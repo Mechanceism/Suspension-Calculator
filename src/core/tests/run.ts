@@ -7,7 +7,8 @@
 import { assembleVehicle, solveCase, type VehicleProblem, type AssembledVehicle } from '../optimize/vehicle';
 import type { DoubleWishboneGeometry } from '../suspension/doubleWishbone';
 import { CORNER_IDS, type CornerId, type ChassisPose, type CornerStatus, type GripSummary, type VehicleResult } from '../vehicle/vehicle';
-import { segmentStates, G, type RoadState, type SegmentSpec } from './segments';
+import { segmentStates, segmentLatG, roadEffective, G, type RoadState, type SegmentSpec, type CarDims } from './segments';
+import { wheelHeights } from './road';
 import { classifyState, worstSeverity, PROFILES, type CheckProfile, type Finding, type Severity } from './checks';
 
 export interface StateResult {
@@ -106,7 +107,7 @@ const dedupe = (fs: Finding[]): Finding[] => {
 
 /** Fastest speed scale (0–1) at which every sample of the segment has no Fail. */
 function speedLimitOf(p: VehicleProblem, asm: AssembledVehicle, seg: TestSegmentSpec, index: number, checks: CheckProfile): number {
-  const passes = (k: number) => segmentStates(seg, index, k).every((st) => evalState(p, asm, st, checks).passed);
+  const passes = (k: number) => segmentStates(seg, index, k, dimsOf(p, asm)).every((st) => evalState(p, asm, st, checks).passed);
   if (!passes(0.02)) return 0;
   let lo = 0.02, hi = 1;
   for (let i = 0; i < 12; i++) {
@@ -126,7 +127,7 @@ export function runTest(
   let guess: ChassisPose | undefined;
   segments.forEach((seg, i) => {
     const checks = seg.checks ?? PROFILES.default.checks;
-    const rs = segmentStates(seg, i).map((st) => {
+    const rs = segmentStates(seg, i, 1, dimsOf(p, asm)).map((st) => {
       const r = evalState(p, asm, st, checks, guess);
       if (r.pose) guess = r.pose;
       return r;
@@ -141,10 +142,90 @@ export function runTest(
     };
     if (!res.passed && (opts.onFail === 'lift' || opts.speedLimits)) {
       res.speedLimit = speedLimitOf(p, asm, seg, i, checks);
-      if (opts.onFail === 'lift' && res.speedLimit > 0) res.lifted = segmentStates(seg, i, res.speedLimit).map((st) => evalState(p, asm, st, checks));
+      if (opts.onFail === 'lift' && res.speedLimit > 0) res.lifted = segmentStates(seg, i, res.speedLimit, dimsOf(p, asm)).map((st) => evalState(p, asm, st, checks));
     }
     segs.push(res);
   });
   const severity = worstSeverity(segs.flatMap((s) => s.findings));
   return { severity, passed: severity !== 'fail', states, segments: segs };
+}
+
+/** Wheelbase and half track of the assembled car, mm. */
+export const dimsOf = (p: VehicleProblem, asm: AssembledVehicle): CarDims => ({
+  wheelbase: p.wheelbase, halfTrack: (Math.abs(asm.chars.FL.contactPoint.x) + Math.abs(asm.chars.RL.contactPoint.x)) / 2,
+});
+
+export interface PlaybackFrame {
+  t: number;
+  segment: number;
+  /** Distance along the segment, m. */
+  s: number;
+  speed: number;
+  ay: number;
+  ax: number;
+  grade: number;
+  bank: number;
+  groundOffset: Partial<Record<CornerId, number>>;
+  /** Position on the test track, top view (m) and height (m); heading, rad. */
+  pos: { x: number; y: number; z: number };
+  heading: number;
+  severity: Severity;
+  utilization: Record<CornerId, number>;
+  findings: string[];
+}
+
+/**
+ * The car driven through the test at constant acceleration per segment, solved every 1/hz s (fewer
+ * frames for long tests). Each frame is a steady state (Phase A): no transients yet.
+ */
+export function playbackFrames(
+  p: VehicleProblem, geometries: Partial<Record<CornerId, DoubleWishboneGeometry>>, segments: TestSegmentSpec[], hz = 10, maxFrames = 600,
+): PlaybackFrame[] {
+  const asm = assembleVehicle(p, geometries);
+  if (!asm) return [];
+  const dims = dimsOf(p, asm);
+  const durations = segments.map((sg) => {
+    const v = (sg.v0 + sg.v1) / 2;
+    return v > 0 ? sg.distance / v : 0;
+  });
+  const total = durations.reduce((a, b) => a + b, 0);
+  const dt = Math.max(1 / hz, total / maxFrames);
+  const frames: PlaybackFrame[] = [];
+  let x = 0, y = 0, z = 0, heading = 0, t0 = 0;
+  let guess: ChassisPose | undefined;
+  segments.forEach((sg, i) => {
+    const T = durations[i]!;
+    if (!(T > 0)) return;
+    const a = (sg.v1 - sg.v0) / T; // m/s², constant over the segment
+    const checks = sg.checks ?? PROFILES.default.checks;
+    let lastS = 0;
+    for (let tt = 0; tt < T - 1e-9; tt += dt) {
+      const sAlong = sg.v0 * tt + 0.5 * a * tt * tt;
+      const v = sg.v0 + a * tt;
+      // Advance the track position.
+      const ds = sAlong - lastS;
+      lastS = sAlong;
+      const curv = sg.path === 'straight' ? 0 : (sg.path === 'left' ? 1 : -1) / Math.max(sg.radius, 0.1);
+      heading += curv * ds;
+      x += ds * Math.cos(heading);
+      y += ds * Math.sin(heading);
+      z += ds * Math.sin(sg.grade);
+      const ay = segmentLatG(sg, v);
+      const ax = sg.longG !== null && sg.longG !== undefined && Number.isFinite(sg.longG) ? sg.longG : a / G;
+      const wh = sg.road ? wheelHeights(sg.road, sAlong, dims.wheelbase / 1000, dims.halfTrack / 1000) : { FL: 0, FR: 0, RL: 0, RR: 0 };
+      const ground: Partial<Record<CornerId, number>> = {};
+      for (const id of CORNER_IDS) { const h = (sg.bumps?.[id] ?? 0) + wh[id]; if (Math.abs(h) > 1e-6) ground[id] = h; }
+      const st: RoadState = { name: `${i + 1}@${sAlong.toFixed(1)}m`, segment: i, speed: v, ay, ax, at: sAlong, ...roadEffective(ay, ax, sg.grade, sg.bank), groundOffset: ground, grade: sg.grade, bank: sg.bank };
+      const r = evalState(p, asm, st, checks, guess);
+      if (r.pose) guess = r.pose;
+      frames.push({
+        t: t0 + tt, segment: i, s: sAlong, speed: v, ay, ax, grade: sg.grade, bank: sg.bank, groundOffset: ground,
+        pos: { x, y, z }, heading, severity: r.severity,
+        utilization: Object.fromEntries(CORNER_IDS.map((id) => [id, r.grip?.corners[id].utilization ?? NaN])) as Record<CornerId, number>,
+        findings: r.findings.filter((f) => f.severity !== 'pass').map((f) => f.text),
+      });
+    }
+    t0 += T;
+  });
+  return frames;
 }

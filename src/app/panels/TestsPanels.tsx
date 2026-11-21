@@ -19,6 +19,8 @@ import { buildVehicleProblem, runTestJob } from '../optimizer';
 import { useProfiles } from '../settings';
 import { switchWorkspace } from '../viewport/SafeHtml';
 import { ValueInput } from './ValueInput';
+import { RoadEditor } from './RoadEditor';
+import { PlaybackBar } from './Playback';
 import { Section, fmt } from './FieldRows';
 import { useDisplay } from '../units';
 import { useLoop, optimizeTest, exploreRanges, acceptExploration } from '../testOptimize';
@@ -161,8 +163,9 @@ function segmentSummary(seg: TestSegment, disp: ReturnType<typeof useDisplay>) {
   const road = [
     seg.grade.value ? `${seg.grade.value > 0 ? '+' : ''}${seg.grade.value}%` : '',
     seg.bank.value ? `bank ${seg.bank.value}°` : '',
-    CORNER_IDS.some((id) => seg.bumps[id].value) ? 'bumps' : '',
-    seg.lumpy ? 'lumpy' : '',
+    CORNER_IDS.some((id) => seg.bumps[id].value) ? 'held bumps' : '',
+    seg.features.length ? `${seg.features.length} bump/pothole` : '',
+    seg.rough.on ? 'rough' : '',
   ].filter(Boolean).join(' · ');
   return `${sp} · ${path}${road ? ` · ${road}` : ''}`;
 }
@@ -264,36 +267,7 @@ function SegmentEditor({ test, seg, index }: { test: TestDesign; seg: TestSegmen
             </>
           )}
           <tr className="seg-layer"><td colSpan={4}>Road</td></tr>
-          <tr title="+ = uphill (incline), − = downhill (decline)">
-            <td>Grade</td>
-            <td><ValueInput field={seg.grade} unit="%" width={56} onCommit={(t) => upd((s) => ({ ...s, grade: parse(t, 'percent', s.grade) }))} /></td>
-            <td className="unit">%</td><td />
-          </tr>
-          <tr title="+ = left side lower">
-            <td>Bank</td>
-            <td><ValueInput field={seg.bank} unit="°" width={56} onCommit={(t) => upd((s) => ({ ...s, bank: parse(t, 'angle', s.bank) }))} /></td>
-            <td className="unit">°</td><td />
-          </tr>
-          <tr title="+ bump, − pothole under that wheel (held while the segment is solved)">
-            <td>Bumps</td>
-            <td colSpan={3}>
-              <div className="bump-grid">
-                {CORNER_IDS.map((id) => (
-                  <label key={id}>
-                    <span className="muted">{id}</span>
-                    <ValueInput field={seg.bumps[id]} unit="mm" width={48} onCommit={(t) => upd((s) => ({ ...s, bumps: { ...s.bumps, [id]: parse(t, 'length', s.bumps[id]) } }))} />
-                  </label>
-                ))}
-                <span className="unit">{disp.conv('mm').unit}</span>
-              </div>
-            </td>
-          </tr>
-          <tr title="Lumpy road needs the time-based simulation (Phase B); saved now, used then">
-            <td>Lumpy road</td>
-            <td colSpan={3}>
-              <label className="check-inline"><input type="checkbox" checked={seg.lumpy} onChange={() => upd((s) => ({ ...s, lumpy: !s.lumpy }))} /> <span className="muted small-text">time-based (Phase B): not used yet</span></label>
-            </td>
-          </tr>
+          <RoadEditor seg={seg} upd={upd} />
           <tr className="seg-layer"><td colSpan={4}>Importance</td></tr>
           <tr title="How much this segment counts within the test when optimizing (1 = normal)">
             <td>Weight</td>
@@ -559,8 +533,18 @@ export function TestResults() {
   );
 }
 
-/** Under the 3D view in the Tests workspace: which state is shown. */
+/** Under the 3D view in the Tests workspace: playback, or which state is shown. */
 export function TestViewBar() {
+  const test = useActiveTest();
+  return (
+    <>
+      <PlaybackBar test={test} />
+      <SelectedStateBar />
+    </>
+  );
+}
+
+function SelectedStateBar() {
   const lat = useApp((s) => s.lateralG);
   const lon = useApp((s) => s.longitudinalG);
   const bumps = useApp((s) => s.wheelBumps);

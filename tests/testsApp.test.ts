@@ -77,3 +77,21 @@ describe('export parts and settings', () => {
     expect(useApp.getState().simpleTire).toBe(true);
   });
 });
+
+describe('road surface in tests', () => {
+  it('rough surface and features save, load and reach the core; format-8 lumpy becomes rough', async () => {
+    const { roadSpecOf } = await import('../src/app/tests');
+    const d = defaultDesign();
+    const t = { ...TEST_PRESETS[2]!.make(), id: newTestId('test') }; // hills: features + rough
+    d.tests = [t];
+    const back = importProject(JSON.parse(JSON.stringify(serializeProject(d, 'R')))).design.tests[0]!;
+    expect(back.segments[1]!.features.map((f) => f.kind)).toEqual(['bump', 'pothole']);
+    expect(back.segments[3]!.rough.on).toBe(true);
+    expect(roadSpecOf(back.segments[3]!)).toEqual(roadSpecOf(t.segments[3]!));
+    // An old test with lumpy: true and no rough field.
+    const old = JSON.parse(JSON.stringify(serializeProject(d, 'R')));
+    delete old.tests[0].segments[3].rough;
+    old.tests[0].segments[3].lumpy = true;
+    expect(importProject(old).design.tests[0]!.segments[3]!.rough.on).toBe(true);
+  });
+});

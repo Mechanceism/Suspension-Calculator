@@ -13,6 +13,7 @@
  */
 import type { CornerId } from '../vehicle/vehicle';
 import type { CheckProfile } from './checks';
+import { wheelHeights, worstRoadSpots, type RoadSpec } from './road';
 
 export const G = 9.80665;
 
@@ -40,7 +41,12 @@ export interface SegmentSpec {
   bumps?: Partial<Record<CornerId, number>>;
   /** Speed samples across the range (1 when the speed is constant). */
   samples?: number;
+  /** Rough surface and placed bumps / potholes along the segment. */
+  road?: RoadSpec;
 }
+
+/** Car dimensions needed to put the wheels on the road. */
+export interface CarDims { wheelbase: number; halfTrack: number }
 
 /** One steady state to solve. Accelerations are the road-frame values the tires must supply. */
 export interface RoadState {
@@ -61,6 +67,8 @@ export interface RoadState {
   /** Road grade and bank, rad (to show the state again). */
   grade: number;
   bank: number;
+  /** Position along the segment, m (road-surface states). */
+  at?: number;
   /** Optimizer weight (test priority × segment weight) and the pass rules that apply. */
   weight?: number;
   checks?: CheckProfile;
@@ -89,7 +97,7 @@ export function roadEffective(ay: number, ax: number, grade: number, bank: numbe
 }
 
 /** Steady states of one segment (speeds scaled by `speedScale`, e.g. for a speed-limit search). */
-export function segmentStates(s: SegmentSpec, index: number, speedScale = 1): RoadState[] {
+export function segmentStates(s: SegmentSpec, index: number, speedScale = 1, dims?: CarDims): RoadState[] {
   const v0 = s.v0 * speedScale, v1 = s.v1 * speedScale;
   const n = Math.abs(v1 - v0) < 1e-9 ? 1 : Math.max(2, Math.round(s.samples ?? 3));
   const scaled: SegmentSpec = { ...s, v0, v1 };
@@ -107,10 +115,30 @@ export function segmentStates(s: SegmentSpec, index: number, speedScale = 1): Ro
       ...eff, groundOffset: { ...(s.bumps ?? {}) }, grade: s.grade, bank: s.bank,
     });
   }
+  // Rough road / bumps: the worst spots along the segment, at the speed the car has there.
+  if (dims && s.road) {
+    const wb = dims.wheelbase / 1000, ht = dims.halfTrack / 1000;
+    worstRoadSpots(s.road, s.distance, wb, ht).forEach((at, k) => {
+      const frac = s.distance > 0 ? Math.min(1, at / s.distance) : 0;
+      const v = Math.sqrt(Math.max(0, v0 * v0 + (v1 * v1 - v0 * v0) * frac));
+      let ay = segmentLatG(scaled, v);
+      if (s.latG !== null && s.latG !== undefined && Number.isFinite(s.latG)) ay *= speedScale * speedScale;
+      const h = wheelHeights(s.road!, at, wb, ht);
+      const ground: Partial<Record<CornerId, number>> = {};
+      for (const id of ['FL', 'FR', 'RL', 'RR'] as CornerId[]) {
+        const v2 = (s.bumps?.[id] ?? 0) + h[id];
+        if (Math.abs(v2) > 1e-6) ground[id] = v2;
+      }
+      out.push({
+        name: `${index + 1}.r${k + 1}`, segment: index, speed: v, ay, ax, at,
+        ...roadEffective(ay, ax, s.grade, s.bank), groundOffset: ground, grade: s.grade, bank: s.bank,
+      });
+    });
+  }
   return out;
 }
 
-export const testStates = (segments: SegmentSpec[]): RoadState[] => segments.flatMap((s, i) => segmentStates(s, i));
+export const testStates = (segments: SegmentSpec[], dims?: CarDims): RoadState[] => segments.flatMap((s, i) => segmentStates(s, i, 1, dims));
 
 /** Segment duration, s (constant acceleration over the distance). */
 export function segmentDuration(s: SegmentSpec): number {

@@ -23,7 +23,7 @@ import pkg from '../../package.json';
 import { parseValue, type Quantity } from '../core/units/units';
 import { CORNER_IDS, type CornerId } from '../core/vehicle/vehicle';
 import { DIM_MEASURES } from '../core/suspension/dimensions';
-import { newSegment, newTestId, OFF, defaultChecks, type TestDesign, type TestSegment } from './tests';
+import { newSegment, newTestId, newFeature, OFF, defaultChecks, type TestDesign, type TestSegment } from './tests';
 import { CHECK_IDS, CHECK_META, type CheckProfile } from '../core/tests/checks';
 import {
   defaultDesign, mergedCorners, rootOf, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META, SPRING_KEYS, SPRING_META,
@@ -279,6 +279,28 @@ function readTests(raw: unknown, warnings: string[]): TestDesign[] {
         bank: fieldOr(sr.bank, 'angle', d.bank, where('bank')),
         bumps: Object.fromEntries(CORNER_IDS.map((id) => [id, fieldOr(bumpsRaw[id], 'length', d.bumps[id], where(`bump ${id}`))])) as TestSegment['bumps'],
         lumpy: sr.lumpy === true,
+        rough: (() => {
+          const r = isObj(sr.rough) ? sr.rough : null;
+          // Format 8 "lumpy" becomes a rough surface.
+          if (!r) return { ...d.rough, on: sr.lumpy === true };
+          return {
+            on: r.on === true, seed: typeof r.seed === 'number' ? r.seed : d.rough.seed,
+            maxHeight: fieldOr(r.maxHeight, 'length', d.rough.maxHeight, where('rough height')),
+            scale: fieldOr(r.scale, 'distance', d.rough.scale, where('rough scale')),
+            coverage: fieldOr(r.coverage, 'percent', d.rough.coverage, where('rough coverage')),
+          };
+        })(),
+        features: (Array.isArray(sr.features) ? sr.features : []).filter(isObj).map((fr) => {
+          const kind = fr.kind === 'pothole' ? 'pothole' : 'bump';
+          const df = newFeature(kind);
+          return {
+            id: typeof fr.id === 'string' ? fr.id : df.id, kind,
+            at: fieldOr(fr.at, 'distance', df.at, where('feature position')),
+            length: fieldOr(fr.length, 'distance', df.length, where('feature length')),
+            height: fieldOr(fr.height, 'length', df.height, where('feature height')),
+            side: fr.side === 'left' || fr.side === 'right' ? fr.side : 'both',
+          } as TestSegment['features'][number];
+        }),
         weight: fieldOr(sr.weight, 'ratio', d.weight, where('weight')),
         checks: isObj(sr.checks) ? readChecks(sr.checks) : null,
         profile: typeof sr.profile === 'string' ? sr.profile : null,

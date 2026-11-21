@@ -26,3 +26,4 @@ export * from './suspension/dimensions';
 export * from './tests/segments';
 export * from './tests/run';
 export * from './tests/checks';
+export * from './tests/road';

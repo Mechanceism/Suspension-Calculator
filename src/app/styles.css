@@ -523,3 +523,24 @@ input[type='range']:disabled { opacity: 0.4; }
 
 .loop-log { margin: 4px 0; padding-left: 18px; }
 .ok-text { color: #5cdc6a; }
+
+/* Road preview */
+.road-preview { margin: 4px 0; }
+.road-preview canvas { width: 100%; height: 56px; border-radius: 4px; display: block; image-rendering: pixelated; }
+.road-profile { width: 100%; height: 60px; display: block; background: var(--panel-2); border-radius: 4px; margin-top: 2px; }
+.road-profile .zero { stroke: var(--border); stroke-width: 1; }
+.road-profile path { fill: none; stroke-width: 1.4; }
+.road-profile .prof-left { stroke: #5c9dff; }
+.road-profile .prof-right { stroke: #ff7eb6; }
+.prof-left-key { color: #5c9dff; }
+.prof-right-key { color: #ff7eb6; }
+.feature-fields { display: inline-flex; flex-wrap: wrap; gap: 3px 6px; align-items: center; }
+.feature-fields label { display: inline-flex; gap: 2px; align-items: center; color: var(--muted); }
+
+/* Playback */
+.playback-bar { align-items: center; gap: 10px; flex-wrap: nowrap; }
+.track-map { width: 150px; height: 110px; flex: none; background: var(--panel-2); border-radius: 6px; }
+.playback-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.playback-slider { flex: 1; min-width: 120px; }
+.playback-hud { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bad-text { color: #ff7b7b; }

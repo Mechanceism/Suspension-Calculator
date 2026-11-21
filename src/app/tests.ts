@@ -4,7 +4,8 @@
  */
 import { CORNER_IDS, type CornerId } from '../core/vehicle/vehicle';
 import { formatValue, type Quantity } from '../core/units/units';
-import { segmentStates, type PathKind, type RoadState } from '../core/tests/segments';
+import { segmentStates, type PathKind, type RoadState, type CarDims } from '../core/tests/segments';
+import type { RoadSpec } from '../core/tests/road';
 import type { TestSegmentSpec } from '../core/tests/run';
 import { PROFILES, cloneProfile, type CheckProfile } from '../core/tests/checks';
 import type { Field } from './store';
@@ -29,8 +30,12 @@ export interface TestSegment {
   bank: Field;
   /** mm (+ bump, − pothole) */
   bumps: Record<CornerId, Field>;
-  /** Lumpy road: time-based (Phase B); kept so the test is ready for it. */
+  /** Old "lumpy" flag (format 8); now the rough surface. */
   lumpy: boolean;
+  /** Seeded random rough surface (height map). */
+  rough: { on: boolean; seed: number; maxHeight: Field; scale: Field; coverage: Field };
+  /** Placed bumps / potholes along the segment. */
+  features: RoadFeatureDesign[];
   /** Weight of this segment within its test (optimizer), default 1. */
   weight: Field;
   /** Check override for this segment (null = the test's checks). */
@@ -38,6 +43,24 @@ export interface TestSegment {
   /** Profile name of the override ('custom' when edited). */
   profile: string | null;
 }
+
+export interface RoadFeatureDesign {
+  id: string;
+  kind: 'bump' | 'pothole';
+  /** m from the segment start */
+  at: Field;
+  /** m */
+  length: Field;
+  /** mm */
+  height: Field;
+  side: 'left' | 'right' | 'both';
+}
+
+export const newFeature = (kind: 'bump' | 'pothole', at = 10): RoadFeatureDesign => ({
+  id: newTestId('feat'), kind, at: f(at, 'distance'), length: f(kind === 'bump' ? 1.5 : 0.8, 'distance'),
+  height: f(kind === 'bump' ? 40 : 50, 'length'), side: kind === 'bump' ? 'both' : 'right',
+});
+export const newSeed = () => Math.floor(Math.random() * 1e6);
 
 export interface TestDesign {
   id: string;
@@ -74,6 +97,8 @@ export function newSegment(over: Partial<Omit<TestSegment, 'id'>> = {}): TestSeg
     bumps: Object.fromEntries(CORNER_IDS.map((id) => [id, f(0, 'length')])) as Record<CornerId, Field>,
     lumpy: false,
     weight: f(1, 'ratio'), checks: null, profile: null,
+    rough: { on: false, seed: 1, maxHeight: f(30, 'length'), scale: f(1.5, 'distance'), coverage: f(60, 'percent') },
+    features: [],
     ...over,
   };
 }
@@ -90,8 +115,9 @@ export const SEGMENT_PRESETS: SegmentPreset[] = [
   { label: 'Right turn 30 mph, R 20 m', make: () => ({ name: 'Right turn', path: 'right', radius: f(20, 'distance'), distance: f(31, 'distance'), speedStart: f(30 * MPH, 'speed'), speedEnd: f(30 * MPH, 'speed') }) },
   { label: 'Incline 10%', make: () => ({ name: 'Incline', grade: f(10, 'percent') }) },
   { label: 'Decline 10%', make: () => ({ name: 'Decline', grade: f(-10, 'percent') }) },
-  { label: 'Bump (front left, 40 mm)', make: () => ({ name: 'Bump', bumps: bumpsOf({ FL: 40 }) }) },
-  { label: 'Pothole (front right, 50 mm)', make: () => ({ name: 'Pothole', bumps: bumpsOf({ FR: -50 }) }) },
+  { label: 'Speed bump (40 mm, both sides)', make: () => ({ name: 'Speed bump', speedStart: f(15 * MPH, 'speed'), speedEnd: f(15 * MPH, 'speed'), distance: f(30, 'distance'), features: [newFeature('bump', 12)] }) },
+  { label: 'Pothole (right side, 50 mm)', make: () => ({ name: 'Pothole', features: [newFeature('pothole', 20)] }) },
+  { label: 'Rough road', make: () => ({ name: 'Rough road', rough: { on: true, seed: newSeed(), maxHeight: f(30, 'length'), scale: f(1.5, 'distance'), coverage: f(60, 'percent') } }) },
 ];
 
 /** Whole tests to start from. */
@@ -114,7 +140,7 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
     make: () => ({
       name: 'Pothole while braking in a turn', checks: defaultChecks(), profile: 'default', priority: f(100, 'percent'), onFail: 'report',
       segments: [
-        newSegment({ name: 'Braking left turn + pothole', path: 'left', radius: f(45, 'distance'), distance: f(35, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(30 * MPH, 'speed'), bumps: bumpsOf({ FR: -40 }) }),
+        newSegment({ name: 'Braking left turn + pothole', path: 'left', radius: f(45, 'distance'), distance: f(35, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(30 * MPH, 'speed'), features: [{ ...newFeature('pothole', 15), height: f(40, 'length') }] }),
       ],
     }),
   },
@@ -124,9 +150,9 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
       name: 'Hills', checks: defaultChecks(), profile: 'default', priority: f(100, 'percent'), onFail: 'report',
       segments: [
         newSegment({ name: 'Flat straight', distance: f(100, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(40 * MPH, 'speed') }),
-        newSegment({ name: 'Bumps + potholes straight', distance: f(60, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(40 * MPH, 'speed'), bumps: bumpsOf({ FL: 30, RR: -30 }) }),
+        newSegment({ name: 'Bumps + potholes straight', distance: f(60, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(40 * MPH, 'speed'), features: [{ ...newFeature('bump', 15), side: 'left' }, newFeature('pothole', 35)] }),
         newSegment({ name: 'Incline left turn', path: 'left', radius: f(40, 'distance'), grade: f(10, 'percent'), distance: f(60, 'distance'), speedStart: f(35 * MPH, 'speed'), speedEnd: f(35 * MPH, 'speed') }),
-        newSegment({ name: 'Lumpy decline right turn', path: 'right', radius: f(40, 'distance'), grade: f(-10, 'percent'), lumpy: true, distance: f(60, 'distance'), speedStart: f(35 * MPH, 'speed'), speedEnd: f(35 * MPH, 'speed') }),
+        newSegment({ name: 'Lumpy decline right turn', path: 'right', radius: f(40, 'distance'), grade: f(-10, 'percent'), rough: { on: true, seed: 42, maxHeight: f(25, 'length'), scale: f(1.2, 'distance'), coverage: f(70, 'percent') }, distance: f(60, 'distance'), speedStart: f(35 * MPH, 'speed'), speedEnd: f(35 * MPH, 'speed') }),
       ],
     }),
   },
@@ -150,7 +176,15 @@ export function segmentSpec(s: TestSegment, test?: TestDesign): TestSegmentSpec 
     bank: (s.bank.value * Math.PI) / 180,
     bumps: Object.fromEntries(CORNER_IDS.filter((id) => s.bumps[id].value !== 0).map((id) => [id, s.bumps[id].value])),
     samples: 3,
+    road: roadSpecOf(s),
   };
+}
+
+/** The segment's road (rough surface + features) for the core. */
+export function roadSpecOf(s: TestSegment): RoadSpec | undefined {
+  const rough = s.rough.on ? { seed: s.rough.seed, maxHeight: Math.max(0, s.rough.maxHeight.value), scale: Math.max(0.05, s.rough.scale.value), coverage: Math.min(1, Math.max(0, s.rough.coverage.value / 100)) } : null;
+  const features = s.features.map((x) => ({ kind: x.kind, at: x.at.value, length: Math.max(0, x.length.value), height: Math.max(0, x.height.value), side: x.side }));
+  return rough || features.length ? { rough, features } : undefined;
 }
 
 /**
@@ -158,7 +192,7 @@ export function segmentSpec(s: TestSegment, test?: TestDesign): TestSegmentSpec 
  * (test priority × segment weight, normalized) and the segment's pass rules.
  * `source`: a test id, or 'all' for every test with a priority above 0.
  */
-export function statesForTests(tests: TestDesign[], source: string): RoadState[] {
+export function statesForTests(tests: TestDesign[], source: string, dims?: CarDims): RoadState[] {
   const chosen = source === 'all' ? tests.filter((t) => t.priority.value > 0) : tests.filter((t) => t.id === source);
   const totalPriority = chosen.reduce((a, t) => a + Math.max(0, source === 'all' ? t.priority.value : 100), 0) || 1;
   const out: RoadState[] = [];
@@ -167,7 +201,7 @@ export function statesForTests(tests: TestDesign[], source: string): RoadState[]
     const specs = t.segments.map((sg) => segmentSpec(sg, t));
     const segTotal = specs.reduce((a, sp) => a + (sp.weight ?? 1), 0) || 1;
     specs.forEach((sp, i) => {
-      const st = segmentStates(sp, i);
+      const st = segmentStates(sp, i, 1, dims);
       for (const x of st) out.push({ ...x, name: `${t.name} ${x.name}`, weight: (tp * (sp.weight ?? 1) / segTotal) * specs.length / st.length, checks: sp.checks });
     });
   }

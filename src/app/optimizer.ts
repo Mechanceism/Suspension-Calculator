@@ -22,7 +22,7 @@ import { STATE_KEY } from './anchors';
 import { lockKeys, pointAxisLocked } from './locks';
 import { toSpec } from './heldDimensions';
 import type { SegmentSpec } from '../core/tests/segments';
-import type { TestRun, TestRunOptions } from '../core/tests/run';
+import type { TestRun, TestRunOptions, PlaybackFrame } from '../core/tests/run';
 import { statesForTests } from './tests';
 
 const AXES = ['x', 'y', 'z'] as const;
@@ -158,7 +158,7 @@ export function buildVehicleProblem(s: AppState): BuiltProblem<VehicleProblem> {
     droop: Math.abs(s.droop), bump: Math.abs(s.bump),
     cases: { lateralG: Math.max(0, o.lateralG.value), brakingG: Math.max(0, o.brakingG.value), accelG: Math.max(0, o.accelG.value) },
     states: o.caseSource && (o.caseSource === 'all' || s.tests.some((x) => x.id === o.caseSource))
-      ? statesForTests(s.tests, o.caseSource) : undefined,
+      ? statesForTests(s.tests, o.caseSource, { wheelbase: v.wheelbase.value, halfTrack: Math.abs(toGeometry(all[rootOf('FL', s.links)].geom).wheel.center.x) }) : undefined,
     goals, variables, holds, grip: gripModelOf(s.grip), keepClose: Math.max(0, o.keepClose.value),
   };
   const blockers: string[] = [];
@@ -225,5 +225,20 @@ export function runTestJob(problem: VehicleProblem, segments: SegmentSpec[], opt
     worker.onerror = (e) => { worker.terminate(); rej(new Error(e.message || 'Test worker failed')); };
   });
   worker.postMessage({ kind: 'test', problem, segments, opts });
+  return { done, cancel: () => worker.terminate() };
+}
+
+/** Compute playback frames in the worker. */
+export function runPlaybackJob(problem: VehicleProblem, segments: SegmentSpec[]): { done: Promise<PlaybackFrame[]>; cancel(): void } {
+  const worker = new Worker(new URL('./optimizer.worker.ts', import.meta.url), { type: 'module' });
+  const done = new Promise<PlaybackFrame[]>((res, rej) => {
+    worker.onmessage = (e: MessageEvent) => {
+      const m = e.data as { type: 'done'; result: PlaybackFrame[] } | { type: 'error'; message: string };
+      worker.terminate();
+      if (m.type === 'error') rej(new Error(m.message)); else res(m.result);
+    };
+    worker.onerror = (e) => { worker.terminate(); rej(new Error(e.message || 'Playback worker failed')); };
+  });
+  worker.postMessage({ kind: 'playback', problem, segments });
   return { done, cancel: () => worker.terminate() };
 }

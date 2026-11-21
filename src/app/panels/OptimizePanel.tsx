@@ -165,6 +165,18 @@ function FreeCoordinates({ spec, ranges, entries, header, update }: {
       <details className="opt-picker">
         <summary>Pick coordinates…</summary>
         {header}
+        <div className="jm-row">
+          <button className="chip" title="Free every coordinate that isn't locked (±25 mm). Many free coordinates make each step slower."
+            onClick={() => update((r0) => {
+              const r = { ...r0 };
+              for (const k of POINT_KEYS) for (const a of [0, 1, 2] as const) {
+                const key = spec.key(k, a);
+                if (!spec.locked(k, a) && !r[key]) r[key] = { lo: numField(spec.value(k, a) - OPT_DEFAULT_RANGE), hi: numField(spec.value(k, a) + OPT_DEFAULT_RANGE) };
+              }
+              return r;
+            })}>Free all available</button>
+          <button className="chip" title="Fix every coordinate (clear the list)" onClick={() => update((r0) => Object.fromEntries(Object.entries(r0).filter(([key]) => !POINT_KEYS.some((k) => [0, 1, 2].some((a) => spec.key(k, a as 0 | 1 | 2) === key)))))}>Clear</button>
+        </div>
         <CoordPicker spec={spec} ranges={ranges} onToggle={(k, a) => update((r0) => {
           const key = spec.key(k, a);
           const r = { ...r0 };
@@ -580,14 +592,15 @@ export function VehicleOptimizePanel() {
       <Section title="Load cases">
         <div className="jm-row">
           <span className="muted">Use</span>
-          <select value={o.caseSource && tests.some((t) => t.id === o.caseSource) ? o.caseSource : ''}
+          <select value={o.caseSource && (o.caseSource === 'all' || tests.some((t) => t.id === o.caseSource)) ? o.caseSource : ''}
             onChange={(e) => update((v) => ({ ...v, caseSource: e.target.value || undefined }))}
-            title="Fixed cases below, or every segment of a test (Tests workspace)">
+            title="Fixed cases below, every segment of one test, or all tests weighted by their priority (Tests workspace)">
             <option value="">Fixed cases (below)</option>
+            {tests.length > 1 && <option value="all">All tests (by priority)</option>}
             {tests.map((t) => <option key={t.id} value={t.id}>Test: {t.name}</option>)}
           </select>
         </div>
-        {o.caseSource && tests.some((t) => t.id === o.caseSource) && (
+        {built.problem.states && (
           <p className="hint">Every segment's speed samples of that test are load cases ({built.problem.states?.length ?? 0} states). Turn on <b>Test passes</b> to make every tire stay within its grip.</p>
         )}
         <table className="opt-table">

@@ -21,6 +21,8 @@ import { switchWorkspace } from '../viewport/SafeHtml';
 import { ValueInput } from './ValueInput';
 import { Section, fmt } from './FieldRows';
 import { useDisplay } from '../units';
+import { useLoop, optimizeTest, exploreRanges, acceptExploration } from '../testOptimize';
+import { VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META } from '../../core/optimize/vehicle';
 
 const parse = (text: string, q: Quantity, prev: Field): Field => {
   const r = parseValue(text, q);
@@ -548,18 +550,7 @@ export function TestResults() {
           </div>
         </Section>
       )}
-      {!r.passed && (fixable ? (
-        <div className="jm-row">
-          <button className="wide-btn primary" onClick={makePass} title="Open the vehicle optimizer with this test as its load cases and a 'test passes' goal">
-            Make it pass with the optimizer…
-          </button>
-        </div>
-      ) : (
-        <p className="hint warn-text">
-          These failures can't be fixed by moving suspension points (no powered / braked wheels, or more than the tires can give):
-          change the corner settings, the test, or the tires.
-        </p>
-      ))}
+      <OptimizeSection test={test} run={r} fixable={fixable} onOpenOptimizer={makePass} />
       <p className="hint">
         Grip uses the placeholder tire grip model (not the official one yet). Steady states: what the car does after a tire slides
         (runs wide, spins) needs the handling model (Phase C).
@@ -585,5 +576,68 @@ export function TestViewBar() {
         lateral {fmt(lat, 2)} g · longitudinal {fmt(lon, 2)} g{anyBump.length ? ` · bumps ${anyBump.map((id) => `${id} ${disp.format(bumps[id], 'mm', 0)}`).join(', ')}` : ''}
       </span>
     </div>
+  );
+}
+
+/** Optimize from here: until it passes, improve, explore beyond the ranges. */
+function OptimizeSection({ test, run, fixable, onOpenOptimizer }: { test: TestDesign; run: TestRun; fixable: boolean; onOpenOptimizer: () => void }) {
+  const loop = useLoop();
+  const vo = useApp((s) => s.vehicleOptimizer);
+  const free = Object.keys(vo.ranges).length;
+  const goals = VEHICLE_GOAL_KINDS.filter((k) => vo.goals[k].on && k !== 'testPass' && k !== 'testReserve').map((k) => VEHICLE_GOAL_META[k].short);
+  const failing = !run.passed;
+  return (
+    <Section title="Optimize">
+      <p className="small-text">
+        Free coordinates: <b>{free || 'none yet (you\'ll be asked to free all available)'}</b>
+        {goals.length ? <> · other goals kept: <b>{goals.join(', ')}</b></> : ' · no other goals'}
+        {' · '}<button className="link-btn" onClick={onOpenOptimizer}>edit in Vehicle → Optimize</button>
+      </p>
+      {!loop.running && (
+        <div className="jm-row">
+          {failing && fixable && <button className="wide-btn primary" onClick={() => void optimizeTest(test, 'pass')} title="Optimize, apply, re-run the test, until it passes or stops improving">▶ Optimize until it passes</button>}
+          {!failing && <button className="wide-btn primary" onClick={() => void optimizeTest(test, 'improve')} title="Lower grip use everywhere (priority-weighted; failing segments get extra weight)">▶ Improve (more grip reserve)</button>}
+          <button className="wide-btn" onClick={() => void exploreRanges(test)} title="Try once with the free ranges widened ×2; shows the result before using it">Explore beyond the ranges…</button>
+        </div>
+      )}
+      {failing && !fixable && (
+        <p className="hint warn-text">These failures can't be fixed by moving suspension points (no powered / braked wheels, or more than the tires can give): change the corner settings, the test, or the tires.</p>
+      )}
+      {loop.running && (
+        <div className="jm-row">
+          <span className="muted">{loop.mode === 'explore' ? 'Exploring…' : `Round ${loop.round}…`}</span>
+          <button className="chip" onClick={() => loop.cancel?.()}>■ Stop</button>
+        </div>
+      )}
+      {loop.log.length > 0 && <ol className="loop-log">{loop.log.map((l, i) => <li key={i} className="small-text">{l}</li>)}</ol>}
+      {loop.outcome === 'passed' && <p className="small-text ok-text">✓ Passes now. Each applied round can be undone (Ctrl+Z).</p>}
+      {loop.outcome === 'improved' && <p className="small-text ok-text">Done improving. Each applied round can be undone (Ctrl+Z).</p>}
+      {loop.outcome === 'stopped' && <p className="small-text muted">Stopped.</p>}
+      {(loop.outcome === 'stuck' || loop.outcome === 'error' || loop.outcome === 'improved') && loop.explanation.map((x) => <p key={x} className={`small-text ${loop.outcome === 'improved' ? 'muted' : 'warn-text'}`}>{x}</p>)}
+      {loop.exploration && (
+        <div className="opt-result">
+          <div className="locks-head">Beyond the ranges</div>
+          <p className="small-text">
+            Candidate {loop.exploration.candidateRun.passed ? (loop.exploration.candidateRun.severity === 'warn' ? 'passes with warnings' : 'passes') : 'still fails'}
+            {' '}· score {fmt(loop.exploration.before, 2)} → <b>{fmt(loop.exploration.after, 2)}</b> (lower is better)
+          </p>
+          <table className="opt-table">
+            <thead><tr><th>Coordinate</th><th>Now</th><th>Candidate</th><th /></tr></thead>
+            <tbody>
+              {loop.exploration.moves.map((m) => (
+                <tr key={m.key} className={m.outside ? 'warn' : ''}>
+                  <td>{m.label}</td><td className="mono">{fmt(m.before, 1)}</td><td className="mono">{fmt(m.after, 1)}</td>
+                  <td className="small-text">{m.outside ? '⚠ outside your range' : ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="jm-row">
+            <button className="wide-btn primary" disabled={loop.exploration.after >= loop.exploration.before} onClick={() => acceptExploration(test)}>Use it (and widen those ranges)</button>
+            <button className="wide-btn" onClick={() => useLoop.setState({ exploration: null })}>Keep my ranges</button>
+          </div>
+        </div>
+      )}
+    </Section>
   );
 }

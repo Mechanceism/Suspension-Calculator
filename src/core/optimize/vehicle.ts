@@ -22,15 +22,16 @@ import {
 } from '../vehicle/vehicle';
 import { boundedLeastSquares, type LsqResult } from './leastSquares';
 import type { RoadState } from '../tests/segments';
+import { checkResiduals } from '../tests/checks';
 import {
-  withVariables, variableValue, sampleCorner, cornerGoalResiduals, goalValue, holdValue, holdTarget,
+  withVariables, variableValue, sampleCorner, cornerGoalResiduals, goalValue, holdValue, holdTarget, getPoint,
   type Variable, type Hold, type ProgressInfo,
 } from './corner';
 
 const G = 9.80665;
 
 export type VehicleGoalKind =
-  | 'grip' | 'contactArea' | 'inclination' | 'roll' | 'lltd' | 'pitch' | 'antiDive' | 'antiSquat' | 'bumpSteer' | 'testPass';
+  | 'grip' | 'contactArea' | 'inclination' | 'roll' | 'lltd' | 'pitch' | 'antiDive' | 'antiSquat' | 'bumpSteer' | 'testPass' | 'testReserve';
 
 export interface VehicleGoalMeta {
   short: string; label: string; unit: string; target: number; tolerance: number; hint: string; maximize?: boolean;
@@ -47,6 +48,7 @@ export const VEHICLE_GOAL_META: Record<VehicleGoalKind, VehicleGoalMeta> = {
   pitch: { short: 'Brake pitch', label: 'Pitch under braking', unit: '°', target: 0.5, tolerance: 0.02, uses: 'braking', hint: 'Nose-down pitch in the braking case.' },
   antiDive: { short: 'Anti-dive', label: 'Anti-dive (front, braking)', unit: '%', target: 20, tolerance: 1, uses: 'geometry', hint: 'Classic geometric anti-dive at static height from the side-view IC, brake mount and bias.' },
   antiSquat: { short: 'Anti-squat', label: 'Anti-squat (rear, accelerating)', unit: '%', target: 30, tolerance: 1, uses: 'geometry', hint: 'Classic geometric anti-squat of the powered rear corners (needs powered rear corners).' },
+  testReserve: { short: 'Test reserve', label: 'More grip reserve in the tests (largest)', unit: '%', target: 0, tolerance: 1, maximize: true, uses: 'all', hint: 'Lowers every state\'s worst tire grip use, weighted by test priority and segment weight (the worst states count most). Use it to improve a test that already passes. Placeholder grip model.' },
   testPass: { short: 'Test passes', label: 'Every tire within its grip (test must pass)', unit: '%', target: 90, tolerance: 1, uses: 'all', hint: 'No tire in any load case may use more than this share of its grip (100% = sliding). With a test selected as the load cases, this makes the test pass with margin. Grip model is a placeholder until real tire data.' },
   bumpSteer: { short: 'Bump steer', label: 'Bump steer (every design)', unit: '°', target: 0, tolerance: 0.01, uses: 'geometry', hint: 'Keeps every corner design free of bump steer over the travel range while the rest is optimized. Reported: worst deviation, °.' },
 };
@@ -295,6 +297,12 @@ export function vehicleGoalValue(kind: VehicleGoalKind, p: VehicleProblem, e: Ve
     case 'inclination': return lat ? mean(outsideOf(lat).map((id) => deg(lat.result.corners[id].inclination))) : null;
     case 'roll': return lat ? Math.abs(deg(lat.result.pose.roll)) / Math.abs(latGOf(lat)) : null;
     case 'testPass': return e.cases.length ? 100 * Math.max(...e.cases.map((c) => c.result.grip?.maxUtilization ?? 0)) : null;
+    case 'testReserve': {
+      if (!e.cases.length) return null;
+      const w = e.cases.map((c) => c.state?.weight ?? 1);
+      const tw = w.reduce((a, b) => a + b, 0) || 1;
+      return (100 * e.cases.reduce((a, c, i) => a + w[i]! * (1 - (c.result.grip?.maxUtilization ?? 1)), 0)) / tw;
+    }
     case 'lltd': return lat ? lltdOf(lat) : null;
     case 'pitch': return brk ? deg(brk.result.pose.pitch) : null;
     case 'antiDive': case 'antiSquat': return antiOf(p, e, kind);
@@ -323,9 +331,17 @@ function vehicleResiduals(goal: VehicleGoal, p: VehicleProblem, e: VehicleEval, 
     return lat ? outsideOf(lat).map((id) => (deg(lat.result.corners[id].inclination) - goal.target) / meta.tolerance) : [];
   }
   if (goal.kind === 'testPass') {
-    // Every tire in every case at or under the allowed grip use: one-sided (only overuse counts).
-    const limit = goal.target / 100;
-    return e.cases.flatMap((c) => CORNER_IDS.map((id) => Math.max(0, (c.result.grip?.corners[id].utilization ?? 0) - limit) / (meta.tolerance / 100)));
+    // Test states: each state's pass rules (Fail = hard, Warning = soft), × √(priority × segment weight).
+    // Fixed cases: every tire at or under the allowed grip use.
+    return e.cases.flatMap((c) => {
+      if (c.state?.checks) return checkResiduals(c.result, c.state.checks).map((v) => v * Math.sqrt(c.state!.weight ?? 1) * 3);
+      const limit = goal.target / 100;
+      return CORNER_IDS.map((id) => Math.max(0, (c.result.grip?.corners[id].utilization ?? 0) - limit) / (meta.tolerance / 100));
+    });
+  }
+  if (goal.kind === 'testReserve') {
+    // Lower grip use everywhere; squares make the worst states count most.
+    return e.cases.map((c) => (Math.sqrt(c.state?.weight ?? 1) * (c.result.grip?.maxUtilization ?? 1)) / 0.05);
   }
   if (goal.kind === 'bumpSteer') {
     const r: number[] = [];
@@ -392,6 +408,7 @@ export function optimizeVehicle(p: VehicleProblem, onIteration?: (info: Progress
     }
     for (const { h, v0 } of holds) r.push((holdValue(geoms[h.root]!, h) - v0) / 1e-3);
     x.forEach((v, i) => r.push((keep * (v - x0[i]!)) / 10));
+    r.push(...packagingResiduals(p, geoms, e));
     return r;
   };
 
@@ -401,3 +418,37 @@ export function optimizeVehicle(p: VehicleProblem, onIteration?: (info: Progress
   });
   return { lsq, ...reportVehicle(p, lsq.x) };
 }
+
+/**
+ * Packaging limits for free points (until real packaging zones exist): a moved point may not sit inside
+ * the tire (with 10 mm clearance) or within 20 mm of the ground at ride height. Penalty per mm.
+ */
+export function packagingResiduals(p: VehicleProblem, geoms: Partial<Record<CornerId, DoubleWishboneGeometry>>, e: VehicleEval): number[] {
+  const out: number[] = [];
+  const seen = new Set<string>();
+  for (const v of p.variables) {
+    const key = `${v.root}.${v.point}`;
+    if (seen.has(key) || v.point === 'wheelCenter') continue;
+    seen.add(key);
+    const g = geoms[v.root]!;
+    const pt = variablePoint(g, v.point);
+    if (!pt) continue;
+    const d = p.designs[v.root]!;
+    const c = g.wheel.center;
+    const a = g.wheel.spinAxis;
+    const al = Math.hypot(a.x, a.y, a.z) || 1;
+    const rel = { x: pt.x - c.x, y: pt.y - c.y, z: pt.z - c.z };
+    const axial = (rel.x * a.x + rel.y * a.y + rel.z * a.z) / al;
+    const radial = Math.sqrt(Math.max(0, rel.x ** 2 + rel.y ** 2 + rel.z ** 2 - axial ** 2));
+    const inAxial = d.profile.width / 2 + 10 - Math.abs(axial);
+    const inRadial = d.profile.radius + 10 - radial;
+    // Ball joints and tie-rod ends live inside the rim: only the tread band (outside the rim) is off limits.
+    const inTread = radial > d.profile.rimRadius;
+    if (inAxial > 0 && inRadial > 0 && inTread) out.push(Math.min(inAxial, inRadial));
+    const groundY = e.chars[v.root]?.contactPoint.y ?? -Infinity;
+    out.push(Math.max(0, groundY + 20 - pt.y));
+  }
+  return out;
+}
+
+const variablePoint = (g: DoubleWishboneGeometry, id: VehicleVariable['point']) => getPoint(g, id);

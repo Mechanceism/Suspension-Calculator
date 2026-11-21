@@ -163,3 +163,25 @@ describe('pass / warning / fail', () => {
     expect(run.segments[0]!.impossible).toBe(true);
   });
 });
+
+describe('optimizer: pass rules as residuals', () => {
+  it('a passing state has no residuals; failing rules give positive ones (Fail heavier than Warning)', async () => {
+    const { checkResiduals } = await import('../src/core');
+    const ok = solve(base(), { lateralG: 0.5 });
+    expect(checkResiduals(ok, PROFILES.default.checks).every((v) => v === 0)).toBe(true);
+    const over = solve(base(), { lateralG: 1.15 });
+    const fail = checkResiduals(over, PROFILES.default.checks).reduce((a, b) => a + b, 0);
+    const warnOnly = checkResiduals(over, { ...PROFILES.default.checks, understeer: { severity: 'warn', threshold: 0 }, oversteer: { severity: 'warn', threshold: 0, threshold2: 10 } }).reduce((a, b) => a + b, 0);
+    expect(fail).toBeGreaterThan(0);
+    expect(warnOnly).toBeLessThan(fail);
+  });
+
+  it('the test-reserve goal does not make grip use worse', async () => {
+    const { optimizeVehicle, segmentStates } = await import('../src/core');
+    const states = segmentStates({ distance: 40, v0: 31 * MPH, v1: 31 * MPH, path: 'left', radius: 20, grade: 0, bank: 0 }, 0).map((s) => ({ ...s, weight: 1, checks: PROFILES.default.checks }));
+    const vars = (['ucaFwd', 'ucaAft'] as const).map((k) => ({ root: 'FL' as const, point: k, axis: 1 as const, lo: geom.uca[k === 'ucaFwd' ? 'fwd' : 'aft'].y - 20, hi: geom.uca[k === 'ucaFwd' ? 'fwd' : 'aft'].y + 20 }));
+    const r = optimizeVehicle({ ...base(), states, variables: vars, goals: [{ kind: 'testReserve', target: 0, weight: 1 }], maxIterations: 8 });
+    const g = r.goals[0]!;
+    expect(g.after!).toBeGreaterThanOrEqual(g.before! - 1e-6);
+  });
+});

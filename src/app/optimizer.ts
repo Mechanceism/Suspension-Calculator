@@ -21,9 +21,9 @@ import {
 import { STATE_KEY } from './anchors';
 import { lockKeys, pointAxisLocked } from './locks';
 import { toSpec } from './heldDimensions';
-import { testStates, type SegmentSpec } from '../core/tests/segments';
+import type { SegmentSpec } from '../core/tests/segments';
 import type { TestRun, TestRunOptions } from '../core/tests/run';
-import { segmentSpec } from './tests';
+import { statesForTests } from './tests';
 
 const AXES = ['x', 'y', 'z'] as const;
 export const varKey = (k: PointKey, axis: 0 | 1 | 2) => `${k}.${AXES[axis]}`;
@@ -157,10 +157,8 @@ export function buildVehicleProblem(s: AppState): BuiltProblem<VehicleProblem> {
     dropLinks: { front: dl(s.shared.front), rear: dl(s.shared.rear) },
     droop: Math.abs(s.droop), bump: Math.abs(s.bump),
     cases: { lateralG: Math.max(0, o.lateralG.value), brakingG: Math.max(0, o.brakingG.value), accelG: Math.max(0, o.accelG.value) },
-    states: (() => {
-      const t = o.caseSource ? s.tests.find((x) => x.id === o.caseSource) : undefined;
-      return t ? testStates(t.segments.map((sg) => segmentSpec(sg, t))) : undefined;
-    })(),
+    states: o.caseSource && (o.caseSource === 'all' || s.tests.some((x) => x.id === o.caseSource))
+      ? statesForTests(s.tests, o.caseSource) : undefined,
     goals, variables, holds, grip: gripModelOf(s.grip), keepClose: Math.max(0, o.keepClose.value),
   };
   const blockers: string[] = [];

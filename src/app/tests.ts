@@ -4,7 +4,7 @@
  */
 import { CORNER_IDS, type CornerId } from '../core/vehicle/vehicle';
 import { formatValue, type Quantity } from '../core/units/units';
-import type { PathKind } from '../core/tests/segments';
+import { segmentStates, type PathKind, type RoadState } from '../core/tests/segments';
 import type { TestSegmentSpec } from '../core/tests/run';
 import { PROFILES, cloneProfile, type CheckProfile } from '../core/tests/checks';
 import type { Field } from './store';
@@ -151,4 +151,25 @@ export function segmentSpec(s: TestSegment, test?: TestDesign): TestSegmentSpec 
     bumps: Object.fromEntries(CORNER_IDS.filter((id) => s.bumps[id].value !== 0).map((id) => [id, s.bumps[id].value])),
     samples: 3,
   };
+}
+
+/**
+ * Load cases for the optimizer from tests: every segment's speed samples, each with weight
+ * (test priority × segment weight, normalized) and the segment's pass rules.
+ * `source`: a test id, or 'all' for every test with a priority above 0.
+ */
+export function statesForTests(tests: TestDesign[], source: string): RoadState[] {
+  const chosen = source === 'all' ? tests.filter((t) => t.priority.value > 0) : tests.filter((t) => t.id === source);
+  const totalPriority = chosen.reduce((a, t) => a + Math.max(0, source === 'all' ? t.priority.value : 100), 0) || 1;
+  const out: RoadState[] = [];
+  for (const t of chosen) {
+    const tp = Math.max(0, source === 'all' ? t.priority.value : 100) / totalPriority;
+    const specs = t.segments.map((sg) => segmentSpec(sg, t));
+    const segTotal = specs.reduce((a, sp) => a + (sp.weight ?? 1), 0) || 1;
+    specs.forEach((sp, i) => {
+      const st = segmentStates(sp, i);
+      for (const x of st) out.push({ ...x, name: `${t.name} ${x.name}`, weight: (tp * (sp.weight ?? 1) / segTotal) * specs.length / st.length, checks: sp.checks });
+    });
+  }
+  return out;
 }

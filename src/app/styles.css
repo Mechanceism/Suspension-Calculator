@@ -520,3 +520,6 @@ input[type='range']:disabled { opacity: 0.4; }
 .seg-fail.sev-warn { border-left-color: #ffb703; }
 
 .menu .menu-head { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; padding: 4px 10px 0; }
+
+.loop-log { margin: 4px 0; padding-left: 18px; }
+.ok-text { color: #5cdc6a; }

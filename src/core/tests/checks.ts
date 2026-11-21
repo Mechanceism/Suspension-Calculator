@@ -150,4 +150,37 @@ export function classifyState(f: StateFacts, profile: CheckProfile): Finding[] {
   return out;
 }
 
+/**
+ * Continuous "how far over" amounts for the optimizer (≥ 0; 1 ≈ 1 % over a grip rule), scaled by the
+ * rule's severity: Fail = 1, Warning = 0.3, Pass = 0. Failures geometry can't change (no drive /
+ * brakes, beyond the tires, rollover) are left out.
+ */
+export function checkResiduals(r: VehicleResult | null, profile: CheckProfile): number[] {
+  if (!r?.converged || !r.grip) return [];
+  const g = r.grip;
+  const w = (id: CheckId) => (profile[id].severity === 'fail' ? 1 : profile[id].severity === 'warn' ? 0.3 : 0);
+  const over = (x: number) => Math.max(0, x) / 0.01;
+  const out: number[] = [];
+  const reserve = (profile.nearLimit.threshold ?? 10) / 100;
+  if (w('nearLimit')) for (const id of CORNER_IDS) out.push(w('nearLimit') * over(g.corners[id].utilization - (1 - reserve)));
+  if (w('understeer')) out.push(w('understeer') * over(g.axles.front - (1 + (profile.understeer.threshold ?? 0) / 100)));
+  if (w('oversteer')) {
+    out.push(w('oversteer') * over(g.axles.rear - (1 + (profile.oversteer.threshold ?? 0) / 100)));
+    if (g.axles.rear > 1) out.push(w('oversteer') * over(g.axles.front - (1 - (profile.oversteer.threshold2 ?? 10) / 100)));
+  }
+  for (const id of CORNER_IDS) {
+    const c = r.corners[id];
+    const cap = Math.max(g.corners[id].capacity, 1e-9);
+    if (w('wheelspin') && c.driveForce > 0) out.push(w('wheelspin') * over(c.driveForce / cap - (1 + (profile.wheelspin.threshold ?? 0) / 100)));
+    if (c.brakeForce < 0) {
+      const k = g.corners[id].state === 'locked' ? 'lockup' : 'absActive';
+      if (w(k)) out.push(w(k) * over(-c.brakeForce / cap - 1));
+    }
+    if (w('bumpStop') && c.onBumpStop) out.push(w('bumpStop') * 5);
+    if (w('bottoming') && c.status !== 'ok') out.push(w('bottoming') * 20);
+    if (w('wheelLift')) out.push(w('wheelLift') * Math.max(0, 25 - c.tireLoad) / 2.5);
+  }
+  return out;
+}
+
 export const worstSeverity = (fs: Finding[]): Severity => (fs.some((x) => x.severity === 'fail') ? 'fail' : fs.some((x) => x.severity === 'warn') ? 'warn' : 'pass');

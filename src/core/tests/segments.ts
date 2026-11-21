@@ -12,6 +12,7 @@
  * and only m·g·cos(grade)·cos(bank) presses the car onto the road.
  */
 import type { CornerId } from '../vehicle/vehicle';
+import type { CheckProfile } from './checks';
 
 export const G = 9.80665;
 
@@ -60,6 +61,9 @@ export interface RoadState {
   /** Road grade and bank, rad (to show the state again). */
   grade: number;
   bank: number;
+  /** Optimizer weight (test priority × segment weight) and the pass rules that apply. */
+  weight?: number;
+  checks?: CheckProfile;
 }
 
 /** Longitudinal acceleration of a segment, g (+ accelerating). */

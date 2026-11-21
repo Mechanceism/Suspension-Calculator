@@ -40,6 +40,19 @@ Calculating and visualizing come first. **Later:** export to modeling software (
 | 7 | **Other suspension types**: MacPherson, multilink, etc., plus user-defined linkages | |
 | 8 | **Tests workspace** (alongside Corner and Vehicle, sharing one design): chainable / combinable test segments (speed change over distance, straight / left / right turn with radius, flat / grade / bank / bumps / potholes / lumpy), per-tire grip use and slip detection, speed limits, test goals for the optimizer | Phase A (quasi-static segments) in progress; Phase B (time-domain ride: transients, bumps at speed, lumpy roads, dampers) and Phase C (handling: tire slip, yaw, path following) planned |
 
+### Tests workspace: requested changes (noted 2026-11-22)
+1. **Segment list.** Replace the collapsible segment cards with a plain, always-visible ordered list (number, name, one-line summary) where segments can be added, reordered (drag or ↑/↓) and removed; selecting one opens its editor.
+2. **Playback.** A ▶ play button and a time slider to play the car through the test after a run (speed, g's, grip use per tire shown as it goes), with the car moving along the test's path. Bumps and potholes need a position and length within a segment for this.
+3. **Physics bug: velocity changes must come from the tires.** Acceleration only from powered wheels; braking only from braked wheels or from sliding tires (a sliding tire's friction acts against its sliding direction: a tire sliding sideways scrubs speed, it never pushes the car forward). Today a segment that speeds up with no powered wheels passes silently (the solver ignores the acceleration and only notes it), and braking with no braked wheels is not enforced. Such segments must fail with the reason. Later, aero drag adds to braking.
+4. **Passing is not the end.** After a test passes, offer "do better": optimize for more grip reserve and higher passing speeds.
+5. **Optimizer from the Tests workspace.**
+   - A button to free **all available (unlocked) coordinates** at once instead of clicking each.
+   - **Run until it passes:** optimize, apply to the design, re-run the test, repeat until it passes, with **stuck / no-improvement detection** and an explanation of what blocks it.
+   - **Test priority (weight)** per test, e.g. 80% paved-road tests, 20% rough-road tests; the optimizer weighs tests by it.
+   - **Other selected goals stay on** (e.g. total grip) while optimizing for a test, so the test optimization doesn't undo them.
+   - **Range exploration:** one extra pass with the min/max ranges relaxed to see whether a better design lies outside them; show what would change and **ask the user** before using it.
+6. **Save and export.** Tests are saved with the model; Export / Import get three options: **model and tests**, **model only**, **tests only**. Unsaved-change tracking per part (model, tests), with a prompt on close or New / Open when a part changed since its last save or export.
+
 ### Future goals (noted 2026-11-22)
 - **Official tire grip model.** The contact-patch grip model (pressure distribution + load-sensitive friction) is a **placeholder** with default parameters; the official model (fitted to tire data, with camber thrust and a peak → sliding friction curve) has **not been implemented yet**. Grip, contact-area and slip / pass-fail results depend on it.
 - **Aero.** Assumed negligible for now. When added: drag acts on the **body** as a braking force (not through the tires), and lift / downforce acts on the body at a center of pressure, so it can lift, lower, pitch or twist (roll / yaw moment) the body, and with that change tire loads and grip. Inputs: CdA, ClA (front/rear or center of pressure), air density; speed comes from the test segments.

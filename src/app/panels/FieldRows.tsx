@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import type { Field } from '../store';
 import { ValueInput } from './ValueInput';
+import { useDisplay } from '../units';
 
 export interface Row {
   label: string;
@@ -16,20 +17,24 @@ export interface Row {
 
 /** Label / value / unit rows; editable when a field + onCommit is given. */
 export function FieldRows({ rows }: { rows: Row[] }) {
+  const d = useDisplay();
   return (
     <table className="field-rows">
       <tbody>
-        {rows.map((r) => (
-          <tr key={r.label} title={r.hint} data-lock-key={r.lockKey}>
-            <td>{r.label}</td>
-            <td className="num">
-              {r.field && r.onCommit
-                ? <ValueInput field={r.field} unit={r.unit} onCommit={r.onCommit} lockKey={r.lockKey} />
-                : <span className="readonly">{r.value ?? '—'}</span>}
-            </td>
-            <td className="unit">{r.unit}</td>
-          </tr>
-        ))}
+        {rows.map((r) => {
+          const shown = d.text(r.value ?? '—', r.unit);
+          return (
+            <tr key={r.label} title={r.hint} data-lock-key={r.lockKey}>
+              <td>{r.label}</td>
+              <td className="num">
+                {r.field && r.onCommit
+                  ? <ValueInput field={r.field} unit={r.unit} onCommit={r.onCommit} lockKey={r.lockKey} />
+                  : <span className="readonly">{shown.text}</span>}
+              </td>
+              <td className="unit">{shown.unit}</td>
+            </tr>
+          );
+        })}
       </tbody>
     </table>
   );

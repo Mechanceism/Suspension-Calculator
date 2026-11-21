@@ -316,6 +316,14 @@ Two operating modes:
 
 ---
 
+## Editing tools: driving dimensions (`src/core/math/dimension.ts`)
+Set dimension (Measure tool) moves one point; the other is fixed. With d = B − A:
+- **Distance:** B′ = A + L·d/|d| (or A′ = B − L·d/|d|).
+- **ΔX/ΔY/ΔZ:** replace one component of d.
+- **View angles** from the horizontal: front atan2(ΔY, |ΔX|), side atan2(ΔY, |ΔZ|), top atan2(ΔZ, |ΔX|), slope atan2(ΔY, √(ΔX²+ΔZ²)). Setting one keeps the line's length in that view and the coordinate out of that view (slope keeps the 3D length and plan direction).
+- **Along a line:** p′ = p + s·(q − p)/|q − p| (s > 0 toward q).
+- **Arm front-view angle (static):** the pivot axis swings around the ball joint (Rodrigues rotation of the foot → ball-joint vector about the axis direction), keeping the axis direction, arm length and pivot spacing; solved by bisection. Lockable and held by the optimizer like the other arm dimensions.
+
 ## L7: Optimizer — corner, first version ✅ (`src/core/optimize/`)
 
 **What moves.** Free variables are single hardpoint coordinates, each with its own range (min/max, absolute mm). Everything else stays where it is, so locked values are respected by never becoming variables: a locked coordinate, point or part is simply skipped. Locked **derived** dimensions (arm length, pivot-axis inclination / plan angle) are held by stiff penalty residuals (tolerance 0.001 mm / 0.001°). Static camber and toe are set by the design spin axis, so moving points never changes them.

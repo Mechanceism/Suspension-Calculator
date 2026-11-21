@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { Num, UnitLabel } from './UnitText';
 import { LocksPanel } from './LocksPanel';
 import { VehicleOptimizePanel } from './OptimizePanel';
 import { CORNER_IDS, type CornerId } from '../../core/vehicle/vehicle';
@@ -142,13 +143,13 @@ export function VehicleInputs({ model }: { model: VehicleModel | null }) {
           <>
             <table className="corner-grid">
               <tbody>
-                <tr><td>FL <b>{fmt(loads.FL, 0)}</b> N</td><td>FR <b>{fmt(loads.FR, 0)}</b> N</td></tr>
-                <tr><td>RL <b>{fmt(loads.RL, 0)}</b> N</td><td>RR <b>{fmt(loads.RR, 0)}</b> N</td></tr>
+                <tr><td>FL <b><Num text={fmt(loads.FL, 0)} unit="N" /></b> <UnitLabel unit="N" /></td><td>FR <b><Num text={fmt(loads.FR, 0)} unit="N" /></b> <UnitLabel unit="N" /></td></tr>
+                <tr><td>RL <b><Num text={fmt(loads.RL, 0)} unit="N" /></b> <UnitLabel unit="N" /></td><td>RR <b><Num text={fmt(loads.RR, 0)} unit="N" /></b> <UnitLabel unit="N" /></td></tr>
               </tbody>
             </table>
             <p className="hint">
               Front {fmt((100 * (loads.FL + loads.FR)) / total, 1)}% · Left {fmt((100 * (loads.FL + loads.RL)) / total, 1)}%
-              · Total {fmt(total / G, 1)} kg
+              · Total <Num text={fmt(total / G, 1)} unit="kg" withUnit />
             </p>
           </>
         )}
@@ -267,15 +268,15 @@ export function VehicleResults({ model }: { model: VehicleModel | null }) {
       </Section>
       <Section title="Corners">
         <table className="corner-table">
-          <thead><tr><th /><th>Load N</th><th>Δ static</th><th title="Longitudinal tire force: − braking, + drive">Long. N</th><th>Travel</th><th>Incl. °</th><th>Toe °</th></tr></thead>
+          <thead><tr><th /><th>Load <UnitLabel unit="N" /></th><th>Δ static</th><th title="Longitudinal tire force: − braking, + drive">Long. <UnitLabel unit="N" /></th><th>Travel <UnitLabel unit="mm" /></th><th>Incl. °</th><th>Toe °</th></tr></thead>
           <tbody>
             {corners.map(({ id, c, v, s }) => (
               <tr key={id} title={c.status !== 'ok' ? `At ${STATUS[c.status]}` : undefined} className={c.status !== 'ok' ? 'warn' : ''}>
                 <td><b>{id}</b></td>
-                <td>{fmt(c.tireLoad, 0)}</td>
-                <td>{fmt(c.tireLoad - s, 0)}</td>
-                <td>{fmt(c.longitudinalForce, 0)}</td>
-                <td>{fmt(c.travel, 1)}{c.status !== 'ok' ? ' !' : ''}</td>
+                <td><Num text={fmt(c.tireLoad, 0)} unit="N" /></td>
+                <td><Num text={fmt(c.tireLoad - s, 0)} unit="N" /></td>
+                <td><Num text={fmt(c.longitudinalForce, 0)} unit="N" /></td>
+                <td><Num text={fmt(c.travel, 1)} unit="mm" />{c.status !== 'ok' ? ' !' : ''}</td>
                 <td>{fmt(deg(c.inclination), 2)}</td>
                 <td>{fmt(v ? deg(v.chars.toe) : NaN, 2)}</td>
               </tr>
@@ -355,7 +356,7 @@ export function VehicleMotionBar() {
       </div>
       <div className="motion-group">
         <label className="slider">
-          <span>Steering wheel <b>{((rack / cFactor) * 360).toFixed(0)}</b>° · rack <b>{rack.toFixed(1)}</b> mm</span>
+          <span>Steering wheel <b>{((rack / cFactor) * 360).toFixed(0)}</b>° · rack <b><Num text={rack.toFixed(1)} unit="mm" withUnit /></b></span>
           <input type="range" min={-swLimit} max={swLimit} step={1} value={(rack / cFactor) * 360} onChange={(e) => setRack((Number(e.target.value) / 360) * cFactor)} onDoubleClick={() => setRack(0)} />
           <span className="quick">
             <button onClick={() => setRack(-rackLimit)}>◀ Lock</button>

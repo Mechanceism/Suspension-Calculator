@@ -4,6 +4,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useApp, defaultDesign, pickDesign } from './store';
 import { serializeProject, importProject, designSnapshot } from './project';
 import { saveLayout, getLayout, touchLayout } from './library';
+import { resetHistory } from './history';
 
 /** True when the design differs from what was last saved / opened. */
 export function useDirty(): boolean {
@@ -18,6 +19,7 @@ export function newLayout(dirty: boolean): void {
   if (!confirmDiscard(dirty)) return;
   const d = defaultDesign();
   useApp.getState().applyDesign(d, null, designSnapshot(d));
+  resetHistory();
   useApp.getState().notify('New layout (default sample C).');
 }
 
@@ -45,6 +47,7 @@ export function openLayout(name: string, dirty: boolean): void {
   try {
     const r = importProject(entry.data);
     s.applyDesign(r.design, name, designSnapshot(r.design));
+    resetHistory();
     touchLayout(name);
     s.notify(r.warnings.length ? `Opened “${name}” with notes:\n${r.warnings.join('\n')}` : `Opened “${name}”.`, r.warnings.length ? 'warn' : 'info');
   } catch (e) {
@@ -75,6 +78,7 @@ export async function importLayoutFile(file: File, dirty: boolean): Promise<void
     const r = importProject(JSON.parse(await file.text()));
     // Imported layouts open as unsaved in this browser until saved.
     s.applyDesign(r.design, r.name, null);
+    resetHistory();
     s.notify(
       r.warnings.length ? `Imported “${r.name}” with notes:\n${r.warnings.join('\n')}` : `Imported “${r.name}”. Save to add it to Recents.`,
       r.warnings.length ? 'warn' : 'info',

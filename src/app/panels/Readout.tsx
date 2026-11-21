@@ -2,6 +2,7 @@ import { deg } from '../../core/suspension/characteristics';
 import type { Model } from '../useModel';
 import { Section, fmt } from './FieldRows';
 import { SteeringReadout } from './SteeringPanel';
+import { useDisplay } from '../units';
 
 const STATUS_TEXT: Record<string, string> = {
   converged: 'Solved',
@@ -11,6 +12,7 @@ const STATUS_TEXT: Record<string, string> = {
 };
 
 export function Readout({ model }: { model: Model }) {
+  const d = useDisplay();
   const cur = model.current;
   if (!cur) return <section className="panel"><h2>Characteristics</h2><p className="muted">{model.error ?? 'No solution'}</p></section>;
   const c = cur.chars;
@@ -64,13 +66,16 @@ export function Readout({ model }: { model: Model }) {
   const Table = ({ rows: r }: { rows: [string, string, string, string?][] }) => (
     <table className="readout">
       <tbody>
-        {r.map(([name, value, unit, hint]) => (
-          <tr key={name} title={hint}>
-            <td>{name}</td>
-            <td className="num">{value}</td>
-            <td className="unit">{unit}</td>
-          </tr>
-        ))}
+        {r.map(([name, value, unit, hint]) => {
+          const shown = d.text(value, unit);
+          return (
+            <tr key={name} title={hint}>
+              <td>{name}</td>
+              <td className="num">{shown.text}</td>
+              <td className="unit">{shown.unit}</td>
+            </tr>
+          );
+        })}
       </tbody>
     </table>
   );

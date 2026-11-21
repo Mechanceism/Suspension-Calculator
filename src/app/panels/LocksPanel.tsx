@@ -13,6 +13,7 @@ import { deg } from '../../core/suspension/characteristics';
 import { switchWorkspace } from '../viewport/SafeHtml';
 import type { CornerId } from '../../core/vehicle/vehicle';
 import { fmt } from './FieldRows';
+import { useDisplay } from '../units';
 
 const AXIS = { x: 0, y: 1, z: 2 } as const;
 
@@ -38,7 +39,7 @@ export function lockValue(s: DesignState, key: string): string {
     case 'part': return '';
     case 'derived': {
       const m = armMetrics(toGeometry(d.geom)[p[2] as 'uca' | 'lca']);
-      return p[3] === 'length' ? `${fmt(m.length, 1)} mm` : `${fmt(deg(p[3] === 'inclination' ? m.inclination : m.planAngle), 2)}°`;
+      return p[3] === 'length' ? `${fmt(m.length, 1)} mm` : `${fmt(deg(p[3] === 'inclination' ? m.inclination : p[3] === 'planAngle' ? m.planAngle : m.frontViewAngle), 2)} °`;
     }
     case 'spring': return show(d.spring[p[2] as keyof typeof d.spring], SPRING_META[p[2] as keyof typeof SPRING_META]?.unit);
     case 'damper': return show(d.damper[p[2] as keyof typeof d.damper], DAMPER_META[p[2] as keyof typeof DAMPER_META]?.unit);
@@ -81,6 +82,14 @@ export function LocksPanel({ compact = false }: { compact?: boolean }) {
   const clearLocks = useApp((s) => s.clearLocks);
   const state = useApp((s) => s);
   const items = Object.keys(locks).sort().map((k) => describeLock(k, links));
+  const disp = useDisplay();
+  // "200 mm" → display units
+  const showValue = (v: string) => {
+    const m = /^(-?[\d.]+) ?(\S+)$/.exec(v);
+    if (!m) return v;
+    const t = disp.text(m[1]!, m[2]!);
+    return `${t.text} ${t.unit}`;
+  };
   const groups = new Map<string, LockInfo[]>();
   for (const it of items) groups.set(it.group, [...(groups.get(it.group) ?? []), it]);
 
@@ -102,7 +111,7 @@ export function LocksPanel({ compact = false }: { compact?: boolean }) {
                 <button className="lock-item" title="Show in the design and the inspector" onClick={() => goToLock(it)}>
                   <span className="lock-icon">🔒</span>
                   <span className="lock-label">{it.label}</span>
-                  <span className="lock-val mono">{lockValue(state, it.key)}</span>
+                  <span className="lock-val mono">{showValue(lockValue(state, it.key))}</span>
                 </button>
                 <button className="icon-btn lock-x" title="Unlock" onClick={() => setLocks([it.key], false)}>✕</button>
               </li>

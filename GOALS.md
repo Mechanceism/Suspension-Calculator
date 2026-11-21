@@ -84,7 +84,7 @@ Reference corner: **front driver's-side corner (driver on the left), viewed from
 - **Fusion-style entry:** a value with no unit uses the current default (`1` → 1 mm). A value with a unit suffix is converted (`5in` → 127 mm internally).
 - **Display preserves user entry:** if the user typed `5in`, it shows as `5in` even though it's stored as 127 mm.
 - **Expressions allowed:** e.g. `5in + 3mm`, `track/2`, references to other parameters (like Fusion user parameters).
-- **User-definable defaults:** the default display unit per quantity type (length, angle, etc.) is a user setting. Nothing is hard-coded to mm in the UI.
+- **User-definable defaults:** the default display unit per quantity type (length, angle, etc.) is a user setting. Nothing is hard-coded to mm in the UI. ✅ Units menu: Metric / Imperial / Custom per quantity (display and typed plain numbers; the math stays in base units).
 
 ---
 

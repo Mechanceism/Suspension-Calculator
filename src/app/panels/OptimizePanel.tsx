@@ -31,6 +31,7 @@ import {
 } from '../optimizer';
 import { ValueInput } from './ValueInput';
 import { Section, FieldRows, fmt } from './FieldRows';
+import { useDisplay } from '../units';
 
 const AXES = ['X', 'Y', 'Z'] as const;
 
@@ -54,6 +55,7 @@ function GoalTable<K extends string>({ kinds, meta, goals, now, onChange }: {
   kinds: readonly K[]; meta: Record<K, AnyMeta>; goals: Record<K, GoalSetting>; now: Partial<Record<K, number | null>> | null;
   onChange: (k: K, patch: Partial<GoalSetting>) => void;
 }) {
+  const disp = useDisplay();
   return (
     <table className="opt-table">
       <thead><tr><th /><th>Goal</th><th>Target</th><th>Wt</th><th>Now</th><th /></tr></thead>
@@ -71,8 +73,8 @@ function GoalTable<K extends string>({ kinds, meta, goals, now, onChange }: {
                   : <ValueInput field={g.target} unit={m.unit} width={50} onCommit={(t) => onChange(k, { target: parseField(t, 'ratio', g.target) })} />}
               </td>
               <td><ValueInput field={g.weight} unit="" width={36} onCommit={(t) => onChange(k, { weight: parseField(t, 'ratio', g.weight) })} /></td>
-              <td className="mono muted nowrap">{now ? goalNumber(m.unit, now[k] ?? null) : '…'}</td>
-              <td className="unit nowrap">{k === 'bumpSteer' ? '° (max)' : m.unit}</td>
+              <td className="mono muted nowrap">{now ? disp.text(goalNumber(m.unit, now[k] ?? null), m.unit).text : '…'}</td>
+              <td className="unit nowrap">{k === 'bumpSteer' ? '° (max)' : disp.conv(m.unit).unit}</td>
             </tr>
           );
         })}
@@ -127,6 +129,7 @@ function RangeTable({ entries, onRange, onRemove }: {
   onRange: (key: string, which: 'lo' | 'hi', text: string) => void;
   onRemove: (key: string) => void;
 }) {
+  const disp = useDisplay();
   if (!entries.length) return <p className="muted">No free coordinates yet: pick some above or use a preset.</p>;
   return (
     <table className="opt-table">
@@ -140,7 +143,7 @@ function RangeTable({ entries, onRange, onRemove }: {
                 <button className="link-btn" onClick={() => highlight(e.k)}>{e.label}</button>
                 {e.locked && <span title="Locked: skipped"> 🔒</span>}
               </td>
-              <td className={`mono nowrap${outside ? ' warn-text' : ''}`} title={outside ? 'Outside its range: the optimizer starts from the nearest limit' : undefined}>{fmt(e.now, 1)}</td>
+              <td className={`mono nowrap${outside ? ' warn-text' : ''}`} title={outside ? 'Outside its range: the optimizer starts from the nearest limit' : undefined}>{disp.text(fmt(e.now, 1), 'mm').text}</td>
               <td><ValueInput field={e.lo} unit="mm" width={56} onCommit={(t) => onRange(e.key, 'lo', t)} /></td>
               <td><ValueInput field={e.hi} unit="mm" width={56} onCommit={(t) => onRange(e.key, 'hi', t)} /></td>
               <td><button className="icon-btn" title="Fix this coordinate (remove from the free list)" onClick={() => onRemove(e.key)}>✕</button></td>
@@ -222,6 +225,7 @@ function RunArea({ useRun, blockers, notes, label, start, current, meta, onApply
   undo: { available: boolean; run: () => void };
 }) {
   const run = useRun();
+  const disp = useDisplay();
   const go = () => {
     const h = start((p) => useRun.setState({ progress: p }));
     useRun.setState({ running: true, progress: null, result: null, error: null, from: current, handle: h });
@@ -262,11 +266,11 @@ function RunArea({ useRun, blockers, notes, label, start, current, meta, onApply
                 return (
                   <tr key={g.kind}>
                     <td title={m.label}>{m.short}</td>
-                    <td className="mono">{goalNumber(m.unit, g.before)}</td>
-                    <td className="mono"><b>{goalNumber(m.unit, g.after)}</b></td>
+                    <td className="mono">{disp.text(goalNumber(m.unit, g.before), m.unit).text}</td>
+                    <td className="mono"><b>{disp.text(goalNumber(m.unit, g.after), m.unit).text}</b></td>
                     <td className="mono muted nowrap">
-                      {m.maximize ? 'max' : g.kind === 'bumpSteer' ? '0°' : fmt(g.target, 2)}{' '}
-                      <span className="unit">{m.maximize || g.kind === 'bumpSteer' ? '' : m.unit}</span>
+                      {m.maximize ? 'max' : g.kind === 'bumpSteer' ? '0°' : disp.text(fmt(g.target, 2), m.unit).text}{' '}
+                      <span className="unit">{m.maximize || g.kind === 'bumpSteer' ? '' : disp.conv(m.unit).unit}</span>
                     </td>
                   </tr>
                 );
@@ -279,10 +283,10 @@ function RunArea({ useRun, blockers, notes, label, start, current, meta, onApply
               {run.result.variables.map((v) => (
                 <tr key={`${v.root ?? ''}.${v.point}.${v.axis}`}>
                   <td className="nowrap"><button className="link-btn" onClick={() => highlight(pointKeyOf(v.point as HardpointId))}>{coordLabel(v)}</button></td>
-                  <td className="mono">{fmt(v.before, 2)}</td>
-                  <td className="mono">{fmt(v.after, 2)}</td>
+                  <td className="mono">{disp.text(fmt(v.before, 2), 'mm').text}</td>
+                  <td className="mono">{disp.text(fmt(v.after, 2), 'mm').text}</td>
                   <td className="mono nowrap">
-                    {fmt(v.after - v.before, 2)}
+                    {disp.text(fmt(v.after - v.before, 2), 'mm').text}
                     {v.atLimit && <span className="warn-text" title="Stopped at its range limit: widen the range or free more coordinates for a better result"> ⚠ limit</span>}
                   </td>
                 </tr>

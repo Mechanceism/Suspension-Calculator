@@ -4,10 +4,12 @@ import { sub, length, lerp } from '../../core/math/vec3';
 import { useApp } from '../store';
 import { anchorLabel, anchorPosition } from '../anchors';
 import type { Current } from '../useModel';
+import { useDisplay } from '../units';
 import { Seg, Joint } from './primitives';
 
 export function MeasureOverlay({ cur }: { cur: Current }) {
   const measure = useApp((s) => s.measure);
+  const disp = useDisplay();
   const [a, b] = measure.map((id) => anchorPosition(id, cur));
   if (!a) return null;
   if (!b) return <Joint p={a} color="#ffffff" r={11} />;
@@ -21,8 +23,8 @@ export function MeasureOverlay({ cur }: { cur: Current }) {
       <Joint p={b} color="#ffffff" r={8} />
       <Html position={[mid.x, mid.y, mid.z]} style={{ pointerEvents: 'none' }}>
         <div className="measure-label">
-          <b>{length(d).toFixed(2)} mm</b>
-          <div>ΔX {d.x.toFixed(2)} · ΔY {d.y.toFixed(2)} · ΔZ {d.z.toFixed(2)}</div>
+          <b>{disp.format(length(d), 'mm', 2)}</b>
+          <div>ΔX {disp.format(d.x, 'mm', 2)} · ΔY {disp.format(d.y, 'mm', 2)} · ΔZ {disp.format(d.z, 'mm', 2)}</div>
           <div>Angle from horizontal {((Math.atan2(d.y, horiz) * 180) / Math.PI).toFixed(2)}°</div>
           <div className="muted">{anchorLabel(measure[0]!)} → {anchorLabel(measure[1]!)}</div>
         </div>

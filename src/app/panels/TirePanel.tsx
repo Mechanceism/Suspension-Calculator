@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useApp, SCALAR_META, TIRE_KEYS, TIRE_META, rootOf, type ScalarKey, type TireModelKind } from '../store';
 import { lockKeys } from '../locks';
 import { ValueInput } from './ValueInput';
+import { UnitLabel } from './UnitText';
 
 const DIM_KEYS: ScalarKey[] = ['tireDiameter', 'tireWidth', 'rimDiameter', 'shoulderRadius'];
 
@@ -47,7 +48,7 @@ export function TireFields() {
             <tr key={k} data-lock-key={lockKeys.field(root, 'scalar', k)}>
               <td>{SCALAR_META[k].label}</td>
               <td><ValueInput field={geom.scalars[k]} unit="mm" onCommit={(t) => setScalar(k, t)} lockKey={lockKeys.field(root, 'scalar', k)} /></td>
-              <td className="muted">mm</td>
+              <td className="muted"><UnitLabel unit="mm" /></td>
             </tr>
           ))}
         </tbody>
@@ -65,7 +66,7 @@ export function TireFields() {
               <tr key={k} data-lock-key={lockKeys.field(root, 'tire', k)}>
                 <td>{TIRE_META[k].label}</td>
                 <td><ValueInput field={tire[k]} unit={TIRE_META[k].unit} onCommit={(t) => setTireField(k, t)} lockKey={lockKeys.field(root, 'tire', k)} /></td>
-                <td className="muted">{TIRE_META[k].unit}</td>
+                <td className="muted"><UnitLabel unit={TIRE_META[k].unit} /></td>
               </tr>
             ))}
           </tbody>

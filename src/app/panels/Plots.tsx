@@ -1,4 +1,5 @@
 import { deg } from '../../core/suspension/characteristics';
+import { useDisplay, toDisplay, digitsFor } from '../units';
 import type { Model, Sample, SteerSample } from '../useModel';
 import { Section } from './FieldRows';
 import { useApp } from '../store';
@@ -14,9 +15,18 @@ function niceRange(lo: number, hi: number): [number, number] {
   return [lo - pad, hi + pad];
 }
 
-function Chart({ title, unit, data, current, digits = 2, xUnit = 'mm' }: {
+function Chart({ title, unit: baseUnit, data: raw, current: rawCurrent, digits: baseDigits = 2, xUnit: baseX = 'mm' }: {
   title: string; unit: string; data: { x: number; y: number }[]; current: { x: number; y: number } | null; digits?: number; xUnit?: string;
 }) {
+  // Display units (Units menu): convert both axes.
+  const disp = useDisplay();
+  const cy = disp.conv(baseUnit);
+  const cx = disp.conv(baseX);
+  const unit = cy.unit;
+  const xUnit = cx.unit;
+  const digits = digitsFor(baseDigits, cy);
+  const data = raw.map((d) => ({ x: toDisplay(d.x, cx), y: toDisplay(d.y, cy) }));
+  const current = rawCurrent ? { x: toDisplay(rawCurrent.x, cx), y: toDisplay(rawCurrent.y, cy) } : null;
   const pts = data.filter((d) => Number.isFinite(d.y));
   if (pts.length < 2) return null;
   const xs = pts.map((d) => d.x);
@@ -39,8 +49,8 @@ function Chart({ title, unit, data, current, digits = 2, xUnit = 'mm' }: {
         <line className="zero" x1={sx(0)} x2={sx(0)} y1={PAD.t} y2={H - PAD.b} />
         <text className="tick" x={PAD.l - 4} y={sy(y1) + 4} textAnchor="end">{y1.toFixed(digits)}</text>
         <text className="tick" x={PAD.l - 4} y={sy(y0)} textAnchor="end">{y0.toFixed(digits)}</text>
-        <text className="tick" x={PAD.l} y={H - 6} textAnchor="start">{x0.toFixed(0)}</text>
-        <text className="tick" x={W - PAD.r} y={H - 6} textAnchor="end">{x1.toFixed(0)} {xUnit}</text>
+        <text className="tick" x={PAD.l} y={H - 6} textAnchor="start">{x0.toFixed(digitsFor(0, cx))}</text>
+        <text className="tick" x={W - PAD.r} y={H - 6} textAnchor="end">{x1.toFixed(digitsFor(0, cx))} {xUnit}</text>
         <path className="series" d={path} />
         {current && Number.isFinite(current.y) && (
           <>

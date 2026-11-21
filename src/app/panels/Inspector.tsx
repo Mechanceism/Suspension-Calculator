@@ -13,6 +13,7 @@ import { COLORS } from '../viewport/Scene';
 import type { Model } from '../useModel';
 import { FieldRows, Section, fmt, derivedField } from './FieldRows';
 import { ValueInput, LockButton } from './ValueInput';
+import { useDisplay } from '../units';
 import { PointEditor, GroupMove } from './PointEditor';
 import { SpringFields, DamperFields } from './SpringPanel';
 import { TireFields } from './TirePanel';
@@ -89,12 +90,12 @@ function ArmSection({ arm, model }: { arm: 'uca' | 'lca'; model: Model }) {
         { label: 'Length (ball joint → pivot axis)', field: derivedField(m.length, 2), unit: 'mm', onCommit: (t) => setArmDerived(arm, 'length', t), hint: 'Moves the frame pivots; the ball joint stays put', lockKey: lockKeys.derived(root, arm, 'length') },
         { label: 'Pivot-axis inclination', field: derivedField(deg(m.inclination), 3), unit: '°', onCommit: (t) => setArmDerived(arm, 'inclination', t), hint: 'Side view, + = front pivot higher (anti-dive style)', lockKey: lockKeys.derived(root, arm, 'inclination') },
         { label: 'Pivot-axis plan angle', field: derivedField(deg(m.planAngle), 3), unit: '°', onCommit: (t) => setArmDerived(arm, 'planAngle', t), hint: 'Top view, + = front pivot further outboard', lockKey: lockKeys.derived(root, arm, 'planAngle') },
+        { label: 'Front-view angle (static)', field: derivedField(deg(m.frontViewAngle), 3), unit: '°', onCommit: (t) => setArmDerived(arm, 'frontViewAngle', t), hint: '+ = ball joint higher than the pivot axis. Swings the pivot axis around the ball joint (frame pivots move)', lockKey: lockKeys.derived(root, arm, 'frontViewAngle') },
       ]} />
       <FieldRows rows={[
         { label: 'Front leg', value: fmt(m.frontLeg, 1), unit: 'mm' },
         { label: 'Rear leg', value: fmt(m.rearLeg, 1), unit: 'mm' },
         { label: 'Pivot spacing', value: fmt(m.pivotSpacing, 1), unit: 'mm' },
-        { label: 'Front-view angle (static)', value: fmt(deg(m.frontViewAngle), 2), unit: '°', hint: '+ = ball joint higher than the pivot axis' },
         { label: 'Front-view angle (now)', value: fmt(live ? deg(live.frontViewAngle) : NaN, 2), unit: '°' },
       ]} />
       <p className="hint">Editing these moves the frame pivots so the upright and track width stay the same.</p>
@@ -149,6 +150,7 @@ function ChassisSection() {
   const setSpringField = useApp((s) => s.setSpringField);
   const mode = useApp((s) => s.cornerLoadMode);
   const vehicleLoad = useApp((s) => vehicleStaticLoads(s.vehicle, mergedCorners(s), s.links)[s.activeCorner]);
+  const disp = useDisplay();
   const root = useApp((s) => rootOf(s.activeCorner, s.links));
 
   const droop = useApp((s) => s.droop);
@@ -159,7 +161,7 @@ function ChassisSection() {
       <div className="row">
         <span className="muted">Corner load</span>
         <select value={mode} onChange={(e) => set('cornerLoadMode', e.target.value as 'vehicle' | 'manual')}>
-          <option value="vehicle">From vehicle CG ({vehicleLoad.toFixed(0)} N)</option>
+          <option value="vehicle">From vehicle CG ({disp.format(vehicleLoad, 'N', 0)})</option>
           <option value="manual">Manual (study this corner alone)</option>
         </select>
       </div>
@@ -194,6 +196,7 @@ function SpringResults({ model }: { model: Model }) {
 function ComponentInspector({ id, model }: { id: ComponentId; model: Model }) {
   const damperArm = useApp((s) => s.geom.damperArm);
   const focusOn = useApp((s) => s.focusOn);
+  const startMeasure = useApp((s) => s.startMeasure);
   const root = useApp((s) => rootOf(s.activeCorner, s.links));
 
   const defs = componentDefs(damperArm);
@@ -205,6 +208,9 @@ function ComponentInspector({ id, model }: { id: ComponentId; model: Model }) {
         <span className="swatch big" style={{ background: COMPONENT_COLOR[id] }} />
         <b>{def.label}</b>
         {def.points.length > 0 && <LockButton keys={[lockKeys.part(root, id)]} title="Lock the whole part (all of its points) so the optimizer can't move it" />}
+        {def.points.length === 2 && (
+          <button className="icon-btn" title="Measure this part, and set its length or angles (static height)" onClick={() => startMeasure([def.points[0]!, def.points[1]!])}>📏</button>
+        )}
         <button className="icon-btn" title="Focus camera" onClick={() => focusOn(id)}>◎ Focus</button>
       </div>
       <Family {...fam} />

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, type ComponentRef } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { CameraControls, OrthographicCamera, PerspectiveCamera } from '@react-three/drei';
 import * as THREE from 'three';
+import { MeasurePanel } from '../panels/MeasurePanel';
 import { useApp, type FocusKey, type ViewName } from '../store';
 import type { Model } from '../useModel';
 import type { Vec3 } from '../../core/math/vec3';
@@ -172,6 +173,7 @@ export function Viewport({ model }: { model: Model }) {
           {' · Esc to exit'}
         </div>
       )}
+      {measureMode && measureCount === 2 && <MeasurePanel />}
       {model.error && <div className="viewport-error">{model.error}</div>}
     </div>
   );

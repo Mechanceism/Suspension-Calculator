@@ -42,7 +42,7 @@ export const pointLocked = (locks: Locks, root: CornerId, k: PointKey, damperArm
 export const anyAxisLocked = (locks: Locks, root: CornerId, k: PointKey, damperArm: 'lca' | 'uca') =>
   ([0, 1, 2] as const).some((a) => pointAxisLocked(locks, root, k, a, damperArm));
 
-const DERIVED_LABELS: Record<string, string> = { length: 'length', inclination: 'pivot-axis inclination', planAngle: 'pivot-axis plan angle' };
+const DERIVED_LABELS: Record<string, string> = { length: 'length', inclination: 'pivot-axis inclination', planAngle: 'pivot-axis plan angle', frontViewAngle: 'front-view angle' };
 const PART_LABELS: Record<ComponentId, string> = {
   chassis: 'Chassis / frame (all mounts)', uca: 'Upper control arm (whole part)', lca: 'Lower control arm (whole part)',
   upright: 'Upright (whole part)', tieRod: 'Tie rod (whole part)', rack: 'Steering rack mount', spring: 'Coilover mounts', wheel: 'Wheel center',

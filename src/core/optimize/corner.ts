@@ -61,7 +61,7 @@ export const GOAL_KINDS = Object.keys(GOAL_META) as GoalKind[];
 
 export interface Goal { kind: GoalKind; target: number; weight: number }
 export interface Variable { point: HardpointId; axis: 0 | 1 | 2; lo: number; hi: number }
-export type Hold = { arm: 'uca' | 'lca'; which: 'length' | 'inclination' | 'planAngle' };
+export type Hold = { arm: 'uca' | 'lca'; which: 'length' | 'inclination' | 'planAngle' | 'frontViewAngle' };
 
 export interface CornerProblem {
   geometry: DoubleWishboneGeometry;
@@ -295,7 +295,7 @@ export function cornerGoalResiduals(goal: Goal, s: CornerSamples, ref?: number |
 
 export function holdValue(g: DoubleWishboneGeometry, h: Hold): number {
   const m = armMetrics(g[h.arm]);
-  return h.which === 'length' ? m.length : deg(h.which === 'inclination' ? m.inclination : m.planAngle);
+  return h.which === 'length' ? m.length : deg(h.which === 'inclination' ? m.inclination : h.which === 'planAngle' ? m.planAngle : m.frontViewAngle);
 }
 
 export interface GoalReport { kind: GoalKind; target: number; before: number | null; after: number | null }

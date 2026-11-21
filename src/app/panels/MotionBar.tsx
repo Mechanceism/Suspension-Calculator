@@ -4,6 +4,8 @@
  * dragging load settles the corner on its spring (and the travel slider follows). Steering has its
  * own slider and Play so it can be animated together with either.
  */
+import { useConversion, toDisplay, fromDisplay } from '../units';
+import { Num } from './UnitText';
 import { useEffect, useRef } from 'react';
 import { useApp } from '../store';
 import type { Model } from '../useModel';
@@ -59,7 +61,7 @@ export function MotionBar({ model }: { model: Model }) {
     <div className="motion-bar">
       <div className={`motion-group${!loaded ? ' driving' : ''}`}>
         <label className="slider">
-          <span>Travel <b>{shownTravel.toFixed(1)}</b> mm {!loaded && <em className="drive-tag">input</em>}</span>
+          <span>Travel <b><Num text={shownTravel.toFixed(1)} unit="mm" withUnit /></b> {!loaded && <em className="drive-tag">input</em>}</span>
           <input
             type="range" min={-droop} max={bump} step={0.5} value={shownTravel}
             onChange={(e) => { set('playing', false); set('mode', 'kinematic'); set('travel', Number(e.target.value)); }}
@@ -95,7 +97,7 @@ export function MotionBar({ model }: { model: Model }) {
       </div>
       <div className="motion-group">
         <label className="slider">
-          <span>Steering wheel <b>{((rack / cFactor) * 360).toFixed(0)}</b>° · rack <b>{rack.toFixed(1)}</b> mm{!steers && <em className="muted"> (this corner doesn't steer)</em>}</span>
+          <span>Steering wheel <b>{((rack / cFactor) * 360).toFixed(0)}</b>° · rack <b><Num text={rack.toFixed(1)} unit="mm" withUnit /></b>{!steers && <em className="muted"> (this corner doesn't steer)</em>}</span>
           <input
             type="range" min={-swLimit} max={swLimit} step={1} value={(rack / cFactor) * 360} disabled={!steers}
             onChange={(e) => { set('playingSteer', false); set('rack', (Number(e.target.value) / 360) * cFactor); }}
@@ -112,14 +114,8 @@ export function MotionBar({ model }: { model: Model }) {
         </button>
       </div>
       <div className="motion-group small-group">
-        <label className="small">
-          Droop
-          <input type="number" value={droop} min={1} max={300} onChange={(e) => set('droop', Math.max(1, Number(e.target.value)))} />
-        </label>
-        <label className="small">
-          Bump
-          <input type="number" value={bump} min={1} max={300} onChange={(e) => set('bump', Math.max(1, Number(e.target.value)))} />
-        </label>
+        <TravelLimit label="Droop" value={droop} onChange={(v) => set('droop', v)} />
+        <TravelLimit label="Bump" value={bump} onChange={(v) => set('bump', v)} />
         {!loaded && (
           <label className="small">
             Travel at
@@ -131,5 +127,18 @@ export function MotionBar({ model }: { model: Model }) {
         )}
       </div>
     </div>
+  );
+}
+
+/** A travel limit (mm) entered in the display length unit. */
+function TravelLimit({ label, value, onChange }: { label: string; value: number; onChange: (mm: number) => void }) {
+  const c = useConversion('mm');
+  const shown = Number(toDisplay(value, c).toFixed(c.identity ? 1 : 3));
+  return (
+    <label className="small" title={`${label} travel (wheel center), ${c.unit}`}>
+      {label} <span className="muted">{c.unit}</span>
+      <input type="number" value={shown} min={0} step={c.identity ? 1 : 0.1}
+        onChange={(e) => { const v = Number(e.target.value); if (Number.isFinite(v)) onChange(Math.min(300, Math.max(1, fromDisplay(v, c)))); }} />
+    </label>
   );
 }

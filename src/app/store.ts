@@ -9,7 +9,7 @@ import { DoubleWishbone, spinAxisFromCamberToe, type DoubleWishboneGeometry, typ
 import { SAMPLE_LAYOUTS, SAMPLE_SPRING } from '../examples/sampleLayouts';
 import { fitFreeLength } from '../core/suspension/spring';
 import { CORNER_IDS, staticCornerLoads, type CornerId, type BrakeMount } from '../core/vehicle/vehicle';
-import { setArmLength, setPivotInclination, setPivotPlanAngle, transferArmPoint } from '../core/suspension/armGeometry';
+import { setArmLength, setPivotInclination, setPivotPlanAngle, setArmFrontViewAngle, transferArmPoint } from '../core/suspension/armGeometry';
 import { add, sub } from '../core/math/vec3';
 import type { TireProfile } from '../core/tire/geometry';
 import type { TireForceModel } from '../core/tire/model';
@@ -104,7 +104,7 @@ export const STEER_META: Record<SteerKey, { label: string; quantity: Quantity; u
   mu: { label: 'Tire friction μ (parking)', quantity: 'ratio', unit: '×', initial: 1 },
 };
 
-export const ARM_DERIVED = ['length', 'inclination', 'planAngle'] as const;
+export const ARM_DERIVED = ['length', 'inclination', 'planAngle', 'frontViewAngle'] as const;
 export type ArmDerived = (typeof ARM_DERIVED)[number];
 
 export type ComponentId = 'chassis' | 'uca' | 'lca' | 'upright' | 'tieRod' | 'rack' | 'spring' | 'wheel';
@@ -254,6 +254,8 @@ export interface AppState extends DesignState {
   /** A joint is being dragged: heavy sweeps pause until release. */
   interacting: boolean;
   measureMode: boolean;
+  /** Point editor: move this joint along the line toward another one (also drives an extra drag arrow). */
+  lineMove: { id: PointKey; toward: PointKey } | null;
   measure: AnchorId[];
 
   /** Name of the open layout in the in-app library (null = untitled). */
@@ -322,6 +324,8 @@ export interface AppState extends DesignState {
   setDamperField(key: DamperKey, text: string): void;
   setSteerField(key: SteerKey, text: string): void;
   toggleMeasure(): void;
+  /** Open the measure tool with these points already picked. */
+  startMeasure(ids: AnchorId[]): void;
   addMeasureAnchor(a: AnchorId): void;
   setSpringField(key: SpringKey, text: string): void;
   setDamperArm(arm: ArmChoice): void;
@@ -893,7 +897,8 @@ export const useApp = create<AppState>((set, get) => ({
     const a = g[arm];
     const next = which === 'length' ? setArmLength(a, r.value)
       : which === 'inclination' ? setPivotInclination(a, (r.value * Math.PI) / 180)
-        : setPivotPlanAngle(a, (r.value * Math.PI) / 180);
+        : which === 'planAngle' ? setPivotPlanAngle(a, (r.value * Math.PI) / 180)
+          : setArmFrontViewAngle(a, (r.value * Math.PI) / 180);
     const kF = arm === 'uca' ? 'ucaFwd' : 'lcaFwd';
     const kA = arm === 'uca' ? 'ucaAft' : 'lcaAft';
     set({ geom: { ...geom, points: { ...geom.points, [kF]: fields(next.fwd), [kA]: fields(next.aft) } }, presetId: 'custom' });
@@ -907,6 +912,8 @@ export const useApp = create<AppState>((set, get) => ({
     set({ steer: { ...st, [key]: parseField(text, STEER_META[key].quantity, st[key]) } });
   },
   toggleMeasure: () => set({ measureMode: !get().measureMode, measure: [] }),
+  startMeasure: (ids) => set({ measureMode: true, measure: ids.slice(0, 2) }),
+  lineMove: null,
   addMeasureAnchor: (a) => {
     const m = get().measure;
     set({ measure: m.length >= 2 ? [a] : [...m, a] });

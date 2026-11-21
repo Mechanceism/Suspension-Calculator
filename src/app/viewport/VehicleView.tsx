@@ -3,6 +3,7 @@
  * contact patches, tire load / lateral force arrows, the CG and the roll axis. Double-click a corner
  * to edit it in the Corner view.
  */
+import { useDisplay } from '../units';
 import { useMemo, useRef, type RefObject } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { Grid, OrthographicCamera, PerspectiveCamera } from '@react-three/drei';
@@ -289,6 +290,9 @@ export function VehicleViewport({ model }: { model: VehicleModel | null }) {
   const labels = useMemo(() => overlayLabels(model, arrows, showValues, k), [model, arrows, showValues, k]);
   const layer = useRef<HTMLDivElement>(null);
   const onMiddle = useMiddleDoubleClick();
+  // Force labels are written in N; show them in the display force unit.
+  const disp = useDisplay();
+  const forceText = (t: string) => t.replace(/(-?\d+(?:\.\d+)?) N\b/g, (_, n: string) => disp.format(Number(n), 'N', 0));
   return (
     <div className="viewport" onMouseDown={onMiddle}>
       <Canvas key={projection} dpr={[1, 2]} style={{ position: 'absolute', inset: 0 }}>
@@ -302,7 +306,7 @@ export function VehicleViewport({ model }: { model: VehicleModel | null }) {
         <LabelSync labels={labels} layer={layer} />
       </Canvas>
       <div className="label-layer" ref={layer}>
-        {labels.map((l) => <div key={l.key} className={`load-label floating ${l.className ?? ''}`}>{l.text}</div>)}
+        {labels.map((l) => <div key={l.key} className={`load-label floating ${l.className ?? ''}`}>{forceText(l.text)}</div>)}
       </div>
       <ViewButtons measure={false} />
       <ForceToggles />

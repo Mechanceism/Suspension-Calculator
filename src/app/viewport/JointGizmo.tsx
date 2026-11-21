@@ -60,9 +60,16 @@ function AxisLabel({ text, color }: { text: string; color: string }) {
   );
 }
 
-function Arrow({ axis, origin, ids, locked }: { axis: 0 | 1 | 2; origin: THREE.Vector3; ids: PointKey[]; locked: boolean }) {
-  const { label, dir } = AXES[axis];
-  const color = locked ? '#5b616d' : AXES[axis].color;
+/**
+ * One drag arrow. Along a coordinate axis (`axis`) it moves that coordinate of every id; along a
+ * `line` (any direction) it slides one joint along that direction, changing X, Y and Z together.
+ */
+function Arrow({ axis, line, origin, ids, locked }: {
+  axis?: 0 | 1 | 2; line?: { dir: THREE.Vector3; label: string }; origin: THREE.Vector3; ids: PointKey[]; locked: boolean;
+}) {
+  const label = line ? line.label : AXES[axis!].label;
+  const dir = line ? line.dir : AXES[axis!].dir;
+  const color = locked ? '#5b616d' : line ? '#ffd166' : AXES[axis!].color;
   const controls = useThree((s) => s.controls) as unknown as Controls;
   const [hover, setHover] = useState(false);
   const drag = useRef<{ t0: number; starts: number[]; origin: THREE.Vector3; pending: number | null; raf: number } | null>(null);
@@ -74,7 +81,14 @@ function Arrow({ axis, origin, ids, locked }: { axis: 0 | 1 | 2; origin: THREE.V
     const delta = d.pending;
     d.pending = null;
     d.raf = 0;
-    useApp.getState().setPointsAxis(ids.map((key, i) => ({ key, axis, value: Number((d.starts[i]! + delta).toFixed(6)) })));
+    if (line) {
+      const k = ids[0]!;
+      const v = [dir.x, dir.y, dir.z];
+      useApp.getState().setPointsAxis(([0, 1, 2] as const).filter((a) => Math.abs(v[a]!) > 1e-9)
+        .map((a) => ({ key: k, axis: a, value: Number((d.starts[a]! + v[a]! * delta).toFixed(6)) })));
+      return;
+    }
+    useApp.getState().setPointsAxis(ids.map((key, i) => ({ key, axis: axis!, value: Number((d.starts[i]! + delta).toFixed(6)) })));
   };
 
   const onDown = (e: ThreeEvent<PointerEvent>) => {
@@ -84,7 +98,8 @@ function Arrow({ axis, origin, ids, locked }: { axis: 0 | 1 | 2; origin: THREE.V
     if (t0 === null) return;
     (e.target as unknown as Element).setPointerCapture(e.pointerId);
     const s = useApp.getState();
-    drag.current = { t0, starts: ids.map((k) => s.geom.points[k][axis].value), origin: origin.clone(), pending: null, raf: 0 };
+    const starts = line ? s.geom.points[ids[0]!].map((f) => f.value) : ids.map((k) => s.geom.points[k][axis!].value);
+    drag.current = { t0, starts, origin: origin.clone(), pending: null, raf: 0 };
     if (controls) controls.enabled = false;
     s.set('interacting', true);
   };
@@ -98,7 +113,7 @@ function Arrow({ axis, origin, ids, locked }: { axis: 0 | 1 | 2; origin: THREE.V
     let delta = t - d.t0;
     if (s.snapToGrid && s.gridSize > 0) {
       // One point: snap its coordinate to the grid. Several: snap the move, keeping their spacing.
-      delta = ids.length === 1
+      delta = ids.length === 1 && !line
         ? Math.round((d.starts[0]! + delta) / s.gridSize) * s.gridSize - d.starts[0]!
         : Math.round(delta / s.gridSize) * s.gridSize;
     }
@@ -152,6 +167,16 @@ export function MoveGizmo({ ids, cur }: { ids: PointKey[]; cur: Current }) {
   const locks = useApp((s) => s.locks);
   const root = useApp((s) => rootOf(s.activeCorner, s.links));
   const damperArm = useApp((s) => s.geom.damperArm);
+  // Point editor's "along the line toward…": an extra (yellow) arrow along that line.
+  const lineMove = useApp((s) => s.lineMove);
+  const geom = useApp((s) => s.geom);
+  const lineArrow = useMemo(() => {
+    if (ids.length !== 1 || !lineMove || lineMove.id !== ids[0]) return null;
+    const p = geom.points[lineMove.id], q = geom.points[lineMove.toward];
+    const d = new THREE.Vector3(q[0].value - p[0].value, q[1].value - p[1].value, q[2].value - p[2].value);
+    if (d.lengthSq() < 1e-12) return null;
+    return { dir: d.normalize(), label: '→' };
+  }, [ids, lineMove, geom]);
   if (positions.length) {
     origin.set(0, 0, 0);
     for (const p of positions) origin.add(new THREE.Vector3(p.x, p.y, p.z));
@@ -182,6 +207,10 @@ export function MoveGizmo({ ids, cur }: { ids: PointKey[]; cur: Current }) {
         <meshBasicMaterial color="#ffffff" depthTest={false} />
       </mesh>
       {([0, 1, 2] as const).map((a) => <Arrow key={a} axis={a} origin={origin} ids={ids} locked={ids.some((k) => pointAxisLocked(locks, root, k, a, damperArm))} />)}
+      {lineArrow && (
+        <Arrow line={lineArrow} origin={origin} ids={ids}
+          locked={([0, 1, 2] as const).some((a) => Math.abs([lineArrow.dir.x, lineArrow.dir.y, lineArrow.dir.z][a]!) > 1e-9 && pointAxisLocked(locks, root, ids[0]!, a, damperArm))} />
+      )}
     </group>
   );
 }

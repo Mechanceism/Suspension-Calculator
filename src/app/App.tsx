@@ -4,6 +4,9 @@ import { useApp, pickDesign } from './store';
 import { designSnapshot } from './project';
 import { FileMenu, Notice } from './panels/FileMenu';
 import { ViewMenu } from './panels/ViewMenu';
+import { UnitsMenu } from './panels/UnitsMenu';
+import { HelpOverlay } from './panels/HelpOverlay';
+import { initHistory, undo, redo, useHistory } from './history';
 import { save, useDirty } from './fileActions';
 import { Viewport } from './viewport/Viewport';
 import { LeftSidebar } from './panels/LeftSidebar';
@@ -26,7 +29,11 @@ export function App() {
   useEffect(() => {
     const s = useApp.getState();
     if (s.savedSnapshot === null && s.fileName === null) s.markSaved(null, designSnapshot(pickDesign(s)));
+    initHistory();
   }, []);
+  const [help, setHelp] = useState(false);
+  const canUndo = useHistory((h) => h.canUndo);
+  const canRedo = useHistory((h) => h.canRedo);
 
   // Warn before closing the tab with unsaved changes.
   useEffect(() => {
@@ -39,8 +46,15 @@ export function App() {
   // Keyboard: Esc closes the measure tool / clears the selection; M toggles measuring.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement;
+      const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement || e.target instanceof HTMLTextAreaElement;
       const s = useApp.getState();
+      // Undo / redo the design (inside a text box the browser's own undo applies).
+      if ((e.ctrlKey || e.metaKey) && !typing && (e.key === 'z' || e.key === 'Z' || e.key === 'y' || e.key === 'Y')) {
+        e.preventDefault();
+        if (e.key === 'y' || e.key === 'Y' || e.shiftKey) redo(); else undo();
+        return;
+      }
+      if (!typing && e.key === '?') { setHelp((h) => !h); return; }
       if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
         e.preventDefault();
         if (e.shiftKey) s.set('saveAsOpen', true);
@@ -68,12 +82,19 @@ export function App() {
         <h1>Suspension Calculator</h1>
         <FileMenu />
         <ViewMenu />
+        <UnitsMenu />
+        <div className="history-btns">
+          <button className="menu-btn" onClick={undo} disabled={!canUndo} title="Undo (Ctrl+Z)">↶</button>
+          <button className="menu-btn" onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Y)">↷</button>
+        </div>
         <nav className="workspace-switch" role="tablist" aria-label="Workspace">
           <button role="tab" aria-selected={workspace === 'corner'} className={workspace === 'corner' ? 'on' : ''} onClick={() => setWorkspace('corner')}>Corner</button>
           <button role="tab" aria-selected={workspace === 'vehicle'} className={workspace === 'vehicle' ? 'on' : ''} onClick={() => setWorkspace('vehicle')}>Vehicle</button>
         </nav>
         <span className="muted topbar-note">{workspace === 'corner' ? 'Chassis fixed · one corner' : 'Whole car · quasi-static'}</span>
+        <button className="menu-btn help-btn" onClick={() => setHelp(true)} title="Keyboard & mouse help (?)">?</button>
       </header>
+      {help && <HelpOverlay onClose={() => setHelp(false)} />}
       <Notice />
       {workspace === 'corner' ? (
         <>

@@ -21,3 +21,4 @@ export * from './optimize/leastSquares';
 export * from './optimize/corner';
 export * from './tire/grip';
 export * from './optimize/vehicle';
+export * from './math/dimension';

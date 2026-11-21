@@ -13,7 +13,7 @@ export type Quantity = 'length' | 'angle' | 'pressure' | 'force' | 'rate' | 'tor
  * altitude → m, ratio → plain number. Temperature (→ °C) has offsets and is handled separately.
  */
 export const UNITS: Record<Quantity, Record<string, number>> = {
-  length: { mm: 1, cm: 10, m: 1000, in: 25.4, '"': 25.4, ft: 304.8, "'": 304.8 },
+  length: { mm: 1, cm: 10, m: 1000, in: 25.4, '"': 25.4, ft: 304.8, "'": 304.8, yd: 914.4 },
   angle: { deg: 1, '°': 1, rad: 180 / Math.PI },
   pressure: { kPa: 1, psi: 6.894757, bar: 100, Pa: 0.001, MPa: 1000 },
   force: { N: 1, kN: 1000, lbf: 4.4482216, kgf: 9.80665 },
@@ -22,7 +22,7 @@ export const UNITS: Record<Quantity, Record<string, number>> = {
   altitude: { m: 1, km: 1000, ft: 0.3048 },
   ratio: { x: 1, '%': 0.01 },
   percent: { '%': 1, x: 100 },
-  mass: { kg: 1, g: 0.001, lb: 0.45359237, lbm: 0.45359237 },
+  mass: { kg: 1, g: 0.001, lb: 0.45359237, lbm: 0.45359237, oz: 0.028349523125 },
   temperature: { C: 1 },
 };
 

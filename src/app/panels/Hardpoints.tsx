@@ -2,6 +2,7 @@ import { useApp, forCorner, rootOf, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR
 import { lockKeys, pointAxisLocked } from '../locks';
 import { SAMPLE_LAYOUTS } from '../../examples/sampleLayouts';
 import { ValueInput, LockButton } from './ValueInput';
+import { UnitLabel } from './UnitText';
 
 export function Hardpoints() {
   const geom = useApp((s) => s.geom);
@@ -22,7 +23,7 @@ export function Hardpoints() {
           {SAMPLE_LAYOUTS.map((l) => <option key={l.id} value={l.id}>{l.id}: {l.label}</option>)}
         </select>
       </div>
-      <p className="hint">mm unless a unit is typed (e.g. <code>5in</code>, <code>1ft 2in</code>). Enter to apply.</p>
+      <p className="hint">In <UnitLabel unit="mm" /> (Units menu) unless a unit is typed (e.g. <code>5in</code>, <code>1ft 2in</code>). Enter to apply.</p>
       <table className="hp-table">
         <thead>
           <tr><th>Point</th><th>X</th><th>Y</th><th>Z</th><th /></tr>
@@ -52,7 +53,7 @@ export function Hardpoints() {
                   onCommit={(t) => setScalar(k, t)} lockKey={lockKeys.field(root, 'scalar', k)}
                 />
               </td>
-              <td className="muted">{SCALAR_META[k].quantity === 'angle' ? 'deg' : 'mm'}</td>
+              <td className="muted"><UnitLabel unit={SCALAR_META[k].quantity === 'angle' ? '°' : 'mm'} /></td>
             </tr>
           ))}
         </tbody>

@@ -9,6 +9,7 @@
 import { type Vec3, sub, add, scale, dot, cross, length, normalize } from '../math/vec3';
 import { closestPointOnLine, lineThrough } from '../math/geom';
 import type { ArmPoints } from './doubleWishbone';
+import { bisect } from '../math/quadrature';
 
 export interface ArmMetrics {
   /** Fwd pivot → ball joint, mm. */
@@ -81,6 +82,39 @@ export function setPivotInclination(a: ArmPoints, angle: number): ArmPoints {
 /** Set the pivot-axis plan-view angle (keeps inclination, arm length and ball joint). */
 export function setPivotPlanAngle(a: ArmPoints, angle: number): ArmPoints {
   return withAxisDirection(a, axisFromAngles(armMetrics(a).inclination, angle));
+}
+
+/** Rotate v about the unit axis k by angle t (Rodrigues). */
+function rotateAbout(v: Vec3, k: Vec3, t: number): Vec3 {
+  const c = Math.cos(t), s = Math.sin(t);
+  const kxv = cross(k, v);
+  const kv = dot(k, v);
+  return add(add(scale(v, c), scale(kxv, s)), scale(k, kv * (1 - c)));
+}
+
+/**
+ * Set the arm's front-view angle at static height (+ = ball joint higher than the pivot axis).
+ * The ball joint stays put; the pivot axis swings around it (keeping its direction, the arm length
+ * and the pivot spacing), so the frame pivots move. Returns the arm unchanged if the angle can't be
+ * reached within ±70° of swing.
+ */
+export function setArmFrontViewAngle(a: ArmPoints, angle: number): ArmPoints {
+  const m = armMetrics(a);
+  const d = normalize(sub(a.fwd, a.aft));
+  const r0 = sub(a.out, m.foot); // foot → ball joint
+  const sF = dot(sub(a.fwd, m.foot), d);
+  const sA = dot(sub(a.aft, m.foot), d);
+  const at = (phi: number): ArmPoints => {
+    const foot = sub(a.out, rotateAbout(r0, d, phi));
+    return { fwd: add(foot, scale(d, sF)), aft: add(foot, scale(d, sA)), out: a.out };
+  };
+  const f = (phi: number) => armMetrics(at(phi)).frontViewAngle - angle;
+  const lim = (70 * Math.PI) / 180;
+  // The swing direction that raises the angle depends on which way the axis points: search both.
+  for (const [lo, hi] of [[0, lim], [-lim, 0]] as const) {
+    if (f(lo) * f(hi) <= 0) return at(bisect(f, lo, hi, 1e-12));
+  }
+  return a;
 }
 
 /**

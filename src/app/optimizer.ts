@@ -62,7 +62,7 @@ export const toAxleShared = (a: SharedDesign): AxleShared => ({
 const holdsFor = (s: AppState, root: CornerId): Hold[] => {
   const out: Hold[] = [];
   for (const arm of ['uca', 'lca'] as const) {
-    for (const which of ['length', 'inclination', 'planAngle'] as const) {
+    for (const which of ['length', 'inclination', 'planAngle', 'frontViewAngle'] as const) {
       if (s.locks[lockKeys.derived(root, arm, which)]) out.push({ arm, which });
     }
   }

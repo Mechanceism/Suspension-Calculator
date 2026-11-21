@@ -35,6 +35,20 @@ export function Readout({ model }: { model: Model }) {
     ['Wheel center Y', fmt(c.wheelCenter.y, 1), 'mm'],
     ['Ground Y', fmt(cur.loaded ? cur.loaded.groundY : c.groundY, 1), 'mm', 'ride height = −ground Y'],
   ];
+  const sp = cur.spring;
+  const springRows: [string, string, string, string?][] = sp ? [
+    ['Wheel travel', fmt(cur.travel, 1), 'mm', 'wheel center, + = bump'],
+    ['Sprung load on spring', fmt(sp.sprungLoad, 0), 'N', '(corner load − unsprung weight) × load factor'],
+    ['Spring force', fmt(sp.force, 0), 'N'],
+    ['Spring length', fmt(sp.length, 1), 'mm'],
+    ['Spring compression', fmt(sp.compression, 1), 'mm', 'from free length'],
+    ['Motion ratio', fmt(sp.motionRatio, 3), '', 'spring mm per wheel mm'],
+    ['Wheel rate', fmt(sp.wheelRate, 1), 'N/mm'],
+    ['Tire rate', fmt(sp.tireRate, 0), 'N/mm'],
+    ['Ride rate', fmt(sp.rideRate, 1), 'N/mm', 'wheel rate in series with tire'],
+    ['Ride frequency', fmt(sp.frequency, 2), 'Hz', 'sprung corner'],
+  ] : [];
+  const STATUS: Record<string, string> = { 'droop-limit': 'At droop limit', 'bump-limit': 'At bump limit' };
   const l = cur.loaded;
   const tireRows: [string, string, string, string?][] = l ? [
     ['Tire load', fmt(l.force.force, 0), 'N'],
@@ -67,6 +81,25 @@ export function Readout({ model }: { model: Model }) {
           ))}
         </tbody>
       </table>
+      {sp && (
+        <>
+          <h3 className="subhead">
+            Spring & ride
+            {sp.status && sp.status !== 'ok' && <span className="status status-singular">{STATUS[sp.status]}</span>}
+          </h3>
+          <table className="readout">
+            <tbody>
+              {springRows.map(([name, value, unit, hint]) => (
+                <tr key={name} title={hint}>
+                  <td>{name}</td>
+                  <td className="num">{value}</td>
+                  <td className="unit">{unit}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
       {l && (
         <>
           <h3 className="subhead">

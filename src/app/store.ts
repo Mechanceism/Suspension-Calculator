@@ -5,8 +5,9 @@
 import { create } from 'zustand';
 import { parseValue, formatValue, type Quantity } from '../core/units/units';
 import { vec3, type Vec3 } from '../core/math/vec3';
-import { spinAxisFromCamberToe, type DoubleWishboneGeometry, type TravelDriver } from '../core/suspension/doubleWishbone';
-import { SAMPLE_LAYOUTS } from '../examples/sampleLayouts';
+import { DoubleWishbone, spinAxisFromCamberToe, type DoubleWishboneGeometry, type TravelDriver } from '../core/suspension/doubleWishbone';
+import { SAMPLE_LAYOUTS, SAMPLE_SPRING } from '../examples/sampleLayouts';
+import { fitFreeLength } from '../core/suspension/spring';
 import type { TireProfile } from '../core/tire/geometry';
 import type { TireForceModel } from '../core/tire/model';
 import { parseTireSize } from '../core/tire/size';
@@ -18,7 +19,7 @@ export interface Field {
   error?: string;
 }
 
-export const POINT_KEYS = ['ucaFwd', 'ucaAft', 'ucaOut', 'lcaFwd', 'lcaAft', 'lcaOut', 'trInner', 'trOuter', 'wheelCenter'] as const;
+export const POINT_KEYS = ['ucaFwd', 'ucaAft', 'ucaOut', 'lcaFwd', 'lcaAft', 'lcaOut', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm'] as const;
 export type PointKey = (typeof POINT_KEYS)[number];
 
 /** Parameter names follow GOALS.md § Parameter Naming. */
@@ -26,6 +27,7 @@ export const POINT_NAMES: Record<PointKey, string> = {
   ucaFwd: 'FL_UCA_Fwd', ucaAft: 'FL_UCA_Aft', ucaOut: 'FL_UCA_Out',
   lcaFwd: 'FL_LCA_Fwd', lcaAft: 'FL_LCA_Aft', lcaOut: 'FL_LCA_Out',
   trInner: 'FL_TR_In', trOuter: 'FL_TR_Out', wheelCenter: 'FL_Hub_Ctr',
+  dmpChassis: 'FL_Dmp_Chs', dmpArm: 'FL_Dmp_Arm',
 };
 
 export const SCALAR_KEYS = ['staticCamber', 'staticToe', 'tireDiameter', 'tireWidth', 'rimDiameter', 'shoulderRadius'] as const;
@@ -40,10 +42,9 @@ export const SCALAR_META: Record<ScalarKey, { name: string; quantity: Quantity; 
 };
 
 /** Tire load / force-model inputs (docs/MATH.md § L4). */
-export const TIRE_KEYS = ['load', 'rate', 'pressure', 'setAltitude', 'setTemperature', 'opAltitude', 'opTemperature', 'volumeFactor'] as const;
+export const TIRE_KEYS = ['rate', 'pressure', 'setAltitude', 'setTemperature', 'opAltitude', 'opTemperature', 'volumeFactor'] as const;
 export type TireKey = (typeof TIRE_KEYS)[number];
 export const TIRE_META: Record<TireKey, { label: string; quantity: Quantity; unit: string; initial: number; models: TireModelKind[] }> = {
-  load: { label: 'Vertical load', quantity: 'force', unit: 'N', initial: 900, models: ['stiffness', 'gas'] },
   rate: { label: 'Vertical stiffness', quantity: 'rate', unit: 'N/mm', initial: 120, models: ['stiffness'] },
   pressure: { label: 'Set pressure (gauge)', quantity: 'pressure', unit: 'kPa', initial: 82.737, models: ['gas'] },
   setAltitude: { label: 'Set at altitude', quantity: 'altitude', unit: 'm', initial: 0, models: ['gas'] },
@@ -54,19 +55,37 @@ export const TIRE_META: Record<TireKey, { label: string; quantity: Quantity; uni
 };
 export type TireModelKind = 'rigid' | 'stiffness' | 'gas';
 
+/** Spring and corner load inputs (docs/MATH.md § L5). */
+export const SPRING_KEYS = ['cornerLoad', 'unsprungMass', 'springRate', 'freeLength'] as const;
+export type SpringKey = (typeof SPRING_KEYS)[number];
+export const SPRING_META: Record<SpringKey, { label: string; name: string; quantity: Quantity; unit: string }> = {
+  cornerLoad: { label: 'Corner load (static, at tire)', name: 'FL_Load', quantity: 'force', unit: 'N' },
+  unsprungMass: { label: 'Unsprung mass', name: 'FL_Mass_Unsprung', quantity: 'mass', unit: 'kg' },
+  springRate: { label: 'Spring rate', name: 'FL_Sprg_Rate', quantity: 'rate', unit: 'N/mm' },
+  freeLength: { label: 'Spring free length', name: 'FL_Sprg_FreeLen', quantity: 'length', unit: 'mm' },
+};
+export type ArmChoice = 'lca' | 'uca';
+export type CornerMode = 'kinematic' | 'loaded';
+const G = 9.80665;
+/** Load the spring carries: (corner load − unsprung weight) × load factor. */
+export const sprungLoad = (f: Record<SpringKey, Field>, loadFactor: number) =>
+  Math.max(0, (f.cornerLoad.value - f.unsprungMass.value * G) * loadFactor);
+
 export interface EditableGeometry {
   points: Record<PointKey, [Field, Field, Field]>;
   scalars: Record<ScalarKey, Field>;
+  /** Which arm the coilover's lower mount is attached to. */
+  damperArm: ArmChoice;
 }
 
 export const VIS_KEYS = [
   'chassis', 'uca', 'lca', 'upright', 'tieRod', 'wheel',
-  'patch', 'steeringAxis', 'icConstruction', 'rollCenter', 'ground', 'datum', 'labels',
+  'spring', 'patch', 'steeringAxis', 'icConstruction', 'rollCenter', 'ground', 'datum', 'labels',
 ] as const;
 export type VisKey = (typeof VIS_KEYS)[number];
 
 export type ViewName = 'front' | 'rear' | 'outboard' | 'inboard' | 'top' | 'bottom' | 'iso';
-export type FocusKey = 'corner' | 'wheel' | 'upright' | 'uca' | 'lca' | 'tieRod' | 'contact';
+export type FocusKey = 'corner' | 'wheel' | 'upright' | 'uca' | 'lca' | 'tieRod' | 'spring' | 'contact';
 
 const field = (value: number, quantity: Quantity = 'length'): Field => ({ text: formatValue(value, quantity), value });
 const fields = (v: Vec3): [Field, Field, Field] => [field(v.x), field(v.y), field(v.z)];
@@ -79,7 +98,10 @@ export function editableFromLayout(id: string): EditableGeometry {
       lcaFwd: fields(g.lca.fwd), lcaAft: fields(g.lca.aft), lcaOut: fields(g.lca.out),
       trInner: fields(g.tieRod.inner), trOuter: fields(g.tieRod.outer),
       wheelCenter: fields(g.wheel.center),
+      dmpChassis: fields(g.damper?.chassis ?? vec3(300, 380, 30)),
+      dmpArm: fields(g.damper?.armPoint ?? vec3(480, 45, 30)),
     },
+    damperArm: g.damper?.arm ?? 'lca',
     scalars: {
       staticCamber: field(0, 'angle'),
       staticToe: field(0, 'angle'),
@@ -104,6 +126,7 @@ export function toGeometry(e: EditableGeometry): DoubleWishboneGeometry {
       radius: s.tireDiameter.value / 2,
       width: s.tireWidth.value,
     },
+    damper: { chassis: p('dmpChassis'), arm: e.damperArm, armPoint: p('dmpArm') },
   };
 }
 
@@ -161,7 +184,16 @@ interface AppState {
   tireSizeText: string;
   tireSizeError: string | null;
 
+  mode: CornerMode;
+  /** Multiplier on the static corner load in loaded mode (1 = static, >1 = bump / load transfer). */
+  loadFactor: number;
+  spring: Record<SpringKey, Field>;
+
   loadPreset(id: string): void;
+  setSpringField(key: SpringKey, text: string): void;
+  setDamperArm(arm: ArmChoice): void;
+  /** Set the free length so the static corner load sits at the design position (travel 0). */
+  fitSpring(): void;
   setTireField(key: TireKey, text: string): void;
   applyTireSize(text: string): void;
   setPoint(key: PointKey, axis: 0 | 1 | 2, text: string): void;
@@ -170,6 +202,18 @@ interface AppState {
   toggleVisibility(key: VisKey): void;
   requestView(view: ViewName | null): void;
   focusOn(key: FocusKey): void;
+}
+
+/** Spring fields with the free length fitted so the static load sits at travel 0 (if solvable). */
+function fittedSpring(geom: EditableGeometry, f: Record<SpringKey, Field>): Record<SpringKey, Field> {
+  try {
+    const corner = new DoubleWishbone(toGeometry(geom));
+    const fl = fitFreeLength(corner, f.springRate.value, sprungLoad(f, 1));
+    if (!Number.isFinite(fl)) return f;
+    return { ...f, freeLength: field(Math.round(fl * 10) / 10) };
+  } catch {
+    return f;
+  }
 }
 
 /** Optional URL overrides, e.g. ?preset=A&view=iso&travel=30&rack=10&labels=1 */
@@ -192,7 +236,7 @@ export const useApp = create<AppState>((set, get) => ({
   trails: true,
   ghosts: true,
   visibility: {
-    chassis: true, uca: true, lca: true, upright: true, tieRod: true, wheel: true,
+    chassis: true, uca: true, lca: true, upright: true, tieRod: true, wheel: true, spring: true,
     patch: true, steeringAxis: true, icConstruction: true, rollCenter: true, ground: true, datum: true, labels: params.get('labels') === '1',
   },
   projection: params.get('projection') === 'perspective' ? 'perspective' : 'orthographic',
@@ -205,6 +249,22 @@ export const useApp = create<AppState>((set, get) => ({
   volumeChange: true,
   tireSizeText: '',
   tireSizeError: null,
+
+  mode: params.get('mode') === 'loaded' ? 'loaded' : 'kinematic',
+  loadFactor: num('load', 1),
+  spring: fittedSpring(editableFromLayout(initialPreset), {
+    cornerLoad: field(900, 'force'),
+    unsprungMass: field(12, 'mass'),
+    springRate: field(SAMPLE_SPRING.rate, 'rate'),
+    freeLength: field(SAMPLE_SPRING.freeLength),
+  }),
+
+  setSpringField: (key, text) => {
+    const spring = get().spring;
+    set({ spring: { ...spring, [key]: parseField(text, SPRING_META[key].quantity, spring[key]) } });
+  },
+  setDamperArm: (arm) => set({ geom: { ...get().geom, damperArm: arm }, presetId: 'custom' }),
+  fitSpring: () => set({ spring: fittedSpring(get().geom, get().spring) }),
 
   setTireField: (key, text) => {
     const tire = get().tire;
@@ -225,7 +285,10 @@ export const useApp = create<AppState>((set, get) => ({
       },
     });
   },
-  loadPreset: (id) => set({ presetId: id, geom: editableFromLayout(id), travel: 0, rack: 0 }),
+  loadPreset: (id) => {
+    const geom = editableFromLayout(id);
+    set({ presetId: id, geom, travel: 0, rack: 0, spring: fittedSpring(geom, get().spring) });
+  },
   setPoint: (key, axis, text) => {
     const geom = get().geom;
     const triple = [...geom.points[key]] as [Field, Field, Field];

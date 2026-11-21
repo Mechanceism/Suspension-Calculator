@@ -59,6 +59,16 @@ export function tireForce(model: TireForceModel, profile: TireProfile, patch: Lo
   return { force, pressureGauge: gauge, airVolume: v2, volumeChangeRatio: (v2 - v1) / v1 };
 }
 
+/** Vertical tire stiffness at a load, N/mm (central difference on the back-solved height). */
+export function tireRate(model: TireForceModel, profile: TireProfile, tilt: number, load: number): number {
+  const d = Math.max(load * 0.02, 1);
+  const fLo = Math.max(load - d, 1e-6);
+  const fHi = load + d;
+  const hLo = solveLoadedHeight(model, profile, tilt, fLo).centerHeight;
+  const hHi = solveLoadedHeight(model, profile, tilt, fHi).centerHeight;
+  return (fHi - fLo) / (hLo - hHi);
+}
+
 export interface LoadedTire {
   /** Wheel center height above the ground that carries the load, mm. */
   centerHeight: number;
@@ -87,7 +97,7 @@ export function solveLoadedHeight(model: TireForceModel, profile: TireProfile, t
   }
   const atLo = evalAt(lo);
   if (atLo.result.force < load) return { centerHeight: lo, ...atLo, bottomedOut: true };
-  const h = bisect((x) => evalAt(x).result.force - load, lo, hi, 1e-7);
+  const h = bisect((x) => evalAt(x).result.force - load, lo, hi, 1e-5);
   const r = evalAt(h);
   return { centerHeight: h, ...r, bottomedOut: r.patch.bottomedOut };
 }

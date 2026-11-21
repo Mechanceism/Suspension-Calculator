@@ -6,7 +6,7 @@ import type { Characteristics } from '../../core/suspension/characteristics';
 import type { LoadedCorner } from '../../core/suspension/loaded';
 import { useApp, POINT_NAMES } from '../store';
 import type { Model, Sample } from '../useModel';
-import { Joint, Seg, Polyline, Tri, Wheel, Label, PatchMesh } from './primitives';
+import { Joint, Seg, Polyline, Tri, Wheel, Label, PatchMesh, Coilover } from './primitives';
 
 export const COLORS = {
   chassis: '#8b93a1',
@@ -20,6 +20,7 @@ export const COLORS = {
   rc: '#7ee081',
   ground: '#3a4150',
   patch: '#ffb347',
+  spring: '#ff7eb6',
 };
 
 const TRAIL_KEYS: { key: keyof CornerPoints; color: string }[] = [
@@ -64,6 +65,11 @@ function Linkage({ state, faint = false }: { state: CornerState; faint?: boolean
         </>
       )}
       {vis.tieRod && <Seg a={p.trInner} b={p.trOuter} color={COLORS.tieRod} width={w} opacity={o} />}
+      {vis.spring && p.damperChassis && p.damperArm && (
+        faint
+          ? <Seg a={p.damperChassis} b={p.damperArm} color={COLORS.spring} width={1} opacity={o} />
+          : <Coilover a={p.damperChassis} b={p.damperArm} color={COLORS.spring} />
+      )}
     </group>
   );
 }
@@ -77,6 +83,8 @@ function Joints({ state }: { state: CornerState }) {
       {(vis.uca || vis.upright) && <Joint p={p.ucaOut} color={COLORS.uca} r={9} />}
       {(vis.lca || vis.upright) && <Joint p={p.lcaOut} color={COLORS.lca} r={9} />}
       {vis.tieRod && <Joint p={p.trInner} color={COLORS.chassis} />}
+      {vis.spring && p.damperChassis && <Joint p={p.damperChassis} color={COLORS.chassis} />}
+      {vis.spring && p.damperArm && <Joint p={p.damperArm} color={COLORS.spring} />}
       {(vis.tieRod || vis.upright) && <Joint p={p.trOuter} color={COLORS.tieRod} />}
       {vis.wheel && <Joint p={p.wheelCenter} color={COLORS.upright} r={6} />}
       {vis.wheel && <Joint p={p.contact} color={COLORS.wheel} r={6} />}
@@ -175,6 +183,7 @@ function Labels({ state }: { state: CornerState }) {
     [p.lcaFwd, POINT_NAMES.lcaFwd], [p.lcaAft, POINT_NAMES.lcaAft], [p.lcaOut, POINT_NAMES.lcaOut],
     [p.trInner, POINT_NAMES.trInner], [p.trOuter, POINT_NAMES.trOuter], [p.wheelCenter, POINT_NAMES.wheelCenter],
     [p.contact, 'Contact'],
+    ...(p.damperChassis && p.damperArm ? [[p.damperChassis, POINT_NAMES.dmpChassis], [p.damperArm, POINT_NAMES.dmpArm]] as [Vec3, string][] : []),
   ];
   return <>{entries.map(([q, t]) => <Label key={t} p={q} text={t} />)}</>;
 }

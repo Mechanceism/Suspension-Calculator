@@ -26,7 +26,7 @@ Status key: ✅ agreed · 🔶 open / under discussion
 | L2 Characteristics | Camber, toe, caster, KPI, offsets, IC, RC, anti %, bump steer, motion ratio | ✅ implemented + tested (`src/core/suspension/characteristics.ts`, `fourBar.ts`) |
 | L3 Tire geometry | Patch area, centroid, displaced volume (slice method) | ✅ implemented + tested (`src/core/tire/geometry.ts`) |
 | L4 Tire force | Gas-law model, stiffness model | ✅ implemented + tested (`src/core/tire/model.ts`, `src/core/suspension/loaded.ts`) |
-| L5 Quasi-static corner | Load-driven equilibrium with spring and tire | ✅ planned |
+| L5 Quasi-static corner | Load-driven equilibrium with spring and tire | ✅ implemented + tested, coilover option 1 (`src/core/suspension/spring.ts`) |
 | L6 Vehicle | Mass, CG, multi-corner, roll center, load transfer | later |
 | L7 Optimizer | Objectives and constraint handling | later |
 
@@ -222,12 +222,26 @@ Moment of the tire force about the **steering axis** (not about the axis's groun
 
 ---
 
-## L5: Quasi-Static Corner (planned)
+## L5: Quasi-Static Corner ✅
 Two operating modes:
-1. **Kinematic:** the user sets travel and steer; geometry is reported. No spring or tire force needed.
-2. **Load-driven:** the user sets loads; the solver finds the body position and tire deflection where spring, tire and load forces balance.
+1. **Kinematic:** the user sets travel and steer; geometry is reported. No spring needed (a tire load is optional).
+2. **Loaded (settle on spring):** the user sets the corner load; the solver finds the travel where the spring carries it, then the tire carries the load on the ground.
 
-- Spring/damper mounts are user inputs for now. Outputs: motion ratio, wheel rate ≈ k_spring · MR² (with installation-angle correction), ride frequency.
+**Spring layouts**
+- **Option 1 (implemented): coilover** from a chassis mount to a mount on the LCA or UCA (`FL_Dmp_Chs`, `FL_Dmp_Arm`).
+- **Option 2 (planned): pushrod / pullrod + rocker.** The spring code only needs the two spring mount points, so a rocker body (revolute to the chassis, pushrod as a fixed-length link to an arm or the upright) supplies them without changing the equilibrium math.
+
+**Relations (virtual work, chassis fixed, 1 DOF = travel q)**
+- Spring force (compression only): `F_s = k · max(0, L_free − L(q))`
+- Motion ratio: `MR = −dL / dy_c` (spring compression per mm of contact-point travel)
+- Wheel force: `F_w = F_s · MR` — the vertical force the spring supports at the contact patch
+- Wheel rate: `k_w = dF_w / dy_c` (≈ k · MR², plus the effect of MR changing with travel)
+- Equilibrium: `F_w(q) = W_s`, where `W_s = (corner load − unsprung mass · g) × load factor`. Solved by bracketed Illinois root-finding over the travel range; reports **droop limit** / **bump limit** when the load can't be balanced in range.
+- The tire carries the full corner load (sprung + unsprung) × load factor; the spring and tire act in series, so the vertical balance needs no iteration at corner level. Coupling (roll, load transfer, the "settle repeatedly" loop) enters at vehicle level (L6).
+- Ride rate: `1 / (1/k_w + 1/k_t)`, tire rate `k_t` from the tire model (∞ for rigid). Ride frequency `f = √(k_ride / m_s) / 2π` with the **static** sprung corner mass (the load factor is extra g, not extra mass).
+- **Fit free length:** `L_free = L(q₀) + W_s / (MR(q₀) · k)` puts the static equilibrium at the design position q₀ = 0.
+
+**Verification:** energy check — ∫ F_w dy_c over travel equals the spring energy change ½k·Δ(compression²) to 0.2%; equilibrium, fitted free length and limit reporting tested.
 
 ---
 

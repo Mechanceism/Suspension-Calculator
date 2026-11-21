@@ -93,6 +93,41 @@ export function Wheel({ center, axis, radius, width, color, ghost = false }: {
   );
 }
 
+/** Coilover between two mounts: damper body + shaft, with a helical spring drawn around it. */
+export function Coilover({ a, b, color, coils = 9, radius = 26 }: { a: Vec3; b: Vec3; color: string; coils?: number; radius?: number }) {
+  const geo = useMemo(() => {
+    const A = new THREE.Vector3(a.x, a.y, a.z);
+    const B = new THREE.Vector3(b.x, b.y, b.z);
+    const axis = B.clone().sub(A);
+    const len = axis.length();
+    const u = axis.clone().normalize();
+    const helper = Math.abs(u.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+    const e1 = new THREE.Vector3().crossVectors(u, helper).normalize();
+    const e2 = new THREE.Vector3().crossVectors(u, e1);
+    // Spring occupies the middle 76% of the length (spring seats at 12% from each end).
+    const start = 0.12 * len;
+    const span = 0.76 * len;
+    const n = coils * 24;
+    const helix: V3[] = [];
+    for (let i = 0; i <= n; i++) {
+      const t = i / n;
+      const ang = t * coils * Math.PI * 2;
+      const p = A.clone().addScaledVector(u, start + span * t)
+        .addScaledVector(e1, radius * Math.cos(ang)).addScaledVector(e2, radius * Math.sin(ang));
+      helix.push([p.x, p.y, p.z]);
+    }
+    const bodyEnd = A.clone().addScaledVector(u, 0.55 * len);
+    return { helix, body: [[A.x, A.y, A.z], [bodyEnd.x, bodyEnd.y, bodyEnd.z]] as V3[], shaft: [[bodyEnd.x, bodyEnd.y, bodyEnd.z], [B.x, B.y, B.z]] as V3[] };
+  }, [a, b, coils, radius]);
+  return (
+    <group>
+      <Line points={geo.body} color="#6b7280" lineWidth={9} />
+      <Line points={geo.shaft} color="#cbd2dc" lineWidth={3} />
+      <Line points={geo.helix} color={color} lineWidth={2} />
+    </group>
+  );
+}
+
 /** Filled contact patch (triangle fan from the centroid) with its outline, lifted slightly off the ground. */
 export function PatchMesh({ outline, centroid, color }: { outline: Vec3[]; centroid: Vec3; color: string }) {
   const lift = 0.6;

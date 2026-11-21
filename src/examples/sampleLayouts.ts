@@ -40,6 +40,9 @@ export interface Layout {
 
 function layout(id: string, label: string, fvsa: number, ucaPivotX: number, lcaPivotX: number): Layout {
   const ic = icForFvsa(fvsa);
+  // Coilover (option 1): LCA mount in the arm plane near the ball joint, chassis mount above/inboard.
+  const lcaMountX = 488;
+  const lcaMountY = LBJ.y + ((lcaMountX - LBJ.x) / (ic.x - LBJ.x)) * (ic.y - LBJ.y);
   return {
     id, label,
     geometry: {
@@ -47,9 +50,13 @@ function layout(id: string, label: string, fvsa: number, ucaPivotX: number, lcaP
       lca: { ...pivotOnIcLine(LBJ, ic, lcaPivotX), out: LBJ },
       tieRod: { inner: vec3(200, 100, -120), outer: vec3(540, 100, -120) },
       wheel: { center: WHEEL_CENTER, spinAxis: vec3(1, 0, 0), radius: WHEEL_RADIUS, width: 205 },
+      damper: { chassis: vec3(300, 380, 30), arm: 'lca', armPoint: vec3(lcaMountX, lcaMountY, 30) },
     },
   };
 }
+
+/** Default spring for the sample layouts (N/mm, mm). Free length is fitted per layout in the UI. */
+export const SAMPLE_SPRING = { rate: 60, freeLength: 406 };
 
 export const SAMPLE_LAYOUTS: Layout[] = [
   layout('A', 'Near-equal arms, FVSA 2000', 2000, 200, 220),

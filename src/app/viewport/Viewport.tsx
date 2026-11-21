@@ -30,6 +30,7 @@ function focusSphere(model: Model, focus: FocusKey, radius: number): { center: V
     uca: [p.ucaFwd, p.ucaAft, p.ucaOut],
     lca: [p.lcaFwd, p.lcaAft, p.lcaOut],
     tieRod: [p.trInner, p.trOuter],
+    spring: p.damperChassis && p.damperArm ? [p.damperChassis, p.damperArm] : [p.wheelCenter],
     contact: [p.contact],
   };
   const box = new THREE.Box3();

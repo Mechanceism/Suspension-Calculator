@@ -126,6 +126,12 @@ input[type='range'] { accent-color: var(--accent); width: 100%; }
   margin: 14px 0 6px; display: flex; align-items: center; justify-content: space-between; font-weight: 600;
 }
 
+.wide-btn {
+  width: 100%; margin-top: 8px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px;
+  padding: 5px 8px; cursor: pointer;
+}
+.wide-btn:hover { border-color: var(--accent); }
+
 /* Readout */
 .readout { width: 100%; border-collapse: collapse; }
 .readout td { padding: 2.5px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.04); }

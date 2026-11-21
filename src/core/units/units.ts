@@ -6,7 +6,7 @@
  * `1ft 2in`, `-12.5`. The original text is kept for display; only the base value is used in math.
  */
 
-export type Quantity = 'length' | 'angle' | 'pressure' | 'force' | 'rate' | 'altitude' | 'ratio' | 'temperature';
+export type Quantity = 'length' | 'angle' | 'pressure' | 'force' | 'rate' | 'altitude' | 'ratio' | 'mass' | 'temperature';
 
 /**
  * Factors to base units: length → mm, angle → deg, pressure → kPa, force → N, rate → N/mm,
@@ -20,11 +20,12 @@ export const UNITS: Record<Quantity, Record<string, number>> = {
   rate: { 'N/mm': 1, 'kN/m': 1, 'lbf/in': 0.17512684 },
   altitude: { m: 1, km: 1000, ft: 0.3048 },
   ratio: { x: 1, '%': 0.01 },
+  mass: { kg: 1, g: 0.001, lb: 0.45359237, lbm: 0.45359237 },
   temperature: { C: 1 },
 };
 
 export const DEFAULT_UNIT: Record<Quantity, string> = {
-  length: 'mm', angle: 'deg', pressure: 'kPa', force: 'N', rate: 'N/mm', altitude: 'm', ratio: 'x', temperature: 'C',
+  length: 'mm', angle: 'deg', pressure: 'kPa', force: 'N', rate: 'N/mm', altitude: 'm', ratio: 'x', mass: 'kg', temperature: 'C',
 };
 
 export type ParseResult = { ok: true; value: number } | { ok: false; error: string };

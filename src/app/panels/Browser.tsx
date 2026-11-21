@@ -7,6 +7,7 @@ const COMPONENTS: { key: VisKey; label: string; color: string; focus?: FocusKey 
   { key: 'lca', label: 'Lower control arm (LCA)', color: COLORS.lca, focus: 'lca' },
   { key: 'upright', label: 'Upright / knuckle', color: COLORS.upright, focus: 'upright' },
   { key: 'tieRod', label: 'Tie rod', color: COLORS.tieRod, focus: 'tieRod' },
+  { key: 'spring', label: 'Coilover (spring/damper)', color: COLORS.spring, focus: 'spring' },
   { key: 'wheel', label: 'Wheel & tire', color: COLORS.wheel, focus: 'wheel' },
 ];
 

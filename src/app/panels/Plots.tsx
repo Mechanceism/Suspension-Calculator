@@ -67,10 +67,16 @@ export function Plots({ model }: { model: Model }) {
     { title: 'Caster', unit: '°', get: (s) => deg(s.chars.caster), digits: 2 },
     { title: 'Scrub radius', unit: 'mm', get: (s) => s.chars.scrubRadius, digits: 1 },
   ];
+  if (model.sweep.some((s) => s.spring)) {
+    series.push(
+      { title: 'Motion ratio', unit: 'spring/wheel', get: (s) => s.spring?.motionRatio ?? NaN, digits: 3 },
+      { title: 'Wheel rate', unit: 'N/mm', get: (s) => s.spring?.wheelRate ?? NaN, digits: 1 },
+    );
+  }
   if (cur?.loaded) {
     series.splice(1, 0,
-      { title: 'Contact patch area', unit: 'cm²', get: (s) => (s.loaded ? s.loaded.patch.area / 100 : NaN), digits: 1 },
-      { title: 'Patch centroid offset (from wheel plane)', unit: 'mm', get: (s) => (s.loaded ? s.loaded.patch.centroidS : NaN), digits: 1 },
+      { title: 'Contact patch area (static load)', unit: 'cm²', get: (s) => (s.loaded ? s.loaded.patch.area / 100 : NaN), digits: 1 },
+      { title: 'Patch centroid offset from wheel plane (static load)', unit: 'mm', get: (s) => (s.loaded ? s.loaded.patch.centroidS : NaN), digits: 1 },
     );
     series.push({ title: 'Effective scrub radius', unit: 'mm', get: (s) => (s.loaded ? s.loaded.effectiveScrubRadius : NaN), digits: 1 });
   }

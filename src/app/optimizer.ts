@@ -159,7 +159,7 @@ export function buildVehicleProblem(s: AppState): BuiltProblem<VehicleProblem> {
     cases: { lateralG: Math.max(0, o.lateralG.value), brakingG: Math.max(0, o.brakingG.value), accelG: Math.max(0, o.accelG.value) },
     states: (() => {
       const t = o.caseSource ? s.tests.find((x) => x.id === o.caseSource) : undefined;
-      return t ? testStates(t.segments.map(segmentSpec)) : undefined;
+      return t ? testStates(t.segments.map((sg) => segmentSpec(sg, t))) : undefined;
     })(),
     goals, variables, holds, grip: gripModelOf(s.grip), keepClose: Math.max(0, o.keepClose.value),
   };

@@ -207,6 +207,9 @@ export interface CornerResult {
   inclination: number;
   /** Spin axis in world coordinates (outboard). */
   axisWorld: Vec3;
+  /** Spring length, mm, and whether the bump stop is engaged. */
+  springLength: number;
+  onBumpStop: boolean;
   /** Ground height under this wheel (world Y), mm. */
   groundY: number;
 }
@@ -224,6 +227,11 @@ export interface VehicleResult {
   notes: string[];
   /** Grip use and slip per tire (when a grip model is given). */
   grip?: GripSummary;
+  /**
+   * Velocity changes only come from the tires: acceleration needs powered wheels, braking needs braked
+   * wheels. When asked for one without the other, it is left out of the solve and flagged here.
+   */
+  unmet: { accel: boolean; brake: boolean };
 }
 
 function sprungProperties(input: VehicleInput) {
@@ -317,6 +325,8 @@ function cornerResult(c: VehicleCorner, input: VehicleInput, f: CornerLoads, q: 
     // Axis points outboard; its upward component means the top leans inboard (negative camber sense).
     inclination: -Math.asin(Math.max(-1, Math.min(1, r.axis.y))),
     axisWorld: r.axis, groundY: r.gY,
+    springLength: r.s.L,
+    onBumpStop: c.spring.bumpStopLength !== undefined && Number.isFinite(r.s.L) && r.s.L < c.spring.bumpStopLength,
   };
 }
 
@@ -453,12 +463,20 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
   const W = input.totalMass * G * gs;
   const latTotal = input.totalMass * input.lateralG * G;
   const notes: string[] = [];
-  const brakingG = Math.max(0, input.brakingG ?? 0);
+  let brakingG = Math.max(0, input.brakingG ?? 0);
   const powered = input.corners.filter((c) => (c.drive ?? 'none') !== 'none');
+  const braked = input.corners.filter((c) => (c.brake ?? 'outboard') !== 'none');
   let accelG = Math.max(0, input.accelG ?? 0);
-  if (accelG > 0 && powered.length === 0) {
-    notes.push('No powered corners: acceleration ignored (mark corners as Powered).');
+  const unmet = { accel: false, brake: false };
+  if (accelG > 1e-9 && powered.length === 0) {
+    notes.push('No powered corners: the car cannot accelerate (mark corners as Powered).');
     accelG = 0;
+    unmet.accel = true;
+  }
+  if (brakingG > 1e-9 && braked.length === 0) {
+    notes.push('No brakes: the car cannot slow down.');
+    brakingG = 0;
+    unmet.brake = true;
   }
   const brakeTotal = input.totalMass * brakingG * G; // magnitude; acts rearward (−Z) on the tires
   const driveTotal = input.totalMass * accelG * G; // acts forward (+Z) on the powered tires
@@ -592,7 +610,7 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
   }
   const out: VehicleResult = {
     pose, corners: cur.corners, converged: norm(cur.res) < 1e-5, iterations: it, residual: cur.res,
-    sprungMass: sp.mass, sprungCg: sp.cg, notes,
+    sprungMass: sp.mass, sprungCg: sp.cg, notes, unmet,
   };
   if (input.grip) out.grip = gripSummary(input, out, capacities(input, cur.corners), frontLatShare, latTotal);
   return out;

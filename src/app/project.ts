@@ -23,7 +23,8 @@ import pkg from '../../package.json';
 import { parseValue, type Quantity } from '../core/units/units';
 import { CORNER_IDS, type CornerId } from '../core/vehicle/vehicle';
 import { DIM_MEASURES } from '../core/suspension/dimensions';
-import { newSegment, newTestId, OFF, type TestDesign, type TestSegment } from './tests';
+import { newSegment, newTestId, OFF, defaultChecks, type TestDesign, type TestSegment } from './tests';
+import { CHECK_IDS, CHECK_META, type CheckProfile } from '../core/tests/checks';
 import {
   defaultDesign, mergedCorners, rootOf, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META, SPRING_KEYS, SPRING_META,
   DAMPER_KEYS, DAMPER_META, STEER_KEYS, STEER_META, TIRE_KEYS, TIRE_META, VEHICLE_KEYS, VEHICLE_META,
@@ -212,6 +213,22 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   7: (f) => ({ ...f, formatVersion: 8 }),
 };
 
+/** Read a check table; unknown checks are ignored, missing ones take the defaults. */
+function readChecks(raw: Json): CheckProfile {
+  const out = defaultChecks();
+  for (const id of CHECK_IDS) {
+    const c = raw[id];
+    if (!isObj(c)) continue;
+    const sev = c.severity === 'pass' || c.severity === 'warn' || c.severity === 'fail' ? c.severity : out[id].severity;
+    out[id] = {
+      severity: CHECK_META[id].fixed ? out[id].severity : sev,
+      ...(typeof c.threshold === 'number' ? { threshold: c.threshold } : out[id].threshold !== undefined ? { threshold: out[id].threshold } : {}),
+      ...(typeof c.threshold2 === 'number' ? { threshold2: c.threshold2 } : out[id].threshold2 !== undefined ? { threshold2: out[id].threshold2 } : {}),
+    };
+  }
+  return out;
+}
+
 /** Read tests; anything malformed is dropped (with a warning) or takes defaults. */
 function readTests(raw: unknown, warnings: string[]): TestDesign[] {
   if (!Array.isArray(raw)) return [];
@@ -239,11 +256,18 @@ function readTests(raw: unknown, warnings: string[]): TestDesign[] {
         bank: fieldOr(sr.bank, 'angle', d.bank, where('bank')),
         bumps: Object.fromEntries(CORNER_IDS.map((id) => [id, fieldOr(bumpsRaw[id], 'length', d.bumps[id], where(`bump ${id}`))])) as TestSegment['bumps'],
         lumpy: sr.lumpy === true,
+        weight: fieldOr(sr.weight, 'ratio', d.weight, where('weight')),
+        checks: isObj(sr.checks) ? readChecks(sr.checks) : null,
+        profile: typeof sr.profile === 'string' ? sr.profile : null,
       } as TestSegment;
     });
+    const checks = isObj(t.checks) ? readChecks(t.checks) : defaultChecks();
+    // Format 8 tests had a single grip reserve: it becomes the near-limit check's reserve.
+    if (!isObj(t.checks) && isObj(t.margin) && typeof t.margin.value === 'number') checks.nearLimit = { ...checks.nearLimit, threshold: t.margin.value };
     out.push({
-      id: typeof t.id === 'string' ? t.id : newTestId('test'), name, segments,
-      margin: fieldOr(t.margin, 'percent', { text: '10', value: 10 }, `test "${name}" margin`),
+      id: typeof t.id === 'string' ? t.id : newTestId('test'), name, segments, checks,
+      profile: typeof t.profile === 'string' ? t.profile : isObj(t.checks) ? 'custom' : 'default',
+      priority: fieldOr(t.priority, 'percent', { text: '100', value: 100 }, `test "${name}" priority`),
       onFail: t.onFail === 'lift' ? 'lift' : 'report',
     });
   }

@@ -4,7 +4,9 @@
  */
 import { CORNER_IDS, type CornerId } from '../core/vehicle/vehicle';
 import { formatValue, type Quantity } from '../core/units/units';
-import type { PathKind, SegmentSpec } from '../core/tests/segments';
+import type { PathKind } from '../core/tests/segments';
+import type { TestSegmentSpec } from '../core/tests/run';
+import { PROFILES, cloneProfile, type CheckProfile } from '../core/tests/checks';
 import type { Field } from './store';
 
 export interface TestSegment {
@@ -29,17 +31,28 @@ export interface TestSegment {
   bumps: Record<CornerId, Field>;
   /** Lumpy road: time-based (Phase B); kept so the test is ready for it. */
   lumpy: boolean;
+  /** Weight of this segment within its test (optimizer), default 1. */
+  weight: Field;
+  /** Check override for this segment (null = the test's checks). */
+  checks: CheckProfile | null;
+  /** Profile name of the override ('custom' when edited). */
+  profile: string | null;
 }
 
 export interface TestDesign {
   id: string;
   name: string;
   segments: TestSegment[];
-  /** Grip reserve required to pass, % (10 = no tire above 90% of its grip). */
-  margin: Field;
+  /** What counts as a pass (severity + thresholds per check) and the profile it came from ('custom' when edited). */
+  checks: CheckProfile;
+  profile: string;
+  /** Priority among tests for the optimizer, % (e.g. 80 paved, 20 rough). */
+  priority: Field;
   /** On a failing segment: report it, or let the driver lift to the speed that passes. */
   onFail: 'report' | 'lift';
 }
+
+export const defaultChecks = () => cloneProfile(PROFILES.default.checks);
 
 const f = (value: number, q: Quantity): Field => ({ text: formatValue(value, q), value });
 export const OFF: Field = { text: '', value: NaN };
@@ -60,6 +73,7 @@ export function newSegment(over: Partial<Omit<TestSegment, 'id'>> = {}): TestSeg
     grade: f(0, 'percent'), bank: f(0, 'angle'),
     bumps: Object.fromEntries(CORNER_IDS.map((id) => [id, f(0, 'length')])) as Record<CornerId, Field>,
     lumpy: false,
+    weight: f(1, 'ratio'), checks: null, profile: null,
     ...over,
   };
 }
@@ -85,7 +99,7 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
   {
     label: 'Autocross sequence',
     make: () => ({
-      name: 'Autocross sequence', margin: f(10, 'percent'), onFail: 'report',
+      name: 'Autocross sequence', checks: defaultChecks(), profile: 'default', priority: f(100, 'percent'), onFail: 'report',
       segments: [
         newSegment({ name: 'Launch 0–40', distance: f(50, 'distance'), speedStart: f(0, 'speed'), speedEnd: f(40 * MPH, 'speed') }),
         newSegment({ name: 'Brake 40–30', distance: f(15, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(30 * MPH, 'speed') }),
@@ -98,16 +112,16 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
   {
     label: 'Pothole while braking in a turn',
     make: () => ({
-      name: 'Pothole while braking in a turn', margin: f(10, 'percent'), onFail: 'report',
+      name: 'Pothole while braking in a turn', checks: defaultChecks(), profile: 'default', priority: f(100, 'percent'), onFail: 'report',
       segments: [
-        newSegment({ name: 'Braking left turn + pothole', path: 'left', radius: f(40, 'distance'), distance: f(30, 'distance'), speedStart: f(45 * MPH, 'speed'), speedEnd: f(30 * MPH, 'speed'), bumps: bumpsOf({ FR: -50 }) }),
+        newSegment({ name: 'Braking left turn + pothole', path: 'left', radius: f(45, 'distance'), distance: f(35, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(30 * MPH, 'speed'), bumps: bumpsOf({ FR: -40 }) }),
       ],
     }),
   },
   {
     label: 'Hills: incline left, lumpy decline right',
     make: () => ({
-      name: 'Hills', margin: f(10, 'percent'), onFail: 'report',
+      name: 'Hills', checks: defaultChecks(), profile: 'default', priority: f(100, 'percent'), onFail: 'report',
       segments: [
         newSegment({ name: 'Flat straight', distance: f(100, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(40 * MPH, 'speed') }),
         newSegment({ name: 'Bumps + potholes straight', distance: f(60, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(40 * MPH, 'speed'), bumps: bumpsOf({ FL: 30, RR: -30 }) }),
@@ -116,12 +130,14 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
       ],
     }),
   },
-  { label: 'Empty test', make: () => ({ name: 'New test', margin: f(10, 'percent'), onFail: 'report', segments: [newSegment()] }) },
+  { label: 'Empty test', make: () => ({ name: 'New test', checks: defaultChecks(), profile: 'default', priority: f(100, 'percent'), onFail: 'report', segments: [newSegment()] }) },
 ];
 
-/** Core spec of a segment. */
-export function segmentSpec(s: TestSegment): SegmentSpec {
+/** Core spec of a segment, with the checks that apply to it. */
+export function segmentSpec(s: TestSegment, test?: TestDesign): TestSegmentSpec {
   return {
+    checks: s.checks ?? test?.checks,
+    weight: Number.isFinite(s.weight.value) ? Math.max(0, s.weight.value) : 1,
     name: s.name,
     distance: Math.max(s.distance.value, 0.01),
     v0: Math.max(0, s.speedStart.value),

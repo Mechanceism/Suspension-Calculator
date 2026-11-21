@@ -495,3 +495,26 @@ input[type='range']:disabled { opacity: 0.4; }
 .seg-fail { border-left: 3px solid #ff5c5c; padding: 2px 8px; margin: 6px 0; }
 .bad-chip { border-color: #ff5c5c !important; }
 .test-view-bar { min-height: 34px; }
+
+/* Tests: segment list, pass rules, severities */
+.seg-list { list-style: none; margin: 4px 0; padding: 0; border: 1px solid var(--border); border-radius: 6px; }
+.seg-list li { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.seg-list li:last-child { border-bottom: none; }
+.seg-list li:hover { background: var(--panel-2); }
+.seg-list li.sel { background: var(--panel-2); box-shadow: inset 3px 0 0 var(--accent); }
+.seg-list li.dragging { opacity: 0.4; }
+.drag-handle { color: var(--muted); cursor: grab; user-select: none; }
+.seg-num { color: var(--accent); font-weight: 600; min-width: 16px; text-align: right; }
+.seg-text { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.seg-text .small-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.seg-editor { border: 1px solid var(--border); border-radius: 6px; padding: 6px; margin-top: 8px; }
+.checks-table td { padding: 1px 3px; }
+.checks-table select { font-size: 11px; }
+.checks-table tr.sev-fail td:first-child { color: #ff7b7b; }
+.checks-table tr.sev-warn td:first-child { color: #ffb703; }
+.checks-table tr.sev-pass td:first-child { color: var(--muted); }
+.finding.sev-fail { color: #ff7b7b; }
+.finding.sev-warn { color: #ffb703; }
+.test-table tr.sev-fail td { color: #ff7b7b; }
+.test-table tr.sev-warn td { color: #ffb703; }
+.seg-fail.sev-warn { border-left-color: #ffb703; }

@@ -32,7 +32,7 @@ describe('tests in the app', () => {
     d.vehicleOptimizer = { ...d.vehicleOptimizer, caseSource: t.id };
     d.settings = { ...d.settings, RL: { ...d.settings.RL, powered: true, diff: 'lsd', abs: false } };
     const b = buildVehicleProblem(d as AppState);
-    expect(b.problem.states).toHaveLength(testStates(t.segments.map(segmentSpec)).length);
+    expect(b.problem.states).toHaveLength(testStates(t.segments.map((sg) => segmentSpec(sg, t))).length);
     expect(b.problem.diff?.rear).toBe('lsd');
     expect(b.problem.settings.RL.abs).toBe(false);
   });

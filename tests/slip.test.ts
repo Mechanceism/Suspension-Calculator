@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   shareLateral, assembleVehicle, solveCase, runTest, segmentStates, segmentLongG, segmentLatG, roadEffective,
-  type VehicleProblem, type CaseSpec, type SegmentSpec, type TireForceModel,
+  PROFILES, type VehicleProblem, type CaseSpec, type SegmentSpec, type TireForceModel,
 } from '../src/core';
 import { SAMPLE_LAYOUTS, SAMPLE_SPRING } from '../src/examples/sampleLayouts';
 
@@ -109,13 +109,57 @@ describe('test segments', () => {
       { distance: 40, v0: 40 * MPH, v1: 40 * MPH, path: 'left', radius: 15, grade: 0, bank: 0 },
       { distance: 30, v0: 30 * MPH, v1: 0, path: 'straight', radius: 0, grade: 0, bank: 0 },
     ];
-    const run = runTest(base(), { FL: geom }, segs, { margin: 0.1, onFail: 'lift' });
+    const run = runTest(base(), { FL: geom }, segs, { onFail: 'lift' });
     expect(run.segments[0]!.passed).toBe(true);
     expect(run.segments[1]!.passed).toBe(false);
-    expect(run.segments[1]!.reasons.length).toBeGreaterThan(0);
+    expect(run.segments[1]!.findings.some((f) => f.severity === 'fail')).toBe(true);
     const k = run.segments[1]!.speedLimit!;
     expect(k).toBeGreaterThan(0.3);
     expect(k).toBeLessThan(1);
     expect(run.segments[1]!.lifted!.every((s) => s.passed)).toBe(true);
+  });
+});
+
+describe('pass / warning / fail', () => {
+  const accel: SegmentSpec = { distance: 60, v0: 0, v1: 30 * MPH, path: 'straight', radius: 0, grade: 0, bank: 0 };
+  it('speeding up needs powered wheels: without them the segment fails (speed not reached)', () => {
+    const p = base();
+    p.settings = { ...p.settings, RL: { brake: 'outboard', drive: 'none' }, RR: { brake: 'outboard', drive: 'none' } };
+    const run = runTest(p, { FL: geom }, [accel], { onFail: 'report' });
+    expect(run.segments[0]!.passed).toBe(false);
+    expect(run.segments[0]!.findings.some((f) => f.check === 'speedNotReached')).toBe(true);
+    // Holding speed uphill also needs drive.
+    const hill: SegmentSpec = { ...accel, v0: 20 * MPH, v1: 20 * MPH, grade: Math.atan(0.1) };
+    expect(runTest(p, { FL: geom }, [hill], { onFail: 'report' }).segments[0]!.passed).toBe(false);
+  });
+
+  it('a drift profile tolerates a sliding rear that the default profile fails', () => {
+    const turn: SegmentSpec = { distance: 40, v0: 37 * MPH, v1: 37 * MPH, path: 'left', radius: 25, grade: 0, bank: 0 };
+    const strict = runTest(base(), { FL: geom }, [turn], { onFail: 'report' });
+    const rearOut = strict.states[0]!.grip!.axles.rear;
+    if (rearOut > 1 && rearOut < 1.3 && strict.states[0]!.grip!.axles.front < 0.9) {
+      expect(strict.segments[0]!.passed).toBe(false);
+      const drift = runTest(base(), { FL: geom }, [{ ...turn, checks: PROFILES.drift.checks }], { onFail: 'report' });
+      expect(drift.segments[0]!.passed).toBe(true);
+      expect(drift.segments[0]!.severity).toBe('warn');
+    }
+    // Same rule checked directly on the classifier.
+    expect(PROFILES.drift.checks.oversteer.severity).toBe('warn');
+  });
+
+  it('ABS active is a warning by default (the test still passes); a strict profile fails it', () => {
+    const stop: SegmentSpec = { distance: 15, v0: 35 * MPH, v1: 0, path: 'straight', radius: 0, grade: 0, bank: 0 };
+    const run = runTest(base(), { FL: geom }, [{ ...stop, checks: { ...PROFILES.default.checks, absActive: { severity: 'warn', threshold: 100 } } }], { onFail: 'report' });
+    const abs = run.segments[0]!.findings.filter((f) => f.check === 'absActive');
+    expect(abs.length).toBeGreaterThan(0);
+    expect(abs.every((f) => f.severity === 'warn')).toBe(true);
+    const street = runTest(base(), { FL: geom }, [{ ...stop, checks: PROFILES.street.checks }], { onFail: 'report' });
+    expect(street.segments[0]!.passed).toBe(false);
+  });
+
+  it('flags states no suspension can pass (more force than the tires give)', () => {
+    const tooFast: SegmentSpec = { distance: 40, v0: 60 * MPH, v1: 60 * MPH, path: 'left', radius: 20, grade: 0, bank: 0 };
+    const run = runTest(base(), { FL: geom }, [tooFast], { onFail: 'report' });
+    expect(run.segments[0]!.impossible).toBe(true);
   });
 });

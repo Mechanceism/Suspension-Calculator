@@ -345,3 +345,7 @@ input[type='range']:disabled { opacity: 0.4; }
 .label-layer { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
 .load-label.floating { position: absolute; left: 0; top: 0; transform: none; will-change: transform; }
 .load-label.cg { color: #ffffff; }
+
+.shared-axle { padding: 4px 0 6px; border-bottom: 1px dashed var(--border); margin-bottom: 4px; }
+.shared-axle:last-child { border-bottom: none; }
+.drop-link { flex-wrap: wrap; }

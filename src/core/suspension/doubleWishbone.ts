@@ -18,6 +18,7 @@
 import {
   type Vec3, add, sub, scale, length, normalize, rejectFrom, Y_AXIS, X_AXIS, distance as dist,
 } from '../math/vec3';
+import { mulVec, transpose } from '../math/mat3';
 import {
   ConstraintSystem, PoseContext, type Poses, type SolveResult, type PointRef,
   coincident, fixedDistance, revolute, coordinate, hingeAngle,
@@ -124,6 +125,28 @@ export class DoubleWishbone {
     for (const [label, a, b] of pairs) {
       if (dist(a, b) < 1e-6) throw new Error(`Degenerate geometry: ${label} coincide`);
     }
+  }
+
+  /**
+   * Where a point fixed to one of the moving bodies (given at its design position) is in a solved
+   * state — e.g. an anti-roll-bar drop-link mount on the lower arm.
+   */
+  pointOn(state: CornerState, body: 'uca' | 'lca' | 'upright', designPoint: Vec3): Vec3 {
+    const g = this.geometry;
+    const origin = body === 'uca' ? centroid(g.uca.fwd, g.uca.aft, g.uca.out)
+      : body === 'lca' ? centroid(g.lca.fwd, g.lca.aft, g.lca.out)
+        : centroid(g.uca.out, g.lca.out, g.tieRod.outer, g.wheel.center);
+    return new PoseContext(state.poses).world({ body, local: sub(designPoint, origin) });
+  }
+
+  /** Inverse of pointOn: the design position of the body point that is at `worldPoint` in `state`. */
+  designPointOf(state: CornerState, body: 'uca' | 'lca' | 'upright', worldPoint: Vec3): Vec3 {
+    const g = this.geometry;
+    const origin = body === 'uca' ? centroid(g.uca.fwd, g.uca.aft, g.uca.out)
+      : body === 'lca' ? centroid(g.lca.fwd, g.lca.aft, g.lca.out)
+        : centroid(g.uca.out, g.lca.out, g.tieRod.outer, g.wheel.center);
+    const pose = state.poses[body]!;
+    return add(origin, mulVec(transpose(pose.rotation), sub(worldPoint, pose.position)));
   }
 
   /** Design (static) state: all inputs zero. */

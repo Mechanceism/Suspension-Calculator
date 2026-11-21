@@ -8,7 +8,7 @@ import { vec3, type Vec3 } from '../core/math/vec3';
 import { DoubleWishbone, spinAxisFromCamberToe, type DoubleWishboneGeometry, type TravelDriver } from '../core/suspension/doubleWishbone';
 import { SAMPLE_LAYOUTS, SAMPLE_SPRING } from '../examples/sampleLayouts';
 import { fitFreeLength } from '../core/suspension/spring';
-import { CORNER_IDS, staticCornerLoads, type CornerId } from '../core/vehicle/vehicle';
+import { CORNER_IDS, staticCornerLoads, type CornerId, type BrakeMount } from '../core/vehicle/vehicle';
 import { setArmLength, setPivotInclination, setPivotPlanAngle, transferArmPoint } from '../core/suspension/armGeometry';
 import { add, sub } from '../core/math/vec3';
 import type { TireProfile } from '../core/tire/geometry';
@@ -265,10 +265,16 @@ export interface AppState extends DesignState {
   /** Vehicle lateral acceleration, g (+ = left turn). */
   lateralG: number;
   playingLateral: boolean;
+  /** Vehicle braking deceleration, g. */
+  brakingG: number;
+  playingBrake: boolean;
 
   setActiveCorner(id: CornerId): void;
   setLink(key: keyof CornerLinks, value: boolean): void;
-  setCornerSetting(id: CornerId, key: keyof CornerSettings, value: boolean): void;
+  setCornerSetting<K extends keyof CornerSettings>(id: CornerId, key: K, value: CornerSettings[K]): void;
+  setShared(axle: Axle, patch: Partial<Pick<SharedDesign, 'antiRollBar' | 'heaveSpring'>>): void;
+  setSharedField(axle: Axle, key: SharedFieldKey, text: string): void;
+  setDropLink(axle: Axle, axis: 0 | 1 | 2, text: string): void;
   setVehicleField(key: VehicleKey, text: string): void;
 
   /** Replace the whole design (File → New / Open / Import). */
@@ -335,7 +341,33 @@ export interface CornerDesign {
 export interface CornerSettings {
   steered: boolean;
   powered: boolean;
+  /** Brake mounting: outboard (torque into the upright) or inboard (into the chassis), or none. */
+  brake: BrakeMount;
 }
+
+/** Shared (left–right) components per axle; each can be absent or one of several types. */
+export interface SharedDesign {
+  antiRollBar: 'none' | 'wheelRate' | 'torsionBar';
+  /** Rate at the wheel (N/mm of left/right travel difference). */
+  arbRate: Field;
+  /** Torsion bar rate (N·m/deg of twist). */
+  barRate: Field;
+  /** Bar arm (lever) length, mm. */
+  lever: Field;
+  /** Drop-link mount on the lower arm (corner frame; mirrored for the right side). */
+  dropLink: [Field, Field, Field];
+  heaveSpring: 'none' | 'wheelRate';
+  /** Heave spring rate at the wheel, N/mm. */
+  heaveRate: Field;
+}
+export type Axle = 'front' | 'rear';
+export type SharedFieldKey = 'arbRate' | 'barRate' | 'lever' | 'heaveRate';
+export const SHARED_META: Record<SharedFieldKey, { label: string; quantity: Quantity; unit: string; hint?: string }> = {
+  arbRate: { label: 'Bar rate at the wheel', quantity: 'rate', unit: 'N/mm', hint: 'Force per mm of left/right travel difference' },
+  barRate: { label: 'Torsion bar rate', quantity: 'torsion', unit: 'Nm/deg' },
+  lever: { label: 'Bar arm length', quantity: 'length', unit: 'mm' },
+  heaveRate: { label: 'Heave spring rate at the wheel', quantity: 'rate', unit: 'N/mm', hint: 'Acts on the average travel of the two corners (no roll stiffness)' },
+};
 
 /** Which corners share dimensions. */
 export interface CornerLinks {
@@ -360,7 +392,7 @@ export function rootOf(id: CornerId, links: CornerLinks): CornerId {
 export const CORNER_NAMES: Record<CornerId, string> = { FL: 'Front left', FR: 'Front right', RL: 'Rear left', RR: 'Rear right' };
 
 /** Vehicle inputs (L6). */
-export const VEHICLE_KEYS = ['mass', 'cgX', 'cgY', 'cgZ', 'wheelbase'] as const;
+export const VEHICLE_KEYS = ['mass', 'cgX', 'cgY', 'cgZ', 'wheelbase', 'brakeBias'] as const;
 export type VehicleKey = (typeof VEHICLE_KEYS)[number];
 export const VEHICLE_META: Record<VehicleKey, { label: string; quantity: Quantity; unit: string; hint?: string }> = {
   mass: { label: 'Total mass (incl. unsprung)', quantity: 'mass', unit: 'kg' },
@@ -368,6 +400,7 @@ export const VEHICLE_META: Record<VehicleKey, { label: string; quantity: Quantit
   cgY: { label: 'CG height above ground (static)', quantity: 'length', unit: 'mm' },
   cgZ: { label: 'CG Z from front axle (+ forward)', quantity: 'length', unit: 'mm', hint: 'Negative = behind the front axle' },
   wheelbase: { label: 'Wheelbase', quantity: 'length', unit: 'mm' },
+  brakeBias: { label: 'Brake bias (front share)', quantity: 'percent', unit: '%', hint: 'Share of the braking force on the front axle' },
 };
 
 export type Workspace = 'corner' | 'vehicle';
@@ -396,6 +429,7 @@ export interface DesignState {
   autoPreload: boolean;
   /** Corner workbench load: the vehicle's static load for that corner, or a manual value. */
   cornerLoadMode: 'vehicle' | 'manual';
+  shared: Record<Axle, SharedDesign>;
 }
 
 /** The working (active corner) fields as a CornerDesign. */
@@ -434,21 +468,32 @@ export const pickDesign = (s: DesignState): DesignState => ({
   tireModel: s.tireModel, tire: s.tire, volumeChange: s.volumeChange, tireSizeText: s.tireSizeText,
   droop: s.droop, bump: s.bump, driver: s.driver,
   corners: s.corners, links: s.links, settings: s.settings, activeCorner: s.activeCorner,
-  vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode,
+  vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode, shared: s.shared,
 });
 
 /** The default layout (File → New). */
 export const DEFAULT_LINKS: CornerLinks = { frontPair: true, rearPair: true, rearFromFront: true };
 export const DEFAULT_SETTINGS: Record<CornerId, CornerSettings> = {
-  FL: { steered: true, powered: false }, FR: { steered: true, powered: false },
-  RL: { steered: false, powered: false }, RR: { steered: false, powered: false },
+  FL: { steered: true, powered: false, brake: 'outboard' }, FR: { steered: true, powered: false, brake: 'outboard' },
+  RL: { steered: false, powered: false, brake: 'outboard' }, RR: { steered: false, powered: false, brake: 'outboard' },
 };
+export const defaultShared = (): SharedDesign => ({
+  antiRollBar: 'none',
+  arbRate: field(15, 'rate'),
+  // ≈ 15 N/mm at the wheel with the default 100 mm arm and drop-link position.
+  barRate: field(5, 'torsion'),
+  lever: field(100),
+  dropLink: [field(450), field(41.5), field(60)],
+  heaveSpring: 'none',
+  heaveRate: field(30, 'rate'),
+});
 export const defaultVehicle = (): Record<VehicleKey, Field> => ({
   mass: field(300, 'mass'),
   cgX: field(0),
   cgY: field(280),
   cgZ: field(-728.5),
   wheelbase: field(1550),
+  brakeBias: field(60, 'percent'),
 });
 
 export function defaultDesign(presetId = 'C'): DesignState {
@@ -486,6 +531,7 @@ export function defaultDesign(presetId = 'C'): DesignState {
     vehicle,
     autoPreload: true,
     cornerLoadMode: 'vehicle',
+    shared: { front: defaultShared(), rear: defaultShared() },
   };
 }
 
@@ -530,7 +576,20 @@ export const useApp = create<AppState>((set, get) => ({
   workspace: params.get('workspace') === 'vehicle' ? 'vehicle' : 'corner',
   lateralG: num('g', 0),
   playingLateral: false,
+  brakingG: num('brake', 0),
+  playingBrake: false,
   suspendHtml: false,
+  setShared: (axle, patch) => set({ shared: { ...get().shared, [axle]: { ...get().shared[axle], ...patch } } }),
+  setSharedField: (axle, key, text) => {
+    const a = get().shared[axle];
+    set({ shared: { ...get().shared, [axle]: { ...a, [key]: parseField(text, SHARED_META[key].quantity, a[key]) } } });
+  },
+  setDropLink: (axle, axis, text) => {
+    const a = get().shared[axle];
+    const p = [...a.dropLink] as [Field, Field, Field];
+    p[axis] = parseField(text, 'length', p[axis]);
+    set({ shared: { ...get().shared, [axle]: { ...a, dropLink: p } } });
+  },
 
   setActiveCorner: (id) => {
     const s = get();

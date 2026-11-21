@@ -1,7 +1,12 @@
 import { useEffect, useRef } from 'react';
 import { CORNER_IDS, type CornerId } from '../../core/vehicle/vehicle';
 import { deg } from '../../core/suspension/characteristics';
-import { useApp, VEHICLE_KEYS, VEHICLE_META, CORNER_NAMES, rootOf, type CornerLinks } from '../store';
+import {
+  useApp, VEHICLE_KEYS, VEHICLE_META, CORNER_NAMES, SHARED_META, rootOf,
+  type CornerLinks, type Axle, type SharedDesign,
+} from '../store';
+import type { BrakeMount } from '../../core/vehicle/vehicle';
+import { ValueInput } from './ValueInput';
 import type { VehicleModel } from '../useVehicle';
 import { FieldRows, Section, fmt } from './FieldRows';
 
@@ -29,7 +34,7 @@ export function CornerSetup({ compact = false }: { compact?: boolean }) {
         {CORNER_IDS.map((id) => (
           <button key={id} role="tab" aria-selected={id === active} className={id === active ? 'on' : ''} onClick={() => setActiveCorner(id)} title={CORNER_NAMES[id]}>
             {id}
-            <span className="corner-flags">{settings[id].steered ? 'S' : ''}{settings[id].powered ? 'P' : ''}</span>
+            <span className="corner-flags">{settings[id].steered ? 'S' : ''}{settings[id].powered ? 'P' : ''}{settings[id].brake === 'inboard' ? 'i' : settings[id].brake === 'none' ? '–' : ''}</span>
           </button>
         ))}
       </div>
@@ -46,6 +51,17 @@ export function CornerSetup({ compact = false }: { compact?: boolean }) {
           <input type="checkbox" checked={settings[active].powered} onChange={(e) => setCornerSetting(active, 'powered', e.target.checked)} />
           Powered
         </label>
+      </div>
+      <div className="row">
+        <span className="muted">Brake</span>
+        <select
+          value={settings[active].brake} onChange={(e) => setCornerSetting(active, 'brake', e.target.value as BrakeMount)}
+          title="Outboard: brake torque goes into the upright (force acts at the contact patch). Inboard: into the chassis (force acts at the wheel center)."
+        >
+          <option value="outboard">Outboard (at the wheel)</option>
+          <option value="inboard">Inboard (on the chassis)</option>
+          <option value="none">None</option>
+        </select>
       </div>
       {!compact && (
         <div className="link-rows">
@@ -99,9 +115,61 @@ export function VehicleInputs({ model }: { model: VehicleModel | null }) {
         </label>
         <p className="hint">Like adjusting each coilover's collar: each corner's free length is fitted to its static weight. Off = use each corner's own free length.</p>
       </Section>
+      <Section title="Shared components (per axle)">
+        <SharedEditor axle="front" />
+        <SharedEditor axle="rear" />
+      </Section>
       <Section title="Corners">
         <CornerSetup />
       </Section>
+    </div>
+  );
+}
+
+const ARB_TYPES: Record<SharedDesign['antiRollBar'], string> = {
+  none: 'None',
+  wheelRate: 'Rate at the wheel',
+  torsionBar: 'Torsion bar + drop links',
+};
+
+function SharedEditor({ axle }: { axle: Axle }) {
+  const sh = useApp((s) => s.shared[axle]);
+  const setShared = useApp((s) => s.setShared);
+  const setSharedField = useApp((s) => s.setSharedField);
+  const setDropLink = useApp((s) => s.setDropLink);
+  const row = (k: keyof typeof SHARED_META) => ({
+    label: SHARED_META[k].label, field: sh[k], unit: SHARED_META[k].unit, hint: SHARED_META[k].hint,
+    onCommit: (t: string) => setSharedField(axle, k, t),
+  });
+  return (
+    <div className="shared-axle">
+      <div className="tree-head">{axle === 'front' ? 'Front axle' : 'Rear axle'}</div>
+      <div className="row">
+        <span className="muted">Anti-roll bar</span>
+        <select value={sh.antiRollBar} onChange={(e) => setShared(axle, { antiRollBar: e.target.value as SharedDesign['antiRollBar'] })}>
+          {(Object.keys(ARB_TYPES) as SharedDesign['antiRollBar'][]).map((k) => <option key={k} value={k}>{ARB_TYPES[k]}</option>)}
+        </select>
+      </div>
+      {sh.antiRollBar === 'wheelRate' && <FieldRows rows={[row('arbRate')]} />}
+      {sh.antiRollBar === 'torsionBar' && (
+        <>
+          <FieldRows rows={[row('barRate'), row('lever')]} />
+          <div className="row drop-link">
+            <span className="muted" title="Where the drop link attaches to the lower arm (corner frame; mirrored for the right side)">Drop link on LCA</span>
+            {(['X', 'Y', 'Z'] as const).map((ax, i) => (
+              <ValueInput key={ax} field={sh.dropLink[i]!} unit="mm" width={58} onCommit={(t) => setDropLink(axle, i as 0 | 1 | 2, t)} />
+            ))}
+          </div>
+        </>
+      )}
+      <div className="row">
+        <span className="muted">Heave spring</span>
+        <select value={sh.heaveSpring} onChange={(e) => setShared(axle, { heaveSpring: e.target.value as SharedDesign['heaveSpring'] })}>
+          <option value="none">None</option>
+          <option value="wheelRate">Rate at the wheel</option>
+        </select>
+      </div>
+      {sh.heaveSpring === 'wheelRate' && <FieldRows rows={[row('heaveRate')]} />}
     </div>
   );
 }
@@ -122,7 +190,7 @@ export function VehicleResults({ model }: { model: VehicleModel | null }) {
       <Section title="Body">
         <FieldRows rows={[
           { label: 'Roll', value: fmt(deg(r.pose.roll), 3), unit: '°', hint: '+ = top leans toward −X (right)' },
-          { label: 'Pitch', value: fmt(deg(r.pose.pitch), 3), unit: '°', hint: '+ = nose up' },
+          { label: 'Pitch', value: fmt(deg(r.pose.pitch), 3), unit: '°', hint: '+ = nose down' },
           { label: 'Heave', value: fmt(r.pose.heave, 2), unit: 'mm', hint: 'chassis rise from design' },
           { label: 'Ride height, front axle', value: fmt(model.rideHeight.front, 1), unit: 'mm', hint: 'frame bottom to ground' },
           { label: 'Ride height, rear axle', value: fmt(model.rideHeight.rear, 1), unit: 'mm' },
@@ -143,15 +211,23 @@ export function VehicleResults({ model }: { model: VehicleModel | null }) {
           { label: 'Front share (LLTD)', value: Math.abs(t.front.total + t.rear.total) < 1 ? '—' : fmt(100 * t.lltdFront, 1), unit: '%', hint: 'Front axle share of the total lateral load transfer' },
         ]} />
       </Section>
+      <Section title="Braking">
+        <FieldRows rows={[
+          { label: 'Load moved onto the front axle', value: fmt(model.frontLoadGain, 0), unit: 'N', hint: 'Front axle load minus its static load' },
+          { label: 'Anti-dive (front, geometric)', value: fmt(model.antiDive, 1), unit: '%', hint: 'tan θ · (wheelbase / CG height) · front brake share; θ from the side-view IC (contact patch for outboard brakes, wheel center for inboard)' },
+          { label: 'Anti-lift (rear, geometric)', value: fmt(model.antiLift, 1), unit: '%' },
+        ]} />
+      </Section>
       <Section title="Corners">
         <table className="corner-table">
-          <thead><tr><th /><th>Load N</th><th>Δ static</th><th>Travel</th><th>Incl. °</th><th>Toe °</th></tr></thead>
+          <thead><tr><th /><th>Load N</th><th>Δ static</th><th>Brake N</th><th>Travel</th><th>Incl. °</th><th>Toe °</th></tr></thead>
           <tbody>
             {corners.map(({ id, c, v, s }) => (
               <tr key={id} title={c.status !== 'ok' ? `At ${STATUS[c.status]}` : undefined} className={c.status !== 'ok' ? 'warn' : ''}>
                 <td><b>{id}</b></td>
                 <td>{fmt(c.tireLoad, 0)}</td>
                 <td>{fmt(c.tireLoad - s, 0)}</td>
+                <td>{fmt(-c.longitudinalForce, 0)}</td>
                 <td>{fmt(c.travel, 1)}{c.status !== 'ok' ? ' !' : ''}</td>
                 <td>{fmt(deg(c.inclination), 2)}</td>
                 <td>{fmt(v ? deg(v.chars.toe) : NaN, 2)}</td>
@@ -181,6 +257,8 @@ function usePlay(active: boolean, period: number, onPhase: (s: number) => void) 
 export function VehicleMotionBar() {
   const lateralG = useApp((s) => s.lateralG);
   const playing = useApp((s) => s.playingLateral);
+  const brakingG = useApp((s) => s.brakingG);
+  const playingBrake = useApp((s) => s.playingBrake);
   const playingSteer = useApp((s) => s.playingSteer);
   const rack = useApp((s) => s.rack);
   const cFactor = useApp((s) => s.steer.cFactor.value);
@@ -189,6 +267,8 @@ export function VehicleMotionBar() {
   const swLimit = (rackLimit / cFactor) * 360;
   usePlay(playing, 5000, (s) => useApp.getState().set('lateralG', Number((1.2 * s).toFixed(3))));
   usePlay(playingSteer, 5000, (s) => useApp.getState().set('rack', s * rackLimit));
+  usePlay(playingBrake, 4000, (s) => useApp.getState().set('brakingG', Number((0.6 * (1 + s)).toFixed(3))));
+  const setB = (g: number) => { set('playingBrake', false); set('brakingG', g); };
   const setG = (g: number) => { set('playingLateral', false); set('lateralG', g); };
   const setRack = (r: number) => { set('playingSteer', false); set('rack', r); };
   return (
@@ -205,6 +285,20 @@ export function VehicleMotionBar() {
         </label>
         <button className={playing ? 'active' : ''} onClick={() => set('playingLateral', !playing)} title="Animate ±1.2 g">
           {playing ? '❚❚' : '▶'} Corner
+        </button>
+      </div>
+      <div className="motion-group">
+        <label className="slider">
+          <span>Braking <b>{brakingG.toFixed(2)}</b> g</span>
+          <input type="range" min={0} max={1.6} step={0.01} value={brakingG} onChange={(e) => setB(Number(e.target.value))} onDoubleClick={() => setB(0)} />
+          <span className="quick">
+            <button onClick={() => setB(0)}>0</button>
+            <button onClick={() => setB(0.5)}>0.5 g</button>
+            <button onClick={() => setB(1)}>1 g</button>
+          </span>
+        </label>
+        <button className={playingBrake ? 'active' : ''} onClick={() => set('playingBrake', !playingBrake)} title="Animate braking 0 – 1.2 g">
+          {playingBrake ? '❚❚' : '▶'} Brake
         </button>
       </div>
       <div className="motion-group">

@@ -36,7 +36,7 @@ Calculating and visualizing come first. **Later:** export to modeling software (
 | 3 | **More variables**: add the remaining characteristics to both the math and the UI | |
 | 4 | **Constraints and optimizer**: lock / range / free per variable; solve for free values once the visualizer and math agree | |
 | 5 | **Export and integration** (only after calculating and visualizing are solid): file exports and an optional Fusion 360 add-in (Python + HTML panel) | |
-| 6 | **Multi-corner**: add more corners, inter-corner interactions (sway bars, shared shocks, pushrods/rockers) | ✅ Four independent corners + whole-car equilibrium (L6). Shared components, braking/drive and the scale-weight CG utility are next. |
+| 6 | **Multi-corner**: add more corners, inter-corner interactions (sway bars, shared shocks, pushrods/rockers) | ✅ Four independent corners, whole-car equilibrium, brakes, anti-roll bars and heave springs (L6). Drive forces and the scale-weight CG utility later. |
 | 7 | **Other suspension types**: MacPherson, multilink, etc., plus user-defined linkages | |
 
 Note: the tool simulates whatever linkage the user builds, including ones whose camber motion is far from ideal. Motion quality is judged from the motion itself (IC, characteristic curves, toggle positions), not from a linkage classification; "optimal" is defined by the user's chosen objectives.
@@ -98,6 +98,8 @@ Every input in the UI is a variable with:
 | `min` / `max` | Limits when Ranged. Applies to positions, lengths, angles, etc. |
 
 All options are available for manual adjustment and placement. The lock/range control is an optional checkbox or dropdown per variable. The optimizer (Phase 4) only moves Free and Ranged variables.
+
+**Locking must be simple and work at every level** (noted 2026-11-21): a whole part, single hardpoints, single coordinates, or derived values (arm length, pivot angle…). Users often work from something already built, so the optimizer must work around whatever is locked. One required optimizer option: **move the tie-rod mounts to minimize bump steer**.
 
 ### Special Inputs
 - **Tire size:** a dropdown of tire-number formats (metric `225/45R17`, flotation `31x10.50R15`, racing `20.5x7.0-13`) that are parsed into dimensions, or **simple** entry (outer diameter, width, rim). Every parsed value can be overridden.

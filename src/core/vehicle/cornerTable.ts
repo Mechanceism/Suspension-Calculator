@@ -4,6 +4,7 @@
  * A corner has one degree of freedom (travel q) for a given rack position. The vehicle solve
  * evaluates corners thousands of times, so each corner is solved once on a grid of q and then
  * interpolated with a Catmull–Rom spline (smooth values and derivatives) — fast and accurate.
+ * An optional extra point fixed to an arm (e.g. an anti-roll-bar drop-link mount) is tracked too.
  */
 import { type Vec3, vec3, normalize } from '../math/vec3';
 import type { DoubleWishbone } from '../suspension/doubleWishbone';
@@ -16,13 +17,28 @@ export interface CornerSampleAt {
   axis: Vec3;
   /** Spring mount-to-mount length (NaN if no spring). */
   L: number;
+  /** Tracked extra point (corner frame), or the wheel center if none was given. */
+  ex: Vec3;
   /** Derivatives with respect to q (per mm of wheel-center travel). */
   dwc: Vec3;
+  /** Path of the lowest point of the wheel (slides around the tire as it rises / tilts). */
   dcp: Vec3;
+  /**
+   * Velocity (per mm of travel) of the material point of the wheel/upright that is touching the
+   * ground. This — not the lowest-point path — is what the tire forces do virtual work through.
+   */
+  dcpm: Vec3;
   dL: number;
+  dex: Vec3;
 }
 
-const K = 10; // wc(3) cp(3) axis(3) L(1)
+export interface TrackedPoint {
+  body: 'uca' | 'lca' | 'upright';
+  /** Design position, corner frame. */
+  point: Vec3;
+}
+
+const K = 16; // wc(3) cp(3) axis(3) L(1) ex(3) contact material velocity(3)
 
 export class CornerTable {
   readonly lo: number;
@@ -34,8 +50,9 @@ export class CornerTable {
   /**
    * @param range wheel-center travel range to tabulate (mm); trimmed if the linkage can't reach it
    * @param n     number of grid points
+   * @param extra a point on one of the moving bodies to track through travel
    */
-  constructor(corner: DoubleWishbone, rack: number, range: [number, number], n = 41) {
+  constructor(corner: DoubleWishbone, rack: number, range: [number, number], n = 41, extra?: TrackedPoint) {
     const qs = Array.from({ length: n }, (_, i) => range[0] + ((range[1] - range[0]) * i) / (n - 1));
     const states = corner.sweep(qs, (q) => ({ travel: q, rack, driver: 'wheelCenter' }));
     // Keep the contiguous run of converged solutions around the design position.
@@ -55,8 +72,17 @@ export class CornerTable {
       const s = states[first + i]!;
       const p = s.points;
       const L = springLength(s);
+      const ex = extra ? corner.pointOn(s, extra.body, extra.point) : p.wheelCenter;
+      // Material velocity of the upright point at the contact: follow that point to the neighbours.
+      const iA = Math.max(first, first + i - 1);
+      const iB = Math.min(last, first + i + 1);
+      const material = corner.designPointOf(s, 'upright', p.contact);
+      const pa = corner.pointOn(states[iA]!, 'upright', material);
+      const pb = corner.pointOn(states[iB]!, 'upright', material);
+      const dq = qs[iB]! - qs[iA]!;
       this.data.set([p.wheelCenter.x, p.wheelCenter.y, p.wheelCenter.z, p.contact.x, p.contact.y, p.contact.z,
-        s.spinAxis.x, s.spinAxis.y, s.spinAxis.z, L ?? NaN], i * K);
+        s.spinAxis.x, s.spinAxis.y, s.spinAxis.z, L ?? NaN, ex.x, ex.y, ex.z,
+        (pb.x - pa.x) / dq, (pb.y - pa.y) / dq, (pb.z - pa.z) / dq], i * K);
     }
   }
 
@@ -84,9 +110,12 @@ export class CornerTable {
       cp: vec3(val[3]!, val[4]!, val[5]!),
       axis: normalize(vec3(val[6]!, val[7]!, val[8]!)),
       L: val[9]!,
+      ex: vec3(val[10]!, val[11]!, val[12]!),
       dwc: vec3(der[0]!, der[1]!, der[2]!),
       dcp: vec3(der[3]!, der[4]!, der[5]!),
+      dcpm: vec3(val[13]!, val[14]!, val[15]!),
       dL: der[9]!,
+      dex: vec3(der[10]!, der[11]!, der[12]!),
     };
   }
 }

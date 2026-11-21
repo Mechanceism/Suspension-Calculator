@@ -37,12 +37,16 @@ describe('project files', () => {
   it('round-trips links, corner settings and vehicle inputs', () => {
     const d = defaultDesign();
     d.links = { frontPair: false, rearPair: true, rearFromFront: false };
-    d.settings = { ...d.settings, RL: { steered: true, powered: true } };
+    d.settings = { ...d.settings, RL: { steered: true, powered: true, brake: 'inboard' } };
+    d.shared = { ...d.shared, front: { ...d.shared.front, antiRollBar: 'torsionBar', barRate: { text: '200', value: 200 } } };
     d.vehicle = { ...d.vehicle, cgY: { text: '11in', value: 279.4 } };
     d.corners = { ...d.corners, FR: { ...d.corners.FR, bumpStop: false } };
     const r = roundTrip(d);
     expect(r.design.links).toEqual(d.links);
-    expect(r.design.settings.RL).toEqual({ steered: true, powered: true });
+    expect(r.design.settings.RL).toEqual({ steered: true, powered: true, brake: 'inboard' });
+    expect(r.design.shared.front.antiRollBar).toBe('torsionBar');
+    expect(r.design.shared.front.barRate.value).toBe(200);
+    expect(r.design.shared.rear.antiRollBar).toBe('none');
     expect(r.design.vehicle.cgY.text).toBe('11in');
     expect(r.design.corners.FR.bumpStop).toBe(false);
   });

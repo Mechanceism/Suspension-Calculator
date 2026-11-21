@@ -6,7 +6,7 @@
  * `1ft 2in`, `-12.5`. The original text is kept for display; only the base value is used in math.
  */
 
-export type Quantity = 'length' | 'angle' | 'pressure' | 'force' | 'rate' | 'altitude' | 'ratio' | 'mass' | 'temperature';
+export type Quantity = 'length' | 'angle' | 'pressure' | 'force' | 'rate' | 'torsion' | 'altitude' | 'ratio' | 'percent' | 'mass' | 'temperature';
 
 /**
  * Factors to base units: length → mm, angle → deg, pressure → kPa, force → N, rate → N/mm,
@@ -18,19 +18,21 @@ export const UNITS: Record<Quantity, Record<string, number>> = {
   pressure: { kPa: 1, psi: 6.894757, bar: 100, Pa: 0.001, MPa: 1000 },
   force: { N: 1, kN: 1000, lbf: 4.4482216, kgf: 9.80665 },
   rate: { 'N/mm': 1, 'kN/m': 1, 'lbf/in': 0.17512684 },
+  torsion: { 'Nm/deg': 1, 'N·m/deg': 1, 'Nm/rad': Math.PI / 180, 'N·m/rad': Math.PI / 180, 'lbf·ft/deg': 1.3558179, 'lbfft/deg': 1.3558179 },
   altitude: { m: 1, km: 1000, ft: 0.3048 },
   ratio: { x: 1, '%': 0.01 },
+  percent: { '%': 1, x: 100 },
   mass: { kg: 1, g: 0.001, lb: 0.45359237, lbm: 0.45359237 },
   temperature: { C: 1 },
 };
 
 export const DEFAULT_UNIT: Record<Quantity, string> = {
-  length: 'mm', angle: 'deg', pressure: 'kPa', force: 'N', rate: 'N/mm', altitude: 'm', ratio: 'x', mass: 'kg', temperature: 'C',
+  length: 'mm', angle: 'deg', pressure: 'kPa', force: 'N', rate: 'N/mm', torsion: 'Nm/deg', altitude: 'm', ratio: 'x', percent: '%', mass: 'kg', temperature: 'C',
 };
 
 export type ParseResult = { ok: true; value: number } | { ok: false; error: string };
 
-const TERM = /([+-]?)\s*(\d+(?:\.\d*)?|\.\d+)(?:e([+-]?\d+))?\s*([a-zA-Z°"'/%]*)/y;
+const TERM = /([+-]?)\s*(\d+(?:\.\d*)?|\.\d+)(?:e([+-]?\d+))?\s*([a-zA-Z°"'/%·]*)/y;
 const TEMPERATURE = /^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*(°?[CFK])?\s*$/i;
 
 function parseTemperature(src: string): ParseResult {

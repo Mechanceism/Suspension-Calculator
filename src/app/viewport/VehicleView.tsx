@@ -10,7 +10,7 @@ import { switchWorkspace } from './SafeHtml';
 import * as THREE from 'three';
 import { vec3, add, type Vec3 } from '../../core/math/vec3';
 import { closestPointOnLine, lineThrough } from '../../core/math/geom';
-import { CORNER_IDS, placement, type CornerId } from '../../core/vehicle/vehicle';
+import { CORNER_IDS, placement, poseFns, type CornerId } from '../../core/vehicle/vehicle';
 import { useApp } from '../store';
 import type { VehicleModel, VehicleCornerView } from '../useVehicle';
 import { CameraRig, DevProjectBridge, ViewButtons, type FocusTarget } from './Viewport';
@@ -81,6 +81,30 @@ function Frame({ model }: { model: VehicleModel }) {
   return <>{pts.map(([a, b], i) => <Seg key={i} a={a} b={b} color={COLORS.chassis} width={2} opacity={0.8} />)}</>;
 }
 
+/** Torsion anti-roll bars: drop-link mounts on each lower arm, joined across the car (chassis frame). */
+function AntiRollBars({ model }: { model: VehicleModel }) {
+  const r = model.result;
+  if (!r) return null;
+  const P = poseFns(r.pose);
+  const bars: [Vec3, Vec3][] = [];
+  for (const [l, rr] of [['FL', 'FR'], ['RL', 'RR']] as const) {
+    const a = model.corners[l]?.dropLink;
+    const b = model.corners[rr]?.dropLink;
+    if (a && b) bars.push([P.point(placement(l, model.wheelbase).point(a)), P.point(placement(rr, model.wheelbase).point(b))]);
+  }
+  return (
+    <>
+      {bars.map(([a, b], i) => (
+        <group key={i}>
+          <Seg a={a} b={b} color="#c77dff" width={3} dashed />
+          <Joint p={a} color="#c77dff" r={8} />
+          <Joint p={b} color="#c77dff" r={8} />
+        </group>
+      ))}
+    </>
+  );
+}
+
 function ForceArrows({ model }: { model: VehicleModel }) {
   const r = model.result;
   if (!r) return null;
@@ -138,6 +162,7 @@ function VehicleScene({ model }: { model: VehicleModel }) {
         return patch?.inContact ? <PatchMesh key={id} outline={patch.outline} centroid={patch.centroid!} color={COLORS.patch} /> : null;
       })}
       <ForceArrows model={model} />
+      <AntiRollBars model={model} />
       {model.sprungCgWorld && <Joint p={model.sprungCgWorld} color="#ffffff" r={16} />}
       {vis.rollCenter && rcF && rcR && (
         <>

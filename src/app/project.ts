@@ -12,6 +12,7 @@
  * Format history
  *   1  single corner (FL)
  *   2  four corners + links + per-corner settings + vehicle inputs (L6)
+ *   3  brakes per corner, brake bias, shared components per axle (anti-roll bar, heave spring)
  */
 import pkg from '../../package.json';
 import { parseValue, type Quantity } from '../core/units/units';
@@ -19,12 +20,12 @@ import { CORNER_IDS, type CornerId } from '../core/vehicle/vehicle';
 import {
   defaultDesign, mergedCorners, rootOf, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META, SPRING_KEYS, SPRING_META,
   DAMPER_KEYS, DAMPER_META, STEER_KEYS, STEER_META, TIRE_KEYS, TIRE_META, VEHICLE_KEYS, VEHICLE_META,
-  DEFAULT_LINKS, DEFAULT_SETTINGS,
-  type DesignState, type CornerDesign, type Field, type CornerLinks, type CornerSettings,
+  DEFAULT_LINKS, DEFAULT_SETTINGS, SHARED_META, defaultShared,
+  type DesignState, type CornerDesign, type Field, type CornerLinks, type CornerSettings, type SharedDesign, type Axle,
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 2;
+export const FORMAT_VERSION = 3;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -58,6 +59,10 @@ export interface ProjectFile {
   vehicle: { fields: Record<string, FieldJson>; autoPreload: boolean; cornerLoadMode: 'vehicle' | 'manual' };
   steering: Record<string, FieldJson>;
   motion: { droop: number; bump: number; driver: DesignState['driver'] };
+  shared: Record<Axle, {
+    antiRollBar: SharedDesign['antiRollBar']; heaveSpring: SharedDesign['heaveSpring'];
+    fields: Record<string, FieldJson>; dropLink: { x: FieldJson; y: FieldJson; z: FieldJson };
+  }>;
   presetId?: string;
 }
 
@@ -96,6 +101,14 @@ export function serializeProject(d: DesignState, name: string): ProjectFile {
     vehicle: { fields: mapFields(VEHICLE_KEYS, d.vehicle), autoPreload: d.autoPreload, cornerLoadMode: d.cornerLoadMode },
     steering: mapFields(STEER_KEYS, d.steer),
     motion: { droop: d.droop, bump: d.bump, driver: d.driver },
+    shared: Object.fromEntries((['front', 'rear'] as const).map((a) => {
+      const sh = d.shared[a];
+      return [a, {
+        antiRollBar: sh.antiRollBar, heaveSpring: sh.heaveSpring,
+        fields: { arbRate: fj(sh.arbRate), barRate: fj(sh.barRate), lever: fj(sh.lever), heaveRate: fj(sh.heaveRate) },
+        dropLink: { x: fj(sh.dropLink[0]), y: fj(sh.dropLink[1]), z: fj(sh.dropLink[2]) },
+      }];
+    })) as unknown as ProjectFile['shared'],
     presetId: d.presetId,
   };
 }
@@ -136,6 +149,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
       activeCorner: 'FL',
     };
   },
+  // 2 → 3: brakes (outboard on every corner), no shared components. Missing values take defaults on read.
+  2: (f) => ({ ...f, formatVersion: 3 }),
 };
 
 export interface ImportResult {
@@ -207,6 +222,24 @@ function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: str
   };
 }
 
+function readShared(raw: unknown, axle: Axle, warnings: string[]): SharedDesign {
+  const def = defaultShared();
+  const all = isObj(raw) ? raw : {};
+  const a = isObj(all[axle]) ? all[axle] as Json : {};
+  const fields = isObj(a.fields) ? a.fields : {};
+  const dl = isObj(a.dropLink) ? a.dropLink : {};
+  const arb = a.antiRollBar === 'wheelRate' || a.antiRollBar === 'torsionBar' ? a.antiRollBar : 'none';
+  return {
+    antiRollBar: arb,
+    heaveSpring: a.heaveSpring === 'wheelRate' ? 'wheelRate' : 'none',
+    arbRate: readField(fields.arbRate, SHARED_META.arbRate.quantity, def.arbRate, `shared.${axle}.arbRate`, warnings),
+    barRate: readField(fields.barRate, SHARED_META.barRate.quantity, def.barRate, `shared.${axle}.barRate`, warnings),
+    lever: readField(fields.lever, SHARED_META.lever.quantity, def.lever, `shared.${axle}.lever`, warnings),
+    heaveRate: readField(fields.heaveRate, SHARED_META.heaveRate.quantity, def.heaveRate, `shared.${axle}.heaveRate`, warnings),
+    dropLink: (['x', 'y', 'z'] as const).map((k, i) => readField(dl[k], 'length', def.dropLink[i]!, `shared.${axle}.dropLink.${k}`, warnings)) as [Field, Field, Field],
+  };
+}
+
 export function importProject(data: unknown): ImportResult {
   if (!isObj(data) || data.format !== FILE_FORMAT) throw new Error('Not a Suspension Calculator project file');
   const warnings: string[] = [];
@@ -225,6 +258,9 @@ export function importProject(data: unknown): ImportResult {
 
   const def = defaultDesign();
   const defCorner: CornerDesign = def.corners.FL;
+  // Values that didn't exist in the file's original format take defaults quietly.
+  const original = typeof data.formatVersion === 'number' ? data.formatVersion : 1;
+  const older = original < 3;
   const cornersRaw = isObj(f.corners) ? f.corners : {};
   const corners = Object.fromEntries(CORNER_IDS.map((id) => [id, readCorner(cornersRaw[id], id, defCorner, warnings)])) as Record<CornerId, CornerDesign>;
   const linksRaw = isObj(f.links) ? f.links : {};
@@ -239,6 +275,7 @@ export function importProject(data: unknown): ImportResult {
     return [id, {
       steered: typeof r.steered === 'boolean' ? r.steered : DEFAULT_SETTINGS[id].steered,
       powered: typeof r.powered === 'boolean' ? r.powered : DEFAULT_SETTINGS[id].powered,
+      brake: r.brake === 'none' || r.brake === 'inboard' || r.brake === 'outboard' ? r.brake : DEFAULT_SETTINGS[id].brake,
     }];
   })) as Record<CornerId, CornerSettings>;
   const activeCorner = (CORNER_IDS as string[]).includes(String(f.activeCorner)) ? f.activeCorner as CornerId : 'FL';
@@ -255,9 +292,10 @@ export function importProject(data: unknown): ImportResult {
     driver: motion.driver === 'contactPatch' ? 'contactPatch' : 'wheelCenter',
     corners, links, settings, activeCorner,
     // Files upgraded from format 1 had no vehicle inputs: use the defaults quietly.
-    vehicle: readRecord(vehicleRaw.fields, VEHICLE_KEYS, (k) => VEHICLE_META[k].quantity, def.vehicle, 'vehicle', data.formatVersion === 1 ? [] : warnings),
+    vehicle: readRecord(vehicleRaw.fields, VEHICLE_KEYS, (k) => VEHICLE_META[k].quantity, def.vehicle, 'vehicle', older ? [] : warnings),
     autoPreload: typeof vehicleRaw.autoPreload === 'boolean' ? vehicleRaw.autoPreload : def.autoPreload,
     cornerLoadMode: vehicleRaw.cornerLoadMode === 'manual' ? 'manual' : 'vehicle',
+    shared: { front: readShared(f.shared, 'front', older ? [] : warnings), rear: readShared(f.shared, 'rear', older ? [] : warnings) },
   };
   Object.assign(design, corners[rootOf(activeCorner, links)]);
   return { design, name: typeof f.name === 'string' && f.name ? f.name : 'Imported layout', warnings };

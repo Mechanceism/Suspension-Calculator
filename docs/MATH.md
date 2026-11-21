@@ -286,9 +286,17 @@ Two operating modes:
 - For a chassis pose, each corner settles independently: the travel q where the virtual work along its one degree of freedom balances —
   `F_tire·dy_c + F_lat·dx_c − m_u·g·dy_wc − m_u·a_y·dx_wc + F_spring·dL = 0`
   (tire vertical force from the tire model at that height and tilt; lateral force at the patch; unsprung weight and inertia at the wheel center; spring incl. bump stop). Jacking forces through the instant centers come out of this automatically — no roll-center formula is used in the solve.
+- **Where the tire forces act (corrected 2026-11-21):** the virtual displacement used for the tire forces is that of the *material point of the wheel/upright touching the ground*, not the path of the wheel's lowest point (which slides around the tire as the wheel rises and tilts). Checked against the side-view instant center: the material point's dz/dy matches tan θ of the IC (0.071 vs 0.068 on a 2.5 mm grid), the lowest-point path had the opposite sign.
 - Whole car: Σ vertical tire force = total weight; roll and pitch moments of tire forces, weights and lateral inertia (sprung at the sprung CG, unsprung at the wheel centers) = 0. Newton on (heave, roll, pitch) with a line search.
 - Lateral tire forces are shared in proportion to each tire's vertical load (equal grip use), updated alongside Newton.
 - Speed: each corner is solved once on a grid of travel and interpolated (Catmull–Rom, smooth values and slopes); the whole-car solve then takes milliseconds.
+
+**Brakes (per corner).** None / outboard / inboard, plus a vehicle brake bias (front share). Braking deceleration (g) gives a total braking force m·a, shared front/rear by the bias and within each axle by tire load among braked corners. An **outboard** brake reacts its torque through the upright, so the braking force does virtual work at the contact patch; an **inboard** brake reacts into the chassis, so the force acts at the wheel center. Unsprung and sprung inertia act forward at their CGs. Results: load moved onto the front axle (statics check: ΔW·L = m·a·h), pitch, and the classic geometric anti-dive (front) / anti-lift (rear) % = tan θ · (L/h) · axle brake share, θ from the side-view IC to the contact patch (outboard) or wheel center (inboard). Verified: inboard vs. outboard changes the dive in the direction those angles predict.
+
+**Shared components (per axle), each optional and with a type.**
+- *Anti-roll bar:* none · **rate at the wheel** (N/mm of left/right travel difference) · **torsion bar + drop links** (bar rate N·m/deg, arm length, drop-link mount on the lower arm — tracked through travel; twist = left/right mount height difference ÷ arm length). Verified: the torsion bar matches a wheel-rate bar of the equivalent rate (bar rate · link motion ratio² ÷ arm²).
+- *Heave spring:* none · **rate at the wheel** on the average travel of the two corners (adds heave/pitch stiffness, no roll stiffness, nothing at static).
+- Coupled corners are settled **together** (2-unknown Newton on left/right travel, limits handled), so the whole-car Newton sees the bar's roll stiffness. Stable even for a near-rigid bar at 1.6 g.
 
 **Results.** Corner loads and Δ from static, travel, inclination to ground, toe; roll, pitch, heave, ride height front/rear; front and rear **roll centers from the actual left/right corners** (no mirrored assumption; lateral position too) and the roll axis; lateral load transfer per axle split into *through the links* (`F_lat,axle · h_RC / track`) and *through the springs* (the rest), and the front share (LLTD); rigid rollover threshold (half track ÷ CG height).
 
@@ -297,15 +305,21 @@ Two operating modes:
 **Background (classic formulas, for cross-checking).** Total lateral transfer per axle `ΔW = m·a_y·h_CG/t`; the roll center splits it into geometric `m·a_y·h_RC/t` and elastic `m·a_y·(h_CG − h_RC)/t`. Roll moment = sprung mass · a_y · roll moment arm (sprung CG to roll axis). Rollover threshold depends on CG height and track, not the roll center.
 
 ### Planned for later (noted 2026-11-21)
-- **Shared components between corners:** anti-roll (sway) bars, shared shocks / heave springs, pushrods across corners. Needed after the corners are set up.
-- **Longitudinal forces:** braking (brake bias; brakes inboard vs outboard changes where the force acts and so anti-dive) and drive for powered corners (anti-squat). Anti-dive / anti-squat % then come from the same virtual-work solve.
+- **More shared-component types:** monoshock / roll-decoupled layouts, pushrods across corners, anti-roll bar geometry with chassis-mounted bar ends.
+- **Drive forces for powered corners** (anti-squat; chassis-mounted diff → force at the wheel center).
 - **CG from scales (page 6 of the hand math):** a utility to find the CG from four corner scale weights level and with one axle raised (tilt). For now the CG is entered directly.
 - **Other suspension types per corner** (MacPherson, multilink, user linkages) and pushrod / rocker spring layouts.
 - Steering jacking and centrifugal roll can be balanced against each other for specific conditions (e.g. a known track).
 
 ---
 
-## L7: Optimizer Objectives (later)
+## L7: Optimizer (later)
+
+### Requirements (noted 2026-11-21)
+- **Bump-steer minimization by tie-rod placement:** an option to optimize the tie-rod mounting points (inner and/or outer, within user limits) so bump steer (toe change through travel) is reduced as far as possible.
+- **Simple locking:** any component or value can be locked — a whole part (e.g. the lower arm), individual hardpoints, single coordinates, or derived values such as an arm length — and the optimizer must work around everything locked. Users often start from something already built, so the optimizer has to respect the parts they can't or won't change. Ranges ("between A and B") are the in-between option.
+
+### Objectives
 Maximum contact area is a useful proxy, but it is **not** the same as maximum grip:
 - Rubber friction depends on contact pressure (**load sensitivity:** μ drops as load per area rises). This is why area helps, but the relationship isn't 1:1.
 - Most tires make peak cornering force at **slightly negative inclination**, not at 0°. Maximizing area alone pushes toward 0°.

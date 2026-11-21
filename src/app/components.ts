@@ -17,8 +17,9 @@ export interface ComponentDef {
 export function componentDefs(damperArm: ArmChoice): Record<ComponentId, ComponentDef> {
   return {
     chassis: { id: 'chassis', label: 'Chassis / frame', points: ['ucaFwd', 'ucaAft', 'lcaFwd', 'lcaAft', 'dmpChassis'], parents: [] },
-    uca: { id: 'uca', label: 'Upper control arm', points: ['ucaFwd', 'ucaAft', 'ucaOut'], parents: ['chassis'] },
-    lca: { id: 'lca', label: 'Lower control arm', points: ['lcaFwd', 'lcaAft', 'lcaOut'], parents: ['chassis'] },
+    // The coilover's lower mount is fixed to whichever arm carries it, so it belongs to that arm too.
+    uca: { id: 'uca', label: 'Upper control arm', points: ['ucaFwd', 'ucaAft', 'ucaOut', ...(damperArm === 'uca' ? ['dmpArm' as const] : [])], parents: ['chassis'] },
+    lca: { id: 'lca', label: 'Lower control arm', points: ['lcaFwd', 'lcaAft', 'lcaOut', ...(damperArm === 'lca' ? ['dmpArm' as const] : [])], parents: ['chassis'] },
     rack: { id: 'rack', label: 'Steering rack', points: ['trInner'], parents: ['chassis'] },
     tieRod: { id: 'tieRod', label: 'Tie rod', points: ['trInner', 'trOuter'], parents: ['rack'] },
     upright: { id: 'upright', label: 'Upright / knuckle', points: ['ucaOut', 'lcaOut', 'trOuter', 'wheelCenter'], parents: ['uca', 'lca', 'tieRod'] },

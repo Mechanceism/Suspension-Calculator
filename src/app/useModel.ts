@@ -138,8 +138,9 @@ export function useModel(): Model {
       return { corner: null, error: e instanceof Error ? e.message : String(e) };
     }
   };
-  const live = useMemo(() => build(geom), [geom]);
-  const built = useMemo(() => (sweepGeom === geom ? live : build(sweepGeom)), [sweepGeom, geom, live]);
+  // `built` only changes when the settled geometry changes, so sweeps don't re-run mid-drag.
+  const built = useMemo(() => build(sweepGeom), [sweepGeom]);
+  const live = useMemo(() => (geom === sweepGeom ? built : build(geom)), [geom, sweepGeom, built]);
 
   const spec = useMemo<SpringSpec>(() => ({
     rate: spring.springRate.value, freeLength: spring.freeLength.value,
@@ -165,6 +166,9 @@ export function useModel(): Model {
   // Through-travel curves use the static load so animating the load factor doesn't rebuild them.
   const sweepLoader = useMemo(() => makeLoader(staticLoad), [tireSetup, staticLoad]);
   const lastEquilibrium = useRef<number | undefined>(undefined);
+  // While dragging, slow extras reuse their last values so the drag stays responsive.
+  const lastSlow = useRef<{ wheelRate: number; tireRate: number; steering: SteeringInfo | null }>({ wheelRate: NaN, tireRate: Infinity, steering: null });
+  const lastSteerSweep = useRef<SteerSample[]>([]);
 
   const kinematicSweep = useMemo(() => {
     const corner = built.corner;
@@ -239,6 +243,7 @@ export function useModel(): Model {
     if (hasSpring && L !== null) {
       const dy = plusState.points.contact.y - minusState.points.contact.y;
       const mr = -(springLength(plusState)! - springLength(minusState)!) / dy;
+      if (!Number.isFinite(wheelRate) && interacting) wheelRate = lastSlow.current.wheelRate;
       if (!Number.isFinite(wheelRate)) {
         const a = wheelLoadAt(corner, spec, travel - h, rack, state.poses);
         const b = wheelLoadAt(corner, spec, travel + h, rack, state.poses);
@@ -247,7 +252,7 @@ export function useModel(): Model {
       const force = springForce(spec, L);
       const wheelForce = force * mr;
       if (mode !== 'loaded' && staticSprung > 0) effFactor = Math.max(0, wheelForce / staticSprung);
-      const kt = tireSetup
+      const kt = interacting ? lastSlow.current.tireRate : tireSetup
         ? tireRate(tireSetup.model, tireSetup.profile, dot(Y_AXIS, state.spinAxis), Math.max(spring.cornerLoad.value * effFactor, 1))
         : Infinity;
       // Natural frequency uses the static sprung mass; the load factor is extra g, not extra mass.
@@ -261,6 +266,7 @@ export function useModel(): Model {
     const effTireLoad = spring.cornerLoad.value * effFactor;
     const loaded = tireSetup ? loadCorner(state, chars, tireSetup.profile, tireSetup.model, effTireLoad) : null;
 
+    const computeSteering = (): SteeringInfo => {
     // Steering: compare with straight ahead at the same arm position.
     const armAngle = lowerArmAngle(corner.geometry, state);
     const atRack = (r: number) => corner.solve({ driver: 'lowerArmAngle', armAngle, rack: r }, state.poses);
@@ -282,7 +288,7 @@ export function useModel(): Model {
     const lever = Math.abs(steeringArmLever(state));
     const rackShare = Math.abs(dot(normalize(sub(state.points.trInner, state.points.trOuter)), corner.rackAxis));
     const parkRack = (parkT / lever) * rackShare;
-    const steering: SteeringInfo = {
+    return {
       roadWheelAngle: headingAngle(state.spinAxis) - headingAngle(straight.spinAxis),
       steeringWheelAngle: (rack / cFactor) * 360,
       ratio: ((1 / cFactor) * 360) / Math.abs(dHeading),
@@ -291,13 +297,18 @@ export function useModel(): Model {
       parkingRackForce: parkRack,
       parkingWheelTorque: (parkRack * cFactor) / (2 * Math.PI) / 1000,
     };
+    };
+    const steering = interacting && lastSlow.current.steering ? lastSlow.current.steering : computeSteering();
+    if (!interacting) {
+      lastSlow.current = { wheelRate: springInfo?.wheelRate ?? NaN, tireRate: springInfo?.tireRate ?? Infinity, steering };
+    }
 
     return {
       travel, state, chars, loaded, spring: springInfo, steering, loadFactor: effFactor, tireLoad: effTireLoad,
       camberGain: (deg(plus.camber) - deg(minus.camber)) / (2 * h),
       bumpSteer: (deg(plus.toe) - deg(minus.toe)) / (2 * h),
     };
-  }, [live, sweep, sliderTravel, rack, driver, mode, factor, spec, ws, droop, bump, tireSetup, spring, steer, cFactor, damperLimits]);
+  }, [live, sweep, sliderTravel, rack, driver, mode, factor, spec, ws, droop, bump, tireSetup, spring, steer, cFactor, damperLimits, interacting]);
 
   // Steering sweep across the rack range at the current arm position.
   const armKey = current && built.corner ? Math.round(lowerArmAngle(built.corner.geometry, current.state) * 1e5) : 0;
@@ -306,6 +317,7 @@ export function useModel(): Model {
   const steerSweep = useMemo<SteerSample[]>(() => {
     const corner = built.corner;
     if (!corner || !current) return [];
+    if (interacting) return lastSteerSweep.current;
     const armAngle = armKey / 1e5;
     const n = 25;
     const racks = Array.from({ length: n }, (_, i) => -rackLimit + (2 * rackLimit * i) / (n - 1));
@@ -322,7 +334,8 @@ export function useModel(): Model {
         jacking: y0 - st.points.contact.y, centeringTorque: l.steeringWheelTorque,
       };
     });
-  }, [built, armKey, rackLimit, cFactor, curTireLoad]);
+  }, [built, armKey, rackLimit, cFactor, curTireLoad, interacting]);
+  if (!interacting) lastSteerSweep.current = steerSweep;
 
   return { error: live.error, corner: live.corner, sweep, current, steerSweep, damperLimits };
 }

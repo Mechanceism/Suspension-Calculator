@@ -93,9 +93,11 @@ function tireProfile(radius: number, width: number, shoulder: number, rimRadius:
 }
 
 /** Tire with rounded shoulders, aligned with the spin axis, plus center-plane and tread-edge circles. */
-export function Wheel({ center, axis, radius, width, color, ghost = false, shoulder = 0, rimRadius }: {
+export function Wheel({ center, axis, radius, width, color, ghost = false, shoulder = 0, rimRadius, simple = false }: {
   center: Vec3; axis: Vec3; radius: number; width: number; color: string; ghost?: boolean;
   shoulder?: number; rimRadius?: number;
+  /** Plain open cylinder (tread only), less busy than the full tire. */
+  simple?: boolean;
 }) {
   const quat = useMemo(
     () => new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(axis.x, axis.y, axis.z)),
@@ -104,8 +106,10 @@ export function Wheel({ center, axis, radius, width, color, ghost = false, shoul
   const rim = rimRadius ?? radius * 0.62;
   const re = Math.max(0, Math.min(shoulder, width / 2, radius - rim));
   const geometry = useMemo(
-    () => (ghost ? null : new THREE.LatheGeometry(tireProfile(radius, width, shoulder, rim), 72)),
-    [ghost, radius, width, shoulder, rim],
+    () => (ghost ? null : simple
+      ? new THREE.CylinderGeometry(radius, radius, width, 72, 1, true)
+      : new THREE.LatheGeometry(tireProfile(radius, width, shoulder, rim), 72)),
+    [ghost, simple, radius, width, shoulder, rim],
   );
   useEffect(() => () => geometry?.dispose(), [geometry]);
   const mid = useMemo(() => circlePoints(radius, 0), [radius]);
@@ -123,8 +127,8 @@ export function Wheel({ center, axis, radius, width, color, ghost = false, shoul
       <Line points={mid} color={color} lineWidth={ghost ? 1 : 1.5} transparent opacity={ghost ? 0.35 : 0.9} dashed={!ghost} dashSize={25} gapSize={15} />
       {!ghost && <Line points={outer} color={color} lineWidth={2} />}
       {!ghost && <Line points={inner} color={color} lineWidth={2} />}
-      {!ghost && <Line points={rimOut} color={color} lineWidth={1} transparent opacity={0.45} />}
-      {!ghost && <Line points={rimIn} color={color} lineWidth={1} transparent opacity={0.45} />}
+      {!ghost && !simple && <Line points={rimOut} color={color} lineWidth={1} transparent opacity={0.45} />}
+      {!ghost && !simple && <Line points={rimIn} color={color} lineWidth={1} transparent opacity={0.45} />}
     </group>
   );
 }

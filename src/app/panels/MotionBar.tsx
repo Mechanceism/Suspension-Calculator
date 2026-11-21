@@ -42,6 +42,9 @@ export function MotionBar({ model }: { model: Model }) {
   const swLimit = (rackLimit / cFactor) * 360;
   const shownTravel = model.current?.travel ?? travel;
   const shownLoad = model.current?.loadFactor ?? loadFactor;
+  const setTravel = (t: number) => { set('playing', false); set('mode', 'kinematic'); set('travel', t); };
+  const setLoad = (f: number) => { set('playing', false); set('mode', 'loaded'); set('loadFactor', f); };
+  const setRack = (r: number) => { set('playingSteer', false); set('rack', r); };
 
   // Play motion: drives whichever input is active (travel, or load when the corner is settling).
   usePlayLoop(playing, 4000, (s) => {
@@ -59,8 +62,13 @@ export function MotionBar({ model }: { model: Model }) {
           <input
             type="range" min={-droop} max={bump} step={0.5} value={shownTravel}
             onChange={(e) => { set('playing', false); set('mode', 'kinematic'); set('travel', Number(e.target.value)); }}
-            onDoubleClick={() => { set('mode', 'kinematic'); set('travel', 0); }}
+            onDoubleClick={() => setTravel(0)}
           />
+          <span className="quick">
+            <button onClick={() => setTravel(-droop)} title="Full droop">Droop</button>
+            <button onClick={() => setTravel(0)} title="Design ride height">0</button>
+            <button onClick={() => setTravel(bump)} title="Full bump">Bump</button>
+          </span>
         </label>
         <label className="slider">
           <span>
@@ -70,8 +78,15 @@ export function MotionBar({ model }: { model: Model }) {
           <input
             type="range" min={0} max={3} step={0.01} value={shownLoad} disabled={!hasSpring}
             onChange={(e) => { set('playing', false); set('mode', 'loaded'); set('loadFactor', Number(e.target.value)); }}
-            onDoubleClick={() => { set('mode', 'loaded'); set('loadFactor', 1); }}
+            onDoubleClick={() => setLoad(1)}
           />
+          {hasSpring && (
+            <span className="quick">
+              <button onClick={() => setLoad(0)} title="No load (wheel hangs)">0×</button>
+              <button onClick={() => setLoad(1)} title="Static load">1×</button>
+              <button onClick={() => setLoad(2)} title="Twice static (e.g. a 1 g bump)">2×</button>
+            </span>
+          )}
         </label>
         <button className={playing ? 'active' : ''} onClick={() => set('playing', !playing)} title={loaded ? 'Animate load 0.3× – 1.9×' : 'Animate travel droop ↔ bump'}>
           {playing ? '❚❚' : '▶'} {loaded ? 'Load' : 'Travel'}
@@ -83,8 +98,13 @@ export function MotionBar({ model }: { model: Model }) {
           <input
             type="range" min={-swLimit} max={swLimit} step={1} value={(rack / cFactor) * 360}
             onChange={(e) => { set('playingSteer', false); set('rack', (Number(e.target.value) / 360) * cFactor); }}
-            onDoubleClick={() => set('rack', 0)}
+            onDoubleClick={() => setRack(0)}
           />
+          <span className="quick">
+            <button onClick={() => setRack(-rackLimit)} title="Full lock, rack inboard">◀ Lock</button>
+            <button onClick={() => setRack(0)} title="Straight ahead">0</button>
+            <button onClick={() => setRack(rackLimit)} title="Full lock, rack outboard">Lock ▶</button>
+          </span>
         </label>
         <button className={playingSteer ? 'active' : ''} onClick={() => set('playingSteer', !playingSteer)} title="Animate steering lock to lock">
           {playingSteer ? '❚❚' : '▶'} Steer

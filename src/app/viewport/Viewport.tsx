@@ -91,7 +91,7 @@ function DevProjectBridge() {
   const size = useThree((s) => s.size);
   const gl = useThree((s) => s.gl);
   useEffect(() => {
-    if (!import.meta.env.DEV) return;
+    if (!import.meta.env.DEV && !window.location.search.includes("debug")) return;
     (window as unknown as { __project?: (x: number, y: number, z: number) => [number, number] }).__project = (x, y, z) => {
       const v = new THREE.Vector3(x, y, z).project(camera);
       const r = gl.domElement.getBoundingClientRect();

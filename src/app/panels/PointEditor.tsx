@@ -9,6 +9,62 @@ const STEPS = [0.1, 0.5, 1, 5, 10, 25];
 const AXES = ['X', 'Y', 'Z'] as const;
 const axisVec = (i: number, s: number) => vec3(i === 0 ? s : 0, i === 1 ? s : 0, i === 2 ? s : 0);
 
+/** Move several points together (a whole part or a multi-selection) by steps or an entered amount. */
+export function GroupMove({ ids }: { ids: PointKey[] }) {
+  const movePoints = useApp((s) => s.movePoints);
+  const step = useApp((s) => s.nudgeStep);
+  const snap = useApp((s) => s.snapToGrid);
+  const grid = useApp((s) => s.gridSize);
+  const set = useApp((s) => s.set);
+  const [delta, setDelta] = useState(['0', '0', '0']);
+  const applyDelta = () => {
+    const v = delta.map((t) => { const r = parseValue(t, 'length'); return r.ok ? r.value : 0; });
+    movePoints(ids, vec3(v[0]!, v[1]!, v[2]!));
+    setDelta(['0', '0', '0']);
+  };
+  return (
+    <div className="point-editor">
+      <div className="jm-row">
+        {AXES.map((ax, i) => (
+          <span key={ax} className="nowrap">
+            <span className="muted">{ax}</span>
+            <button className="nudge" title={`−${step} mm`} onClick={() => movePoints(ids, axisVec(i, -step))}>−</button>
+            <button className="nudge" title={`+${step} mm`} onClick={() => movePoints(ids, axisVec(i, step))}>+</button>
+          </span>
+        ))}
+      </div>
+      <div className="jm-row">
+        <span className="muted">Step</span>
+        {STEPS.map((s) => (
+          <button key={s} className={`chip${s === step ? ' on' : ''}`} onClick={() => set('nudgeStep', s)}>{s}</button>
+        ))}
+        <span className="muted">mm</span>
+      </div>
+      <div className="jm-row">
+        <label className="check-inline">
+          <input type="checkbox" checked={snap} onChange={() => set('snapToGrid', !snap)} />
+          Snap drag to grid
+        </label>
+        <select value={grid} onChange={(e) => set('gridSize', Number(e.target.value))} disabled={!snap}>
+          {[0.1, 0.5, 1, 2, 5, 10].map((g) => <option key={g} value={g}>{g} mm</option>)}
+        </select>
+      </div>
+      <div className="jm-row">
+        <span className="muted">Move by</span>
+        {delta.map((d, i) => (
+          <input
+            key={i} className="value-input small" value={d} title={`Δ${AXES[i]} (units allowed)`}
+            onChange={(e) => setDelta(delta.map((x, j) => (j === i ? e.target.value : x)))}
+            onKeyDown={(e) => { if (e.key === 'Enter') applyDelta(); }}
+          />
+        ))}
+        <button className="chip on" onClick={applyDelta}>Apply</button>
+      </div>
+      <p className="hint">Or drag the X / Y / Z arrows at the center of the selection in the viewport.</p>
+    </div>
+  );
+}
+
 export function PointEditor({ id }: { id: PointKey }) {
   const field = useApp((s) => s.geom.points[id]);
   const setPoint = useApp((s) => s.setPoint);

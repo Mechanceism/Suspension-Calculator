@@ -99,7 +99,15 @@ export const ARM_DERIVED = ['length', 'inclination', 'planAngle'] as const;
 export type ArmDerived = (typeof ARM_DERIVED)[number];
 
 export type ComponentId = 'chassis' | 'uca' | 'lca' | 'upright' | 'tieRod' | 'rack' | 'spring' | 'wheel';
-export type Selection = { kind: 'component'; id: ComponentId } | { kind: 'point'; id: PointKey } | null;
+export type Selection =
+  | { kind: 'component'; id: ComponentId }
+  | { kind: 'point'; id: PointKey }
+  | { kind: 'points'; ids: PointKey[] }
+  | null;
+
+/** Hardpoints covered by a selection (for moving / highlighting). */
+export const selectedPoints = (sel: Selection, partPoints: (id: ComponentId) => PointKey[]): PointKey[] =>
+  !sel ? [] : sel.kind === 'point' ? [sel.id] : sel.kind === 'points' ? sel.ids : partPoints(sel.id);
 /** Anything the measure tool can snap to: a hardpoint or a derived point. */
 export type AnchorId = PointKey | 'contact' | 'patchCentroid' | 'axisGround' | 'rollCenter' | 'frontViewIC';
 
@@ -202,6 +210,8 @@ export interface AppState {
   playing: boolean;
   playingSteer: boolean;
   trails: boolean;
+  /** Draw the tire as a plain cylinder (the math still uses the shoulder radius). */
+  simpleTire: boolean;
   ghosts: boolean;
   visibility: Record<VisKey, boolean>;
   projection: 'orthographic' | 'perspective';
@@ -250,6 +260,12 @@ export interface AppState {
   loadPreset(id: string): void;
   select(sel: Selection): void;
   movePoint(key: PointKey, delta: Vec3): void;
+  /** Move several hardpoints by the same amount. */
+  movePoints(keys: PointKey[], delta: Vec3): void;
+  /** Set one coordinate of several hardpoints at once (used by dragging). */
+  setPointsAxis(updates: { key: PointKey; axis: 0 | 1 | 2; value: number }[]): void;
+  /** Shift/Ctrl-click: add or remove points from a multi-selection. */
+  toggleSelectPoints(keys: PointKey[]): void;
   /** Set one coordinate of a hardpoint to a base-unit value (used by dragging). */
   setPointAxis(key: PointKey, axis: 0 | 1 | 2, value: number): void;
   setArmDerived(arm: 'uca' | 'lca', which: ArmDerived, text: string): void;
@@ -348,6 +364,7 @@ export const useApp = create<AppState>((set, get) => ({
   playing: false,
   playingSteer: false,
   trails: true,
+  simpleTire: false,
   ghosts: true,
   visibility: {
     chassis: true, uca: true, lca: true, upright: true, tieRod: true, wheel: true, spring: true,
@@ -386,6 +403,35 @@ export const useApp = create<AppState>((set, get) => ({
   measure: [],
 
   select: (selection) => set(selection ? { selection, leftTab: 'inspector' } : { selection }),
+  movePoints: (keys, delta) => {
+    const geom = get().geom;
+    const points = { ...geom.points };
+    for (const k of new Set(keys)) {
+      const [fx, fy, fz] = points[k];
+      points[k] = fields(add(vec3(fx.value, fy.value, fz.value), delta));
+    }
+    set({ geom: { ...geom, points }, presetId: 'custom' });
+  },
+  setPointsAxis: (updates) => {
+    const geom = get().geom;
+    const points = { ...geom.points };
+    for (const u of updates) {
+      const triple = [...points[u.key]] as [Field, Field, Field];
+      triple[u.axis] = field(u.value);
+      points[u.key] = triple;
+    }
+    set({ geom: { ...geom, points }, presetId: 'custom' });
+  },
+  toggleSelectPoints: (keys) => {
+    const sel = get().selection;
+    const current = sel?.kind === 'point' ? [sel.id] : sel?.kind === 'points' ? sel.ids : [];
+    const allIn = keys.every((k) => current.includes(k));
+    const next = allIn ? current.filter((k) => !keys.includes(k)) : [...new Set([...current, ...keys])];
+    set({
+      selection: next.length === 0 ? null : next.length === 1 ? { kind: 'point', id: next[0]! } : { kind: 'points', ids: next },
+      leftTab: 'inspector',
+    });
+  },
   movePoint: (key, delta) => {
     const geom = get().geom;
     const [fx, fy, fz] = geom.points[key];

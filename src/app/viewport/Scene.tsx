@@ -7,11 +7,12 @@ import { closestPointOnLine, lineThrough } from '../../core/math/geom';
 import type { CornerPoints, CornerState } from '../../core/suspension/doubleWishbone';
 import type { Characteristics } from '../../core/suspension/characteristics';
 import type { LoadedCorner } from '../../core/suspension/loaded';
-import { useApp, POINT_NAMES, type AnchorId, type ComponentId, type PointKey } from '../store';
+import { useApp, POINT_NAMES, selectedPoints, type AnchorId, type ComponentId, type PointKey } from '../store';
 import type { Model, Sample, Current } from '../useModel';
 import { STATE_KEY, anchorPosition } from '../anchors';
 import { Joint, Seg, Polyline, Tri, Wheel, Label, PatchMesh, Coilover, HitLink } from './primitives';
-import { JointGizmo } from './JointGizmo';
+import { MoveGizmo } from './JointGizmo';
+import { componentDefs } from '../components';
 import { MeasureOverlay } from './MeasureOverlay';
 
 export const COLORS = {
@@ -64,7 +65,10 @@ function usePickComponent(id: ComponentId) {
       onClick: (e: ThreeEvent<MouseEvent>) => {
         if (isDrag(e) || jointUnderPointer(e)) return; // let the joint handle it
         e.stopPropagation();
-        select({ kind: 'component', id });
+        // Shift / Ctrl / Cmd adds the part's points to a multi-selection.
+        const n = e.nativeEvent;
+        if (n.shiftKey || n.ctrlKey || n.metaKey) useApp.getState().toggleSelectPoints(componentDefs(useApp.getState().geom.damperArm)[id].points);
+        else select({ kind: 'component', id });
       },
       onPointerOver: (e: ThreeEvent<PointerEvent>) => { e.stopPropagation(); setHover(true); document.body.style.cursor = 'pointer'; },
       onPointerOut: () => { setHover(false); document.body.style.cursor = ''; },
@@ -156,14 +160,18 @@ function PickJoint({ id, p, color, r = 7 }: { id: AnchorId; p: Vec3; color: stri
   const measure = useApp((s) => s.measure);
   const [hover, setHover] = useState(false);
   const isPoint = id in STATE_KEY;
-  const selected = (selection?.kind === 'point' && selection.id === id) || measure.includes(id);
+  const selected = (selection?.kind === 'point' && selection.id === id)
+    || (selection?.kind === 'points' && selection.ids.includes(id as PointKey))
+    || measure.includes(id);
   return (
     <group
       userData={{ joint: true }}
       onClick={(e) => {
         if (isDrag(e)) return;
         e.stopPropagation();
+        const n = e.nativeEvent;
         if (measureMode) addMeasureAnchor(id);
+        else if (isPoint && (n.shiftKey || n.ctrlKey || n.metaKey)) useApp.getState().toggleSelectPoints([id as PointKey]);
         else if (isPoint) select({ kind: 'point', id: id as PointKey });
       }}
       onPointerOver={(e) => { e.stopPropagation(); setHover(true); document.body.style.cursor = 'pointer'; }}
@@ -311,6 +319,8 @@ export function Scene({ model }: { model: Model }) {
   const width = useApp((s) => s.geom.scalars.tireWidth.value);
   const radius = useApp((s) => s.geom.scalars.tireDiameter.value / 2);
   const shoulder = useApp((s) => s.geom.scalars.shoulderRadius.value);
+  const simpleTire = useApp((s) => s.simpleTire);
+  const damperArm = useApp((s) => s.geom.damperArm);
   const rimRadius = useApp((s) => s.geom.scalars.rimDiameter.value / 2);
   const selection = useApp((s) => s.selection);
   const measureMode = useApp((s) => s.measureMode);
@@ -346,7 +356,7 @@ export function Scene({ model }: { model: Model }) {
       <Linkage state={state} />
       {vis.wheel && (
         <Part id="wheel">{(e) => (
-          <Wheel center={state.points.wheelCenter} axis={state.spinAxis} radius={radius} width={width} shoulder={shoulder} rimRadius={rimRadius} color={e === 2 ? COLORS.select : COLORS.wheel} />
+          <Wheel center={state.points.wheelCenter} axis={state.spinAxis} radius={radius} width={width} shoulder={simpleTire ? 0 : shoulder} rimRadius={rimRadius} simple={simpleTire} color={e === 2 ? COLORS.select : COLORS.wheel} />
         )}</Part>
       )}
       <Joints state={state} cur={cur} />
@@ -354,7 +364,9 @@ export function Scene({ model }: { model: Model }) {
       {trails && <Trails sweep={model.sweep} />}
       {ghosts && <Ghosts sweep={model.sweep} radius={radius} />}
       {vis.labels && <Labels state={state} />}
-      {!measureMode && selection?.kind === 'point' && <JointGizmo id={selection.id} cur={cur} />}
+      {!measureMode && selection && (
+        <MoveGizmo ids={selectedPoints(selection, (c) => componentDefs(damperArm)[c].points)} cur={cur} />
+      )}
       {measureMode && <MeasureOverlay cur={cur} />}
     </group>
   );

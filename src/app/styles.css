@@ -302,3 +302,11 @@ input[type='range']:disabled { opacity: 0.4; }
 .notice pre { margin: 0; font: inherit; white-space: pre-wrap; max-height: 240px; overflow-y: auto; }
 .notice-warn { border-color: var(--warn); }
 .notice-error { border-color: var(--bad); }
+.icon-btn.tiny { padding: 0 3px; line-height: 14px; font-size: 10px; }
+
+.quick { display: flex; gap: 4px; margin-top: 2px; }
+.quick button {
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 0 7px; font-size: 11px;
+  line-height: 18px; cursor: pointer; color: var(--muted);
+}
+.quick button:hover { border-color: var(--accent); color: var(--text); }

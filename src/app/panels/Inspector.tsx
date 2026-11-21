@@ -12,7 +12,7 @@ import { COLORS } from '../viewport/Scene';
 import type { Model } from '../useModel';
 import { FieldRows, Section, fmt, derivedField } from './FieldRows';
 import { ValueInput } from './ValueInput';
-import { PointEditor } from './PointEditor';
+import { PointEditor, GroupMove } from './PointEditor';
 import { SpringFields, DamperFields } from './SpringPanel';
 import { TireFields } from './TirePanel';
 import { SteeringSystemFields, TireForceFields, SteeringReadout } from './SteeringPanel';
@@ -206,6 +206,12 @@ function ComponentInspector({ id, model }: { id: ComponentId; model: Model }) {
         </>
       )}
       {def.points.length > 0 && <Section title="Points"><PointsTable points={def.points} /></Section>}
+      {def.points.length > 1 && (
+        <Section title="Move whole part" open={false}>
+          <p className="hint">Moves all of this part's points together{def.points.some((k) => ownersOf(k, defs).length > 1) ? ' — shared joints (e.g. ball joints) move with it' : ''}.</p>
+          <GroupMove ids={def.points} />
+        </Section>
+      )}
     </div>
   );
 }
@@ -242,7 +248,8 @@ export function Inspector({ model }: { model: Model }) {
         <p><b>Click a part or a joint</b> in the viewport to edit it here.</p>
         <ul className="hint-list">
           <li>Parts show their dimensions, settings and connected parts.</li>
-          <li>Joints open a menu to type a position, nudge in steps, or move by an amount.</li>
+          <li>Click a joint to move it: drag its X / Y / Z arrows, or type / nudge here.</li>
+          <li><kbd>Shift</kbd> or <kbd>Ctrl</kbd> + click joints or parts to select several and move them together.</li>
           <li><b>📏 Measure</b> (or <kbd>M</kbd>) measures between any two points. <kbd>Esc</kbd> closes.</li>
         </ul>
         <div className="family-row wrap">
@@ -252,5 +259,32 @@ export function Inspector({ model }: { model: Model }) {
       </div>
     );
   }
-  return selection.kind === 'point' ? <PointInspector id={selection.id} /> : <ComponentInspector id={selection.id} model={model} />;
+  if (selection.kind === 'point') return <PointInspector id={selection.id} />;
+  if (selection.kind === 'points') return <PointsInspector ids={selection.ids} />;
+  return <ComponentInspector id={selection.id} model={model} />;
+}
+
+function PointsInspector({ ids }: { ids: PointKey[] }) {
+  const select = useApp((s) => s.select);
+  const toggle = useApp((s) => s.toggleSelectPoints);
+  return (
+    <div className="inspector">
+      <div className="insp-head">
+        <span className="swatch big" style={{ background: '#ffffff' }} />
+        <b>{ids.length} points selected</b>
+        <button className="icon-btn" onClick={() => select(null)} title="Clear selection (Esc)">Clear</button>
+      </div>
+      <div className="family-row wrap">
+        {ids.map((k) => (
+          <span key={k} className="family-chip">
+            <button className="link-btn" onClick={() => select({ kind: 'point', id: k })} title={POINT_NAMES[k]}>{POINT_LABELS[k]}</button>
+            <button className="icon-btn tiny" onClick={() => toggle([k])} title="Remove from selection">✕</button>
+          </span>
+        ))}
+      </div>
+      <p className="hint"><kbd>Shift</kbd>/<kbd>Ctrl</kbd> + click joints or parts to add or remove them.</p>
+      <Section title="Move together"><GroupMove ids={ids} /></Section>
+      <Section title="Points"><PointsTable points={ids} /></Section>
+    </div>
+  );
 }

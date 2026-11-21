@@ -44,6 +44,7 @@ export function Browser() {
   const follow = useApp((s) => s.followFocus);
   const trails = useApp((s) => s.trails);
   const ghosts = useApp((s) => s.ghosts);
+  const simpleTire = useApp((s) => s.simpleTire);
   const set = useApp((s) => s.set);
   return (
     <section className="panel">
@@ -67,10 +68,11 @@ export function Browser() {
         ))}
       </div>
       <div className="tree-group">
-        <div className="tree-head">Motion & camera</div>
+        <div className="tree-head">Motion & display</div>
         <Row label="Motion trails" color="#ffffff" checked={trails} onToggle={() => set('trails', !trails)} />
         <Row label="Ghost at travel limits" color="#ffffff" checked={ghosts} onToggle={() => set('ghosts', !ghosts)} />
         <Row label="Camera follows focused part" color="#ffffff" checked={follow} onToggle={() => set('followFocus', !follow)} />
+        <Row label="Plain cylinder tire (no shoulders)" color={COLORS.wheel} checked={simpleTire} onToggle={() => set('simpleTire', !simpleTire)} />
       </div>
     </section>
   );

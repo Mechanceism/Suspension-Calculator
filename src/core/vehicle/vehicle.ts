@@ -28,6 +28,12 @@ export const isLeft = (id: CornerId) => id === 'FL' || id === 'RL';
 const G = 9.80665;
 
 export type BrakeMount = 'none' | 'outboard' | 'inboard';
+/**
+ * Drive for a powered corner. chassis: diff on the chassis, torque through a halfshaft, so the
+ * drive force acts at the wheel center. hub: hub motor, torque reacted by the upright, so the force
+ * acts at the contact patch. none: not powered.
+ */
+export type DriveMount = 'none' | 'chassis' | 'hub';
 
 export interface VehicleCorner {
   id: CornerId;
@@ -42,6 +48,7 @@ export interface VehicleCorner {
    * at the contact patch. Inboard: reacted by the chassis, so it acts at the wheel center.
    */
   brake?: BrakeMount;
+  drive?: DriveMount;
 }
 
 /** Anti-roll bar between the two corners of an axle. */
@@ -83,6 +90,10 @@ export interface VehicleInput {
   brakingG?: number;
   /** Fraction of the braking force on the front axle (0–1). */
   brakeBias?: number;
+  /** Forward acceleration, g (≥ 0), driven by the powered corners. */
+  accelG?: number;
+  /** Fraction of the drive force on the front axle when both axles are powered (0–1). */
+  driveSplit?: number;
   /** Shared components per axle. */
   shared?: { front: AxleShared; rear: AxleShared };
 }
@@ -127,8 +138,11 @@ export interface CornerResult {
   tireLoad: number;
   /** Lateral tire force, N (world X). */
   lateralForce: number;
-  /** Longitudinal tire force, N (world Z; braking is negative). */
+  /** Longitudinal tire force, N (world Z; braking is negative, drive positive). */
   longitudinalForce: number;
+  /** Braking part (≤ 0) and drive part (≥ 0) of the longitudinal force, N. */
+  brakeForce: number;
+  driveForce: number;
   /** Spring force, N. */
   springForce: number;
   /** Generalized force from shared components (anti-roll bar + heave spring), N at the wheel. */
@@ -149,6 +163,8 @@ export interface VehicleResult {
   residual: [number, number, number];
   sprungMass: number;
   sprungCg: Vec3;
+  /** Things the user should know about the inputs (e.g. acceleration without powered corners). */
+  notes: string[];
 }
 
 function sprungProperties(input: VehicleInput) {
@@ -190,7 +206,11 @@ function sharedForce(c: VehicleCorner, partnerC: VehicleCorner | undefined, axle
 
 interface CornerLoads {
   lateral: number;
-  longitudinal: number;
+  /** Braking force (≤ 0) and drive force (≥ 0), N along world Z. */
+  brake: number;
+  drive: number;
+  /** Longitudinal acceleration of the car, m/s² (+ forward). */
+  aZ: number;
 }
 
 /** Virtual work along the corner's travel (N) at q, with the partner corner at qOther. Decreasing in q. */
@@ -200,8 +220,8 @@ function cornerWork(
 ) {
   const pl = placement(c.id, input.wheelbase);
   const P = poseFns(pose);
-  const brakingG = input.brakingG ?? 0;
   const inboard = c.brake === 'inboard';
+  const hub = c.drive === 'hub';
   const s = c.table.at(q);
   const wc = P.point(pl.point(s.wc));
   const axis = P.rot(pl.dir(s.axis));
@@ -216,10 +236,12 @@ function cornerWork(
   const fShared = sharedForce(c, shared.partner, shared.axle, q, qOther);
   const work = ft * dcp.y + f.lateral * dcp.x
     // Braking force: at the patch (outboard brake) or the wheel center (inboard brake).
-    + f.longitudinal * (inboard ? dwc.z : dcp.z)
+    + f.brake * (inboard ? dwc.z : dcp.z)
+    // Drive force: at the wheel center (chassis diff, halfshaft) or the patch (hub motor).
+    + f.drive * (hub ? dcp.z : dwc.z)
     - c.unsprungMass * G * dwc.y
     - c.unsprungMass * input.lateralG * G * dwc.x
-    + c.unsprungMass * brakingG * G * dwc.z
+    - c.unsprungMass * f.aZ * dwc.z
     + (Number.isFinite(s.dL) ? fs * s.dL : 0)
     + fShared;
   return { work, ft, fs, fShared, s, wc, axis, P, pl };
@@ -228,7 +250,8 @@ function cornerWork(
 function cornerResult(c: VehicleCorner, input: VehicleInput, f: CornerLoads, q: number, status: CornerStatus, r: ReturnType<typeof cornerWork>): CornerResult {
   const cpWorld = r.P.point(r.pl.point(r.s.cp));
   return {
-    id: c.id, travel: q, status, tireLoad: r.ft, lateralForce: f.lateral, longitudinalForce: f.longitudinal,
+    id: c.id, travel: q, status, tireLoad: r.ft, lateralForce: f.lateral, longitudinalForce: f.brake + f.drive,
+    brakeForce: f.brake, driveForce: f.drive,
     springForce: r.fs, sharedForce: r.fShared,
     contact: vec3(cpWorld.x, input.groundY, cpWorld.z), wheelCenter: r.wc,
     // Axis points outboard; its upward component means the top leans inboard (negative camber sense).
@@ -335,8 +358,27 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
   const sp = sprungProperties(input);
   const W = input.totalMass * G;
   const latTotal = input.totalMass * input.lateralG * G;
-  const brakingG = input.brakingG ?? 0;
+  const notes: string[] = [];
+  const brakingG = Math.max(0, input.brakingG ?? 0);
+  const powered = input.corners.filter((c) => (c.drive ?? 'none') !== 'none');
+  let accelG = Math.max(0, input.accelG ?? 0);
+  if (accelG > 0 && powered.length === 0) {
+    notes.push('No powered corners: acceleration ignored (mark corners as Powered).');
+    accelG = 0;
+  }
   const brakeTotal = input.totalMass * brakingG * G; // magnitude; acts rearward (−Z) on the tires
+  const driveTotal = input.totalMass * accelG * G; // acts forward (+Z) on the powered tires
+  const aZ = (accelG - brakingG) * G;
+  // Drive shares: front/rear by the split (or all to the only powered axle), equal per powered
+  // wheel within an axle (open differential).
+  const driveShares: Record<CornerId, number> = { FL: 0, FR: 0, RL: 0, RR: 0 };
+  {
+    const fp = powered.filter((c) => isFront(c.id));
+    const rp = powered.filter((c) => !isFront(c.id));
+    const split = fp.length && rp.length ? Math.min(1, Math.max(0, input.driveSplit ?? 0.5)) : fp.length ? 1 : 0;
+    for (const c of fp) driveShares[c.id] = split / fp.length;
+    for (const c of rp) driveShares[c.id] = (1 - split) / rp.length;
+  }
   const byId = Object.fromEntries(input.corners.map((c) => [c.id, c])) as Partial<Record<CornerId, VehicleCorner>>;
   const axleOf = (id: CornerId) => (isFront(id) ? input.shared?.front : input.shared?.rear) ?? NO_SHARED;
   const isCoupled = (a: AxleShared) => a.antiRollBar.kind !== 'none' || a.heaveSpring.kind !== 'none';
@@ -351,7 +393,9 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
     const corners = {} as Record<CornerId, CornerResult>;
     const forces = (id: CornerId): CornerLoads => ({
       lateral: total > 0 ? (latTotal * Math.max(0, loads[id])) / total : 0,
-      longitudinal: -brakeTotal * bShares[id],
+      brake: -brakeTotal * bShares[id],
+      drive: driveTotal * driveShares[id],
+      aZ,
     });
     for (const [l, r] of [['FL', 'FR'], ['RL', 'RR']] as const) {
       const cl = byId[l];
@@ -378,10 +422,10 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
       fy += r.tireLoad;
       add2(momentOf(r.contact, vec3(r.lateralForce, r.tireLoad, r.longitudinalForce)));
       // Unsprung weight and inertia (lateral, braking) at the wheel center.
-      add2(momentOf(r.wheelCenter, vec3(-c.unsprungMass * input.lateralG * G, -c.unsprungMass * G, c.unsprungMass * brakingG * G)));
+      add2(momentOf(r.wheelCenter, vec3(-c.unsprungMass * input.lateralG * G, -c.unsprungMass * G, -c.unsprungMass * aZ)));
     }
     const cg = P.point(sp.cg);
-    add2(momentOf(cg, vec3(-sp.mass * input.lateralG * G, -sp.mass * G, sp.mass * brakingG * G)));
+    add2(momentOf(cg, vec3(-sp.mass * input.lateralG * G, -sp.mass * G, -sp.mass * aZ)));
     return { corners, res: [fy - W, mRoll / 1000, mPitch / 1000] as [number, number, number] };
   };
 
@@ -425,7 +469,7 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
   }
   return {
     pose, corners: cur.corners, converged: norm(cur.res) < 1e-5, iterations: it, residual: cur.res,
-    sprungMass: sp.mass, sprungCg: sp.cg,
+    sprungMass: sp.mass, sprungCg: sp.cg, notes,
   };
 }
 

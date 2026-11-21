@@ -4,12 +4,12 @@
  * Drag an arrow to move along that axis (the move snaps to the grid when enabled). The arrows keep a
  * constant size on screen, and updates are limited to one per frame so dragging stays smooth.
  */
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
-import { SafeHtml as Html } from './SafeHtml';
 import * as THREE from 'three';
 import type { Vec3 } from '../../core/math/vec3';
-import { useApp, type PointKey } from '../store';
+import { useApp, rootOf, type PointKey } from '../store';
+import { pointAxisLocked } from '../locks';
 import { STATE_KEY } from '../anchors';
 import type { Current } from '../useModel';
 
@@ -31,8 +31,38 @@ function axisParam(ray: THREE.Ray, o: THREE.Vector3, u: THREE.Vector3): number |
 
 type Controls = { enabled: boolean } | null;
 
-function Arrow({ axis, origin, ids }: { axis: 0 | 1 | 2; origin: THREE.Vector3; ids: PointKey[] }) {
-  const { label, color, dir } = AXES[axis];
+/**
+ * Axis letter drawn as a sprite (a canvas texture), not a DOM label: the gizmo mounts and unmounts
+ * with the selection, and DOM labels (separate React roots) can't unmount cleanly mid-render.
+ */
+function AxisLabel({ text, color }: { text: string; color: string }) {
+  const tex = useMemo(() => {
+    const c = document.createElement('canvas');
+    c.width = 128; c.height = 48;
+    const g = c.getContext('2d');
+    if (g) {
+      g.font = 'bold 30px ui-monospace, Consolas, monospace';
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.lineWidth = 5; g.strokeStyle = 'rgba(22, 25, 30, 0.85)';
+      g.strokeText(text, 64, 25);
+      g.fillStyle = color;
+      g.fillText(text, 64, 25);
+    }
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  }, [text, color]);
+  useEffect(() => () => tex.dispose(), [tex]);
+  return (
+    <sprite position={[0, 1.2, 0]} scale={[0.6, 0.225, 1]} renderOrder={10}>
+      <spriteMaterial map={tex} depthTest={false} transparent />
+    </sprite>
+  );
+}
+
+function Arrow({ axis, origin, ids, locked }: { axis: 0 | 1 | 2; origin: THREE.Vector3; ids: PointKey[]; locked: boolean }) {
+  const { label, dir } = AXES[axis];
+  const color = locked ? '#5b616d' : AXES[axis].color;
   const controls = useThree((s) => s.controls) as unknown as Controls;
   const [hover, setHover] = useState(false);
   const drag = useRef<{ t0: number; starts: number[]; origin: THREE.Vector3; pending: number | null; raf: number } | null>(null);
@@ -49,6 +79,7 @@ function Arrow({ axis, origin, ids }: { axis: 0 | 1 | 2; origin: THREE.Vector3; 
 
   const onDown = (e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation();
+    if (locked) { useApp.getState().notify(`${label} is locked for this selection`); return; }
     const t0 = axisParam(e.ray, origin, dir);
     if (t0 === null) return;
     (e.target as unknown as Element).setPointerCapture(e.pointerId);
@@ -91,7 +122,7 @@ function Arrow({ axis, origin, ids }: { axis: 0 | 1 | 2; origin: THREE.Vector3; 
     <group quaternion={quat}>
       <group
         onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp}
-        onPointerOver={(e) => { e.stopPropagation(); setHover(true); document.body.style.cursor = 'grab'; }}
+        onPointerOver={(e) => { e.stopPropagation(); setHover(!locked); document.body.style.cursor = locked ? 'not-allowed' : 'grab'; }}
         onPointerOut={() => { setHover(false); document.body.style.cursor = ''; }}
         onClick={(e) => e.stopPropagation()}
       >
@@ -109,9 +140,7 @@ function Arrow({ axis, origin, ids }: { axis: 0 | 1 | 2; origin: THREE.Vector3; 
           <meshBasicMaterial transparent opacity={0} depthWrite={false} colorWrite={false} />
         </mesh>
       </group>
-      <Html position={[0, 1.18, 0]} center style={{ pointerEvents: 'none' }}>
-        <span className="gizmo-label" style={{ color }}>{label}</span>
-      </Html>
+      <AxisLabel text={locked ? `${label} 🔒` : label} color={color} />
     </group>
   );
 }
@@ -120,6 +149,9 @@ export function MoveGizmo({ ids, cur }: { ids: PointKey[]; cur: Current }) {
   const positions = ids.map((k) => cur.state.points[STATE_KEY[k]] as Vec3 | undefined).filter((p): p is Vec3 => Boolean(p));
   const group = useRef<THREE.Group>(null);
   const origin = useMemo(() => new THREE.Vector3(), []);
+  const locks = useApp((s) => s.locks);
+  const root = useApp((s) => rootOf(s.activeCorner, s.links));
+  const damperArm = useApp((s) => s.geom.damperArm);
   if (positions.length) {
     origin.set(0, 0, 0);
     for (const p of positions) origin.add(new THREE.Vector3(p.x, p.y, p.z));
@@ -149,7 +181,7 @@ export function MoveGizmo({ ids, cur }: { ids: PointKey[]; cur: Current }) {
         {ids.length > 1 ? <boxGeometry args={[0.16, 0.16, 0.16]} /> : <sphereGeometry args={[0.09, 16, 12]} />}
         <meshBasicMaterial color="#ffffff" depthTest={false} />
       </mesh>
-      {([0, 1, 2] as const).map((a) => <Arrow key={a} axis={a} origin={origin} ids={ids} />)}
+      {([0, 1, 2] as const).map((a) => <Arrow key={a} axis={a} origin={origin} ids={ids} locked={ids.some((k) => pointAxisLocked(locks, root, k, a, damperArm))} />)}
     </group>
   );
 }

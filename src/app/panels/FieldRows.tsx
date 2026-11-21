@@ -10,6 +10,8 @@ export interface Row {
   unit: string;
   onCommit?: (text: string) => void;
   hint?: string;
+  /** Lock key (see locks.ts): shows a lock toggle and lets the Locks tab find this row. */
+  lockKey?: string;
 }
 
 /** Label / value / unit rows; editable when a field + onCommit is given. */
@@ -18,11 +20,11 @@ export function FieldRows({ rows }: { rows: Row[] }) {
     <table className="field-rows">
       <tbody>
         {rows.map((r) => (
-          <tr key={r.label} title={r.hint}>
+          <tr key={r.label} title={r.hint} data-lock-key={r.lockKey}>
             <td>{r.label}</td>
             <td className="num">
               {r.field && r.onCommit
-                ? <ValueInput field={r.field} unit={r.unit} onCommit={r.onCommit} />
+                ? <ValueInput field={r.field} unit={r.unit} onCommit={r.onCommit} lockKey={r.lockKey} />
                 : <span className="readonly">{r.value ?? '—'}</span>}
             </td>
             <td className="unit">{r.unit}</td>

@@ -293,6 +293,10 @@ Two operating modes:
 
 **Brakes (per corner).** None / outboard / inboard, plus a vehicle brake bias (front share). Braking deceleration (g) gives a total braking force m·a, shared front/rear by the bias and within each axle by tire load among braked corners. An **outboard** brake reacts its torque through the upright, so the braking force does virtual work at the contact patch; an **inboard** brake reacts into the chassis, so the force acts at the wheel center. Unsprung and sprung inertia act forward at their CGs. Results: load moved onto the front axle (statics check: ΔW·L = m·a·h), pitch, and the classic geometric anti-dive (front) / anti-lift (rear) % = tan θ · (L/h) · axle brake share, θ from the side-view IC to the contact patch (outboard) or wheel center (inboard). Verified: inboard vs. outboard changes the dive in the direction those angles predict.
 
+**Drive (powered corners).** Each corner is powered or passive; a powered corner is driven from a **chassis-mounted** diff (halfshaft) or a **hub motor**. Acceleration (g) gives a total drive force m·a, split front/rear by the drive split (front share; all to whichever axle has powered corners if only one does) and equally between the powered corners of an axle (open differential). A **chassis** drive reacts its torque into the chassis, so the drive force does virtual work at the **wheel center**; a **hub** motor reacts into the upright, so it acts at the **contact patch** (the same rule as inboard/outboard brakes). Inertia acts rearward at the sprung and unsprung CGs. Results: load moved to the rear axle, pitch (squat), and the classic anti-squat (rear) / anti-lift (front) % = tan θ · (L/h) · axle drive share, θ from the side-view IC to the wheel center (chassis drive) or contact patch (hub). If no corner is powered, acceleration is ignored and the results say so. Verified: the statics check ΔW·L = m·a·h; RWD loads the rear; hub vs. chassis drive changes the squat in the direction the angles predict.
+
+**Force display.** Every force in the vehicle solve can be drawn as an arrow where it acts (toggle per kind, with values and a size control): tire vertical, lateral and brake/drive forces at the patch centroid, spring forces on the body and on the arm, anti-roll bar / heave forces at the wheel center (equivalent wheel force), unsprung and sprung weights, and the d'Alembert inertia at the CG.
+
 **Shared components (per axle), each optional and with a type.**
 - *Anti-roll bar:* none · **rate at the wheel** (N/mm of left/right travel difference) · **torsion bar + drop links** (bar rate N·m/deg, arm length, drop-link mount on the lower arm — tracked through travel; twist = left/right mount height difference ÷ arm length). Verified: the torsion bar matches a wheel-rate bar of the equivalent rate (bar rate · link motion ratio² ÷ arm²).
 - *Heave spring:* none · **rate at the wheel** on the average travel of the two corners (adds heave/pitch stiffness, no roll stiffness, nothing at static).
@@ -306,7 +310,6 @@ Two operating modes:
 
 ### Planned for later (noted 2026-11-21)
 - **More shared-component types:** monoshock / roll-decoupled layouts, pushrods across corners, anti-roll bar geometry with chassis-mounted bar ends.
-- **Drive forces for powered corners** (anti-squat; chassis-mounted diff → force at the wheel center).
 - **CG from scales (page 6 of the hand math):** a utility to find the CG from four corner scale weights level and with one axle raised (tilt). For now the CG is entered directly.
 - **Other suspension types per corner** (MacPherson, multilink, user linkages) and pushrod / rocker spring layouts.
 - Steering jacking and centrifugal roll can be balanced against each other for specific conditions (e.g. a known track).
@@ -317,7 +320,8 @@ Two operating modes:
 
 ### Requirements (noted 2026-11-21)
 - **Bump-steer minimization by tie-rod placement:** an option to optimize the tie-rod mounting points (inner and/or outer, within user limits) so bump steer (toe change through travel) is reduced as far as possible.
-- **Simple locking:** any component or value can be locked — a whole part (e.g. the lower arm), individual hardpoints, single coordinates, or derived values such as an arm length — and the optimizer must work around everything locked. Users often start from something already built, so the optimizer has to respect the parts they can't or won't change. Ranges ("between A and B") are the in-between option.
+- **Simple locking** ✅ (UI done, the optimizer will read it): any component or value can be locked — a whole part (e.g. the lower arm), individual hardpoints, single coordinates, or derived values such as an arm length — and the optimizer must work around everything locked. Users often start from something already built, so the optimizer has to respect the parts they can't or won't change. Ranges ("between A and B") are the in-between option.
+- **Lock keys** (`src/app/locks.ts`, saved in the project file from format v4): `FL.point.trInner.y` (one coordinate), `FL.part.uca` (every point of a part, including the coilover mount on the arm that carries it), `FL.derived.uca.length` / `inclination` / `planAngle`, `FL.spring|damper|tire|scalar.<key>`, `vehicle.<key>`, `shared.<axle>.<key>` (and `shared.front.dropLink.x`), `steer.<key>`. Linked corners share one design, so they share its locks; unlinking a corner copies them. A locked value can still be typed by hand; dragging and nudging a locked coordinate is blocked.
 
 ### Objectives
 Maximum contact area is a useful proxy, but it is **not** the same as maximum grip:

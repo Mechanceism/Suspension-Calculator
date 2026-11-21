@@ -7,7 +7,8 @@ import { closestPointOnLine, lineThrough } from '../../core/math/geom';
 import type { CornerPoints, CornerState } from '../../core/suspension/doubleWishbone';
 import type { Characteristics } from '../../core/suspension/characteristics';
 import type { LoadedCorner } from '../../core/suspension/loaded';
-import { useApp, POINT_NAMES, forCorner, selectedPoints, type AnchorId, type ComponentId, type PointKey } from '../store';
+import { anyAxisLocked } from '../locks';
+import { useApp, POINT_NAMES, forCorner, selectedPoints, rootOf, type AnchorId, type ComponentId, type PointKey } from '../store';
 import type { Model, Sample, Current } from '../useModel';
 import { STATE_KEY, anchorPosition } from '../anchors';
 import { Joint, Seg, Polyline, Tri, Wheel, Label, PatchMesh, Coilover, HitLink } from './primitives';
@@ -17,6 +18,8 @@ import { MeasureOverlay } from './MeasureOverlay';
 
 export const COLORS = {
   chassis: '#8b93a1',
+  /** Locked joints (fixed for the optimizer). */
+  locked: '#ffd60a',
   uca: '#5b9cf5',
   lca: '#36c2b4',
   upright: '#f0a03c',
@@ -160,6 +163,7 @@ function PickJoint({ id, p, color, r = 7 }: { id: AnchorId; p: Vec3; color: stri
   const measure = useApp((s) => s.measure);
   const [hover, setHover] = useState(false);
   const isPoint = id in STATE_KEY;
+  const locked = useApp((s) => isPoint && anyAxisLocked(s.locks, rootOf(s.activeCorner, s.links), id as PointKey, s.geom.damperArm));
   const selected = (selection?.kind === 'point' && selection.id === id)
     || (selection?.kind === 'points' && selection.ids.includes(id as PointKey))
     || measure.includes(id);
@@ -177,7 +181,7 @@ function PickJoint({ id, p, color, r = 7 }: { id: AnchorId; p: Vec3; color: stri
       onPointerOver={(e) => { e.stopPropagation(); setHover(true); document.body.style.cursor = 'pointer'; }}
       onPointerOut={() => { setHover(false); document.body.style.cursor = ''; }}
     >
-      <Joint p={p} color={selected ? COLORS.select : color} r={r * (hover || selected ? 1.6 : 1)} />
+      <Joint p={p} color={selected ? COLORS.select : locked ? COLORS.locked : color} r={r * (hover || selected ? 1.6 : 1)} />
     </group>
   );
 }

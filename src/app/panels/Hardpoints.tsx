@@ -1,6 +1,7 @@
-import { useApp, forCorner, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META } from '../store';
+import { useApp, forCorner, rootOf, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META } from '../store';
+import { lockKeys, pointAxisLocked } from '../locks';
 import { SAMPLE_LAYOUTS } from '../../examples/sampleLayouts';
-import { ValueInput } from './ValueInput';
+import { ValueInput, LockButton } from './ValueInput';
 
 export function Hardpoints() {
   const geom = useApp((s) => s.geom);
@@ -9,6 +10,8 @@ export function Hardpoints() {
   const loadPreset = useApp((s) => s.loadPreset);
   const setPoint = useApp((s) => s.setPoint);
   const setScalar = useApp((s) => s.setScalar);
+  const locks = useApp((s) => s.locks);
+  const root = useApp((s) => rootOf(s.activeCorner, s.links));
   return (
     <section className="panel">
       <h2>Hardpoints</h2>
@@ -22,7 +25,7 @@ export function Hardpoints() {
       <p className="hint">mm unless a unit is typed (e.g. <code>5in</code>, <code>1ft 2in</code>). Enter to apply.</p>
       <table className="hp-table">
         <thead>
-          <tr><th>Point</th><th>X</th><th>Y</th><th>Z</th></tr>
+          <tr><th>Point</th><th>X</th><th>Y</th><th>Z</th><th /></tr>
         </thead>
         <tbody>
           {POINT_KEYS.map((k) => (
@@ -30,9 +33,10 @@ export function Hardpoints() {
               <td className="mono">{forCorner(active, POINT_NAMES[k])}</td>
               {([0, 1, 2] as const).map((axis) => (
                 <td key={axis}>
-                  <ValueInput field={geom.points[k][axis]} unit="mm" onCommit={(t) => setPoint(k, axis, t)} />
+                  <ValueInput field={geom.points[k][axis]} unit="mm" onCommit={(t) => setPoint(k, axis, t)} locked={pointAxisLocked(locks, root, k, axis, geom.damperArm)} />
                 </td>
               ))}
+              <td><LockButton keys={([0, 1, 2] as const).map((a) => lockKeys.point(root, k, a))} title="Lock / unlock X, Y and Z of this point" /></td>
             </tr>
           ))}
         </tbody>
@@ -45,7 +49,7 @@ export function Hardpoints() {
               <td>
                 <ValueInput
                   field={geom.scalars[k]} unit={SCALAR_META[k].quantity === 'angle' ? 'deg' : 'mm'}
-                  onCommit={(t) => setScalar(k, t)}
+                  onCommit={(t) => setScalar(k, t)} lockKey={lockKeys.field(root, 'scalar', k)}
                 />
               </td>
               <td className="muted">{SCALAR_META[k].quantity === 'angle' ? 'deg' : 'mm'}</td>

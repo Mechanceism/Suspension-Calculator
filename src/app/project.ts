@@ -13,6 +13,7 @@
  *   1  single corner (FL)
  *   2  four corners + links + per-corner settings + vehicle inputs (L6)
  *   3  brakes per corner, brake bias, shared components per axle (anti-roll bar, heave spring)
+ *   4  drive mount per corner, drive split, locks
  */
 import pkg from '../../package.json';
 import { parseValue, type Quantity } from '../core/units/units';
@@ -25,7 +26,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 3;
+export const FORMAT_VERSION = 4;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -63,6 +64,8 @@ export interface ProjectFile {
     antiRollBar: SharedDesign['antiRollBar']; heaveSpring: SharedDesign['heaveSpring'];
     fields: Record<string, FieldJson>; dropLink: { x: FieldJson; y: FieldJson; z: FieldJson };
   }>;
+  /** Locked values (keys as in locks.ts). */
+  locks: string[];
   presetId?: string;
 }
 
@@ -109,6 +112,7 @@ export function serializeProject(d: DesignState, name: string): ProjectFile {
         dropLink: { x: fj(sh.dropLink[0]), y: fj(sh.dropLink[1]), z: fj(sh.dropLink[2]) },
       }];
     })) as unknown as ProjectFile['shared'],
+    locks: Object.keys(d.locks).sort(),
     presetId: d.presetId,
   };
 }
@@ -151,6 +155,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   },
   // 2 → 3: brakes (outboard on every corner), no shared components. Missing values take defaults on read.
   2: (f) => ({ ...f, formatVersion: 3 }),
+  // 3 → 4: drive mount (chassis diff), drive split and locks (none). Missing values take defaults.
+  3: (f) => ({ ...f, formatVersion: 4 }),
 };
 
 export interface ImportResult {
@@ -261,6 +267,7 @@ export function importProject(data: unknown): ImportResult {
   // Values that didn't exist in the file's original format take defaults quietly.
   const original = typeof data.formatVersion === 'number' ? data.formatVersion : 1;
   const older = original < 3;
+  const olderThan4 = original < 4;
   const cornersRaw = isObj(f.corners) ? f.corners : {};
   const corners = Object.fromEntries(CORNER_IDS.map((id) => [id, readCorner(cornersRaw[id], id, defCorner, warnings)])) as Record<CornerId, CornerDesign>;
   const linksRaw = isObj(f.links) ? f.links : {};
@@ -276,6 +283,7 @@ export function importProject(data: unknown): ImportResult {
       steered: typeof r.steered === 'boolean' ? r.steered : DEFAULT_SETTINGS[id].steered,
       powered: typeof r.powered === 'boolean' ? r.powered : DEFAULT_SETTINGS[id].powered,
       brake: r.brake === 'none' || r.brake === 'inboard' || r.brake === 'outboard' ? r.brake : DEFAULT_SETTINGS[id].brake,
+      drive: r.drive === 'hub' ? 'hub' : 'chassis',
     }];
   })) as Record<CornerId, CornerSettings>;
   const activeCorner = (CORNER_IDS as string[]).includes(String(f.activeCorner)) ? f.activeCorner as CornerId : 'FL';
@@ -292,10 +300,11 @@ export function importProject(data: unknown): ImportResult {
     driver: motion.driver === 'contactPatch' ? 'contactPatch' : 'wheelCenter',
     corners, links, settings, activeCorner,
     // Files upgraded from format 1 had no vehicle inputs: use the defaults quietly.
-    vehicle: readRecord(vehicleRaw.fields, VEHICLE_KEYS, (k) => VEHICLE_META[k].quantity, def.vehicle, 'vehicle', older ? [] : warnings),
+    vehicle: readRecord(vehicleRaw.fields, VEHICLE_KEYS, (k) => VEHICLE_META[k].quantity, def.vehicle, 'vehicle', olderThan4 ? [] : warnings),
     autoPreload: typeof vehicleRaw.autoPreload === 'boolean' ? vehicleRaw.autoPreload : def.autoPreload,
     cornerLoadMode: vehicleRaw.cornerLoadMode === 'manual' ? 'manual' : 'vehicle',
     shared: { front: readShared(f.shared, 'front', older ? [] : warnings), rear: readShared(f.shared, 'rear', older ? [] : warnings) },
+    locks: Object.fromEntries((Array.isArray(f.locks) ? f.locks : []).filter((k): k is string => typeof k === 'string').map((k) => [k, true as const])),
   };
   Object.assign(design, corners[rootOf(activeCorner, links)]);
   return { design, name: typeof f.name === 'string' && f.name ? f.name : 'Imported layout', warnings };

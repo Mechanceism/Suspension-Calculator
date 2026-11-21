@@ -241,7 +241,7 @@ export interface AppState extends DesignState {
   steer: Record<SteerKey, Field>;
 
   selection: Selection;
-  leftTab: 'inspector' | 'browser' | 'table';
+  leftTab: 'inspector' | 'browser' | 'table' | 'locks';
   nudgeStep: number;
   /** Round dragged joint coordinates to the grid. */
   snapToGrid: boolean;
@@ -260,14 +260,18 @@ export interface AppState extends DesignState {
   saveAsOpen: boolean;
 
   workspace: Workspace;
+  forceVis: Record<ForceKey, boolean>;
+  /** Arrow length per newton, mm/N. */
+  forceScale: number;
+  forceValues: boolean;
   /** Briefly hides 3D labels while the 3D view is swapped (see SafeHtml). */
   suspendHtml: boolean;
   /** Vehicle lateral acceleration, g (+ = left turn). */
   lateralG: number;
   playingLateral: boolean;
-  /** Vehicle braking deceleration, g. */
-  brakingG: number;
-  playingBrake: boolean;
+  /** Vehicle longitudinal acceleration, g: negative = braking, positive = accelerating (powered corners). */
+  longitudinalG: number;
+  playingLongitudinal: boolean;
 
   setActiveCorner(id: CornerId): void;
   setLink(key: keyof CornerLinks, value: boolean): void;
@@ -276,6 +280,10 @@ export interface AppState extends DesignState {
   setSharedField(axle: Axle, key: SharedFieldKey, text: string): void;
   setDropLink(axle: Axle, axis: 0 | 1 | 2, text: string): void;
   setVehicleField(key: VehicleKey, text: string): void;
+  toggleLock(key: string): void;
+  /** Lock or unlock several keys at once (e.g. all three coordinates of a point). */
+  setLocks(keys: string[], locked: boolean): void;
+  clearLocks(): void;
 
   /** Replace the whole design (File → New / Open / Import). */
   applyDesign(design: DesignState, fileName: string | null, savedSnapshot: string | null): void;
@@ -343,6 +351,8 @@ export interface CornerSettings {
   powered: boolean;
   /** Brake mounting: outboard (torque into the upright) or inboard (into the chassis), or none. */
   brake: BrakeMount;
+  /** How a powered corner is driven: chassis diff + halfshaft, or hub motor. */
+  drive: 'chassis' | 'hub';
 }
 
 /** Shared (left–right) components per axle; each can be absent or one of several types. */
@@ -392,7 +402,7 @@ export function rootOf(id: CornerId, links: CornerLinks): CornerId {
 export const CORNER_NAMES: Record<CornerId, string> = { FL: 'Front left', FR: 'Front right', RL: 'Rear left', RR: 'Rear right' };
 
 /** Vehicle inputs (L6). */
-export const VEHICLE_KEYS = ['mass', 'cgX', 'cgY', 'cgZ', 'wheelbase', 'brakeBias'] as const;
+export const VEHICLE_KEYS = ['mass', 'cgX', 'cgY', 'cgZ', 'wheelbase', 'brakeBias', 'driveSplit'] as const;
 export type VehicleKey = (typeof VEHICLE_KEYS)[number];
 export const VEHICLE_META: Record<VehicleKey, { label: string; quantity: Quantity; unit: string; hint?: string }> = {
   mass: { label: 'Total mass (incl. unsprung)', quantity: 'mass', unit: 'kg' },
@@ -401,9 +411,23 @@ export const VEHICLE_META: Record<VehicleKey, { label: string; quantity: Quantit
   cgZ: { label: 'CG Z from front axle (+ forward)', quantity: 'length', unit: 'mm', hint: 'Negative = behind the front axle' },
   wheelbase: { label: 'Wheelbase', quantity: 'length', unit: 'mm' },
   brakeBias: { label: 'Brake bias (front share)', quantity: 'percent', unit: '%', hint: 'Share of the braking force on the front axle' },
+  driveSplit: { label: 'Drive split (front share)', quantity: 'percent', unit: '%', hint: 'Only used when both axles have powered corners; within an axle the drive is shared equally (open differential)' },
 };
 
 export type Workspace = 'corner' | 'vehicle';
+
+/** Forces that can be drawn in the Vehicle view. */
+export const FORCE_KEYS = ['tireVertical', 'tireLateral', 'tireLongitudinal', 'springs', 'shared', 'weights', 'inertia'] as const;
+export type ForceKey = (typeof FORCE_KEYS)[number];
+export const FORCE_META: Record<ForceKey, { label: string; color: string; hint: string }> = {
+  tireVertical: { label: 'Tire vertical load', color: '#ffd166', hint: 'Ground on tire, at the patch centroid' },
+  tireLateral: { label: 'Tire lateral force', color: '#ef476f', hint: 'Ground on tire, sideways' },
+  tireLongitudinal: { label: 'Brake / drive force', color: '#06d6a0', hint: 'Ground on tire, fore/aft (− braking, + drive)' },
+  springs: { label: 'Spring forces', color: '#ff7eb6', hint: 'Coilover on the body (at the chassis mount) and on the arm (at the arm mount)' },
+  shared: { label: 'Anti-roll bar / heave', color: '#c77dff', hint: 'Shared-component force, shown as the equivalent force at each wheel' },
+  weights: { label: 'Weights', color: '#e0e0e0', hint: 'Sprung weight at the sprung CG, unsprung weights at the wheel centers' },
+  inertia: { label: 'Inertia (d’Alembert)', color: '#8ecae6', hint: '−m·a at the sprung CG: what the body "feels" when cornering, braking or accelerating' },
+};
 
 export interface DesignState {
   presetId: string;
@@ -430,6 +454,8 @@ export interface DesignState {
   /** Corner workbench load: the vehicle's static load for that corner, or a manual value. */
   cornerLoadMode: 'vehicle' | 'manual';
   shared: Record<Axle, SharedDesign>;
+  /** Locked values (see locks.ts for the key format). The optimizer must work around them. */
+  locks: Record<string, true>;
 }
 
 /** The working (active corner) fields as a CornerDesign. */
@@ -468,14 +494,14 @@ export const pickDesign = (s: DesignState): DesignState => ({
   tireModel: s.tireModel, tire: s.tire, volumeChange: s.volumeChange, tireSizeText: s.tireSizeText,
   droop: s.droop, bump: s.bump, driver: s.driver,
   corners: s.corners, links: s.links, settings: s.settings, activeCorner: s.activeCorner,
-  vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode, shared: s.shared,
+  vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode, shared: s.shared, locks: s.locks,
 });
 
 /** The default layout (File → New). */
 export const DEFAULT_LINKS: CornerLinks = { frontPair: true, rearPair: true, rearFromFront: true };
 export const DEFAULT_SETTINGS: Record<CornerId, CornerSettings> = {
-  FL: { steered: true, powered: false, brake: 'outboard' }, FR: { steered: true, powered: false, brake: 'outboard' },
-  RL: { steered: false, powered: false, brake: 'outboard' }, RR: { steered: false, powered: false, brake: 'outboard' },
+  FL: { steered: true, powered: false, brake: 'outboard', drive: 'chassis' }, FR: { steered: true, powered: false, brake: 'outboard', drive: 'chassis' },
+  RL: { steered: false, powered: false, brake: 'outboard', drive: 'chassis' }, RR: { steered: false, powered: false, brake: 'outboard', drive: 'chassis' },
 };
 export const defaultShared = (): SharedDesign => ({
   antiRollBar: 'none',
@@ -494,6 +520,7 @@ export const defaultVehicle = (): Record<VehicleKey, Field> => ({
   cgZ: field(-728.5),
   wheelbase: field(1550),
   brakeBias: field(60, 'percent'),
+  driveSplit: field(50, 'percent'),
 });
 
 export function defaultDesign(presetId = 'C'): DesignState {
@@ -532,6 +559,7 @@ export function defaultDesign(presetId = 'C'): DesignState {
     autoPreload: true,
     cornerLoadMode: 'vehicle',
     shared: { front: defaultShared(), rear: defaultShared() },
+    locks: {},
   };
 }
 
@@ -576,8 +604,11 @@ export const useApp = create<AppState>((set, get) => ({
   workspace: params.get('workspace') === 'vehicle' ? 'vehicle' : 'corner',
   lateralG: num('g', 0),
   playingLateral: false,
-  brakingG: num('brake', 0),
-  playingBrake: false,
+  forceVis: { tireVertical: true, tireLateral: true, tireLongitudinal: true, springs: false, shared: false, weights: false, inertia: false },
+  forceScale: 0.12,
+  forceValues: true,
+  longitudinalG: params.has('brake') ? -Math.abs(num('brake', 0)) : num('accel', 0),
+  playingLongitudinal: false,
   suspendHtml: false,
   setShared: (axle, patch) => set({ shared: { ...get().shared, [axle]: { ...get().shared[axle], ...patch } } }),
   setSharedField: (axle, key, text) => {
@@ -607,13 +638,29 @@ export const useApp = create<AppState>((set, get) => ({
     const links = { ...s.links, [key]: value };
     // A corner that stops following another starts from a copy of the design it was using.
     const corners = { ...before };
+    const locks = { ...s.locks };
     for (const id of CORNER_IDS) {
       const oldRoot = rootOf(id, s.links);
       const newRoot = rootOf(id, links);
-      if (newRoot === id && oldRoot !== id) corners[id] = before[oldRoot];
+      if (newRoot === id && oldRoot !== id) {
+        corners[id] = before[oldRoot];
+        // The new copy starts with the same locks as the design it came from.
+        for (const k of Object.keys(s.locks)) if (k.startsWith(`${oldRoot}.`)) locks[`${id}${k.slice(oldRoot.length)}`] = true;
+      }
     }
-    set({ links, corners, ...corners[rootOf(s.activeCorner, links)] });
+    set({ links, corners, locks, ...corners[rootOf(s.activeCorner, links)] });
   },
+  toggleLock: (key) => {
+    const locks = { ...get().locks };
+    if (locks[key]) delete locks[key]; else locks[key] = true;
+    set({ locks });
+  },
+  setLocks: (keys, locked) => {
+    const locks = { ...get().locks };
+    for (const k of keys) { if (locked) locks[k] = true; else delete locks[k]; }
+    set({ locks });
+  },
+  clearLocks: () => set({ locks: {} }),
   setCornerSetting: (id, key, value) => {
     const s = get();
     set({ settings: { ...s.settings, [id]: { ...s.settings[id], [key]: value } }, ...(key === 'steered' && !value && id === s.activeCorner ? { rack: 0 } : {}) });

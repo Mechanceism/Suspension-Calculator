@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { LocksPanel } from './LocksPanel';
 import { CORNER_IDS, type CornerId } from '../../core/vehicle/vehicle';
 import { deg } from '../../core/suspension/characteristics';
 import {
@@ -52,6 +53,18 @@ export function CornerSetup({ compact = false }: { compact?: boolean }) {
           Powered
         </label>
       </div>
+      {settings[active].powered && (
+        <div className="row">
+          <span className="muted">Drive</span>
+          <select
+            value={settings[active].drive} onChange={(e) => setCornerSetting(active, 'drive', e.target.value as 'chassis' | 'hub')}
+            title="Chassis diff: drive torque through a halfshaft, so the force acts at the wheel center. Hub motor: torque into the upright, so it acts at the contact patch."
+          >
+            <option value="chassis">Chassis diff + halfshaft</option>
+            <option value="hub">Hub motor</option>
+          </select>
+        </div>
+      )}
       <div className="row">
         <span className="muted">Brake</span>
         <select
@@ -78,6 +91,15 @@ export function CornerSetup({ compact = false }: { compact?: boolean }) {
   );
 }
 
+function LocksSection() {
+  const n = useApp((s) => Object.keys(s.locks).length);
+  return (
+    <Section title={`Locks (${n})`} open={n > 0}>
+      <LocksPanel compact />
+    </Section>
+  );
+}
+
 export function VehicleInputs({ model }: { model: VehicleModel | null }) {
   const vehicle = useApp((s) => s.vehicle);
   const setVehicleField = useApp((s) => s.setVehicleField);
@@ -90,7 +112,7 @@ export function VehicleInputs({ model }: { model: VehicleModel | null }) {
       <Section title="Vehicle">
         <FieldRows rows={VEHICLE_KEYS.map((k) => ({
           label: VEHICLE_META[k].label, field: vehicle[k], unit: VEHICLE_META[k].unit, hint: VEHICLE_META[k].hint,
-          onCommit: (t: string) => setVehicleField(k, t),
+          onCommit: (t: string) => setVehicleField(k, t), lockKey: `vehicle.${k}`,
         }))} />
         <p className="hint">Corner unsprung masses are set per corner (Spring &amp; load). The CG is the whole car at static ride height.</p>
       </Section>
@@ -122,6 +144,7 @@ export function VehicleInputs({ model }: { model: VehicleModel | null }) {
       <Section title="Corners">
         <CornerSetup />
       </Section>
+      <LocksSection />
     </div>
   );
 }
@@ -139,7 +162,7 @@ function SharedEditor({ axle }: { axle: Axle }) {
   const setDropLink = useApp((s) => s.setDropLink);
   const row = (k: keyof typeof SHARED_META) => ({
     label: SHARED_META[k].label, field: sh[k], unit: SHARED_META[k].unit, hint: SHARED_META[k].hint,
-    onCommit: (t: string) => setSharedField(axle, k, t),
+    onCommit: (t: string) => setSharedField(axle, k, t), lockKey: `shared.${axle}.${k}`,
   });
   return (
     <div className="shared-axle">
@@ -157,7 +180,9 @@ function SharedEditor({ axle }: { axle: Axle }) {
           <div className="row drop-link">
             <span className="muted" title="Where the drop link attaches to the lower arm (corner frame; mirrored for the right side)">Drop link on LCA</span>
             {(['X', 'Y', 'Z'] as const).map((ax, i) => (
-              <ValueInput key={ax} field={sh.dropLink[i]!} unit="mm" width={58} onCommit={(t) => setDropLink(axle, i as 0 | 1 | 2, t)} />
+              <span key={ax} data-lock-key={`shared.${axle}.dropLink.${ax.toLowerCase()}`}>
+                <ValueInput field={sh.dropLink[i]!} unit="mm" width={58} onCommit={(t) => setDropLink(axle, i as 0 | 1 | 2, t)} lockKey={`shared.${axle}.dropLink.${ax.toLowerCase()}`} />
+              </span>
             ))}
           </div>
         </>
@@ -211,23 +236,25 @@ export function VehicleResults({ model }: { model: VehicleModel | null }) {
           { label: 'Front share (LLTD)', value: Math.abs(t.front.total + t.rear.total) < 1 ? '—' : fmt(100 * t.lltdFront, 1), unit: '%', hint: 'Front axle share of the total lateral load transfer' },
         ]} />
       </Section>
-      <Section title="Braking">
+      <Section title="Braking & acceleration">
         <FieldRows rows={[
-          { label: 'Load moved onto the front axle', value: fmt(model.frontLoadGain, 0), unit: 'N', hint: 'Front axle load minus its static load' },
-          { label: 'Anti-dive (front, geometric)', value: fmt(model.antiDive, 1), unit: '%', hint: 'tan θ · (wheelbase / CG height) · front brake share; θ from the side-view IC (contact patch for outboard brakes, wheel center for inboard)' },
-          { label: 'Anti-lift (rear, geometric)', value: fmt(model.antiLift, 1), unit: '%' },
+          { label: 'Load moved onto the front axle', value: fmt(model.frontLoadGain, 0), unit: 'N', hint: 'Front axle load minus its static load (negative = moved to the rear)' },
+          { label: 'Anti-dive, braking (front)', value: fmt(model.antiDive, 1), unit: '%', hint: 'tan θ · (wheelbase / CG height) · front brake share; θ from the side-view IC (contact patch for outboard brakes, wheel center for inboard)' },
+          { label: 'Anti-lift, braking (rear)', value: fmt(model.antiLift, 1), unit: '%' },
+          { label: 'Anti-squat, accelerating (rear)', value: fmt(model.antiSquat, 1), unit: '%', hint: 'Powered rear corners: θ from the wheel center (chassis diff) or contact patch (hub motor), × rear drive share' },
+          { label: 'Anti-lift, accelerating (front)', value: fmt(model.antiLiftAccel, 1), unit: '%', hint: 'Powered front corners' },
         ]} />
       </Section>
       <Section title="Corners">
         <table className="corner-table">
-          <thead><tr><th /><th>Load N</th><th>Δ static</th><th>Brake N</th><th>Travel</th><th>Incl. °</th><th>Toe °</th></tr></thead>
+          <thead><tr><th /><th>Load N</th><th>Δ static</th><th title="Longitudinal tire force: − braking, + drive">Long. N</th><th>Travel</th><th>Incl. °</th><th>Toe °</th></tr></thead>
           <tbody>
             {corners.map(({ id, c, v, s }) => (
               <tr key={id} title={c.status !== 'ok' ? `At ${STATUS[c.status]}` : undefined} className={c.status !== 'ok' ? 'warn' : ''}>
                 <td><b>{id}</b></td>
                 <td>{fmt(c.tireLoad, 0)}</td>
                 <td>{fmt(c.tireLoad - s, 0)}</td>
-                <td>{fmt(-c.longitudinalForce, 0)}</td>
+                <td>{fmt(c.longitudinalForce, 0)}</td>
                 <td>{fmt(c.travel, 1)}{c.status !== 'ok' ? ' !' : ''}</td>
                 <td>{fmt(deg(c.inclination), 2)}</td>
                 <td>{fmt(v ? deg(v.chars.toe) : NaN, 2)}</td>
@@ -257,8 +284,9 @@ function usePlay(active: boolean, period: number, onPhase: (s: number) => void) 
 export function VehicleMotionBar() {
   const lateralG = useApp((s) => s.lateralG);
   const playing = useApp((s) => s.playingLateral);
-  const brakingG = useApp((s) => s.brakingG);
-  const playingBrake = useApp((s) => s.playingBrake);
+  const longG = useApp((s) => s.longitudinalG);
+  const playingLong = useApp((s) => s.playingLongitudinal);
+  const anyPowered = useApp((s) => Object.values(s.settings).some((c) => c.powered));
   const playingSteer = useApp((s) => s.playingSteer);
   const rack = useApp((s) => s.rack);
   const cFactor = useApp((s) => s.steer.cFactor.value);
@@ -267,8 +295,9 @@ export function VehicleMotionBar() {
   const swLimit = (rackLimit / cFactor) * 360;
   usePlay(playing, 5000, (s) => useApp.getState().set('lateralG', Number((1.2 * s).toFixed(3))));
   usePlay(playingSteer, 5000, (s) => useApp.getState().set('rack', s * rackLimit));
-  usePlay(playingBrake, 4000, (s) => useApp.getState().set('brakingG', Number((0.6 * (1 + s)).toFixed(3))));
-  const setB = (g: number) => { set('playingBrake', false); set('brakingG', g); };
+  // Play: brake to 1.2 g, then (if any corner is powered) accelerate to 0.6 g.
+  usePlay(playingLong, 5000, (s) => useApp.getState().set('longitudinalG', Number((s < 0 ? 1.2 * s : (anyPowered ? 0.6 : 0) * s).toFixed(3))));
+  const setL = (g: number) => { set('playingLongitudinal', false); set('longitudinalG', g); };
   const setG = (g: number) => { set('playingLateral', false); set('lateralG', g); };
   const setRack = (r: number) => { set('playingSteer', false); set('rack', r); };
   return (
@@ -289,16 +318,19 @@ export function VehicleMotionBar() {
       </div>
       <div className="motion-group">
         <label className="slider">
-          <span>Braking <b>{brakingG.toFixed(2)}</b> g</span>
-          <input type="range" min={0} max={1.6} step={0.01} value={brakingG} onChange={(e) => setB(Number(e.target.value))} onDoubleClick={() => setB(0)} />
+          <span>
+            Longitudinal <b>{Math.abs(longG).toFixed(2)}</b> g {longG < 0 ? '(braking)' : longG > 0 ? '(accelerating)' : ''}
+            {longG > 0 && !anyPowered && <em className="muted"> — no powered corners</em>}
+          </span>
+          <input type="range" min={-1.6} max={1.2} step={0.01} value={longG} onChange={(e) => setL(Number(e.target.value))} onDoubleClick={() => setL(0)} />
           <span className="quick">
-            <button onClick={() => setB(0)}>0</button>
-            <button onClick={() => setB(0.5)}>0.5 g</button>
-            <button onClick={() => setB(1)}>1 g</button>
+            <button onClick={() => setL(-1)}>Brake 1 g</button>
+            <button onClick={() => setL(0)}>0</button>
+            <button onClick={() => setL(0.5)} disabled={!anyPowered}>Accel 0.5 g</button>
           </span>
         </label>
-        <button className={playingBrake ? 'active' : ''} onClick={() => set('playingBrake', !playingBrake)} title="Animate braking 0 – 1.2 g">
-          {playingBrake ? '❚❚' : '▶'} Brake
+        <button className={playingLong ? 'active' : ''} onClick={() => set('playingLongitudinal', !playingLong)} title="Animate braking (and accelerating if any corner is powered)">
+          {playingLong ? '❚❚' : '▶'} Brake/accel
         </button>
       </div>
       <div className="motion-group">

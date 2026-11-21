@@ -1,4 +1,5 @@
-import { useApp, SPRING_KEYS, SPRING_META, DAMPER_KEYS, DAMPER_META, type ArmChoice, type SpringKey } from '../store';
+import { useApp, SPRING_KEYS, SPRING_META, DAMPER_KEYS, DAMPER_META, rootOf, type ArmChoice, type SpringKey } from '../store';
+import { lockKeys } from '../locks';
 import type { Model } from '../useModel';
 import { FieldRows, fmt } from './FieldRows';
 
@@ -9,6 +10,7 @@ export function SpringFields({ keys = SPRING_KEYS }: { keys?: readonly SpringKey
   const damperArm = useApp((s) => s.geom.damperArm);
   const setDamperArm = useApp((s) => s.setDamperArm);
   const fitSpring = useApp((s) => s.fitSpring);
+  const root = useApp((s) => rootOf(s.activeCorner, s.links));
   return (
     <>
       <div className="row">
@@ -26,6 +28,7 @@ export function SpringFields({ keys = SPRING_KEYS }: { keys?: readonly SpringKey
       </div>
       <FieldRows rows={keys.map((k) => ({
         label: SPRING_META[k].label, field: spring[k], unit: SPRING_META[k].unit, onCommit: (t: string) => setSpringField(k, t),
+        lockKey: lockKeys.field(root, 'spring', k),
       }))} />
       <button className="wide-btn" onClick={fitSpring} title="Free length that holds the static corner load at the design position (travel 0)">
         Fit free length to design ride height
@@ -41,6 +44,8 @@ export function DamperFields({ model }: { model: Model }) {
   const bumpStop = useApp((s) => s.bumpStop);
   const set = useApp((s) => s.set);
   const lim = model.damperLimits;
+  const root = useApp((s) => rootOf(s.activeCorner, s.links));
+
   const useLimits = () => {
     if (lim?.droop !== null && lim?.droop !== undefined) set('droop', Math.round(-lim.droop * 10) / 10);
     if (lim?.bump !== null && lim?.bump !== undefined) set('bump', Math.round(lim.bump * 10) / 10);
@@ -49,6 +54,7 @@ export function DamperFields({ model }: { model: Model }) {
     <>
       <FieldRows rows={DAMPER_KEYS.filter((k) => bumpStop || !k.startsWith('bumpStop')).map((k) => ({
         label: DAMPER_META[k].label, field: damper[k], unit: DAMPER_META[k].unit, onCommit: (t: string) => setDamperField(k, t),
+        lockKey: lockKeys.field(root, 'damper', k),
       }))} />
       <label className="check-row">
         <input type="checkbox" checked={bumpStop} onChange={() => set('bumpStop', !bumpStop)} />

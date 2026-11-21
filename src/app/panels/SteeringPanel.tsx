@@ -12,6 +12,7 @@ export function SteerFields({ keys }: { keys: SteerKey[] }) {
   return (
     <FieldRows rows={keys.map((k) => ({
       label: STEER_META[k].label, field: steer[k], unit: STEER_META[k].unit, onCommit: (t: string) => setSteerField(k, t),
+      lockKey: `steer.${k}`,
     }))} />
   );
 }

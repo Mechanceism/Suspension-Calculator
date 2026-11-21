@@ -2,7 +2,8 @@
  * Inspector: the editable variables of whatever is selected (click a part or joint in the viewport),
  * plus its 1st and 2nd family so related settings are one click away.
  */
-import { useApp, POINT_NAMES, activeParam, SPRING_META, vehicleStaticLoads, mergedCorners, type ComponentId, type PointKey } from '../store';
+import { useApp, POINT_NAMES, activeParam, SPRING_META, vehicleStaticLoads, mergedCorners, rootOf, type ComponentId, type PointKey } from '../store';
+import { lockKeys, pointAxisLocked } from '../locks';
 import { toGeometry } from '../store';
 import { componentDefs, family, ownersOf, POINT_LABELS } from '../components';
 import { armMetrics } from '../../core/suspension/armGeometry';
@@ -11,7 +12,7 @@ import { distance } from '../../core/math/vec3';
 import { COLORS } from '../viewport/Scene';
 import type { Model } from '../useModel';
 import { FieldRows, Section, fmt, derivedField } from './FieldRows';
-import { ValueInput } from './ValueInput';
+import { ValueInput, LockButton } from './ValueInput';
 import { PointEditor, GroupMove } from './PointEditor';
 import { SpringFields, DamperFields } from './SpringPanel';
 import { TireFields } from './TirePanel';
@@ -47,20 +48,25 @@ function PointsTable({ points }: { points: PointKey[] }) {
   const geom = useApp((s) => s.geom);
   const setPoint = useApp((s) => s.setPoint);
   const select = useApp((s) => s.select);
+  const locks = useApp((s) => s.locks);
+  const root = useApp((s) => rootOf(s.activeCorner, s.links));
   return (
     <table className="hp-table">
-      <thead><tr><th>Point</th><th>X</th><th>Y</th><th>Z</th></tr></thead>
+      <thead><tr><th>Point</th><th>X</th><th>Y</th><th>Z</th><th /></tr></thead>
       <tbody>
         {points.map((k) => (
           <tr key={k}>
             <td>
-              <button className="link-btn" title={`${activeParam(POINT_NAMES[k])} — open joint menu`} onClick={() => select({ kind: 'point', id: k })}>
+              <button className="link-btn" title={`${activeParam(POINT_NAMES[k])} — select the joint`} onClick={() => select({ kind: 'point', id: k })}>
                 {POINT_LABELS[k]}
               </button>
             </td>
             {([0, 1, 2] as const).map((i) => (
-              <td key={i}><ValueInput field={geom.points[k][i]} unit="mm" onCommit={(t) => setPoint(k, i, t)} /></td>
+              <td key={i} data-lock-key={lockKeys.point(root, k, i)}>
+                <ValueInput field={geom.points[k][i]} unit="mm" onCommit={(t) => setPoint(k, i, t)} locked={pointAxisLocked(locks, root, k, i, geom.damperArm)} />
+              </td>
             ))}
+            <td><LockButton keys={([0, 1, 2] as const).map((i) => lockKeys.point(root, k, i))} title="Lock / unlock X, Y and Z of this point" /></td>
           </tr>
         ))}
       </tbody>
@@ -70,6 +76,8 @@ function PointsTable({ points }: { points: PointKey[] }) {
 
 function ArmSection({ arm, model }: { arm: 'uca' | 'lca'; model: Model }) {
   const geom = useApp((s) => s.geom);
+  const root = useApp((s) => rootOf(s.activeCorner, s.links));
+
   const setArmDerived = useApp((s) => s.setArmDerived);
   const a = toGeometry(geom)[arm];
   const m = armMetrics(a);
@@ -78,9 +86,9 @@ function ArmSection({ arm, model }: { arm: 'uca' | 'lca'; model: Model }) {
   return (
     <>
       <FieldRows rows={[
-        { label: 'Length (ball joint → pivot axis)', field: derivedField(m.length, 2), unit: 'mm', onCommit: (t) => setArmDerived(arm, 'length', t), hint: 'Moves the frame pivots; the ball joint stays put' },
-        { label: 'Pivot-axis inclination', field: derivedField(deg(m.inclination), 3), unit: '°', onCommit: (t) => setArmDerived(arm, 'inclination', t), hint: 'Side view, + = front pivot higher (anti-dive style)' },
-        { label: 'Pivot-axis plan angle', field: derivedField(deg(m.planAngle), 3), unit: '°', onCommit: (t) => setArmDerived(arm, 'planAngle', t), hint: 'Top view, + = front pivot further outboard' },
+        { label: 'Length (ball joint → pivot axis)', field: derivedField(m.length, 2), unit: 'mm', onCommit: (t) => setArmDerived(arm, 'length', t), hint: 'Moves the frame pivots; the ball joint stays put', lockKey: lockKeys.derived(root, arm, 'length') },
+        { label: 'Pivot-axis inclination', field: derivedField(deg(m.inclination), 3), unit: '°', onCommit: (t) => setArmDerived(arm, 'inclination', t), hint: 'Side view, + = front pivot higher (anti-dive style)', lockKey: lockKeys.derived(root, arm, 'inclination') },
+        { label: 'Pivot-axis plan angle', field: derivedField(deg(m.planAngle), 3), unit: '°', onCommit: (t) => setArmDerived(arm, 'planAngle', t), hint: 'Top view, + = front pivot further outboard', lockKey: lockKeys.derived(root, arm, 'planAngle') },
       ]} />
       <FieldRows rows={[
         { label: 'Front leg', value: fmt(m.frontLeg, 1), unit: 'mm' },
@@ -125,11 +133,13 @@ function TieRodSection({ model }: { model: Model }) {
 
 function WheelSection() {
   const geom = useApp((s) => s.geom);
+  const root = useApp((s) => rootOf(s.activeCorner, s.links));
+
   const setScalar = useApp((s) => s.setScalar);
   return (
     <FieldRows rows={[
-      { label: 'Static camber', field: geom.scalars.staticCamber, unit: '°', onCommit: (t) => setScalar('staticCamber', t), hint: '+ = top outboard' },
-      { label: 'Static toe', field: geom.scalars.staticToe, unit: '°', onCommit: (t) => setScalar('staticToe', t), hint: '+ = toe-in' },
+      { label: 'Static camber', field: geom.scalars.staticCamber, unit: '°', onCommit: (t) => setScalar('staticCamber', t), hint: '+ = top outboard', lockKey: lockKeys.field(root, 'scalar', 'staticCamber') },
+      { label: 'Static toe', field: geom.scalars.staticToe, unit: '°', onCommit: (t) => setScalar('staticToe', t), hint: '+ = toe-in', lockKey: lockKeys.field(root, 'scalar', 'staticToe') },
     ]} />
   );
 }
@@ -139,6 +149,8 @@ function ChassisSection() {
   const setSpringField = useApp((s) => s.setSpringField);
   const mode = useApp((s) => s.cornerLoadMode);
   const vehicleLoad = useApp((s) => vehicleStaticLoads(s.vehicle, mergedCorners(s), s.links)[s.activeCorner]);
+  const root = useApp((s) => rootOf(s.activeCorner, s.links));
+
   const droop = useApp((s) => s.droop);
   const bump = useApp((s) => s.bump);
   const set = useApp((s) => s.set);
@@ -153,9 +165,9 @@ function ChassisSection() {
       </div>
       <FieldRows rows={[
         ...(mode === 'manual'
-          ? [{ label: SPRING_META.cornerLoad.label, field: spring.cornerLoad, unit: 'N', onCommit: (t: string) => setSpringField('cornerLoad', t) }]
+          ? [{ label: SPRING_META.cornerLoad.label, field: spring.cornerLoad, unit: 'N', onCommit: (t: string) => setSpringField('cornerLoad', t), lockKey: lockKeys.field(root, 'spring', 'cornerLoad') }]
           : [{ label: SPRING_META.cornerLoad.label, value: vehicleLoad.toFixed(0), unit: 'N', hint: 'Static weight on this corner from the vehicle mass and CG' }]),
-        { label: SPRING_META.unsprungMass.label, field: spring.unsprungMass, unit: SPRING_META.unsprungMass.unit, onCommit: (t: string) => setSpringField('unsprungMass', t) },
+        { label: SPRING_META.unsprungMass.label, field: spring.unsprungMass, unit: SPRING_META.unsprungMass.unit, onCommit: (t: string) => setSpringField('unsprungMass', t), lockKey: lockKeys.field(root, 'spring', 'unsprungMass') },
       ]} />
       <FieldRows rows={[
         { label: 'Droop travel', field: derivedField(droop, 1), unit: 'mm', onCommit: (t) => set('droop', Math.max(1, Math.abs(Number(t) || droop))) },
@@ -182,14 +194,17 @@ function SpringResults({ model }: { model: Model }) {
 function ComponentInspector({ id, model }: { id: ComponentId; model: Model }) {
   const damperArm = useApp((s) => s.geom.damperArm);
   const focusOn = useApp((s) => s.focusOn);
+  const root = useApp((s) => rootOf(s.activeCorner, s.links));
+
   const defs = componentDefs(damperArm);
   const def = defs[id];
   const fam = family(id, defs);
   return (
     <div className="inspector">
-      <div className="insp-head">
+      <div className="insp-head" data-lock-key={lockKeys.part(root, id)}>
         <span className="swatch big" style={{ background: COMPONENT_COLOR[id] }} />
         <b>{def.label}</b>
+        {def.points.length > 0 && <LockButton keys={[lockKeys.part(root, id)]} title="Lock the whole part (all of its points) so the optimizer can't move it" />}
         <button className="icon-btn" title="Focus camera" onClick={() => focusOn(id)}>◎ Focus</button>
       </div>
       <Family {...fam} />
@@ -230,6 +245,8 @@ function ComponentInspector({ id, model }: { id: ComponentId; model: Model }) {
 
 function PointInspector({ id }: { id: PointKey }) {
   const defs = componentDefs(useApp((s) => s.geom.damperArm));
+  const root = useApp((s) => rootOf(s.activeCorner, s.links));
+
   const owners = ownersOf(id, defs);
   const related = [...new Set(owners.flatMap((o) => family(o, defs).first))].filter((c) => !owners.includes(c));
   return (
@@ -240,6 +257,7 @@ function PointInspector({ id }: { id: PointKey }) {
           <b>{POINT_LABELS[id]}</b>
           <div className="mono muted">{activeParam(POINT_NAMES[id])}</div>
         </div>
+        <LockButton keys={([0, 1, 2] as const).map((i) => lockKeys.point(root, id, i))} title="Lock / unlock X, Y and Z of this point" />
       </div>
       <div className="family">
         <div className="family-row"><span className="muted">Part of</span>{owners.map((c) => <Chip key={c} id={c} label={defs[c].label} />)}</div>

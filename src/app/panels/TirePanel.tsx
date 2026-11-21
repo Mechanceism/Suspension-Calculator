@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { useApp, SCALAR_META, TIRE_KEYS, TIRE_META, type ScalarKey, type TireModelKind } from '../store';
+import { useApp, SCALAR_META, TIRE_KEYS, TIRE_META, rootOf, type ScalarKey, type TireModelKind } from '../store';
+import { lockKeys } from '../locks';
 import { ValueInput } from './ValueInput';
 
 const DIM_KEYS: ScalarKey[] = ['tireDiameter', 'tireWidth', 'rimDiameter', 'shoulderRadius'];
@@ -22,6 +23,7 @@ export function TireFields() {
   const applyTireSize = useApp((s) => s.applyTireSize);
   const setTireField = useApp((s) => s.setTireField);
   const set = useApp((s) => s.set);
+  const root = useApp((s) => rootOf(s.activeCorner, s.links));
   const [size, setSize] = useState(sizeText);
   useEffect(() => setSize(sizeText), [sizeText]);
 
@@ -42,9 +44,9 @@ export function TireFields() {
       <table className="hp-table scalars">
         <tbody>
           {DIM_KEYS.map((k) => (
-            <tr key={k}>
+            <tr key={k} data-lock-key={lockKeys.field(root, 'scalar', k)}>
               <td>{SCALAR_META[k].label}</td>
-              <td><ValueInput field={geom.scalars[k]} unit="mm" onCommit={(t) => setScalar(k, t)} /></td>
+              <td><ValueInput field={geom.scalars[k]} unit="mm" onCommit={(t) => setScalar(k, t)} lockKey={lockKeys.field(root, 'scalar', k)} /></td>
               <td className="muted">mm</td>
             </tr>
           ))}
@@ -60,9 +62,9 @@ export function TireFields() {
         <table className="hp-table scalars">
           <tbody>
             {TIRE_KEYS.filter((k) => TIRE_META[k].models.includes(tireModel)).map((k) => (
-              <tr key={k}>
+              <tr key={k} data-lock-key={lockKeys.field(root, 'tire', k)}>
                 <td>{TIRE_META[k].label}</td>
-                <td><ValueInput field={tire[k]} unit={TIRE_META[k].unit} onCommit={(t) => setTireField(k, t)} /></td>
+                <td><ValueInput field={tire[k]} unit={TIRE_META[k].unit} onCommit={(t) => setTireField(k, t)} lockKey={lockKeys.field(root, 'tire', k)} /></td>
                 <td className="muted">{TIRE_META[k].unit}</td>
               </tr>
             ))}

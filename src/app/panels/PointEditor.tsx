@@ -2,8 +2,9 @@
 import { useState } from 'react';
 import { vec3 } from '../../core/math/vec3';
 import { parseValue } from '../../core/units/units';
-import { useApp, type PointKey } from '../store';
-import { ValueInput } from './ValueInput';
+import { useApp, rootOf, type PointKey } from '../store';
+import { lockKeys, pointAxisLocked } from '../locks';
+import { ValueInput, LockButton } from './ValueInput';
 
 const STEPS = [0.1, 0.5, 1, 5, 10, 25];
 const AXES = ['X', 'Y', 'Z'] as const;
@@ -12,6 +13,10 @@ const axisVec = (i: number, s: number) => vec3(i === 0 ? s : 0, i === 1 ? s : 0,
 /** Move several points together (a whole part or a multi-selection) by steps or an entered amount. */
 export function GroupMove({ ids }: { ids: PointKey[] }) {
   const movePoints = useApp((s) => s.movePoints);
+  const locks = useApp((s) => s.locks);
+  const root = useApp((s) => rootOf(s.activeCorner, s.links));
+  const damperArm = useApp((s) => s.geom.damperArm);
+  const axisLocked = (i: number) => ids.some((k) => pointAxisLocked(locks, root, k, i as 0 | 1 | 2, damperArm));
   const step = useApp((s) => s.nudgeStep);
   const snap = useApp((s) => s.snapToGrid);
   const grid = useApp((s) => s.gridSize);
@@ -28,8 +33,8 @@ export function GroupMove({ ids }: { ids: PointKey[] }) {
         {AXES.map((ax, i) => (
           <span key={ax} className="nowrap">
             <span className="muted">{ax}</span>
-            <button className="nudge" title={`−${step} mm`} onClick={() => movePoints(ids, axisVec(i, -step))}>−</button>
-            <button className="nudge" title={`+${step} mm`} onClick={() => movePoints(ids, axisVec(i, step))}>+</button>
+            <button className="nudge" disabled={axisLocked(i)} title={axisLocked(i) ? 'Locked' : `−${step} mm`} onClick={() => movePoints(ids, axisVec(i, -step))}>−</button>
+            <button className="nudge" disabled={axisLocked(i)} title={axisLocked(i) ? 'Locked' : `+${step} mm`} onClick={() => movePoints(ids, axisVec(i, step))}>+</button>
           </span>
         ))}
       </div>
@@ -67,6 +72,9 @@ export function GroupMove({ ids }: { ids: PointKey[] }) {
 
 export function PointEditor({ id }: { id: PointKey }) {
   const field = useApp((s) => s.geom.points[id]);
+  const locks = useApp((s) => s.locks);
+  const root = useApp((s) => rootOf(s.activeCorner, s.links));
+  const damperArm = useApp((s) => s.geom.damperArm);
   const setPoint = useApp((s) => s.setPoint);
   const movePoint = useApp((s) => s.movePoint);
   const step = useApp((s) => s.nudgeStep);
@@ -83,16 +91,20 @@ export function PointEditor({ id }: { id: PointKey }) {
     <div className="point-editor">
       <table className="jm-table">
         <tbody>
-          {AXES.map((ax, i) => (
-            <tr key={ax}>
-              <td className="muted">{ax}</td>
-              <td><ValueInput field={field[i]!} unit="mm" onCommit={(t) => setPoint(id, i as 0 | 1 | 2, t)} /></td>
-              <td className="nowrap">
-                <button className="nudge" title={`−${step} mm`} onClick={() => movePoint(id, axisVec(i, -step))}>−</button>
-                <button className="nudge" title={`+${step} mm`} onClick={() => movePoint(id, axisVec(i, step))}>+</button>
-              </td>
-            </tr>
-          ))}
+          {AXES.map((ax, i) => {
+            const locked = pointAxisLocked(locks, root, id, i as 0 | 1 | 2, damperArm);
+            return (
+              <tr key={ax} data-lock-key={lockKeys.point(root, id, i as 0 | 1 | 2)}>
+                <td className="muted">{ax}</td>
+                <td><ValueInput field={field[i]!} unit="mm" onCommit={(t) => setPoint(id, i as 0 | 1 | 2, t)} locked={locked} /></td>
+                <td className="nowrap">
+                  <button className="nudge" disabled={locked} title={locked ? 'Locked' : `−${step} mm`} onClick={() => movePoint(id, axisVec(i, -step))}>−</button>
+                  <button className="nudge" disabled={locked} title={locked ? 'Locked' : `+${step} mm`} onClick={() => movePoint(id, axisVec(i, step))}>+</button>
+                  <LockButton keys={[lockKeys.point(root, id, i as 0 | 1 | 2)]} title={`Lock ${ax} of this point`} />
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
       <div className="jm-row">

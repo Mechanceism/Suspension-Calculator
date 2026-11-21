@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   DoubleWishbone, CornerTable, solveVehicle, staticCornerLoads, fitFreeLength, designGroundY, characteristics,
   setPivotInclination, CORNER_IDS, isFront, vec3, rad,
-  type VehicleInput, type TireForceModel, type DoubleWishboneGeometry, type AxleShared, type BrakeMount, type TrackedPoint,
+  type VehicleInput, type TireForceModel, type DoubleWishboneGeometry, type AxleShared, type BrakeMount, type TrackedPoint, type DriveMount,
 } from '../src/core';
 import { SAMPLE_LAYOUTS, SAMPLE_SPRING } from '../src/examples/sampleLayouts';
 
@@ -21,12 +21,13 @@ const NONE: AxleShared = { antiRollBar: { kind: 'none' }, heaveSpring: { kind: '
 const DROP_LINK: TrackedPoint = { body: 'lca', point: vec3(450, 41.5, 60) };
 
 function car(opts: {
-  front?: DoubleWishboneGeometry; lateralG?: number; brakingG?: number; brake?: BrakeMount;
+  front?: DoubleWishboneGeometry; rear?: DoubleWishboneGeometry; lateralG?: number; brakingG?: number; brake?: BrakeMount;
+  accelG?: number; rearDrive?: DriveMount;
   shared?: { front: AxleShared; rear: AxleShared }; track?: TrackedPoint;
 } = {}): VehicleInput {
   const fGeom = opts.front ?? base;
   const cF = new DoubleWishbone(fGeom);
-  const cR = new DoubleWishbone(base);
+  const cR = new DoubleWishbone(opts.rear ?? base);
   const cx = cF.design().points.contact.x;
   const loads = staticCornerLoads(MASS, CG, WB, { FL: cx, FR: cx, RL: cx, RR: cx });
   const tF = new CornerTable(cF, 0, [-50, 50], 41, opts.track);
@@ -36,10 +37,12 @@ function car(opts: {
   return {
     totalMass: MASS, cg: vec3(CG.x, groundY + CG.y, CG.z), wheelbase: WB, groundY,
     lateralG: opts.lateralG ?? 0, brakingG: opts.brakingG ?? 0, brakeBias: 0.6, shared: opts.shared,
+    accelG: opts.accelG ?? 0, driveSplit: 0,
     corners: CORNER_IDS.map((id) => {
       const corner = isFront(id) ? cF : cR;
       return {
         id, table: isFront(id) ? tF : tR, unsprungMass: MU, tire: { profile, model: gas }, brake: opts.brake ?? 'outboard',
+        drive: isFront(id) ? 'none' : (opts.rearDrive ?? 'none'),
         spring: { rate: SAMPLE_SPRING.rate, freeLength: fitFreeLength(corner, SAMPLE_SPRING.rate, loads[id] - MU * G) },
       };
     }),
@@ -79,6 +82,42 @@ describe('braking', () => {
     expect(Math.sign(plain.pose.pitch - out.pose.pitch)).toBe(Math.sign(antiOut));
     expect(Math.sign(plain.pose.pitch - inb.pose.pitch)).toBe(Math.sign(antiIn));
     expect(Math.sign(inb.pose.pitch - out.pose.pitch)).toBe(Math.sign(antiOut - antiIn));
+  });
+});
+
+describe('drive (powered corners)', () => {
+  it('rear-wheel drive: rear squats, load moves rearward per statics, open diff splits evenly', () => {
+    const still = solveVehicle(car());
+    const r = solveVehicle(car({ accelG: 0.5, rearDrive: 'chassis' }));
+    expect(r.converged).toBe(true);
+    expect(r.notes).toEqual([]);
+    expect(r.pose.pitch).toBeLessThan(still.pose.pitch); // nose up
+    expect(r.corners.RL.driveForce + r.corners.RR.driveForce).toBeCloseTo(0.5 * MASS * G, 3);
+    expect(r.corners.FL.driveForce).toBe(0);
+    expect(r.corners.RL.driveForce).toBeCloseTo(r.corners.RR.driveForce, 9);
+    const dW = sumLoad(r, ['RL', 'RR']) - sumLoad(still, ['RL', 'RR']);
+    expect(Math.abs(dW * WB - 0.5 * MASS * G * 280) / (0.5 * MASS * G * 280)).toBeLessThan(0.05);
+  });
+
+  it('acceleration without powered corners is ignored, with a note', () => {
+    const r = solveVehicle(car({ accelG: 0.5 }));
+    expect(r.notes.length).toBe(1);
+    expect(CORNER_IDS.every((id) => r.corners[id].driveForce === 0)).toBe(true);
+  });
+
+  it('hub motor vs chassis drive changes squat the way the anti-squat geometry predicts', () => {
+    const anti: DoubleWishboneGeometry = { ...base, uca: setPivotInclination(base.uca, rad(-8)) };
+    const c = characteristics(new DoubleWishbone(anti).design());
+    const chassis = solveVehicle(car({ rear: anti, accelG: 0.6, rearDrive: 'chassis' }));
+    const hub = solveVehicle(car({ rear: anti, accelG: 0.6, rearDrive: 'hub' }));
+    const plain = solveVehicle(car({ accelG: 0.6, rearDrive: 'chassis' }));
+    expect(chassis.converged && hub.converged && plain.converged).toBe(true);
+    // Rear anti-squat ∝ −tan θ (θ from the contact patch for a hub motor, the wheel center for a chassis diff).
+    const antiHub = -Math.tan(c.antiAngleContact);
+    const antiChassis = -Math.tan(c.antiAngleWheelCenter);
+    // More anti-squat → less nose-up pitch (pitch is negative when the nose rises).
+    expect(Math.sign(hub.pose.pitch - plain.pose.pitch)).toBe(Math.sign(antiHub));
+    expect(Math.sign(chassis.pose.pitch - plain.pose.pitch)).toBe(Math.sign(antiChassis));
   });
 });
 

@@ -37,6 +37,7 @@ export interface VehicleCornerView {
   profile: TireProfile;
   /** Anti-roll-bar drop-link mount (corner frame, moved with the arm), if a torsion bar is used. */
   dropLink: Vec3 | null;
+  unsprungMass: number;
 }
 
 export interface AxleTransfer {
@@ -63,9 +64,14 @@ export interface VehicleModel {
   /** Classic geometric anti-dive (front) and anti-lift (rear) under braking, % (side-view IC, brake mount, bias). */
   antiDive: number;
   antiLift: number;
+  /** Classic geometric anti-squat (rear) and front anti-lift under acceleration, % (side-view IC, drive mount, split). */
+  antiSquat: number;
+  antiLiftAccel: number;
   rolloverG: number;
   sprungCgWorld: Vec3 | null;
   wheelbase: number;
+  /** Accelerations used in the solve, g (+ lateral = left turn, + longitudinal = accelerating). */
+  accel: { lateral: number; longitudinal: number };
 }
 
 const pickVehicleInputs = (s: DesignState) => ({
@@ -80,7 +86,9 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
   // Motion inputs are separate so moving a slider doesn't rebuild the corners (or their cached curves).
   const rack = useApp((st) => st.rack);
   const lateralG = useApp((st) => st.lateralG);
-  const brakingG = useApp((st) => st.brakingG);
+  const longitudinalG = useApp((st) => st.longitudinalG);
+  const brakingG = Math.max(0, -longitudinalG);
+  const accelG = Math.max(0, longitudinalG);
   const tableCache = useRef(new WeakMap<object, Map<string, CornerTable>>());
   const lastPose = useRef<ChassisPose | undefined>(undefined);
 
@@ -114,7 +122,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
       error: setup.error, result: null, corners: {}, staticLoads: { FL: 0, FR: 0, RL: 0, RR: 0 }, groundY: 0,
       rollCenters: { front: null, rear: null }, rideHeight: { front: NaN, rear: NaN },
       transfer: { front: { total: 0, geometric: 0, elastic: 0 }, rear: { total: 0, geometric: 0, elastic: 0 }, lltdFront: NaN },
-      rolloverG: NaN, sprungCgWorld: null, wheelbase, frontLoadGain: NaN, antiDive: NaN, antiLift: NaN,
+      rolloverG: NaN, sprungCgWorld: null, wheelbase, accel: { lateral: 0, longitudinal: 0 }, frontLoadGain: NaN, antiDive: NaN, antiLift: NaN, antiSquat: NaN, antiLiftAccel: NaN,
     };
     if (!setup.all || !setup.built) return empty;
     const all = setup.all;
@@ -147,6 +155,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
           : d.spring.freeLength.value;
         corners.push({
           id, table, unsprungMass: mu, tire: { profile: b.profile, model: b.model }, brake: s.settings[id].brake,
+          drive: s.settings[id].powered ? s.settings[id].drive : 'none',
           spring: {
             rate: d.spring.springRate.value, freeLength,
             ...(d.bumpStop ? { bumpStopLength: d.damper.bumpStopLength.value, bumpStopRate: d.damper.bumpStopRate.value } : {}),
@@ -169,6 +178,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
       const res = solveVehicle(
         {
           corners, totalMass: v.mass.value, cg, wheelbase, groundY, lateralG, brakingG, brakeBias: bias,
+          accelG, driveSplit: v.driveSplit.value / 100,
           shared: { front: toAxle(s.shared.front), rear: toAxle(s.shared.rear) },
         },
         { guess: lastPose.current },
@@ -190,7 +200,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         const dropLink = axleShared.antiRollBar === 'torsionBar'
           ? b.corner.pointOn(state, 'lca', vec3(axleShared.dropLink[0].value, axleShared.dropLink[1].value, axleShared.dropLink[2].value))
           : null;
-        views[c.id] = { id: c.id, root: rootOf(c.id, s.links), rack: racks[c.id], state, chars: characteristics(state), patch, axisWorld, profile: b.profile, dropLink };
+        views[c.id] = { id: c.id, root: rootOf(c.id, s.links), rack: racks[c.id], state, chars: characteristics(state), patch, axisWorld, profile: b.profile, dropLink, unsprungMass: c.unsprungMass };
       }
 
       // Roll centers from the actual left/right corners (front view, world).
@@ -233,8 +243,22 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
       };
       const frontStatic = staticLoads.FL + staticLoads.FR;
+      // Anti-squat (rear) / anti-lift (front) under acceleration: θ from the wheel center for a
+      // chassis diff, from the contact patch for a hub motor; share = the axle's drive share.
+      const poweredIds = CORNER_IDS.filter((id) => s.settings[id].powered);
+      const frontPowered = poweredIds.filter((id) => isFront(id));
+      const rearPowered = poweredIds.filter((id) => !isFront(id));
+      const split = frontPowered.length && rearPowered.length ? v.driveSplit.value / 100 : frontPowered.length ? 1 : 0;
+      const driveAnti = (ids: CornerId[], share: number, sign: number) => {
+        const vals = ids.map((id) => {
+          const ch = views[id]!.chars;
+          const th = s.settings[id].drive === 'hub' ? ch.antiAngleContact : ch.antiAngleWheelCenter;
+          return sign * Math.tan(th) * (wheelbase / v.cgY.value) * share * 100;
+        });
+        return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : NaN;
+      };
       return {
-        error: res.converged ? null : 'Vehicle solve did not fully converge — check corner travel ranges and loads.',
+        error: res.converged ? (res.notes.length ? res.notes.join(' ') : null) : 'Vehicle solve did not fully converge — check corner travel ranges and loads.',
         result: res, corners: views, staticLoads, groundY, rollCenters,
         rideHeight: { front: ride(0), rear: ride(-wheelbase) },
         transfer: { front, rear, lltdFront: front.total + rear.total !== 0 ? front.total / (front.total + rear.total) : NaN },
@@ -243,13 +267,16 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         antiDive: antiOf(['FL', 'FR'], bias, 1),
         // Rear: a side-view IC ahead of and above the wheel resists lift.
         antiLift: antiOf(['RL', 'RR'], 1 - bias, -1),
+        antiSquat: driveAnti(rearPowered, 1 - split, -1),
+        antiLiftAccel: driveAnti(frontPowered, split, 1),
         sprungCgWorld: P.point(res.sprungCg),
         wheelbase,
+        accel: { lateral: lateralG, longitudinal: res.notes.length ? -brakingG : accelG - brakingG },
       };
     } catch (e) {
       return { ...empty, error: e instanceof Error ? e.message : String(e) };
     }
-  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, rack, lateralG, brakingG]);
+  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, rack, lateralG, brakingG, accelG]);
 
   return result;
 }

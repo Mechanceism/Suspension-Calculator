@@ -8,16 +8,14 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { Grid, OrthographicCamera, PerspectiveCamera } from '@react-three/drei';
 import { switchWorkspace } from './SafeHtml';
 import * as THREE from 'three';
-import { vec3, add, type Vec3 } from '../../core/math/vec3';
+import { vec3, add, sub, scale, normalize, type Vec3 } from '../../core/math/vec3';
 import { closestPointOnLine, lineThrough } from '../../core/math/geom';
 import { CORNER_IDS, placement, poseFns, type CornerId } from '../../core/vehicle/vehicle';
-import { useApp } from '../store';
+import { useApp, FORCE_KEYS, FORCE_META, type ForceKey } from '../store';
 import type { VehicleModel, VehicleCornerView } from '../useVehicle';
 import { CameraRig, DevProjectBridge, ViewButtons, type FocusTarget } from './Viewport';
 import { COLORS } from './Scene';
-import { Joint, Seg, Polyline, Tri, Wheel, PatchMesh, Coilover } from './primitives';
-
-const LOAD_SCALE = 0.12; // mm of arrow per N
+import { Joint, Seg, Polyline, Tri, Wheel, PatchMesh, Coilover, Arrow } from './primitives';
 
 /** One corner drawn in the vehicle frame. Right corners are mirrored point-by-point (a negative
  *  scale on the group would flip the line quads' winding and cull them). */
@@ -105,28 +103,62 @@ function AntiRollBars({ model }: { model: VehicleModel }) {
   );
 }
 
-function ForceArrows({ model }: { model: VehicleModel }) {
+interface ForceArrow { key: string; kind: ForceKey; from: Vec3; vec: Vec3; label: string }
+
+const G = 9.80665;
+
+/** Every force that can be shown, as an arrow starting at its point of action (world, N). */
+function forceList(model: VehicleModel): ForceArrow[] {
   const r = model.result;
-  if (!r) return null;
+  if (!r) return [];
+  const P = poseFns(r.pose);
+  const out: ForceArrow[] = [];
+  for (const id of CORNER_IDS) {
+    const c = r.corners[id];
+    const v = model.corners[id];
+    const at = v?.patch?.centroid ?? c.contact;
+    out.push({ key: `${id}-fz`, kind: 'tireVertical', from: at, vec: vec3(0, c.tireLoad, 0), label: `${id} ${c.tireLoad.toFixed(0)} N` });
+    out.push({ key: `${id}-fy`, kind: 'tireLateral', from: at, vec: vec3(c.lateralForce, 0, 0), label: `${id} lat ${c.lateralForce.toFixed(0)} N` });
+    if (c.brakeForce) out.push({ key: `${id}-fb`, kind: 'tireLongitudinal', from: at, vec: vec3(0, 0, c.brakeForce), label: `${id} brake ${(-c.brakeForce).toFixed(0)} N` });
+    if (c.driveForce) out.push({ key: `${id}-fd`, kind: 'tireLongitudinal', from: at, vec: vec3(0, 0, c.driveForce), label: `${id} drive ${c.driveForce.toFixed(0)} N` });
+    if (v) {
+      const pl = placement(id, model.wheelbase);
+      const toW = (q: Vec3) => P.point(pl.point(q));
+      const pts = v.state.points;
+      if (pts.damperChassis && pts.damperArm && c.springForce > 0) {
+        const ch = toW(pts.damperChassis);
+        const arm = toW(pts.damperArm);
+        const d = normalize(sub(ch, arm));
+        out.push({ key: `${id}-sb`, kind: 'springs', from: ch, vec: scale(d, c.springForce), label: `${id} spring ${c.springForce.toFixed(0)} N (on body)` });
+        out.push({ key: `${id}-sa`, kind: 'springs', from: arm, vec: scale(d, -c.springForce), label: `${id} spring (on arm)` });
+      }
+      if (Math.abs(c.sharedForce) > 0.5) {
+        out.push({ key: `${id}-sh`, kind: 'shared', from: c.wheelCenter, vec: vec3(0, c.sharedForce, 0), label: `${id} bar/heave ${c.sharedForce.toFixed(0)} N` });
+      }
+      out.push({ key: `${id}-wu`, kind: 'weights', from: c.wheelCenter, vec: vec3(0, -v.unsprungMass * G, 0), label: `${id} unsprung ${(v.unsprungMass * G).toFixed(0)} N` });
+    }
+  }
+  if (model.sprungCgWorld) {
+    const m = r.sprungMass;
+    out.push({ key: 'ws', kind: 'weights', from: model.sprungCgWorld, vec: vec3(0, -m * G, 0), label: `sprung weight ${(m * G).toFixed(0)} N` });
+    const lat = -m * model.accel.lateral * G;
+    const lon = -m * model.accel.longitudinal * G;
+    if (Math.abs(lat) > 1) out.push({ key: 'il', kind: 'inertia', from: model.sprungCgWorld, vec: vec3(lat, 0, 0), label: `inertia lat ${Math.abs(lat).toFixed(0)} N` });
+    if (Math.abs(lon) > 1) out.push({ key: 'iz', kind: 'inertia', from: model.sprungCgWorld, vec: vec3(0, 0, lon), label: `inertia long ${Math.abs(lon).toFixed(0)} N` });
+  }
+  return out;
+}
+
+function ForceArrows({ arrows }: { arrows: ForceArrow[] }) {
+  const k = useApp((s) => s.forceScale);
   return (
     <>
-      {CORNER_IDS.map((id) => {
-        const c = r.corners[id];
-        const base = model.corners[id]?.patch?.centroid ?? c.contact;
-        const top = add(base, vec3(0, c.tireLoad * LOAD_SCALE, 0));
-        const lat = add(base, vec3(c.lateralForce * LOAD_SCALE, 0, 0));
-        return (
-          <group key={id}>
-            <Seg a={base} b={top} color="#ffd166" width={4} />
-            {Math.abs(c.lateralForce) > 1 && <Seg a={base} b={lat} color="#ef476f" width={4} />}
-          </group>
-        );
-      })}
+      {arrows.map((a) => <Arrow key={a.key} from={a.from} vec={scale(a.vec, k)} color={FORCE_META[a.kind].color} />)}
     </>
   );
 }
 
-function VehicleScene({ model }: { model: VehicleModel }) {
+function VehicleScene({ model, arrows }: { model: VehicleModel; arrows: ForceArrow[] }) {
   const setActiveCorner = useApp((s) => s.setActiveCorner);
   const activeCorner = useApp((s) => s.activeCorner);
   const vis = useApp((s) => s.visibility);
@@ -161,7 +193,7 @@ function VehicleScene({ model }: { model: VehicleModel }) {
         const patch = model.corners[id]?.patch;
         return patch?.inContact ? <PatchMesh key={id} outline={patch.outline} centroid={patch.centroid!} color={COLORS.patch} /> : null;
       })}
-      <ForceArrows model={model} />
+      <ForceArrows arrows={arrows} />
       <AntiRollBars model={model} />
       {model.sprungCgWorld && <Joint p={model.sprungCgWorld} color="#ffffff" r={16} />}
       {vis.rollCenter && rcF && rcR && (
@@ -178,16 +210,40 @@ function VehicleScene({ model }: { model: VehicleModel }) {
 interface OverlayLabel { key: string; text: string; pos: Vec3; className?: string }
 
 /** Screen-space labels for the vehicle view (positions follow the 3D points every frame). */
-function overlayLabels(model: VehicleModel | null): OverlayLabel[] {
-  const r = model?.result;
-  if (!model || !r) return [];
-  const out: OverlayLabel[] = CORNER_IDS.map((id) => {
-    const c = r.corners[id];
-    const base = model.corners[id]?.patch?.centroid ?? c.contact;
-    return { key: id, text: `${id} ${c.tireLoad.toFixed(0)} N`, pos: add(base, vec3(0, c.tireLoad * LOAD_SCALE, 0)) };
-  });
+function overlayLabels(model: VehicleModel | null, arrows: ForceArrow[], showValues: boolean, k: number): OverlayLabel[] {
+  if (!model?.result) return [];
+  const out: OverlayLabel[] = showValues
+    ? arrows.map((a) => ({ key: a.key, text: a.label, pos: add(a.from, scale(a.vec, k)), className: a.kind }))
+    : [];
   if (model.sprungCgWorld) out.push({ key: 'cg', text: 'CG (sprung)', pos: model.sprungCgWorld, className: 'cg' });
   return out;
+}
+
+/** Toggle which forces are drawn, their size, and their values. */
+function ForceToggles() {
+  const vis = useApp((s) => s.forceVis);
+  const k = useApp((s) => s.forceScale);
+  const showValues = useApp((s) => s.forceValues);
+  const set = useApp((s) => s.set);
+  return (
+    <details className="force-toggles" open>
+      <summary>Forces</summary>
+      {FORCE_KEYS.map((key) => (
+        <label key={key} className="check-inline" title={FORCE_META[key].hint}>
+          <input type="checkbox" checked={vis[key]} onChange={() => set('forceVis', { ...vis, [key]: !vis[key] })} />
+          <span className="swatch" style={{ background: FORCE_META[key].color }} />
+          {FORCE_META[key].label}
+        </label>
+      ))}
+      <label className="check-inline">
+        <input type="checkbox" checked={showValues} onChange={() => set('forceValues', !showValues)} /> Show values
+      </label>
+      <label className="force-scale">
+        Size
+        <input type="range" min={0.02} max={0.4} step={0.01} value={k} onChange={(e) => set('forceScale', Number(e.target.value))} />
+      </label>
+    </details>
+  );
 }
 
 /** Inside the Canvas: projects each label's 3D point and moves its DOM element (no React re-render). */
@@ -224,7 +280,11 @@ export function VehicleViewport({ model }: { model: VehicleModel | null }) {
   const projection = useApp((s) => s.projection);
   const bg = useMemo(() => getComputedStyle(document.documentElement).getPropertyValue('--viewport-bg').trim() || '#16191e', []);
   const target = vehicleTarget(model);
-  const labels = useMemo(() => overlayLabels(model), [model]);
+  const vis = useApp((s) => s.forceVis);
+  const k = useApp((s) => s.forceScale);
+  const showValues = useApp((s) => s.forceValues);
+  const arrows = useMemo(() => forceList(model ?? ({} as VehicleModel)).filter((a) => vis[a.kind]), [model, vis]);
+  const labels = useMemo(() => overlayLabels(model, arrows, showValues, k), [model, arrows, showValues, k]);
   const layer = useRef<HTMLDivElement>(null);
   return (
     <div className="viewport">
@@ -235,14 +295,15 @@ export function VehicleViewport({ model }: { model: VehicleModel | null }) {
           : <PerspectiveCamera makeDefault position={[0, 300, 6000]} fov={30} near={1} far={200000} />}
         <CameraRig target={target} />
         <DevProjectBridge />
-        {model && <VehicleScene model={model} />}
+        {model && <VehicleScene model={model} arrows={arrows} />}
         <LabelSync labels={labels} layer={layer} />
       </Canvas>
       <div className="label-layer" ref={layer}>
         {labels.map((l) => <div key={l.key} className={`load-label floating ${l.className ?? ''}`}>{l.text}</div>)}
       </div>
       <ViewButtons measure={false} />
-      <div className="viewport-hint">Double-click a corner to edit it · arrows: tire load (yellow), lateral force (red)</div>
+      <ForceToggles />
+      <div className="viewport-hint">Double-click a corner to edit it · arrows start where each force acts</div>
       {model?.error && <div className="viewport-error">{model.error}</div>}
     </div>
   );

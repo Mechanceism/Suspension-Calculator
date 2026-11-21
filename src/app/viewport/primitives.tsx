@@ -134,6 +134,34 @@ export function Wheel({ center, axis, radius, width, color, ghost = false, shoul
   );
 }
 
+/** Force arrow: shaft from `from` along `vec` (already scaled to mm) with a cone head. */
+export function Arrow({ from, vec, color, width = 3 }: { from: Vec3; vec: Vec3; color: string; width?: number }) {
+  const geo = useMemo(() => {
+    const len = Math.hypot(vec.x, vec.y, vec.z);
+    if (len < 1) return null;
+    const dir = new THREE.Vector3(vec.x, vec.y, vec.z).divideScalar(len);
+    const head = Math.min(45, Math.max(12, len * 0.25));
+    const tip = new THREE.Vector3(from.x + vec.x, from.y + vec.y, from.z + vec.z);
+    const base = tip.clone().addScaledVector(dir, -head);
+    return {
+      shaft: [[from.x, from.y, from.z], [base.x, base.y, base.z]] as V3[],
+      headPos: tip.clone().addScaledVector(dir, -head / 2),
+      quat: new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir),
+      head,
+    };
+  }, [from, vec]);
+  if (!geo) return null;
+  return (
+    <group>
+      <Line points={geo.shaft} color={color} lineWidth={width} />
+      <mesh position={geo.headPos} quaternion={geo.quat}>
+        <coneGeometry args={[geo.head * 0.38, geo.head, 14]} />
+        <meshBasicMaterial color={color} />
+      </mesh>
+    </group>
+  );
+}
+
 /** Invisible, clickable cylinder along a link (thin lines are hard to hit with the mouse). */
 export function HitLink({ a, b, radius }: { a: Vec3; b: Vec3; radius: number }) {
   const { position, quaternion, len } = useMemo(() => {

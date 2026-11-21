@@ -518,3 +518,5 @@ input[type='range']:disabled { opacity: 0.4; }
 .test-table tr.sev-fail td { color: #ff7b7b; }
 .test-table tr.sev-warn td { color: #ffb703; }
 .seg-fail.sev-warn { border-left-color: #ffb703; }
+
+.menu .menu-head { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; padding: 4px 10px 0; }

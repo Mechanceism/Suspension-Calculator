@@ -273,7 +273,9 @@ export interface AppState extends DesignState {
   /** Name of the open layout in the in-app library (null = untitled). */
   fileName: string | null;
   /** Snapshot of the design when it was last saved/opened, for the unsaved-changes marker. */
+  /** Snapshots of the model and tests parts at the last save / export (unsaved-change tracking). */
   savedSnapshot: string | null;
+  savedTests: string | null;
   notice: { text: string; kind: 'info' | 'warn' | 'error' } | null;
   /** Save-as dialog open. */
   saveAsOpen: boolean;
@@ -323,8 +325,9 @@ export interface AppState extends DesignState {
   optUndo: { root: CornerId; geom: EditableGeometry } | null;
 
   /** Replace the whole design (File → New / Open / Import). */
-  applyDesign(design: DesignState, fileName: string | null, savedSnapshot: string | null): void;
-  markSaved(fileName: string | null, snapshot: string): void;
+  applyDesign(design: DesignState, fileName: string | null, savedModel: string | null, savedTests?: string | null): void;
+  /** Mark parts saved (undefined = leave that part as it is). */
+  markSaved(fileName: string | null, model?: string, tests?: string): void;
   notify(text: string, kind?: 'info' | 'warn' | 'error'): void;
   loadPreset(id: string): void;
   select(sel: Selection): void;
@@ -742,6 +745,7 @@ export const useApp = create<AppState>((set, get) => ({
 
   fileName: null,
   savedSnapshot: null,
+  savedTests: null,
   notice: null,
   saveAsOpen: false,
 
@@ -885,12 +889,12 @@ export const useApp = create<AppState>((set, get) => ({
     const v = get().vehicle;
     set({ vehicle: { ...v, [key]: parseField(text, VEHICLE_META[key].quantity, v[key]) } });
   },
-  applyDesign: (design, fileName, savedSnapshot) => set({
-    ...design, ...design.corners[rootOf(design.activeCorner, design.links)], fileName, savedSnapshot, tireSizeError: null,
+  applyDesign: (design, fileName, savedModel, savedTests = null) => set({
+    ...design, ...design.corners[rootOf(design.activeCorner, design.links)], fileName, savedSnapshot: savedModel, savedTests, tireSizeError: null,
     travel: 0, rack: 0, loadFactor: 1, mode: 'kinematic', playing: false, playingSteer: false,
     selection: null, measure: [], measureMode: false,
   }),
-  markSaved: (fileName, savedSnapshot) => set({ fileName, savedSnapshot }),
+  markSaved: (fileName, model, tests) => set({ fileName, ...(model !== undefined ? { savedSnapshot: model } : {}), ...(tests !== undefined ? { savedTests: tests } : {}) }),
   notify: (text, kind = 'info') => set({ notice: { text, kind } }),
 
   selection: null,

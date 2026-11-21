@@ -1,24 +1,50 @@
-/** File menu actions: New, Save, Save as, Recents, Import, Export. */
+/**
+ * File menu actions: New, Save, Save as, Recents, and Export / Import in three parts: model and tests,
+ * model only, tests only. Plus settings export / import (preferences, not the project).
+ * Unsaved changes are tracked per part (model, tests) since the last save or export of that part.
+ */
 import { useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useApp, defaultDesign, pickDesign } from './store';
-import { serializeProject, importProject, designSnapshot } from './project';
+import { serializeProject, importProject, modelSnapshot, testsSnapshot, serializeTests, importTests } from './project';
 import { saveLayout, getLayout, touchLayout } from './library';
 import { resetHistory } from './history';
+import { exportSettingsFile, applySettingsFile } from './settingsFile';
+import { newTestId } from './tests';
 
-/** True when the design differs from what was last saved / opened. */
-export function useDirty(): boolean {
+export type Part = 'all' | 'model' | 'tests';
+
+/** Which parts differ from their last save / export. */
+export function useDirtyParts(): { model: boolean; tests: boolean } {
   const design = useApp(useShallow(pickDesign));
-  const saved = useApp((s) => s.savedSnapshot);
-  return useMemo(() => designSnapshot(design) !== saved, [design, saved]);
+  const savedModel = useApp((s) => s.savedSnapshot);
+  const savedTests = useApp((s) => s.savedTests);
+  return useMemo(() => ({
+    model: modelSnapshot(design) !== savedModel,
+    tests: testsSnapshot(design) !== (savedTests ?? testsSnapshot({ tests: [] })),
+  }), [design, savedModel, savedTests]);
 }
 
-const confirmDiscard = (dirty: boolean) => !dirty || window.confirm('Discard unsaved changes to this layout?');
+/** True when anything is unsaved. */
+export function useDirty(): boolean {
+  const d = useDirtyParts();
+  return d.model || d.tests;
+}
 
-export function newLayout(dirty: boolean): void {
+const partsText = (d: { model: boolean; tests: boolean }) => [d.model && 'the model', d.tests && 'the tests'].filter(Boolean).join(' and ');
+function confirmDiscard(dirty: boolean | { model: boolean; tests: boolean }, what: { model: boolean; tests: boolean } = { model: true, tests: true }): boolean {
+  const d = typeof dirty === 'boolean' ? { model: dirty, tests: dirty } : dirty;
+  const lose = { model: d.model && what.model, tests: d.tests && what.tests };
+  if (!lose.model && !lose.tests) return true;
+  return window.confirm(`Discard unsaved changes to ${partsText(lose)}? (Not saved or exported since the last change.)`);
+}
+
+const currentSnapshots = () => { const d = pickDesign(useApp.getState()); return { model: modelSnapshot(d), tests: testsSnapshot(d) }; };
+
+export function newLayout(dirty: boolean | { model: boolean; tests: boolean }): void {
   if (!confirmDiscard(dirty)) return;
   const d = defaultDesign();
-  useApp.getState().applyDesign(d, null, designSnapshot(d));
+  useApp.getState().applyDesign(d, null, modelSnapshot(d), testsSnapshot(d));
   resetHistory();
   useApp.getState().notify('New layout (default sample C).');
 }
@@ -28,9 +54,10 @@ export function saveAs(name: string): void {
   const design = pickDesign(s);
   const file = serializeProject(design, name);
   if (!saveLayout(file)) { s.notify('Could not save: browser storage is unavailable. Use Export instead.', 'error'); return; }
-  s.markSaved(name, designSnapshot(design));
+  const snap = currentSnapshots();
+  s.markSaved(name, snap.model, snap.tests);
   s.set('saveAsOpen', false);
-  s.notify(`Saved “${name}”.`);
+  s.notify(`Saved “${name}” (model and tests).`);
 }
 
 export function save(): void {
@@ -39,14 +66,14 @@ export function save(): void {
   else s.set('saveAsOpen', true);
 }
 
-export function openLayout(name: string, dirty: boolean): void {
+export function openLayout(name: string, dirty: boolean | { model: boolean; tests: boolean }): void {
   if (!confirmDiscard(dirty)) return;
   const s = useApp.getState();
   const entry = getLayout(name);
   if (!entry) { s.notify(`“${name}” is no longer in Recents.`, 'error'); return; }
   try {
     const r = importProject(entry.data);
-    s.applyDesign(r.design, name, designSnapshot(r.design));
+    s.applyDesign(r.design, name, modelSnapshot(r.design), testsSnapshot(r.design));
     resetHistory();
     touchLayout(name);
     s.notify(r.warnings.length ? `Opened “${name}” with notes:\n${r.warnings.join('\n')}` : `Opened “${name}”.`, r.warnings.length ? 'warn' : 'info');
@@ -55,35 +82,79 @@ export function openLayout(name: string, dirty: boolean): void {
   }
 }
 
-export function exportLayout(): void {
-  const s = useApp.getState();
-  const name = s.fileName ?? 'Untitled layout';
-  const file = serializeProject(pickDesign(s), name);
-  const blob = new Blob([JSON.stringify(file, null, 2)], { type: 'application/json' });
+export function download(data: unknown, filename: string): string {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `${name.replace(/[\\/:*?"<>|]+/g, '_')}.susp.json`;
+  a.download = filename.replace(/[\\/:*?"<>|]+/g, '_');
   document.body.appendChild(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-  s.notify(`Exported “${a.download}” (file format v${file.formatVersion}, app ${file.appVersion}).`);
+  return a.download;
 }
 
-export async function importLayoutFile(file: File, dirty: boolean): Promise<void> {
+/** Export model and tests, the model only, or the tests only. */
+export function exportParts(part: Part): void {
   const s = useApp.getState();
-  if (!confirmDiscard(dirty)) return;
+  const name = s.fileName ?? 'Untitled layout';
+  const d = pickDesign(s);
+  const snap = currentSnapshots();
+  if (part === 'tests') {
+    const f = download(serializeTests(d, name), `${name} tests.susp-tests.json`);
+    s.markSaved(s.fileName, undefined, snap.tests);
+    s.notify(`Exported ${d.tests.length} test(s) to “${f}”.`);
+    return;
+  }
+  const file = serializeProject(d, name, { tests: part === 'all' });
+  const f = download(file, `${name}${part === 'model' ? ' model' : ''}.susp.json`);
+  s.markSaved(s.fileName, snap.model, part === 'all' ? snap.tests : undefined);
+  s.notify(`Exported ${part === 'all' ? 'model and tests' : 'the model'} to “${f}” (file format v${file.formatVersion}, app ${file.appVersion}).`);
+}
+
+/** Import model and tests, the model only (keeps the current tests), or the tests only (added to the current ones). */
+export async function importParts(file: File, part: Part, dirty: { model: boolean; tests: boolean }): Promise<void> {
+  const s = useApp.getState();
   try {
-    const r = importProject(JSON.parse(await file.text()));
-    // Imported layouts open as unsaved in this browser until saved.
-    s.applyDesign(r.design, r.name, null);
+    const data = JSON.parse(await file.text()) as unknown;
+    if (part === 'tests') {
+      const r = importTests(data);
+      if (!r.tests.length) { s.notify(`No tests in ${file.name}.`, 'warn'); return; }
+      const names = new Set(s.tests.map((t) => t.name));
+      const clash = r.tests.filter((t) => names.has(t.name));
+      const replace = clash.length > 0 && window.confirm(`${clash.length} test(s) have the same name as existing ones (${clash.map((t) => t.name).join(', ')}).\nOK = replace them, Cancel = keep both (renamed).`);
+      const incoming = r.tests.map((t) => ({ ...t, id: newTestId('test'), name: !replace && names.has(t.name) ? `${t.name} (imported)` : t.name }));
+      s.updateTests((ts) => [...(replace ? ts.filter((t) => !clash.some((c) => c.name === t.name)) : ts), ...incoming]);
+      s.notify(r.warnings.length ? `Imported ${incoming.length} test(s) with notes:\n${r.warnings.join('\n')}` : `Imported ${incoming.length} test(s).`, r.warnings.length ? 'warn' : 'info');
+      return;
+    }
+    if (!confirmDiscard(dirty, { model: true, tests: part === 'all' })) return;
+    const r = importProject(data);
+    const keepTests = part === 'model';
+    const design = keepTests ? { ...r.design, tests: s.tests } : r.design;
+    // Imported parts count as unsaved in this browser until saved; kept tests keep their saved state.
+    s.applyDesign(design, r.name, null, keepTests ? s.savedTests : null);
     resetHistory();
     s.notify(
-      r.warnings.length ? `Imported “${r.name}” with notes:\n${r.warnings.join('\n')}` : `Imported “${r.name}”. Save to add it to Recents.`,
+      r.warnings.length ? `Imported “${r.name}” (${keepTests ? 'model only' : 'model and tests'}) with notes:\n${r.warnings.join('\n')}` : `Imported “${r.name}” (${keepTests ? 'model only, current tests kept' : 'model and tests'}). Save to add it to Recents.`,
       r.warnings.length ? 'warn' : 'info',
     );
   } catch (e) {
     s.notify(`Could not import ${file.name}: ${e instanceof Error ? e.message : String(e)}`, 'error');
+  }
+}
+
+export function exportSettings(): void {
+  const f = download(exportSettingsFile(), 'Suspension Calculator settings.susp-settings.json');
+  useApp.getState().notify(`Exported settings to “${f}”.`);
+}
+
+export async function importSettings(file: File): Promise<void> {
+  try {
+    const notes = applySettingsFile(JSON.parse(await file.text()));
+    useApp.getState().notify(notes.length ? `Imported settings with notes:\n${notes.join('\n')}` : 'Imported settings.', notes.length ? 'warn' : 'info');
+  } catch (e) {
+    useApp.getState().notify(`Could not import ${file.name}: ${e instanceof Error ? e.message : String(e)}`, 'error');
   }
 }

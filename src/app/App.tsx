@@ -1,7 +1,7 @@
 import { useEffect, useState, type PointerEvent as RPointerEvent } from 'react';
 import { useModel } from './useModel';
 import { useApp, pickDesign } from './store';
-import { designSnapshot } from './project';
+import { modelSnapshot, testsSnapshot } from './project';
 import { FileMenu, Notice } from './panels/FileMenu';
 import { ViewMenu } from './panels/ViewMenu';
 import { UnitsMenu } from './panels/UnitsMenu';
@@ -30,7 +30,7 @@ export function App() {
   // The startup layout counts as "saved" (nothing to lose yet).
   useEffect(() => {
     const s = useApp.getState();
-    if (s.savedSnapshot === null && s.fileName === null) s.markSaved(null, designSnapshot(pickDesign(s)));
+    if (s.savedSnapshot === null && s.fileName === null) s.markSaved(null, modelSnapshot(pickDesign(s)), testsSnapshot(s));
     initHistory();
     initHeldDimensions();
   }, []);

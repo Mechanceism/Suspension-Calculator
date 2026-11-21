@@ -116,7 +116,7 @@ function cornerToJson(id: CornerId, c: CornerDesign): CornerJson {
   };
 }
 
-export function serializeProject(d: DesignState, name: string): ProjectFile {
+export function serializeProject(d: DesignState, name: string, include: { tests: boolean } = { tests: true }): ProjectFile {
   const corners = mergedCorners(d);
   return {
     format: FILE_FORMAT,
@@ -154,7 +154,7 @@ export function serializeProject(d: DesignState, name: string): ProjectFile {
       ...(d.vehicleOptimizer.caseSource ? { caseSource: d.vehicleOptimizer.caseSource } : {}),
     },
     grip: mapFields(GRIP_KEYS, d.grip),
-    tests: JSON.parse(JSON.stringify(d.tests)) as unknown[],
+    ...(include.tests ? { tests: JSON.parse(JSON.stringify(d.tests)) as unknown[] } : {}),
     dimensions: d.dimensions.map((x) => ({
       root: x.root, a: cornerParam(x.root, POINT_NAMES[x.a]), b: cornerParam(x.root, POINT_NAMES[x.b]),
       measure: x.measure, value: x.value, travel: x.travel,
@@ -167,6 +167,29 @@ export function serializeProject(d: DesignState, name: string): ProjectFile {
 export function designSnapshot(d: DesignState): string {
   const f = serializeProject(d, '');
   return JSON.stringify({ ...f, name: undefined, savedAt: undefined, appVersion: undefined, activeCorner: undefined });
+}
+
+/** The model part (everything but the tests), for unsaved-change tracking. */
+export function modelSnapshot(d: DesignState): string {
+  const f = serializeProject(d, '', { tests: false });
+  return JSON.stringify({ ...f, name: undefined, savedAt: undefined, appVersion: undefined, activeCorner: undefined });
+}
+
+/** The tests part, for unsaved-change tracking. */
+export const testsSnapshot = (d: Pick<DesignState, 'tests'>): string => JSON.stringify(d.tests);
+
+export const TESTS_FORMAT = 'suspension-calculator-tests';
+
+/** A tests-only file. */
+export function serializeTests(d: Pick<DesignState, 'tests'>, name: string) {
+  return { format: TESTS_FORMAT, formatVersion: FORMAT_VERSION, appVersion: APP_VERSION, name, savedAt: new Date().toISOString(), tests: JSON.parse(JSON.stringify(d.tests)) as unknown[] };
+}
+
+/** Tests from a tests-only file or from a project file. */
+export function importTests(data: unknown): { tests: TestDesign[]; warnings: string[] } {
+  if (!isObj(data) || (data.format !== TESTS_FORMAT && data.format !== FILE_FORMAT)) throw new Error('Not a Suspension Calculator tests or project file');
+  const warnings: string[] = [];
+  return { tests: readTests(data.tests, warnings), warnings };
 }
 
 /**

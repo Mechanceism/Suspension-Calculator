@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useApp } from '../store';
 import { listLayouts, removeLayout, hasLayout, type LibraryEntry } from '../library';
-import { useDirty, newLayout, save, saveAs, openLayout, exportLayout, importLayoutFile } from '../fileActions';
+import { useDirtyParts, newLayout, save, saveAs, openLayout, exportParts, importParts, exportSettings, importSettings, type Part } from '../fileActions';
 
 const when = (iso: string) => {
   const d = new Date(iso);
@@ -13,8 +13,12 @@ export function FileMenu() {
   const [recentsOpen, setRecentsOpen] = useState(false);
   const [recents, setRecents] = useState<LibraryEntry[]>([]);
   const fileName = useApp((s) => s.fileName);
-  const dirty = useDirty();
+  const parts = useDirtyParts();
+  const dirty = parts.model || parts.tests;
   const importInput = useRef<HTMLInputElement>(null);
+  const settingsInput = useRef<HTMLInputElement>(null);
+  const importPart = useRef<Part>('all');
+  const pickImport = (part: Part) => { importPart.current = part; importInput.current?.click(); };
   const root = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -30,12 +34,14 @@ export function FileMenu() {
   return (
     <div className="file-menu" ref={root}>
       <button className={`menu-btn${open ? ' on' : ''}`} onClick={() => setOpen(!open)} aria-haspopup="menu" aria-expanded={open}>File</button>
-      <span className="file-title" title={dirty ? 'Unsaved changes' : 'Saved'}>
-        {fileName ?? 'Untitled'}{dirty && <span className="dirty-dot"> •</span>}
+      <span className="file-title" title={dirty ? `Unsaved changes to ${[parts.model && 'the model', parts.tests && 'the tests'].filter(Boolean).join(' and ')} since the last save / export` : 'Saved'}>
+        {fileName ?? 'Untitled'}
+        {parts.model && <span className="dirty-dot"> • model</span>}
+        {parts.tests && <span className="dirty-dot"> • tests</span>}
       </span>
       {open && (
         <div className="menu" role="menu">
-          <button role="menuitem" onClick={run(() => newLayout(dirty))}>New (default layout)</button>
+          <button role="menuitem" onClick={run(() => newLayout(parts))}>New (default layout)</button>
           <button role="menuitem" onClick={run(save)}>Save<kbd>Ctrl+S</kbd></button>
           <button role="menuitem" onClick={run(() => useApp.getState().set('saveAsOpen', true))}>Save as…<kbd>Ctrl+Shift+S</kbd></button>
           <div className="menu-sub" onMouseEnter={() => setRecentsOpen(true)} onMouseLeave={() => setRecentsOpen(false)}>
@@ -45,7 +51,7 @@ export function FileMenu() {
                 {recents.length === 0 && <div className="menu-empty">No saved layouts yet</div>}
                 {recents.map((r) => (
                   <div key={r.name} className="menu-recent">
-                    <button role="menuitem" onClick={run(() => openLayout(r.name, dirty))}>
+                    <button role="menuitem" onClick={run(() => openLayout(r.name, parts))}>
                       <span>{r.name}</span><span className="muted small-text">{when(r.savedAt)}</span>
                     </button>
                     <button
@@ -58,13 +64,28 @@ export function FileMenu() {
             )}
           </div>
           <div className="menu-sep" />
-          <button role="menuitem" onClick={run(() => importInput.current?.click())}>Import from file…</button>
-          <button role="menuitem" onClick={run(exportLayout)}>Export to file…</button>
+          <div className="menu-head">Export to file</div>
+          <button role="menuitem" onClick={run(() => exportParts('all'))}>Model and tests…{parts.model || parts.tests ? <span className="dirty-dot">•</span> : null}</button>
+          <button role="menuitem" onClick={run(() => exportParts('model'))}>Model only…{parts.model ? <span className="dirty-dot">•</span> : null}</button>
+          <button role="menuitem" onClick={run(() => exportParts('tests'))}>Tests only…{parts.tests ? <span className="dirty-dot">•</span> : null}</button>
+          <div className="menu-sep" />
+          <div className="menu-head">Import from file</div>
+          <button role="menuitem" onClick={run(() => pickImport('all'))} title="Replace the model and the tests">Model and tests…</button>
+          <button role="menuitem" onClick={run(() => pickImport('model'))} title="Replace the model, keep the current tests">Model only…</button>
+          <button role="menuitem" onClick={run(() => pickImport('tests'))} title="Add the tests from a tests or project file to the current ones">Tests only…</button>
+          <div className="menu-sep" />
+          <div className="menu-head">Settings (units, view, pass-rule profiles)</div>
+          <button role="menuitem" onClick={run(exportSettings)}>Export settings…</button>
+          <button role="menuitem" onClick={run(() => settingsInput.current?.click())}>Import settings…</button>
         </div>
       )}
       <input
         ref={importInput} type="file" accept=".json,application/json" hidden
-        onChange={(e) => { const f = e.target.files?.[0]; if (f) void importLayoutFile(f, dirty); e.target.value = ''; }}
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) void importParts(f, importPart.current, parts); e.target.value = ''; }}
+      />
+      <input
+        ref={settingsInput} type="file" accept=".json,application/json" hidden
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) void importSettings(f); e.target.value = ''; }}
       />
       <SaveAsDialog />
     </div>

@@ -21,9 +21,9 @@ Status key: ✅ agreed · 🔶 open / under discussion
 
 | Layer | Contents | Status |
 |---|---|---|
-| L0 Geometry | Vectors, frames, rotations, planes, lines, intersections | ✅ planned |
-| L1 Corner kinematics | Constraint solve for upright/wheel position from travel and steer inputs | ✅ planned |
-| L2 Characteristics | Camber, toe, caster, KPI, offsets, IC, RC, anti %, bump steer, motion ratio | ✅ planned |
+| L0 Geometry | Vectors, frames, rotations, planes, lines, intersections | ✅ implemented + tested (`src/core/math`) |
+| L1 Corner kinematics | Constraint solve for upright/wheel position from travel and steer inputs | ✅ implemented + tested (`src/core/solver`, `src/core/suspension/doubleWishbone.ts`) |
+| L2 Characteristics | Camber, toe, caster, KPI, offsets, IC, RC, anti %, bump steer, motion ratio | ✅ implemented + tested (`src/core/suspension/characteristics.ts`, `fourBar.ts`) |
 | L3 Tire geometry | Patch area, centroid, displaced volume (slice method) | ✅ agreed |
 | L4 Tire force | Gas-law model, stiffness model | ✅ agreed |
 | L5 Quasi-static corner | Load-driven equilibrium with spring and tire | ✅ planned |
@@ -103,12 +103,28 @@ Definitions follow the normal SAE J670 / ISO 8855 terms. Signs use the GOALS.md 
 
 **Other outputs:** bump steer (toe change vs. travel), track change / scrub, camber gain vs. travel, motion ratio (spring/damper length change ÷ wheel travel), Ackermann % (with steering).
 
-### Grashof Classification 🔶
-The front view of an SLA is a four-bar: chassis (ground link), UCA, upright (coupler), LCA. With s = shortest, l = longest and p, q the others:
-- **Grashof:** s + l ≤ p + q. Shortest = ground → double crank; shortest adjacent to ground → crank-rocker; shortest = coupler → double rocker.
-- **Non-Grashof:** s + l > p + q → triple rocker.
+### Linkage Motion Quality ✅
+How good the knuckle's path is gets judged directly from the motion, not from a linkage classification:
+- **Instant center / FVSA:** first-order camber gain (and roll center).
+- **Characteristic curves through travel:** camber, toe (bump steer), roll center height and migration, track change. Arm proportions shape these away from design.
+- **Toggle detection:** the solver's conditioning flags positions where links approach a straight line.
 
-The tool computes and displays the class. **Under discussion:** whether the class should be a design requirement (author's position: the double-crank linkage proportions give the desired positive → 0 → negative camber path of the knuckle) or a diagnostic only (the camber curve over limited travel is set by the IC/FVSA, and many working SLAs are non-Grashof). To be settled by demonstration in the visualizer (motion trail) and Fusion.
+**Grashof's law was evaluated and dropped** (decided 2026-11-20). The Grashof class (double crank, crank-rocker, etc.) describes whether links can fully rotate. It did not predict the camber path over real travel in a controlled comparison (below). Not every suspension type produces "ideal" camber motion, and that's fine. The tool simulates whatever linkage the user builds; "optimal" is defined by the user's chosen objectives (L7).
+
+**Controlled comparison** (`npm run compare:layouts`, layouts in `src/examples/sampleLayouts.ts`). Same upright, wheel and tie rod in all four. A–C have their pivots on the same ball-joint → IC lines, so they share one static IC (FVSA 2000 mm, RC 50 mm). D keeps C's pivot X positions with FVSA 1000 mm.
+
+| Layout | Class | Camber @ −50 mm | @ +50 mm | Camber gain @ 0 | RC @ −50 / +50 mm |
+|---|---|---|---|---|---|
+| A near-equal arms | double crank | +1.43° | −1.46° | −0.0286 °/mm | 135 / −34 |
+| B short upper arm | crank-rocker | +0.79° | −2.10° | −0.0286 °/mm | 94 / 11 |
+| C unequal arms | triple rocker (non-Grashof) | +1.27° | −1.63° | −0.0286 °/mm | 121 / −19 |
+| D unequal arms, FVSA 1000 | double crank | +2.68° | −3.10° | −0.0573 °/mm | 118 / −15 |
+
+Observations:
+1. All four pass through zero camber from positive (droop) to negative (bump), including the non-Grashof layout C.
+2. The static IC sets the first-order camber gain: A–C are identical at design, and halving the FVSA (D) doubles it.
+3. Arm proportions shape the curve away from design (progressive camber, RC migration). This is not ordered by Grashof class: non-Grashof C stays within 0.17° of double-crank A, while Grashof crank-rocker B differs by 0.65°.
+4. Moving only the IC flipped the class (C → D) without changing the character of the curve.
 
 ---
 
@@ -240,7 +256,6 @@ Multiple objectives can be weighted. All objectives respect lock / range / free 
 ---
 
 ## Open Items
-- 🔶 Grashof class: requirement vs. diagnostic (see L2).
 - Default `k_v` for the volume-change toggle (calibrate).
 - Default shoulder radius as a fraction of section width.
 - Carcass stiffness term for Model A.

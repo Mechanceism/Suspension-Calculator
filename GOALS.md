@@ -39,7 +39,9 @@ Calculating and visualizing come first. **Later:** export to modeling software (
 | 6 | **Multi-corner**: add more corners, inter-corner interactions (sway bars, shared shocks, pushrods/rockers) | |
 | 7 | **Other suspension types**: MacPherson, multilink, etc., plus user-defined linkages | |
 
-Note: all suspension types are treated as linkages that produce a desired wheel motion. Double wishbone comes first because the original math was built for it. The architecture must not hard-code SLA assumptions into the core.
+Note: the tool simulates whatever linkage the user builds, including ones whose camber motion is far from ideal. Motion quality is judged from the motion itself (IC, characteristic curves, toggle positions), not from a linkage classification; "optimal" is defined by the user's chosen objectives.
+
+All suspension types are treated as linkages that produce a desired wheel motion. Double wishbone comes first because the original math was built for it. The architecture must not hard-code SLA assumptions into the core.
 
 ---
 
@@ -192,7 +194,6 @@ Avoid codes that look like numeric error values (`Inf`, `NaN`, `Err`, `Null`).
 1. **Mirroring for other corners.** Each corner gets its own local frame using the same rules (X always outboard), mapped to a shared vehicle frame. Confirm when multi-corner work starts.
 2. **Fusion integration style:** embedded panel vs. external bridge (see above).
 3. **Hierarchy view:** browser tree vs. node graph vs. both. Decide after experimenting.
-4. **Grashof class:** design requirement vs. diagnostic. See [docs/MATH.md](docs/MATH.md#grashof-classification-).
 
 ### Resolved
 - **Handedness:** right-handed system. X outboard, Y up, Z forward.

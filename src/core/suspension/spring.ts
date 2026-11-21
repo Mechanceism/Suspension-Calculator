@@ -22,11 +22,65 @@ export interface SpringSpec {
   readonly rate: number;
   /** Unloaded length between mounts, mm. */
   readonly freeLength: number;
+  /** Mount-to-mount length at which the bump stop starts to compress, mm (optional). */
+  readonly bumpStopLength?: number;
+  /** Bump-stop rate once engaged, N/mm. */
+  readonly bumpStopRate?: number;
 }
 
-/** Compression-only spring force, N (0 when longer than free length). */
+/** Compression-only spring force plus bump stop, N (spring gives 0 when longer than free length). */
 export const springForce = (spec: SpringSpec, length: number): number =>
-  Math.max(0, spec.rate * (spec.freeLength - length));
+  Math.max(0, spec.rate * (spec.freeLength - length)) +
+  (spec.bumpStopLength !== undefined && spec.bumpStopRate
+    ? Math.max(0, spec.bumpStopRate * (spec.bumpStopLength - length))
+    : 0);
+
+export interface TravelLimits {
+  /** Droop limit (negative travel, mm) where the damper is fully extended; null if not reached. */
+  droop: number | null;
+  /** Bump limit (positive travel, mm) where the damper is fully compressed; null if not reached. */
+  bump: number | null;
+}
+
+/**
+ * Wheel-center travel at which the mount-to-mount length reaches the damper's fully extended
+ * (`maxLength`) and fully compressed (`minLength`) lengths. Searches up to ±`searchRange` mm.
+ */
+export function damperTravelLimits(
+  corner: DoubleWishbone, minLength: number, maxLength: number, rack = 0, searchRange = 250,
+): TravelLimits {
+  const lengthAt = (t: number, warm?: Poses) => {
+    const s = corner.solve({ travel: t, rack, driver: 'wheelCenter' }, warm);
+    return { s, L: s.solve.status === 'not-converged' ? null : springLength(s) };
+  };
+  const search = (dir: 1 | -1, target: number): number | null => {
+    const step = 2;
+    let prev = lengthAt(0);
+    if (prev.L === null) return null;
+    const sign0 = Math.sign(prev.L - target);
+    for (let t = step; t <= searchRange; t += step) {
+      const cur = lengthAt(dir * t, prev.s.poses);
+      if (cur.L === null) return null;
+      if (Math.sign(cur.L - target) !== sign0) {
+        let lo = dir * (t - step);
+        let hi = dir * t;
+        let warm = prev.s.poses;
+        for (let i = 0; i < 40; i++) {
+          const mid = (lo + hi) / 2;
+          const m = lengthAt(mid, warm);
+          if (m.L === null) break;
+          warm = m.s.poses;
+          if (Math.sign(m.L - target) === sign0) lo = mid; else hi = mid;
+        }
+        return (lo + hi) / 2;
+      }
+      prev = cur;
+    }
+    return null;
+  };
+  // In bump the mount-to-mount length shortens (positive motion ratio) — search each way for its limit.
+  return { droop: search(-1, maxLength), bump: search(1, minLength) };
+}
 
 export function springLength(state: CornerState): number | null {
   const p = state.points;

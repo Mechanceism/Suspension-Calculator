@@ -16,7 +16,13 @@ import {
   type SpringSpec, type EquilibriumStatus,
 } from '../core/suspension/spring';
 import { tireRate } from '../core/tire/model';
-import { dot, Y_AXIS } from '../core/math/vec3';
+import { patchSamples } from '../core/tire/geometry';
+import { dot, vec3, Y_AXIS, type Vec3 } from '../core/math/vec3';
+import { damperTravelLimits, type TravelLimits } from '../core/suspension/spring';
+import {
+  headingAngle, lowerArmAngle, steeringLoads, steeringArmLever, parkingTorque, type SteeringLoads,
+} from '../core/suspension/steering';
+import { normalize, sub } from '../core/math/vec3';
 
 export interface SampleSpring {
   length: number;
@@ -49,7 +55,33 @@ export interface SpringInfo {
   status: EquilibriumStatus | null;
 }
 
+export interface SteeringInfo {
+  /** Road-wheel angle relative to straight ahead at the same arm position (rad, + = front toward outboard). */
+  roadWheelAngle: number;
+  /** Steering-wheel angle (deg) from rack travel and the c-factor. */
+  steeringWheelAngle: number;
+  /** Overall steering ratio at the current position (steering-wheel deg per road-wheel deg). */
+  ratio: number;
+  loads: SteeringLoads;
+  /** Parking (standstill) scrub torque about the steering axis, N·mm, and what it takes at the rack / wheel. */
+  parkingTorque: number;
+  parkingRackForce: number;
+  parkingWheelTorque: number;
+}
+
+export interface SteerSample {
+  rack: number;
+  steeringWheelAngle: number;
+  roadWheelAngle: number;
+  camber: number;
+  /** Body rise from steering at a fixed arm position (contact drop), mm. */
+  jacking: number;
+  /** Steering-wheel torque from the vertical load alone (self-centering), N·m. */
+  centeringTorque: number;
+}
+
 export interface Current extends Omit<Sample, 'spring'> {
+  steering: SteeringInfo | null;
   /** deg per mm of travel */
   camberGain: number;
   /** toe change, deg per mm of travel */
@@ -62,6 +94,8 @@ export interface Model {
   corner: DoubleWishbone | null;
   sweep: Sample[];
   current: Current | null;
+  steerSweep: SteerSample[];
+  damperLimits: TravelLimits | null;
 }
 
 const SWEEP_STEPS = 41;
@@ -80,6 +114,10 @@ export function useModel(): Model {
   const mode = useApp((s) => s.mode);
   const loadFactor = useApp((s) => s.loadFactor);
   const spring = useApp((s) => s.spring);
+  const damper = useApp((s) => s.damper);
+  const bumpStop = useApp((s) => s.bumpStop);
+  const steer = useApp((s) => s.steer);
+  const cFactor = steer.cFactor.value;
   const driver = mode === 'loaded' ? 'wheelCenter' : sliderDriver;
   const factor = mode === 'loaded' ? loadFactor : 1;
 
@@ -91,7 +129,16 @@ export function useModel(): Model {
     }
   }, [geom]);
 
-  const spec = useMemo<SpringSpec>(() => ({ rate: spring.springRate.value, freeLength: spring.freeLength.value }), [spring]);
+  const spec = useMemo<SpringSpec>(() => ({
+    rate: spring.springRate.value, freeLength: spring.freeLength.value,
+    ...(bumpStop ? { bumpStopLength: damper.bumpStopLength.value, bumpStopRate: damper.bumpStopRate.value } : {}),
+  }), [spring, damper, bumpStop]);
+
+  const damperLimits = useMemo(() => {
+    const corner = built.corner;
+    if (!corner?.geometry.damper) return null;
+    return damperTravelLimits(corner, damper.minLength.value, damper.maxLength.value, rack);
+  }, [built, damper, rack]);
   const tireLoad = spring.cornerLoad.value * factor;
   const ws = sprungLoad(spring, factor);
 
@@ -153,7 +200,10 @@ export function useModel(): Model {
     let status: EquilibriumStatus | null = null;
     let wheelRate = NaN;
     if (mode === 'loaded' && hasSpring) {
-      const eq = solveEquilibrium(corner, spec, ws, [-Math.abs(droop), Math.abs(bump)], rack, lastEquilibrium.current);
+      // Settle within the travel range, tightened to the damper stroke when it's shorter.
+      const lo = Math.max(-Math.abs(droop), damperLimits?.droop ?? -Infinity);
+      const hi = Math.min(Math.abs(bump), damperLimits?.bump ?? Infinity);
+      const eq = solveEquilibrium(corner, spec, ws, [lo, hi], rack, lastEquilibrium.current);
       lastEquilibrium.current = eq.travel;
       state = eq.load.state;
       travel = eq.travel;
@@ -194,12 +244,67 @@ export function useModel(): Model {
       };
     }
 
+    // Steering: compare with straight ahead at the same arm position.
+    const armAngle = lowerArmAngle(corner.geometry, state);
+    const atRack = (r: number) => corner.solve({ driver: 'lowerArmAngle', armAngle, rack: r }, state.poses);
+    const straight = atRack(0);
+    const rp = atRack(rack + 0.5);
+    const rm = atRack(rack - 0.5);
+    const dHeading = deg(headingAngle(rp.spinAxis) - headingAngle(rm.spinAxis));
+    const vertical = loaded ? loaded.force.force : tireLoad;
+    const contact = loaded?.patch.centroid ?? chars.contactPoint;
+    const forces = {
+      vertical, lateral: steer.lateral.value, longitudinal: steer.longitudinal.value, pneumaticTrail: steer.pneumaticTrail.value,
+    };
+    const loads = steeringLoads(state, contact, forces, corner.rackAxis, cFactor);
+    const axisGround = loaded?.steeringAxisAtGround ?? chars.steeringAxisAtGround;
+    const samples = loaded && tireSetup
+      ? patchSamples(state.points.wheelCenter, state.spinAxis, { point: vec3(0, loaded.groundY, 0), normal: Y_AXIS }, tireSetup.profile, 24, 10)
+      : { points: [contact], weights: [1] };
+    const parkT = axisGround ? parkingTorque(samples, axisGround, vertical, steer.mu.value) : NaN;
+    const lever = Math.abs(steeringArmLever(state));
+    const rackShare = Math.abs(dot(normalize(sub(state.points.trInner, state.points.trOuter)), corner.rackAxis));
+    const parkRack = (parkT / lever) * rackShare;
+    const steering: SteeringInfo = {
+      roadWheelAngle: headingAngle(state.spinAxis) - headingAngle(straight.spinAxis),
+      steeringWheelAngle: (rack / cFactor) * 360,
+      ratio: ((1 / cFactor) * 360) / Math.abs(dHeading),
+      loads,
+      parkingTorque: parkT,
+      parkingRackForce: parkRack,
+      parkingWheelTorque: (parkRack * cFactor) / (2 * Math.PI) / 1000,
+    };
+
     return {
-      travel, state, chars, loaded, spring: springInfo,
+      travel, state, chars, loaded, spring: springInfo, steering,
       camberGain: (deg(plus.camber) - deg(minus.camber)) / (2 * h),
       bumpSteer: (deg(plus.toe) - deg(minus.toe)) / (2 * h),
     };
-  }, [built, sweep, sliderTravel, rack, driver, loader, mode, spec, ws, droop, bump, tireSetup, tireLoad, spring]);
+  }, [built, sweep, sliderTravel, rack, driver, loader, mode, spec, ws, droop, bump, tireSetup, tireLoad, spring, steer, cFactor, damperLimits]);
 
-  return { error: built.error, corner: built.corner, sweep, current };
+  // Steering sweep across the rack range at the current arm position.
+  const armKey = current && built.corner ? Math.round(lowerArmAngle(built.corner.geometry, current.state) * 1e5) : 0;
+  const rackLimit = steer.rackLimit.value;
+  const steerSweep = useMemo<SteerSample[]>(() => {
+    const corner = built.corner;
+    if (!corner || !current) return [];
+    const armAngle = armKey / 1e5;
+    const n = 25;
+    const racks = Array.from({ length: n }, (_, i) => -rackLimit + (2 * rackLimit * i) / (n - 1));
+    const states = corner.sweep(racks, (r) => ({ driver: 'lowerArmAngle', armAngle, rack: r }));
+    const mid = corner.solve({ driver: 'lowerArmAngle', armAngle, rack: 0 }, states[(n - 1) / 2]!.poses);
+    const h0 = headingAngle(mid.spinAxis);
+    const y0 = mid.points.contact.y;
+    return states.map((st, i) => {
+      const c = characteristics(st);
+      const l = steeringLoads(st, c.contactPoint, { vertical: tireLoad, lateral: 0, longitudinal: 0, pneumaticTrail: 0 }, corner.rackAxis, cFactor);
+      return {
+        rack: racks[i]!, steeringWheelAngle: (racks[i]! / cFactor) * 360,
+        roadWheelAngle: headingAngle(st.spinAxis) - h0, camber: c.camber,
+        jacking: y0 - st.points.contact.y, centeringTorque: l.steeringWheelTorque,
+      };
+    });
+  }, [built, armKey, rackLimit, cFactor, tireLoad]);
+
+  return { error: built.error, corner: built.corner, sweep, current, steerSweep, damperLimits };
 }

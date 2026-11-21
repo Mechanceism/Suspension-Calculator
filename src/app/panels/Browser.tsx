@@ -1,14 +1,14 @@
-import { useApp, type VisKey, type FocusKey } from '../store';
+import { useApp, type VisKey, type ComponentId } from '../store';
 import { COLORS } from '../viewport/Scene';
 
-const COMPONENTS: { key: VisKey; label: string; color: string; focus?: FocusKey }[] = [
-  { key: 'chassis', label: 'Chassis pivots & rack', color: COLORS.chassis },
-  { key: 'uca', label: 'Upper control arm (UCA)', color: COLORS.uca, focus: 'uca' },
-  { key: 'lca', label: 'Lower control arm (LCA)', color: COLORS.lca, focus: 'lca' },
-  { key: 'upright', label: 'Upright / knuckle', color: COLORS.upright, focus: 'upright' },
-  { key: 'tieRod', label: 'Tie rod', color: COLORS.tieRod, focus: 'tieRod' },
-  { key: 'spring', label: 'Coilover (spring/damper)', color: COLORS.spring, focus: 'spring' },
-  { key: 'wheel', label: 'Wheel & tire', color: COLORS.wheel, focus: 'wheel' },
+const COMPONENTS: { key: VisKey; label: string; color: string; select: ComponentId }[] = [
+  { key: 'chassis', label: 'Chassis pivots & rack', color: COLORS.chassis, select: 'chassis' },
+  { key: 'uca', label: 'Upper control arm (UCA)', color: COLORS.uca, select: 'uca' },
+  { key: 'lca', label: 'Lower control arm (LCA)', color: COLORS.lca, select: 'lca' },
+  { key: 'upright', label: 'Upright / knuckle', color: COLORS.upright, select: 'upright' },
+  { key: 'tieRod', label: 'Tie rod', color: COLORS.tieRod, select: 'tieRod' },
+  { key: 'spring', label: 'Coilover (spring/damper)', color: COLORS.spring, select: 'spring' },
+  { key: 'wheel', label: 'Wheel & tire', color: COLORS.wheel, select: 'wheel' },
 ];
 
 const CONSTRUCTION: { key: VisKey; label: string; color: string }[] = [
@@ -21,17 +21,16 @@ const CONSTRUCTION: { key: VisKey; label: string; color: string }[] = [
   { key: 'labels', label: 'Point labels', color: '#ffffff' },
 ];
 
-function Row({ label, color, checked, onToggle, onFocus, focused }: {
-  label: string; color: string; checked: boolean; onToggle: () => void; onFocus?: () => void; focused?: boolean;
+function Row({ label, color, checked, onToggle, onSelect, selected }: {
+  label: string; color: string; checked: boolean; onToggle: () => void; onSelect?: () => void; selected?: boolean;
 }) {
   return (
-    <div className={`tree-row${focused ? ' focused' : ''}`}>
-      <label>
-        <input type="checkbox" checked={checked} onChange={onToggle} />
-        <span className="swatch" style={{ background: color }} />
-        {label}
-      </label>
-      {onFocus && <button className="icon-btn" title="Focus camera" onClick={onFocus}>◎</button>}
+    <div className={`tree-row${selected ? ' focused' : ''}`}>
+      <input type="checkbox" checked={checked} onChange={onToggle} title="Show / hide" />
+      <span className="swatch" style={{ background: color }} />
+      {onSelect
+        ? <button className="link-btn grow" onClick={onSelect} title="Select and edit">{label}</button>
+        : <span className="grow clickable" onClick={onToggle}>{label}</span>}
     </div>
   );
 }
@@ -39,7 +38,8 @@ function Row({ label, color, checked, onToggle, onFocus, focused }: {
 export function Browser() {
   const vis = useApp((s) => s.visibility);
   const toggle = useApp((s) => s.toggleVisibility);
-  const focus = useApp((s) => s.focus);
+  const selection = useApp((s) => s.selection);
+  const select = useApp((s) => s.select);
   const focusOn = useApp((s) => s.focusOn);
   const follow = useApp((s) => s.followFocus);
   const trails = useApp((s) => s.trails);
@@ -47,16 +47,16 @@ export function Browser() {
   const set = useApp((s) => s.set);
   return (
     <section className="panel">
-      <h2>Browser</h2>
       <div className="tree-group">
         <div className="tree-head">
           FL corner · Double wishbone
-          <button className="icon-btn" title="Focus whole corner" onClick={() => focusOn('corner')}>◎</button>
+          <button className="icon-btn" title="Fit whole corner in view" onClick={() => focusOn('corner')}>◎</button>
         </div>
         {COMPONENTS.map((c) => (
           <Row
             key={c.key} label={c.label} color={c.color} checked={vis[c.key]} onToggle={() => toggle(c.key)}
-            onFocus={c.focus ? () => focusOn(c.focus!) : undefined} focused={c.focus === focus}
+            onSelect={() => select({ kind: 'component', id: c.select })}
+            selected={selection?.kind === 'component' && selection.id === c.select}
           />
         ))}
       </div>
@@ -67,10 +67,10 @@ export function Browser() {
         ))}
       </div>
       <div className="tree-group">
-        <div className="tree-head">Motion</div>
+        <div className="tree-head">Motion & camera</div>
         <Row label="Motion trails" color="#ffffff" checked={trails} onToggle={() => set('trails', !trails)} />
         <Row label="Ghost at travel limits" color="#ffffff" checked={ghosts} onToggle={() => set('ghosts', !ghosts)} />
-        <Row label="Camera follows focus" color="#ffffff" checked={follow} onToggle={() => set('followFocus', !follow)} />
+        <Row label="Camera follows focused part" color="#ffffff" checked={follow} onToggle={() => set('followFocus', !follow)} />
       </div>
     </section>
   );

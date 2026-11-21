@@ -8,7 +8,9 @@ export function MotionBar({ model }: { model: Model }) {
   const driver = useApp((s) => s.driver);
   const droop = useApp((s) => s.droop);
   const bump = useApp((s) => s.bump);
-  const rackRange = useApp((s) => s.rackRange);
+  const rackLimit = useApp((s) => s.steer.rackLimit.value);
+  const cFactor = useApp((s) => s.steer.cFactor.value);
+  const swLimit = (rackLimit / cFactor) * 360;
   const playing = useApp((s) => s.playing);
   const mode = useApp((s) => s.mode);
   const loadFactor = useApp((s) => s.loadFactor);
@@ -64,10 +66,10 @@ export function MotionBar({ model }: { model: Model }) {
         </label>
       )}
       <label className="slider">
-        <span>Rack <b>{rack.toFixed(1)}</b> mm</span>
+        <span>Steering wheel <b>{((rack / cFactor) * 360).toFixed(0)}</b>° · rack <b>{rack.toFixed(1)}</b> mm</span>
         <input
-          type="range" min={-rackRange} max={rackRange} step={0.5} value={rack}
-          onChange={(e) => set('rack', Number(e.target.value))}
+          type="range" min={-swLimit} max={swLimit} step={1} value={(rack / cFactor) * 360}
+          onChange={(e) => set('rack', (Number(e.target.value) / 360) * cFactor)}
           onDoubleClick={() => set('rack', 0)}
         />
       </label>

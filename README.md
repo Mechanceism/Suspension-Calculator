@@ -13,14 +13,13 @@ npm install
 npm run dev        # then open http://localhost:5173
 ```
 
-- **Hardpoints** (left): edit any point. Values are mm unless a unit is typed (`5in`, `1ft 2in`, `250 + 3in`). Press Enter to apply; invalid entries turn red and are ignored.
-- **Browser** (left): show/hide parts and construction geometry, focus the camera on a part (◎), and toggle motion trails, ghost positions at the travel limits, and camera follow.
-- **Viewport**: drag to orbit, right-drag to pan, scroll to zoom. Buttons lock to Front / Rear / Outboard / Inboard / Top / Bottom / Iso and switch orthographic ↔ perspective.
-- **Motion bar** (bottom): travel and rack sliders (double-click to reset), Play to sweep droop ↔ bump, travel range, and whether travel is measured at the wheel center or contact patch.
-- **Spring & load** (left): coilover from the LCA or UCA to the chassis (mount points `FL_Dmp_Chs` / `FL_Dmp_Arm` in Hardpoints), spring rate, free length (with a button to fit it to the design ride height), corner load and unsprung mass.
-- **Mode** (bottom): *Kinematic* sets travel with the slider; *Loaded* settles the corner on its spring for the corner load × a load-factor slider (Play animates the load).
-- **Tire** (left): enter a tire size (`225/45R17`, `31x10.50R15`, `20.5x7.0-13`) or dimensions, pick a model (rigid, stiffness, or air spring with pressure, altitude, temperature and the volume-change toggle) and a vertical load. The loaded contact patch is drawn on the ground.
-- **Characteristics / Through travel** (right): live values at the current position (including the loaded patch: area, deflection, pressure, effective scrub and trail) and curves across the travel range.
+- **Click to edit.** Click any part in the viewport (arm, upright, tie rod, rack, coilover, wheel, chassis) to open it in the **Inspector** (left): its settings, dimensions (e.g. arm length and pivot-axis angles — editing them moves the frame pivots, not the upright), its points, and chips for its connected (1st) and next (2nd) family parts.
+- **Joints.** Click a joint for a menu right at the joint: type X/Y/Z, nudge ± in steps (0.1–25 mm), or move by an entered amount. Values accept units (`5in`, `1ft 2in`, `250 + 3in`).
+- **Measure** (`📏` button or <kbd>M</kbd>): click two points (hardpoints, contact point, patch centroid, steering-axis ground point, roll center, IC) for distance, ΔX/ΔY/ΔZ and angle — it updates live as the suspension moves. <kbd>Esc</kbd> exits.
+- **Browser** tab: show/hide parts and construction geometry, motion trails, ghosts at the travel limits, and camera follow. **All inputs** tab: every input in one list.
+- **Viewport**: drag to orbit, right-drag to pan, scroll to zoom. Buttons lock to Front / Rear / Outboard / Inboard / Top / Bottom / Iso and switch orthographic ↔ perspective. Click empty space to deselect.
+- **Motion bar** (bottom): *Kinematic* mode sets travel with the slider; *Loaded* mode settles the corner on its spring for the corner load × a load factor. Steering-wheel slider (rack travel from the c-factor), Play, travel range.
+- **Results / Curves** (right, collapsible): geometry, spring & ride, steering (angles, ratio, axis torque, tie-rod / rack force, steering-wheel torque, parking scrub torque), tire & patch; curves through travel and through steering.
 
 URL options for sharing a specific view: `?preset=A&view=front&travel=30&rack=10&labels=1&projection=perspective&mode=loaded&load=1.5&tire=gas`.
 

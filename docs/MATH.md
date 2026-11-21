@@ -103,6 +103,17 @@ Definitions follow the normal SAE J670 / ISO 8855 terms. Signs use the GOALS.md 
 
 **Other outputs:** bump steer (toe change vs. travel), track change / scrub, camber gain vs. travel, motion ratio (spring/damper length change ÷ wheel travel), Ackermann % (with steering).
 
+### Arm Dimensions as Design Variables ✅
+Besides raw coordinates, each A-arm has derived variables that can be read **and edited** (`src/core/suspension/armGeometry.ts`):
+| Variable | Definition |
+|---|---|
+| Length | Ball joint → pivot axis, perpendicular (the arm's swing radius) |
+| Pivot-axis inclination | Side-view angle of the pivot axis, + = front pivot higher (anti-dive style) |
+| Pivot-axis plan angle | Top-view angle, + = front pivot further outboard |
+| Front leg / rear leg / pivot spacing / front-view angle | Read-only |
+
+**Editing a derived variable moves only the frame pivots** and keeps the ball joint fixed, so the upright, wheel and track width at static height don't change (decided 2026-11-20). Length slides both pivots along the ball-joint → axis direction; the angles re-aim the axis while holding the length, pivot spacing and ball joint exactly.
+
 ### Linkage Motion Quality ✅
 How good the knuckle's path is gets judged directly from the motion, not from a linkage classification:
 - **Instant center / FVSA:** first-order camber gain (and roll center).
@@ -222,6 +233,17 @@ Moment of the tire force about the **steering axis** (not about the axis's groun
 
 ---
 
+## Steering ✅ (`src/core/suspension/steering.ts`)
+- **Input:** steering-wheel angle → rack travel via the c-factor (rack mm per steering-wheel revolution).
+- **Road-wheel angle:** change in wheel heading versus straight ahead at the same arm position (+ = front of the wheel toward outboard; a left turn for FL).
+- **Steering ratio:** steering-wheel degrees per road-wheel degree at the current position.
+- **Steer sweep:** at the current arm position (LCA angle held), across the rack range: road-wheel angle, camber, jacking (contact drop = body rise) and the self-centering torque from the vertical load.
+- **Tire forces at the patch:** vertical (from the tire model / corner load), lateral (+ outboard), longitudinal (+ drive, − braking); the lateral force acts a pneumatic trail behind the patch center.
+- **Torque about the steering axis:** `T = û · ((p − q) × F)` summed over the force components.
+- **Tie rod / rack / steering wheel:** for an SLA with the spring on an arm, the ball-joint forces act on the steering axis, so only the tie rod resists rotation about it: `f = −T / (û · ((r_TR − q) × d))` (d = outer → inner, f = tension). Rack force = `f · (d · rack axis)`. Steering-wheel torque = `F_rack · c / 2π`. Values are for this corner; the other front corner adds its share.
+- **Parking (standstill) scrub torque** (page 1 of the hand math, generalized): the patch twists about the steering axis's ground point against friction μ with the load spread evenly: `T = μ · (F_z / A) · ∫ |r| dA`, integrated over the actual patch shape; converted to rack force and steering-wheel torque the same way.
+- **Verified:** hand-checkable vertical-axis case (braking × scrub, lateral × pneumatic trail, 120 mm steering arm), KPI self-centering sign, parking torque → μ·F·d far from the axis.
+
 ## L5: Quasi-Static Corner ✅
 Two operating modes:
 1. **Kinematic:** the user sets travel and steer; geometry is reported. No spring needed (a tire load is optional).
@@ -240,6 +262,10 @@ Two operating modes:
 - The tire carries the full corner load (sprung + unsprung) × load factor; the spring and tire act in series, so the vertical balance needs no iteration at corner level. Coupling (roll, load transfer, the "settle repeatedly" loop) enters at vehicle level (L6).
 - Ride rate: `1 / (1/k_w + 1/k_t)`, tire rate `k_t` from the tire model (∞ for rigid). Ride frequency `f = √(k_ride / m_s) / 2π` with the **static** sprung corner mass (the load factor is extra g, not extra mass).
 - **Fit free length:** `L_free = L(q₀) + W_s / (MR(q₀) · k)` puts the static equilibrium at the design position q₀ = 0.
+
+**Travel limits:** damper fully-extended / fully-compressed mount-to-mount lengths give the droop / bump limits (found by sweeping and bisection); a bump stop adds `k_bs · max(0, L_bs − L)` to the spring force. In loaded mode the settle range is tightened to the damper stroke.
+
+**Switching the lower mount between arms** moves the coilover as a unit (same relative spot on the other arm, chassis mount shifted by the same amount), so the installed length/angle and the damper settings stay valid; the free length is refitted.
 
 **Verification:** energy check — ∫ F_w dy_c over travel equals the spring energy change ½k·Δ(compression²) to 0.2%; equilibrium, fitted free length and limit reporting tested.
 

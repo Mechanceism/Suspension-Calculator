@@ -8,6 +8,8 @@ import { vec3, type Vec3 } from '../core/math/vec3';
 import { DoubleWishbone, spinAxisFromCamberToe, type DoubleWishboneGeometry, type TravelDriver } from '../core/suspension/doubleWishbone';
 import { SAMPLE_LAYOUTS, SAMPLE_SPRING } from '../examples/sampleLayouts';
 import { fitFreeLength } from '../core/suspension/spring';
+import { setArmLength, setPivotInclination, setPivotPlanAngle, transferArmPoint } from '../core/suspension/armGeometry';
+import { add, sub } from '../core/math/vec3';
 import type { TireProfile } from '../core/tire/geometry';
 import type { TireForceModel } from '../core/tire/model';
 import { parseTireSize } from '../core/tire/size';
@@ -71,6 +73,36 @@ const G = 9.80665;
 export const sprungLoad = (f: Record<SpringKey, Field>, loadFactor: number) =>
   Math.max(0, (f.cornerLoad.value - f.unsprungMass.value * G) * loadFactor);
 
+/** Damper stroke and bump stop (docs/MATH.md § L5). */
+export const DAMPER_KEYS = ['maxLength', 'minLength', 'bumpStopLength', 'bumpStopRate'] as const;
+export type DamperKey = (typeof DAMPER_KEYS)[number];
+export const DAMPER_META: Record<DamperKey, { label: string; quantity: Quantity; unit: string }> = {
+  maxLength: { label: 'Damper fully extended', quantity: 'length', unit: 'mm' },
+  minLength: { label: 'Damper fully compressed', quantity: 'length', unit: 'mm' },
+  bumpStopLength: { label: 'Bump stop engages at', quantity: 'length', unit: 'mm' },
+  bumpStopRate: { label: 'Bump stop rate', quantity: 'rate', unit: 'N/mm' },
+};
+
+/** Steering system and tire-force inputs (docs/MATH.md § Steering). */
+export const STEER_KEYS = ['cFactor', 'rackLimit', 'lateral', 'longitudinal', 'pneumaticTrail', 'mu'] as const;
+export type SteerKey = (typeof STEER_KEYS)[number];
+export const STEER_META: Record<SteerKey, { label: string; quantity: Quantity; unit: string; initial: number; hint?: string }> = {
+  cFactor: { label: 'Rack travel per steering-wheel rev', quantity: 'length', unit: 'mm/rev', initial: 75 },
+  rackLimit: { label: 'Rack travel limit (±)', quantity: 'length', unit: 'mm', initial: 30 },
+  lateral: { label: 'Lateral tire force (+ outboard)', quantity: 'force', unit: 'N', initial: 0 },
+  longitudinal: { label: 'Longitudinal tire force (+ drive, − brake)', quantity: 'force', unit: 'N', initial: 0 },
+  pneumaticTrail: { label: 'Pneumatic trail', quantity: 'length', unit: 'mm', initial: 0 },
+  mu: { label: 'Tire friction μ (parking)', quantity: 'ratio', unit: '×', initial: 1 },
+};
+
+export const ARM_DERIVED = ['length', 'inclination', 'planAngle'] as const;
+export type ArmDerived = (typeof ARM_DERIVED)[number];
+
+export type ComponentId = 'chassis' | 'uca' | 'lca' | 'upright' | 'tieRod' | 'rack' | 'spring' | 'wheel';
+export type Selection = { kind: 'component'; id: ComponentId } | { kind: 'point'; id: PointKey } | null;
+/** Anything the measure tool can snap to: a hardpoint or a derived point. */
+export type AnchorId = PointKey | 'contact' | 'patchCentroid' | 'axisGround' | 'rollCenter' | 'frontViewIC';
+
 export interface EditableGeometry {
   points: Record<PointKey, [Field, Field, Field]>;
   scalars: Record<ScalarKey, Field>;
@@ -85,7 +117,7 @@ export const VIS_KEYS = [
 export type VisKey = (typeof VIS_KEYS)[number];
 
 export type ViewName = 'front' | 'rear' | 'outboard' | 'inboard' | 'top' | 'bottom' | 'iso';
-export type FocusKey = 'corner' | 'wheel' | 'upright' | 'uca' | 'lca' | 'tieRod' | 'spring' | 'contact';
+export type FocusKey = ComponentId | 'corner' | 'contact';
 
 const field = (value: number, quantity: Quantity = 'length'): Field => ({ text: formatValue(value, quantity), value });
 const fields = (v: Vec3): [Field, Field, Field] => [field(v.x), field(v.y), field(v.z)];
@@ -167,7 +199,6 @@ interface AppState {
   driver: Extract<TravelDriver, 'wheelCenter' | 'contactPatch'>;
   droop: number;
   bump: number;
-  rackRange: number;
   playing: boolean;
   trails: boolean;
   ghosts: boolean;
@@ -188,8 +219,24 @@ interface AppState {
   /** Multiplier on the static corner load in loaded mode (1 = static, >1 = bump / load transfer). */
   loadFactor: number;
   spring: Record<SpringKey, Field>;
+  damper: Record<DamperKey, Field>;
+  bumpStop: boolean;
+  steer: Record<SteerKey, Field>;
+
+  selection: Selection;
+  leftTab: 'inspector' | 'browser' | 'table';
+  nudgeStep: number;
+  measureMode: boolean;
+  measure: AnchorId[];
 
   loadPreset(id: string): void;
+  select(sel: Selection): void;
+  movePoint(key: PointKey, delta: Vec3): void;
+  setArmDerived(arm: 'uca' | 'lca', which: ArmDerived, text: string): void;
+  setDamperField(key: DamperKey, text: string): void;
+  setSteerField(key: SteerKey, text: string): void;
+  toggleMeasure(): void;
+  addMeasureAnchor(a: AnchorId): void;
   setSpringField(key: SpringKey, text: string): void;
   setDamperArm(arm: ArmChoice): void;
   /** Set the free length so the static corner load sits at the design position (travel 0). */
@@ -231,7 +278,6 @@ export const useApp = create<AppState>((set, get) => ({
   driver: 'wheelCenter',
   droop: 50,
   bump: 50,
-  rackRange: 30,
   playing: false,
   trails: true,
   ghosts: true,
@@ -259,11 +305,72 @@ export const useApp = create<AppState>((set, get) => ({
     freeLength: field(SAMPLE_SPRING.freeLength),
   }),
 
+  damper: {
+    maxLength: field(430), minLength: field(330), bumpStopLength: field(345), bumpStopRate: field(400, 'rate'),
+  },
+  bumpStop: true,
+  steer: Object.fromEntries(STEER_KEYS.map((k) => [k, field(STEER_META[k].initial, STEER_META[k].quantity)])) as Record<SteerKey, Field>,
+
+  selection: null,
+  leftTab: 'inspector',
+  nudgeStep: 1,
+  measureMode: false,
+  measure: [],
+
+  select: (selection) => set(selection ? { selection, leftTab: 'inspector' } : { selection }),
+  movePoint: (key, delta) => {
+    const geom = get().geom;
+    const [fx, fy, fz] = geom.points[key];
+    const moved = add(vec3(fx.value, fy.value, fz.value), delta);
+    set({ geom: { ...geom, points: { ...geom.points, [key]: fields(moved) } }, presetId: 'custom' });
+  },
+  setArmDerived: (arm, which, text) => {
+    const r = parseValue(text, which === 'length' ? 'length' : 'angle');
+    if (!r.ok) return;
+    const geom = get().geom;
+    const g = toGeometry(geom);
+    const a = g[arm];
+    const next = which === 'length' ? setArmLength(a, r.value)
+      : which === 'inclination' ? setPivotInclination(a, (r.value * Math.PI) / 180)
+        : setPivotPlanAngle(a, (r.value * Math.PI) / 180);
+    const kF = arm === 'uca' ? 'ucaFwd' : 'lcaFwd';
+    const kA = arm === 'uca' ? 'ucaAft' : 'lcaAft';
+    set({ geom: { ...geom, points: { ...geom.points, [kF]: fields(next.fwd), [kA]: fields(next.aft) } }, presetId: 'custom' });
+  },
+  setDamperField: (key, text) => {
+    const d = get().damper;
+    set({ damper: { ...d, [key]: parseField(text, DAMPER_META[key].quantity, d[key]) } });
+  },
+  setSteerField: (key, text) => {
+    const st = get().steer;
+    set({ steer: { ...st, [key]: parseField(text, STEER_META[key].quantity, st[key]) } });
+  },
+  toggleMeasure: () => set({ measureMode: !get().measureMode, measure: [] }),
+  addMeasureAnchor: (a) => {
+    const m = get().measure;
+    set({ measure: m.length >= 2 ? [a] : [...m, a] });
+  },
+
   setSpringField: (key, text) => {
     const spring = get().spring;
     set({ spring: { ...spring, [key]: parseField(text, SPRING_META[key].quantity, spring[key]) } });
   },
-  setDamperArm: (arm) => set({ geom: { ...get().geom, damperArm: arm }, presetId: 'custom' }),
+  setDamperArm: (arm) => {
+    const geom = get().geom;
+    if (arm === geom.damperArm) return;
+    const g = toGeometry(geom);
+    // Move the coilover as a unit: the arm mount goes to the same relative spot on the other arm and
+    // the chassis mount follows by the same amount, so the installed length and angle (and therefore
+    // the damper stroke and bump-stop settings) stay valid.
+    const moved = transferArmPoint(g.damper!.armPoint, g[geom.damperArm], g[arm]);
+    const shift = sub(moved, g.damper!.armPoint);
+    const chassisMount = add(g.damper!.chassis, shift);
+    const next: EditableGeometry = {
+      ...geom, damperArm: arm,
+      points: { ...geom.points, dmpArm: fields(moved), dmpChassis: fields(chassisMount) },
+    };
+    set({ geom: next, presetId: 'custom', spring: fittedSpring(next, get().spring) });
+  },
   fitSpring: () => set({ spring: fittedSpring(get().geom, get().spring) }),
 
   setTireField: (key, text) => {

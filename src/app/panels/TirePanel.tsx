@@ -10,7 +10,8 @@ const MODEL_TEXT: Record<TireModelKind, string> = {
   gas: 'Air spring (gas law + patch area)',
 };
 
-export function TirePanel() {
+/** Tire size, dimensions and force model (used in the inspector and the Table tab). */
+export function TireFields() {
   const geom = useApp((s) => s.geom);
   const setScalar = useApp((s) => s.setScalar);
   const tireModel = useApp((s) => s.tireModel);
@@ -25,8 +26,7 @@ export function TirePanel() {
   useEffect(() => setSize(sizeText), [sizeText]);
 
   return (
-    <section className="panel">
-      <h2>Tire</h2>
+    <>
       <div className="row">
         <span className="muted">Size</span>
         <input
@@ -79,6 +79,15 @@ export function TirePanel() {
         Units can be typed: <code>12psi</code>, <code>2.2bar</code>, <code>200lbf</code>, <code>5000ft</code>, <code>68F</code>.
         The patch is a rigid-cylinder approximation; compare designs with it, calibrate later.
       </p>
+    </>
+  );
+}
+
+export function TirePanel() {
+  return (
+    <section className="panel">
+      <h2>Tire</h2>
+      <TireFields />
     </section>
   );
 }

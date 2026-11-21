@@ -189,6 +189,40 @@ export function contactPatch(center: Vec3, spinAxis: Vec3, ground: Ground, p: Ti
   return { ...local, inclination, centerHeight: h0, centroid: at(local.centroidS, local.centroidD), outline };
 }
 
+/**
+ * Area-weighted sample points over the contact patch (world coordinates), for integrals such as
+ * the parking scrub torque. Weights sum to the patch area.
+ */
+export function patchSamples(
+  center: Vec3, spinAxis: Vec3, ground: Ground, p: TireProfile, nS = 40, nT = 16,
+): { points: Vec3[]; weights: number[] } {
+  const a = normalize(spinAxis);
+  const n = normalize(ground.normal);
+  const sinG = dot(n, a);
+  const cosG = Math.sqrt(Math.max(1e-12, 1 - sinG * sinG));
+  const h0 = dot(n, add(center, scale(ground.point, -1)));
+  const local = localPatch(p, h0, sinG);
+  const points: Vec3[] = [];
+  const weights: number[] = [];
+  if (!local.inContact) return { points, weights };
+  const u = normalize(addScaled(scale(n, -1), a, sinG));
+  const t = cross(a, u);
+  const ds = (local.sMax - local.sMin) / nS;
+  for (let i = 0; i < nS; i++) {
+    const s = local.sMin + (i + 0.5) * ds;
+    const d = (h0 + s * sinG) / cosG;
+    const L = chord(sliceRadius(p, s), d);
+    if (L <= 0) continue;
+    const m = addScaled(addScaled(center, a, s), u, d);
+    for (let j = 0; j < nT; j++) {
+      const v = -L / 2 + ((j + 0.5) * L) / nT;
+      points.push(addScaled(m, t, v));
+      weights.push(((L / nT) * ds) / cosG);
+    }
+  }
+  return { points, weights };
+}
+
 /** Air volume of the tire (annulus between rim and tread, following the shoulder profile), mm³. */
 export function airVolume(p: TireProfile): number {
   const half = p.width / 2;

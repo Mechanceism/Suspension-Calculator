@@ -1,5 +1,6 @@
 import { deg } from '../../core/suspension/characteristics';
-import type { Model, Sample } from '../useModel';
+import type { Model, Sample, SteerSample } from '../useModel';
+import { Section } from './FieldRows';
 import { useApp } from '../store';
 
 const W = 300;
@@ -13,8 +14,8 @@ function niceRange(lo: number, hi: number): [number, number] {
   return [lo - pad, hi + pad];
 }
 
-function Chart({ title, unit, data, current, digits = 2 }: {
-  title: string; unit: string; data: { x: number; y: number }[]; current: { x: number; y: number } | null; digits?: number;
+function Chart({ title, unit, data, current, digits = 2, xUnit = 'mm' }: {
+  title: string; unit: string; data: { x: number; y: number }[]; current: { x: number; y: number } | null; digits?: number; xUnit?: string;
 }) {
   const pts = data.filter((d) => Number.isFinite(d.y));
   if (pts.length < 2) return null;
@@ -39,7 +40,7 @@ function Chart({ title, unit, data, current, digits = 2 }: {
         <text className="tick" x={PAD.l - 4} y={sy(y1) + 4} textAnchor="end">{y1.toFixed(digits)}</text>
         <text className="tick" x={PAD.l - 4} y={sy(y0)} textAnchor="end">{y0.toFixed(digits)}</text>
         <text className="tick" x={PAD.l} y={H - 6} textAnchor="start">{x0.toFixed(0)}</text>
-        <text className="tick" x={W - PAD.r} y={H - 6} textAnchor="end">{x1.toFixed(0)} mm</text>
+        <text className="tick" x={W - PAD.r} y={H - 6} textAnchor="end">{x1.toFixed(0)} {xUnit}</text>
         <path className="series" d={path} />
         {current && Number.isFinite(current.y) && (
           <>
@@ -80,16 +81,39 @@ export function Plots({ model }: { model: Model }) {
     );
     series.push({ title: 'Effective scrub radius', unit: 'mm', get: (s) => (s.loaded ? s.loaded.effectiveScrubRadius : NaN), digits: 1 });
   }
+  const curTravel = cur?.travel ?? travel;
+  const sw = cur?.steering?.steeringWheelAngle ?? 0;
+  const steerSeries: { title: string; unit: string; get: (s: SteerSample) => number; digits?: number; now?: number }[] = [
+    { title: 'Road-wheel angle', unit: '°', get: (s) => deg(s.roadWheelAngle), digits: 2, now: cur?.steering ? deg(cur.steering.roadWheelAngle) : undefined },
+    { title: 'Camber vs steer', unit: '°', get: (s) => deg(s.camber), digits: 3 },
+    { title: 'Steering jacking (body rise)', unit: 'mm', get: (s) => s.jacking, digits: 2 },
+    { title: 'Self-centering wheel torque (vertical load)', unit: 'N·m', get: (s) => s.centeringTorque, digits: 2 },
+  ];
+  const nearestSteer = (x: number) => model.steerSweep.reduce<SteerSample | null>((b, q) => (!b || Math.abs(q.steeringWheelAngle - x) < Math.abs(b.steeringWheelAngle - x) ? q : b), null);
+  const ns = nearestSteer(sw);
   return (
     <section className="panel">
-      <h2>Through travel</h2>
-      {series.map((s) => (
-        <Chart
-          key={s.title} title={s.title} unit={s.unit} digits={s.digits}
-          data={model.sweep.map((q) => ({ x: q.travel, y: s.get(q) }))}
-          current={cur ? { x: travel, y: s.get(cur) } : null}
-        />
-      ))}
+      <h2>Curves</h2>
+      <Section title="Through travel">
+        {series.map((s) => (
+          <Chart
+            key={s.title} title={s.title} unit={s.unit} digits={s.digits}
+            data={model.sweep.map((q) => ({ x: q.travel, y: s.get(q) }))}
+            current={cur ? { x: curTravel, y: s.get(cur) } : null}
+          />
+        ))}
+      </Section>
+      {model.steerSweep.length > 1 && (
+        <Section title="Through steering (at current travel)">
+          {steerSeries.map((s) => (
+            <Chart
+              key={s.title} title={s.title} unit={s.unit} digits={s.digits} xUnit="° sw"
+              data={model.steerSweep.map((q) => ({ x: q.steeringWheelAngle, y: s.get(q) }))}
+              current={ns ? { x: sw, y: s.now ?? s.get(ns) } : null}
+            />
+          ))}
+        </Section>
+      )}
     </section>
   );
 }

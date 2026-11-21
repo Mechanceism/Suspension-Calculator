@@ -1,8 +1,7 @@
 import { deg } from '../../core/suspension/characteristics';
 import type { Model } from '../useModel';
-
-const fmt = (v: number | null | undefined, digits = 2) =>
-  v === null || v === undefined || Number.isNaN(v) ? '—' : Number.isFinite(v) ? v.toFixed(digits) : '∞';
+import { Section, fmt } from './FieldRows';
+import { SteeringReadout } from './SteeringPanel';
 
 const STATUS_TEXT: Record<string, string> = {
   converged: 'Solved',
@@ -62,62 +61,46 @@ export function Readout({ model }: { model: Model }) {
     ['Effective scrub', fmt(l.effectiveScrubRadius, 1), 'mm', 'to patch centroid'],
     ['Effective trail', fmt(l.effectiveTrail, 1), 'mm', 'to patch centroid'],
   ] : [];
+  const Table = ({ rows: r }: { rows: [string, string, string, string?][] }) => (
+    <table className="readout">
+      <tbody>
+        {r.map(([name, value, unit, hint]) => (
+          <tr key={name} title={hint}>
+            <td>{name}</td>
+            <td className="num">{value}</td>
+            <td className="unit">{unit}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
   return (
     <section className="panel">
       <h2>
-        Characteristics
+        Results
         <span className={`status status-${s.status}`} title={`RMS residual ${s.residualRms.toExponential(1)} mm · conditioning ${s.conditioning.toExponential(1)}`}>
           {STATUS_TEXT[s.status] ?? s.status}
         </span>
       </h2>
-      <table className="readout">
-        <tbody>
-          {rows.map(([name, value, unit, hint]) => (
-            <tr key={name} title={hint}>
-              <td>{name}</td>
-              <td className="num">{value}</td>
-              <td className="unit">{unit}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <Section title="Geometry"><Table rows={rows} /></Section>
       {sp && (
-        <>
-          <h3 className="subhead">
-            Spring & ride
-            {sp.status && sp.status !== 'ok' && <span className="status status-singular">{STATUS[sp.status]}</span>}
-          </h3>
-          <table className="readout">
-            <tbody>
-              {springRows.map(([name, value, unit, hint]) => (
-                <tr key={name} title={hint}>
-                  <td>{name}</td>
-                  <td className="num">{value}</td>
-                  <td className="unit">{unit}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </>
+        <Section
+          title="Spring & ride"
+          extra={sp.status && sp.status !== 'ok' ? <span className="status status-singular">{STATUS[sp.status]}</span> : undefined}
+        >
+          <Table rows={springRows} />
+        </Section>
+      )}
+      {cur.steering && (
+        <Section title="Steering"><SteeringReadout model={model} /></Section>
       )}
       {l && (
-        <>
-          <h3 className="subhead">
-            Tire & contact patch
-            {l.bottomedOut && <span className="status status-not-converged">Bottomed out</span>}
-          </h3>
-          <table className="readout">
-            <tbody>
-              {tireRows.map(([name, value, unit, hint]) => (
-                <tr key={name} title={hint}>
-                  <td>{name}</td>
-                  <td className="num">{value}</td>
-                  <td className="unit">{unit}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </>
+        <Section
+          title="Tire & contact patch"
+          extra={l.bottomedOut ? <span className="status status-not-converged">Bottomed out</span> : undefined}
+        >
+          <Table rows={tireRows} />
+        </Section>
       )}
     </section>
   );

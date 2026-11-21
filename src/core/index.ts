@@ -13,3 +13,5 @@ export * from './tire/size';
 export * from './suspension/loaded';
 export * from './suspension/spring';
 export * from './math/roots';
+export * from './suspension/armGeometry';
+export * from './suspension/steering';

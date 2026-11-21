@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, type ComponentRef } from 'react';
-import { Canvas, useThree } from '@react-three/fiber';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { CameraControls, OrthographicCamera, PerspectiveCamera } from '@react-three/drei';
 import * as THREE from 'three';
 import { useApp, type FocusKey, type ViewName } from '../store';
@@ -30,6 +30,8 @@ function focusSphere(model: Model, focus: FocusKey, radius: number): { center: V
     uca: [p.ucaFwd, p.ucaAft, p.ucaOut],
     lca: [p.lcaFwd, p.lcaAft, p.lcaOut],
     tieRod: [p.trInner, p.trOuter],
+    rack: [p.trInner],
+    chassis: [p.ucaFwd, p.ucaAft, p.lcaFwd, p.lcaAft],
     spring: p.damperChassis && p.damperArm ? [p.damperChassis, p.damperArm] : [p.wheelCenter],
     contact: [p.contact],
   };
@@ -64,23 +66,50 @@ function CameraRig({ model }: { model: Model }) {
     void c.fitToSphere(new THREE.Sphere(new THREE.Vector3(t.center.x, t.center.y, t.center.z), t.radius * 1.15), animate);
   }, [request.nonce, request.view, camera]);
 
-  // Lock the camera to the focused component as it moves.
-  const cx = target?.center.x, cy = target?.center.y, cz = target?.center.z;
-  useEffect(() => {
+  // Lock the camera to the focused component as it moves. Done every frame, just before rendering,
+  // so the camera and the parts move together (an effect after the render made it stutter).
+  const tmp = useMemo(() => new THREE.Vector3(), []);
+  useFrame(() => {
     const c = controls.current;
-    if (!c || !follow || cx === undefined || cy === undefined || cz === undefined) return;
-    void c.moveTo(cx, cy, cz, false);
-  }, [follow, cx, cy, cz]);
+    const t = targetRef.current;
+    if (!c || !follow || !t) return;
+    c.getTarget(tmp);
+    const dx = t.center.x - tmp.x, dy = t.center.y - tmp.y, dz = t.center.z - tmp.z;
+    if (dx * dx + dy * dy + dz * dz < 1e-6) return;
+    // Shift camera and target together so the view direction and zoom stay put.
+    c.getPosition(tmp);
+    void c.setLookAt(tmp.x + dx, tmp.y + dy, tmp.z + dz, t.center.x, t.center.y, t.center.z, false);
+    c.update(0);
+  }, -2);
 
   return <CameraControls ref={controls} makeDefault smoothTime={0.2} />;
+}
+
+/** Dev only: lets automated UI checks turn a 3D point into screen pixels (window.__project). */
+function DevProjectBridge() {
+  const camera = useThree((s) => s.camera);
+  const size = useThree((s) => s.size);
+  const gl = useThree((s) => s.gl);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    (window as unknown as { __project?: (x: number, y: number, z: number) => [number, number] }).__project = (x, y, z) => {
+      const v = new THREE.Vector3(x, y, z).project(camera);
+      const r = gl.domElement.getBoundingClientRect();
+      return [r.left + ((v.x + 1) / 2) * size.width, r.top + ((1 - v.y) / 2) * size.height];
+    };
+  }, [camera, size, gl]);
+  return null;
 }
 
 export function ViewButtons() {
   const requestView = useApp((s) => s.requestView);
   const projection = useApp((s) => s.projection);
   const set = useApp((s) => s.set);
+  const measureMode = useApp((s) => s.measureMode);
+  const toggleMeasure = useApp((s) => s.toggleMeasure);
   return (
     <div className="view-buttons">
+      <button className={measureMode ? 'toggle on' : 'toggle'} onClick={toggleMeasure} title="Measure between two points (M)">📏 Measure</button>
       {(Object.keys(VIEWS) as ViewName[]).map((v) => (
         <button key={v} onClick={() => requestView(v)}>{VIEWS[v].label}</button>
       ))}
@@ -97,18 +126,31 @@ export function ViewButtons() {
 
 export function Viewport({ model }: { model: Model }) {
   const projection = useApp((s) => s.projection);
+  const measureMode = useApp((s) => s.measureMode);
+  const measureCount = useApp((s) => s.measure.length);
+  const select = useApp((s) => s.select);
   const bg = useMemo(() => getComputedStyle(document.documentElement).getPropertyValue('--viewport-bg').trim() || '#16191e', []);
   return (
     <div className="viewport">
-      <Canvas key={projection} dpr={[1, 2]} style={{ position: 'absolute', inset: 0 }}>
+      <Canvas
+        key={projection} dpr={[1, 2]} style={{ position: 'absolute', inset: 0 }}
+        onPointerMissed={(e) => { if (e.type === 'click' && !measureMode) select(null); }}
+      >
         <color attach="background" args={[bg]} />
         {projection === 'orthographic'
           ? <OrthographicCamera makeDefault position={[300, 150, 5000]} zoom={0.6} near={1} far={100000} />
           : <PerspectiveCamera makeDefault position={[300, 150, 3500]} fov={30} near={1} far={100000} />}
         <CameraRig model={model} />
+        <DevProjectBridge />
         <Scene model={model} />
       </Canvas>
       <ViewButtons />
+      {measureMode && (
+        <div className="viewport-banner">
+          {measureCount < 2 ? `Measure: click ${measureCount === 0 ? 'the first' : 'the second'} point` : 'Click another point to start a new measurement'}
+          {' · Esc to exit'}
+        </div>
+      )}
       {model.error && <div className="viewport-error">{model.error}</div>}
     </div>
   );

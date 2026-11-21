@@ -93,6 +93,23 @@ export function Wheel({ center, axis, radius, width, color, ghost = false }: {
   );
 }
 
+/** Invisible, clickable cylinder along a link (thin lines are hard to hit with the mouse). */
+export function HitLink({ a, b, radius }: { a: Vec3; b: Vec3; radius: number }) {
+  const { position, quaternion, len } = useMemo(() => {
+    const A = new THREE.Vector3(a.x, a.y, a.z);
+    const B = new THREE.Vector3(b.x, b.y, b.z);
+    const dir = B.clone().sub(A);
+    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+    return { position: A.add(B).multiplyScalar(0.5), quaternion: q, len: dir.length() };
+  }, [a, b]);
+  return (
+    <mesh position={position} quaternion={quaternion}>
+      <cylinderGeometry args={[radius, radius, len, 8, 1]} />
+      <meshBasicMaterial transparent opacity={0} depthWrite={false} colorWrite={false} />
+    </mesh>
+  );
+}
+
 /** Coilover between two mounts: damper body + shaft, with a helical spring drawn around it. */
 export function Coilover({ a, b, color, coils = 9, radius = 26 }: { a: Vec3; b: Vec3; color: string; coils?: number; radius?: number }) {
   const geo = useMemo(() => {

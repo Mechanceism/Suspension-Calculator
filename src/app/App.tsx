@@ -1,15 +1,31 @@
+import { useEffect } from 'react';
 import { useModel } from './useModel';
+import { useApp } from './store';
 import { Viewport } from './viewport/Viewport';
-import { Browser } from './panels/Browser';
-import { Hardpoints } from './panels/Hardpoints';
-import { TirePanel } from './panels/TirePanel';
-import { SpringPanel } from './panels/SpringPanel';
+import { LeftSidebar } from './panels/LeftSidebar';
 import { MotionBar } from './panels/MotionBar';
 import { Readout } from './panels/Readout';
 import { Plots } from './panels/Plots';
 
 export function App() {
   const model = useModel();
+
+  // Keyboard: Esc closes the measure tool / clears the selection; M toggles measuring.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement;
+      const s = useApp.getState();
+      if (e.key === 'Escape') {
+        if (s.measureMode) s.toggleMeasure();
+        else s.select(null);
+      } else if (!typing && (e.key === 'm' || e.key === 'M')) {
+        s.toggleMeasure();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   return (
     <div className="app">
       <header className="topbar">
@@ -17,10 +33,7 @@ export function App() {
         <span className="muted">Chassis fixed · front-left corner</span>
       </header>
       <aside className="left">
-        <Browser />
-        <Hardpoints />
-        <SpringPanel />
-        <TirePanel />
+        <LeftSidebar model={model} />
       </aside>
       <main className="center">
         <Viewport model={model} />

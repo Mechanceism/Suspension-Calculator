@@ -191,7 +191,7 @@ function parseField(text: string, quantity: Quantity, prev: Field): Field {
   return r.ok ? { text, value: r.value } : { text, value: prev.value, error: r.error };
 }
 
-interface AppState {
+export interface AppState {
   presetId: string;
   geom: EditableGeometry;
   travel: number;
@@ -200,6 +200,7 @@ interface AppState {
   droop: number;
   bump: number;
   playing: boolean;
+  playingSteer: boolean;
   trails: boolean;
   ghosts: boolean;
   visibility: Record<VisKey, boolean>;
@@ -226,12 +227,31 @@ interface AppState {
   selection: Selection;
   leftTab: 'inspector' | 'browser' | 'table';
   nudgeStep: number;
+  /** Round dragged joint coordinates to the grid. */
+  snapToGrid: boolean;
+  gridSize: number;
+  /** A joint is being dragged: heavy sweeps pause until release. */
+  interacting: boolean;
   measureMode: boolean;
   measure: AnchorId[];
 
+  /** Name of the open layout in the in-app library (null = untitled). */
+  fileName: string | null;
+  /** Snapshot of the design when it was last saved/opened, for the unsaved-changes marker. */
+  savedSnapshot: string | null;
+  notice: { text: string; kind: 'info' | 'warn' | 'error' } | null;
+  /** Save-as dialog open. */
+  saveAsOpen: boolean;
+
+  /** Replace the whole design (File → New / Open / Import). */
+  applyDesign(design: DesignState, fileName: string | null, savedSnapshot: string | null): void;
+  markSaved(fileName: string | null, snapshot: string): void;
+  notify(text: string, kind?: 'info' | 'warn' | 'error'): void;
   loadPreset(id: string): void;
   select(sel: Selection): void;
   movePoint(key: PointKey, delta: Vec3): void;
+  /** Set one coordinate of a hardpoint to a base-unit value (used by dragging). */
+  setPointAxis(key: PointKey, axis: 0 | 1 | 2, value: number): void;
   setArmDerived(arm: 'uca' | 'lca', which: ArmDerived, text: string): void;
   setDamperField(key: DamperKey, text: string): void;
   setSteerField(key: SteerKey, text: string): void;
@@ -263,6 +283,55 @@ function fittedSpring(geom: EditableGeometry, f: Record<SpringKey, Field>): Reco
   }
 }
 
+/** Everything a saved layout holds (docs: project files). */
+export interface DesignState {
+  presetId: string;
+  geom: EditableGeometry;
+  spring: Record<SpringKey, Field>;
+  damper: Record<DamperKey, Field>;
+  bumpStop: boolean;
+  steer: Record<SteerKey, Field>;
+  tireModel: TireModelKind;
+  tire: Record<TireKey, Field>;
+  volumeChange: boolean;
+  tireSizeText: string;
+  droop: number;
+  bump: number;
+  driver: Extract<TravelDriver, 'wheelCenter' | 'contactPatch'>;
+}
+
+/** The design part of the app state (what a file saves). */
+export const pickDesign = (s: DesignState): DesignState => ({
+  presetId: s.presetId, geom: s.geom, spring: s.spring, damper: s.damper, bumpStop: s.bumpStop, steer: s.steer,
+  tireModel: s.tireModel, tire: s.tire, volumeChange: s.volumeChange, tireSizeText: s.tireSizeText,
+  droop: s.droop, bump: s.bump, driver: s.driver,
+});
+
+/** The default layout (File → New). */
+export function defaultDesign(presetId = 'C'): DesignState {
+  const geom = editableFromLayout(presetId);
+  return {
+    presetId,
+    geom,
+    spring: fittedSpring(geom, {
+      cornerLoad: field(900, 'force'),
+      unsprungMass: field(12, 'mass'),
+      springRate: field(SAMPLE_SPRING.rate, 'rate'),
+      freeLength: field(SAMPLE_SPRING.freeLength),
+    }),
+    damper: { maxLength: field(430), minLength: field(330), bumpStopLength: field(345), bumpStopRate: field(400, 'rate') },
+    bumpStop: true,
+    steer: Object.fromEntries(STEER_KEYS.map((k) => [k, field(STEER_META[k].initial, STEER_META[k].quantity)])) as Record<SteerKey, Field>,
+    tireModel: 'gas',
+    tire: Object.fromEntries(TIRE_KEYS.map((k) => [k, field(TIRE_META[k].initial, TIRE_META[k].quantity)])) as Record<TireKey, Field>,
+    volumeChange: true,
+    tireSizeText: '',
+    droop: 50,
+    bump: 50,
+    driver: 'wheelCenter',
+  };
+}
+
 /** Optional URL overrides, e.g. ?preset=A&view=iso&travel=30&rack=10&labels=1 */
 const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
 const num = (k: string, d: number) => (params.has(k) && Number.isFinite(Number(params.get(k))) ? Number(params.get(k)) : d);
@@ -270,15 +339,14 @@ const VIEW_NAMES: ViewName[] = ['front', 'rear', 'outboard', 'inboard', 'top', '
 const initialView = (VIEW_NAMES as string[]).includes(params.get('view') ?? '') ? (params.get('view') as ViewName) : 'iso';
 const initialPreset = SAMPLE_LAYOUTS.some((l) => l.id === params.get('preset')) ? params.get('preset')! : 'C';
 
+const initialDesign = defaultDesign(initialPreset);
+
 export const useApp = create<AppState>((set, get) => ({
-  presetId: initialPreset,
-  geom: editableFromLayout(initialPreset),
+  ...initialDesign,
   travel: num('travel', 0),
   rack: num('rack', 0),
-  driver: 'wheelCenter',
-  droop: 50,
-  bump: 50,
   playing: false,
+  playingSteer: false,
   trails: true,
   ghosts: true,
   visibility: {
@@ -290,30 +358,30 @@ export const useApp = create<AppState>((set, get) => ({
   followFocus: false,
   cameraRequest: { view: initialView, nonce: 0 },
 
-  tireModel: (['rigid', 'stiffness', 'gas'] as string[]).includes(params.get('tire') ?? '') ? (params.get('tire') as TireModelKind) : 'gas',
-  tire: Object.fromEntries(TIRE_KEYS.map((k) => [k, field(TIRE_META[k].initial, TIRE_META[k].quantity)])) as Record<TireKey, Field>,
-  volumeChange: true,
-  tireSizeText: '',
+  tireModel: (['rigid', 'stiffness', 'gas'] as string[]).includes(params.get('tire') ?? '') ? (params.get('tire') as TireModelKind) : initialDesign.tireModel,
   tireSizeError: null,
 
   mode: params.get('mode') === 'loaded' ? 'loaded' : 'kinematic',
   loadFactor: num('load', 1),
-  spring: fittedSpring(editableFromLayout(initialPreset), {
-    cornerLoad: field(900, 'force'),
-    unsprungMass: field(12, 'mass'),
-    springRate: field(SAMPLE_SPRING.rate, 'rate'),
-    freeLength: field(SAMPLE_SPRING.freeLength),
-  }),
 
-  damper: {
-    maxLength: field(430), minLength: field(330), bumpStopLength: field(345), bumpStopRate: field(400, 'rate'),
-  },
-  bumpStop: true,
-  steer: Object.fromEntries(STEER_KEYS.map((k) => [k, field(STEER_META[k].initial, STEER_META[k].quantity)])) as Record<SteerKey, Field>,
+  fileName: null,
+  savedSnapshot: null,
+  notice: null,
+  saveAsOpen: false,
+  applyDesign: (design, fileName, savedSnapshot) => set({
+    ...design, fileName, savedSnapshot, tireSizeError: null,
+    travel: 0, rack: 0, loadFactor: 1, mode: 'kinematic', playing: false, playingSteer: false,
+    selection: null, measure: [], measureMode: false,
+  }),
+  markSaved: (fileName, savedSnapshot) => set({ fileName, savedSnapshot }),
+  notify: (text, kind = 'info') => set({ notice: { text, kind } }),
 
   selection: null,
   leftTab: 'inspector',
   nudgeStep: 1,
+  snapToGrid: true,
+  gridSize: 1,
+  interacting: false,
   measureMode: false,
   measure: [],
 
@@ -323,6 +391,12 @@ export const useApp = create<AppState>((set, get) => ({
     const [fx, fy, fz] = geom.points[key];
     const moved = add(vec3(fx.value, fy.value, fz.value), delta);
     set({ geom: { ...geom, points: { ...geom.points, [key]: fields(moved) } }, presetId: 'custom' });
+  },
+  setPointAxis: (key, axis, value) => {
+    const geom = get().geom;
+    const triple = [...geom.points[key]] as [Field, Field, Field];
+    triple[axis] = field(value);
+    set({ geom: { ...geom, points: { ...geom.points, [key]: triple } }, presetId: 'custom' });
   },
   setArmDerived: (arm, which, text) => {
     const r = parseValue(text, which === 'length' ? 'length' : 'angle');

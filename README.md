@@ -14,11 +14,12 @@ npm run dev        # then open http://localhost:5173
 ```
 
 - **Click to edit.** Click any part in the viewport (arm, upright, tie rod, rack, coilover, wheel, chassis) to open it in the **Inspector** (left): its settings, dimensions (e.g. arm length and pivot-axis angles — editing them moves the frame pivots, not the upright), its points, and chips for its connected (1st) and next (2nd) family parts.
-- **Joints.** Click a joint for a menu right at the joint: type X/Y/Z, nudge ± in steps (0.1–25 mm), or move by an entered amount. Values accept units (`5in`, `1ft 2in`, `250 + 3in`).
+- **Joints.** Click a joint to select it: small X / Y / Z arrows appear on it in the viewport — **drag an arrow** to move the joint along that axis (*Snap drag to grid*, 0.1–10 mm, keeps values round). The Inspector shows the position to type X/Y/Z, nudge ± in steps, or move by an amount. Values accept units (`5in`, `1ft 2in`, `250 + 3in`).
 - **Measure** (`📏` button or <kbd>M</kbd>): click two points (hardpoints, contact point, patch centroid, steering-axis ground point, roll center, IC) for distance, ΔX/ΔY/ΔZ and angle — it updates live as the suspension moves. <kbd>Esc</kbd> exits.
 - **Browser** tab: show/hide parts and construction geometry, motion trails, ghosts at the travel limits, and camera follow. **All inputs** tab: every input in one list.
 - **Viewport**: drag to orbit, right-drag to pan, scroll to zoom. Buttons lock to Front / Rear / Outboard / Inboard / Top / Bottom / Iso and switch orthographic ↔ perspective. Click empty space to deselect.
-- **Motion bar** (bottom): *Kinematic* mode sets travel with the slider; *Loaded* mode settles the corner on its spring for the corner load × a load factor. Steering-wheel slider (rack travel from the c-factor), Play, travel range.
+- **Motion bar** (bottom): **Travel** and **Load** sliders are both shown and linked through the spring — drag travel and the load slider shows the load that position implies; drag load and the corner settles on its spring while the travel slider follows (the one you touched is marked *input*). **Steering wheel** slider (rack travel from the c-factor). Separate **▶ Travel/Load** and **▶ Steer** play buttons can run together.
+- **File** menu (top left): New (default layout), Save (<kbd>Ctrl+S</kbd>), Save as (<kbd>Ctrl+Shift+S</kbd>), Recents (saved in this browser), Import from file, Export to file (`.susp.json`). The title shows • when there are unsaved changes.
 - **Results / Curves** (right, collapsible): geometry, spring & ride, steering (angles, ratio, axis torque, tie-rod / rack force, steering-wheel torque, parking scrub torque), tire & patch; curves through travel and through steering.
 
 URL options for sharing a specific view: `?preset=A&view=front&travel=30&rack=10&labels=1&projection=perspective&mode=loaded&load=1.5&tire=gas`.

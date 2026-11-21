@@ -1,6 +1,28 @@
+/**
+ * Motion controls. Travel and load are linked through the spring, so both sliders are always shown:
+ * dragging travel sets the position (and the load slider shows the load that position implies);
+ * dragging load settles the corner on its spring (and the travel slider follows). Steering has its
+ * own slider and Play so it can be animated together with either.
+ */
 import { useEffect, useRef } from 'react';
-import { useApp, type CornerMode } from '../store';
+import { useApp } from '../store';
 import type { Model } from '../useModel';
+
+function usePlayLoop(active: boolean, period: number, onPhase: (s: number) => void) {
+  const cb = useRef(onPhase);
+  cb.current = onPhase;
+  useEffect(() => {
+    if (!active) return;
+    let raf = 0;
+    const t0 = performance.now();
+    const tick = (now: number) => {
+      cb.current(Math.sin(((now - t0) / period) * Math.PI * 2));
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [active, period]);
+}
 
 export function MotionBar({ model }: { model: Model }) {
   const travel = useApp((s) => s.travel);
@@ -10,86 +32,83 @@ export function MotionBar({ model }: { model: Model }) {
   const bump = useApp((s) => s.bump);
   const rackLimit = useApp((s) => s.steer.rackLimit.value);
   const cFactor = useApp((s) => s.steer.cFactor.value);
-  const swLimit = (rackLimit / cFactor) * 360;
   const playing = useApp((s) => s.playing);
+  const playingSteer = useApp((s) => s.playingSteer);
   const mode = useApp((s) => s.mode);
   const loadFactor = useApp((s) => s.loadFactor);
   const set = useApp((s) => s.set);
-  const loaded = mode === 'loaded';
-  const shownTravel = loaded ? model.current?.travel ?? 0 : travel;
+  const hasSpring = Boolean(model.corner?.geometry.damper);
+  const loaded = mode === 'loaded' && hasSpring;
+  const swLimit = (rackLimit / cFactor) * 360;
+  const shownTravel = model.current?.travel ?? travel;
+  const shownLoad = model.current?.loadFactor ?? loadFactor;
 
-  // Play: kinematic → sweep travel droop ↔ bump; loaded → sweep load factor 0.4 ↔ 1.8.
-  const t0 = useRef(0);
-  useEffect(() => {
-    if (!playing) return;
-    let raf = 0;
-    t0.current = performance.now();
-    const tick = (now: number) => {
-      const s = Math.sin(((now - t0.current) / 4000) * Math.PI * 2);
-      if (loaded) set('loadFactor', 1.1 + 0.7 * s);
-      else set('travel', s >= 0 ? s * bump : s * droop);
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [playing, bump, droop, set, loaded]);
+  // Play motion: drives whichever input is active (travel, or load when the corner is settling).
+  usePlayLoop(playing, 4000, (s) => {
+    if (useApp.getState().mode === 'loaded') useApp.getState().set('loadFactor', 1.1 + 0.8 * s);
+    else useApp.getState().set('travel', s >= 0 ? s * bump : s * droop);
+  });
+  // Play steering: lock to lock.
+  usePlayLoop(playingSteer, 5000, (s) => useApp.getState().set('rack', s * rackLimit));
 
   return (
     <div className="motion-bar">
-      <label className="small">
-        Mode
-        <select value={mode} onChange={(e) => { set('playing', false); set('mode', e.target.value as CornerMode); }}>
-          <option value="kinematic">Kinematic (set travel)</option>
-          <option value="loaded">Loaded (settle on spring)</option>
-        </select>
-      </label>
-      <button className={playing ? 'active' : ''} onClick={() => set('playing', !playing)}>
-        {playing ? '❚❚ Pause' : '▶ Play'}
-      </button>
-      {loaded ? (
+      <div className={`motion-group${!loaded ? ' driving' : ''}`}>
         <label className="slider">
-          <span>Load factor <b>{loadFactor.toFixed(2)}</b>× static · travel <b>{shownTravel.toFixed(1)}</b> mm</span>
+          <span>Travel <b>{shownTravel.toFixed(1)}</b> mm {!loaded && <em className="drive-tag">input</em>}</span>
           <input
-            type="range" min={0} max={3} step={0.01} value={loadFactor}
-            onChange={(e) => { set('playing', false); set('loadFactor', Number(e.target.value)); }}
-            onDoubleClick={() => set('loadFactor', 1)}
+            type="range" min={-droop} max={bump} step={0.5} value={shownTravel}
+            onChange={(e) => { set('playing', false); set('mode', 'kinematic'); set('travel', Number(e.target.value)); }}
+            onDoubleClick={() => { set('mode', 'kinematic'); set('travel', 0); }}
           />
         </label>
-      ) : (
         <label className="slider">
-          <span>Travel <b>{shownTravel.toFixed(1)}</b> mm</span>
+          <span>
+            Load <b>{shownLoad.toFixed(2)}</b>× static
+            {hasSpring ? (loaded && <em className="drive-tag">input</em>) : <em className="muted"> (needs a spring)</em>}
+          </span>
           <input
-            type="range" min={-droop} max={bump} step={0.5} value={travel}
-            onChange={(e) => { set('playing', false); set('travel', Number(e.target.value)); }}
-            onDoubleClick={() => set('travel', 0)}
+            type="range" min={0} max={3} step={0.01} value={shownLoad} disabled={!hasSpring}
+            onChange={(e) => { set('playing', false); set('mode', 'loaded'); set('loadFactor', Number(e.target.value)); }}
+            onDoubleClick={() => { set('mode', 'loaded'); set('loadFactor', 1); }}
           />
         </label>
-      )}
-      <label className="slider">
-        <span>Steering wheel <b>{((rack / cFactor) * 360).toFixed(0)}</b>° · rack <b>{rack.toFixed(1)}</b> mm</span>
-        <input
-          type="range" min={-swLimit} max={swLimit} step={1} value={(rack / cFactor) * 360}
-          onChange={(e) => set('rack', (Number(e.target.value) / 360) * cFactor)}
-          onDoubleClick={() => set('rack', 0)}
-        />
-      </label>
-      <label className="small">
-        Droop
-        <input type="number" value={droop} min={1} max={300} onChange={(e) => set('droop', Math.max(1, Number(e.target.value)))} />
-      </label>
-      <label className="small">
-        Bump
-        <input type="number" value={bump} min={1} max={300} onChange={(e) => set('bump', Math.max(1, Number(e.target.value)))} />
-      </label>
-      {!loaded && (
+        <button className={playing ? 'active' : ''} onClick={() => set('playing', !playing)} title={loaded ? 'Animate load 0.3× – 1.9×' : 'Animate travel droop ↔ bump'}>
+          {playing ? '❚❚' : '▶'} {loaded ? 'Load' : 'Travel'}
+        </button>
+      </div>
+      <div className="motion-group">
+        <label className="slider">
+          <span>Steering wheel <b>{((rack / cFactor) * 360).toFixed(0)}</b>° · rack <b>{rack.toFixed(1)}</b> mm</span>
+          <input
+            type="range" min={-swLimit} max={swLimit} step={1} value={(rack / cFactor) * 360}
+            onChange={(e) => { set('playingSteer', false); set('rack', (Number(e.target.value) / 360) * cFactor); }}
+            onDoubleClick={() => set('rack', 0)}
+          />
+        </label>
+        <button className={playingSteer ? 'active' : ''} onClick={() => set('playingSteer', !playingSteer)} title="Animate steering lock to lock">
+          {playingSteer ? '❚❚' : '▶'} Steer
+        </button>
+      </div>
+      <div className="motion-group small-group">
         <label className="small">
-          Travel measured at
-          <select value={driver} onChange={(e) => set('driver', e.target.value as typeof driver)}>
-            <option value="wheelCenter">Wheel center</option>
-            <option value="contactPatch">Contact patch</option>
-          </select>
+          Droop
+          <input type="number" value={droop} min={1} max={300} onChange={(e) => set('droop', Math.max(1, Number(e.target.value)))} />
         </label>
-      )}
+        <label className="small">
+          Bump
+          <input type="number" value={bump} min={1} max={300} onChange={(e) => set('bump', Math.max(1, Number(e.target.value)))} />
+        </label>
+        {!loaded && (
+          <label className="small">
+            Travel at
+            <select value={driver} onChange={(e) => set('driver', e.target.value as typeof driver)}>
+              <option value="wheelCenter">Wheel center</option>
+              <option value="contactPatch">Contact patch</option>
+            </select>
+          </label>
+        )}
+      </div>
     </div>
   );
 }

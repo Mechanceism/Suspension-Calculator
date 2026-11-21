@@ -181,6 +181,12 @@ Avoid codes that look like numeric error values (`Inf`, `NaN`, `Err`, `Null`).
 | Plots | Lightweight charting (e.g. uPlot / Recharts) | Characteristic vs. travel curves. |
 | Distribution | Static web app first; optional desktop wrapper (Tauri) later | No install needed; works offline when packaged. |
 
+### Project Files ✅
+- **In-app library** (File → Save / Save as / Recents) kept in the browser; **Export / Import** as `.susp.json` files to share or back up.
+- Every file records `formatVersion` (file layout) and `appVersion` (app that wrote it). On import, older files are upgraded through migration steps (`src/app/project.ts` → `MIGRATIONS`), values this version doesn't know are ignored with a note, and missing values fall back to defaults with a note.
+- Hardpoints and wheel scalars are keyed by their parameter names (`FL_UCA_Fwd`, `FL_Whl_Camber`…), the same names planned for CAD parameters; each value keeps the text as typed (`5in`) plus its base-unit value.
+- **Rule for future changes:** any change to saved variables bumps `FORMAT_VERSION` and adds a migration step + test.
+
 ### Export / Integration (Phase 5, after calculating and visualizing)
 1. **File exports** (no CAD needed): project JSON, hardpoint CSV, Fusion user-parameter CSV, Blender Python script.
 2. **Fusion 360 add-in:** thin Python add-in that pushes parameters into Fusion. Trade-offs to decide later:

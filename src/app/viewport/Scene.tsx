@@ -11,7 +11,7 @@ import { useApp, POINT_NAMES, type AnchorId, type ComponentId, type PointKey } f
 import type { Model, Sample, Current } from '../useModel';
 import { STATE_KEY, anchorPosition } from '../anchors';
 import { Joint, Seg, Polyline, Tri, Wheel, Label, PatchMesh, Coilover, HitLink } from './primitives';
-import { JointMenu } from './JointMenu';
+import { JointGizmo } from './JointGizmo';
 import { MeasureOverlay } from './MeasureOverlay';
 
 export const COLORS = {
@@ -310,6 +310,8 @@ export function Scene({ model }: { model: Model }) {
   const rackLimit = useApp((s) => s.steer.rackLimit.value);
   const width = useApp((s) => s.geom.scalars.tireWidth.value);
   const radius = useApp((s) => s.geom.scalars.tireDiameter.value / 2);
+  const shoulder = useApp((s) => s.geom.scalars.shoulderRadius.value);
+  const rimRadius = useApp((s) => s.geom.scalars.rimDiameter.value / 2);
   const selection = useApp((s) => s.selection);
   const measureMode = useApp((s) => s.measureMode);
   const cur = model.current;
@@ -344,7 +346,7 @@ export function Scene({ model }: { model: Model }) {
       <Linkage state={state} />
       {vis.wheel && (
         <Part id="wheel">{(e) => (
-          <Wheel center={state.points.wheelCenter} axis={state.spinAxis} radius={radius} width={width} color={e === 2 ? COLORS.select : COLORS.wheel} />
+          <Wheel center={state.points.wheelCenter} axis={state.spinAxis} radius={radius} width={width} shoulder={shoulder} rimRadius={rimRadius} color={e === 2 ? COLORS.select : COLORS.wheel} />
         )}</Part>
       )}
       <Joints state={state} cur={cur} />
@@ -352,7 +354,7 @@ export function Scene({ model }: { model: Model }) {
       {trails && <Trails sweep={model.sweep} />}
       {ghosts && <Ghosts sweep={model.sweep} radius={radius} />}
       {vis.labels && <Labels state={state} />}
-      {!measureMode && selection?.kind === 'point' && <JointMenu id={selection.id} cur={cur} />}
+      {!measureMode && selection?.kind === 'point' && <JointGizmo id={selection.id} cur={cur} />}
       {measureMode && <MeasureOverlay cur={cur} />}
     </group>
   );

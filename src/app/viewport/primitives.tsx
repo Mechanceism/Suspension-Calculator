@@ -67,28 +67,64 @@ const circlePoints = (r: number, y: number, n = 72): V3[] =>
     return [r * Math.cos(t), y, r * Math.sin(t)];
   });
 
-/** Tire as an open cylinder aligned with the spin axis, plus center-plane and sidewall circles. */
-export function Wheel({ center, axis, radius, width, color, ghost = false }: {
+/**
+ * Tire cross-section (radius vs. position across the tread), revolved about the spin axis:
+ * sidewall from the rim up, quarter-circle shoulder, flat tread, shoulder, sidewall back down.
+ * Same profile as the contact-patch math (docs/MATH.md § L3).
+ */
+function tireProfile(radius: number, width: number, shoulder: number, rimRadius: number): THREE.Vector2[] {
+  const half = width / 2;
+  const re = Math.max(0, Math.min(shoulder, half, radius - rimRadius));
+  const pts: THREE.Vector2[] = [new THREE.Vector2(rimRadius, -half)];
+  const arc = (cy: number, from: number, to: number) => {
+    for (let i = 0; i <= 12; i++) {
+      const t = from + ((to - from) * i) / 12;
+      pts.push(new THREE.Vector2(radius - re + re * Math.cos(t), cy + re * Math.sin(t)));
+    }
+  };
+  if (re > 0) {
+    arc(-half + re, -Math.PI / 2, 0); // inboard shoulder: side → tread
+    arc(half - re, 0, Math.PI / 2); // outboard shoulder: tread → side
+  } else {
+    pts.push(new THREE.Vector2(radius, -half), new THREE.Vector2(radius, half));
+  }
+  pts.push(new THREE.Vector2(rimRadius, half));
+  return pts;
+}
+
+/** Tire with rounded shoulders, aligned with the spin axis, plus center-plane and tread-edge circles. */
+export function Wheel({ center, axis, radius, width, color, ghost = false, shoulder = 0, rimRadius }: {
   center: Vec3; axis: Vec3; radius: number; width: number; color: string; ghost?: boolean;
+  shoulder?: number; rimRadius?: number;
 }) {
   const quat = useMemo(
     () => new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(axis.x, axis.y, axis.z)),
     [axis],
   );
+  const rim = rimRadius ?? radius * 0.62;
+  const re = Math.max(0, Math.min(shoulder, width / 2, radius - rim));
+  const geometry = useMemo(
+    () => (ghost ? null : new THREE.LatheGeometry(tireProfile(radius, width, shoulder, rim), 72)),
+    [ghost, radius, width, shoulder, rim],
+  );
+  useEffect(() => () => geometry?.dispose(), [geometry]);
   const mid = useMemo(() => circlePoints(radius, 0), [radius]);
-  const outer = useMemo(() => circlePoints(radius, width / 2), [radius, width]);
-  const inner = useMemo(() => circlePoints(radius, -width / 2), [radius, width]);
+  const outer = useMemo(() => circlePoints(radius, width / 2 - re), [radius, width, re]);
+  const inner = useMemo(() => circlePoints(radius, -width / 2 + re), [radius, width, re]);
+  const rimOut = useMemo(() => circlePoints(rim, width / 2), [rim, width]);
+  const rimIn = useMemo(() => circlePoints(rim, -width / 2), [rim, width]);
   return (
     <group position={arr(center)} quaternion={quat}>
-      {!ghost && (
-        <mesh>
-          <cylinderGeometry args={[radius, radius, width, 72, 1, true]} />
-          <meshStandardMaterial color={color} transparent opacity={0.14} side={THREE.DoubleSide} depthWrite={false} />
+      {geometry && (
+        <mesh geometry={geometry}>
+          <meshStandardMaterial color={color} transparent opacity={0.16} side={THREE.DoubleSide} depthWrite={false} />
         </mesh>
       )}
       <Line points={mid} color={color} lineWidth={ghost ? 1 : 1.5} transparent opacity={ghost ? 0.35 : 0.9} dashed={!ghost} dashSize={25} gapSize={15} />
       {!ghost && <Line points={outer} color={color} lineWidth={2} />}
       {!ghost && <Line points={inner} color={color} lineWidth={2} />}
+      {!ghost && <Line points={rimOut} color={color} lineWidth={1} transparent opacity={0.45} />}
+      {!ghost && <Line points={rimIn} color={color} lineWidth={1} transparent opacity={0.45} />}
     </group>
   );
 }

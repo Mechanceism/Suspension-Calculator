@@ -1,0 +1,121 @@
+import { useEffect, useRef, useState } from 'react';
+import { useApp } from '../store';
+import { listLayouts, removeLayout, hasLayout, type LibraryEntry } from '../library';
+import { useDirty, newLayout, save, saveAs, openLayout, exportLayout, importLayoutFile } from '../fileActions';
+
+const when = (iso: string) => {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+};
+
+export function FileMenu() {
+  const [open, setOpen] = useState(false);
+  const [recentsOpen, setRecentsOpen] = useState(false);
+  const [recents, setRecents] = useState<LibraryEntry[]>([]);
+  const fileName = useApp((s) => s.fileName);
+  const dirty = useDirty();
+  const importInput = useRef<HTMLInputElement>(null);
+  const root = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setRecents(listLayouts());
+    const close = (e: MouseEvent) => { if (!root.current?.contains(e.target as Node)) { setOpen(false); setRecentsOpen(false); } };
+    window.addEventListener('mousedown', close);
+    return () => window.removeEventListener('mousedown', close);
+  }, [open]);
+
+  const run = (fn: () => void) => () => { setOpen(false); setRecentsOpen(false); fn(); };
+
+  return (
+    <div className="file-menu" ref={root}>
+      <button className={`menu-btn${open ? ' on' : ''}`} onClick={() => setOpen(!open)} aria-haspopup="menu" aria-expanded={open}>File</button>
+      <span className="file-title" title={dirty ? 'Unsaved changes' : 'Saved'}>
+        {fileName ?? 'Untitled'}{dirty && <span className="dirty-dot"> •</span>}
+      </span>
+      {open && (
+        <div className="menu" role="menu">
+          <button role="menuitem" onClick={run(() => newLayout(dirty))}>New (default layout)</button>
+          <button role="menuitem" onClick={run(save)}>Save<kbd>Ctrl+S</kbd></button>
+          <button role="menuitem" onClick={run(() => useApp.getState().set('saveAsOpen', true))}>Save as…<kbd>Ctrl+Shift+S</kbd></button>
+          <div className="menu-sub" onMouseEnter={() => setRecentsOpen(true)} onMouseLeave={() => setRecentsOpen(false)}>
+            <button role="menuitem" aria-haspopup="menu" onClick={() => setRecentsOpen(!recentsOpen)}>Recents<span className="menu-arrow">▸</span></button>
+            {recentsOpen && (
+              <div className="menu submenu" role="menu">
+                {recents.length === 0 && <div className="menu-empty">No saved layouts yet</div>}
+                {recents.map((r) => (
+                  <div key={r.name} className="menu-recent">
+                    <button role="menuitem" onClick={run(() => openLayout(r.name, dirty))}>
+                      <span>{r.name}</span><span className="muted small-text">{when(r.savedAt)}</span>
+                    </button>
+                    <button
+                      className="icon-btn" title={`Remove “${r.name}” from Recents`}
+                      onClick={() => { if (window.confirm(`Delete “${r.name}” from this browser?`)) { removeLayout(r.name); setRecents(listLayouts()); } }}
+                    >✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="menu-sep" />
+          <button role="menuitem" onClick={run(() => importInput.current?.click())}>Import from file…</button>
+          <button role="menuitem" onClick={run(exportLayout)}>Export to file…</button>
+        </div>
+      )}
+      <input
+        ref={importInput} type="file" accept=".json,application/json" hidden
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) void importLayoutFile(f, dirty); e.target.value = ''; }}
+      />
+      <SaveAsDialog />
+    </div>
+  );
+}
+
+function SaveAsDialog() {
+  const openDialog = useApp((s) => s.saveAsOpen);
+  const fileName = useApp((s) => s.fileName);
+  const set = useApp((s) => s.set);
+  const [name, setName] = useState('');
+  useEffect(() => { if (openDialog) setName(fileName ?? 'My layout'); }, [openDialog, fileName]);
+  if (!openDialog) return null;
+  const submit = () => {
+    const n = name.trim();
+    if (!n) return;
+    if (n !== fileName && hasLayout(n) && !window.confirm(`“${n}” already exists. Replace it?`)) return;
+    saveAs(n);
+  };
+  return (
+    <div className="modal-backdrop" onMouseDown={() => set('saveAsOpen', false)}>
+      <div className="modal" role="dialog" aria-label="Save layout as" onMouseDown={(e) => e.stopPropagation()}>
+        <h3>Save layout as</h3>
+        <input
+          autoFocus className="text-input" value={name} onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') set('saveAsOpen', false); }}
+        />
+        <p className="hint">Saved in this browser and listed under File → Recents. Use Export to share or back up as a file.</p>
+        <div className="modal-actions">
+          <button onClick={() => set('saveAsOpen', false)}>Cancel</button>
+          <button className="primary" onClick={submit} disabled={!name.trim()}>Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Short-lived message for saves, imports and their warnings. */
+export function Notice() {
+  const notice = useApp((s) => s.notice);
+  const set = useApp((s) => s.set);
+  useEffect(() => {
+    if (!notice || notice.kind !== 'info') return;
+    const t = setTimeout(() => set('notice', null), 3500);
+    return () => clearTimeout(t);
+  }, [notice, set]);
+  if (!notice) return null;
+  return (
+    <div className={`notice notice-${notice.kind}`} role="status">
+      <pre>{notice.text}</pre>
+      <button className="icon-btn" onClick={() => set('notice', null)} title="Dismiss">✕</button>
+    </div>
+  );
+}

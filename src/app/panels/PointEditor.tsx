@@ -14,6 +14,8 @@ export function PointEditor({ id }: { id: PointKey }) {
   const setPoint = useApp((s) => s.setPoint);
   const movePoint = useApp((s) => s.movePoint);
   const step = useApp((s) => s.nudgeStep);
+  const snap = useApp((s) => s.snapToGrid);
+  const grid = useApp((s) => s.gridSize);
   const set = useApp((s) => s.set);
   const [delta, setDelta] = useState(['0', '0', '0']);
   const applyDelta = () => {
@@ -44,6 +46,16 @@ export function PointEditor({ id }: { id: PointKey }) {
         ))}
         <span className="muted">mm</span>
       </div>
+      <div className="jm-row">
+        <label className="check-inline">
+          <input type="checkbox" checked={snap} onChange={() => set('snapToGrid', !snap)} />
+          Snap drag to grid
+        </label>
+        <select value={grid} onChange={(e) => set('gridSize', Number(e.target.value))} disabled={!snap}>
+          {[0.1, 0.5, 1, 2, 5, 10].map((g) => <option key={g} value={g}>{g} mm</option>)}
+        </select>
+      </div>
+      <p className="hint">Drag the X / Y / Z arrows on the joint in the viewport to move it.</p>
       <div className="jm-row">
         <span className="muted">Move by</span>
         {delta.map((d, i) => (

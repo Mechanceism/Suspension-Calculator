@@ -16,21 +16,23 @@
  *   4  drive mount per corner, drive split, locks
  *   5  optimizer setup per corner design (free coordinates + ranges, goals)
  *   6  vehicle optimizer setup, tire grip model, roll load factor (corner optimizer)
+ *   7  held dimensions (Measure → set, hold at a travel or permanently)
  */
 import pkg from '../../package.json';
 import { parseValue, type Quantity } from '../core/units/units';
 import { CORNER_IDS, type CornerId } from '../core/vehicle/vehicle';
+import { DIM_MEASURES } from '../core/suspension/dimensions';
 import {
   defaultDesign, mergedCorners, rootOf, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META, SPRING_KEYS, SPRING_META,
   DAMPER_KEYS, DAMPER_META, STEER_KEYS, STEER_META, TIRE_KEYS, TIRE_META, VEHICLE_KEYS, VEHICLE_META,
   DEFAULT_LINKS, DEFAULT_SETTINGS, SHARED_META, defaultShared, defaultOptimizerSetup, defaultVehicleOptimizerSetup, defaultGrip, GRIP_KEYS, GRIP_META,
-  type VehicleOptimizerSetup,
+  type VehicleOptimizerSetup, type HeldDimension, newDimId,
   type OptimizerSetup,
   type DesignState, type CornerDesign, type Field, type CornerLinks, type CornerSettings, type SharedDesign, type Axle,
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 6;
+export const FORMAT_VERSION = 7;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -79,6 +81,8 @@ export interface ProjectFile {
   };
   /** Tire grip model. */
   grip: Record<string, FieldJson>;
+  /** Held dimensions (points named per corner, e.g. FL_UCA_Fwd). */
+  dimensions: { root: CornerId; a: string; b: string; measure: string; value: number; travel: number | null }[];
   presetId?: string;
 }
 
@@ -144,6 +148,10 @@ export function serializeProject(d: DesignState, name: string): ProjectFile {
       accelG: fj(d.vehicleOptimizer.accelG), keepClose: fj(d.vehicleOptimizer.keepClose),
     },
     grip: mapFields(GRIP_KEYS, d.grip),
+    dimensions: d.dimensions.map((x) => ({
+      root: x.root, a: cornerParam(x.root, POINT_NAMES[x.a]), b: cornerParam(x.root, POINT_NAMES[x.b]),
+      measure: x.measure, value: x.value, travel: x.travel,
+    })),
     presetId: d.presetId,
   };
 }
@@ -192,7 +200,28 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   4: (f) => ({ ...f, formatVersion: 5 }),
   // 5 → 6: vehicle optimizer (none), default tire grip model, roll load factor default.
   5: (f) => ({ ...f, formatVersion: 6 }),
+  // 6 → 7: held dimensions (none).
+  6: (f) => ({ ...f, formatVersion: 7 }),
 };
+
+/** Read held dimensions; unknown points or measures are dropped with a warning. */
+function readDimensions(raw: unknown, warnings: string[]): HeldDimension[] {
+  if (!Array.isArray(raw)) return [];
+  const out: HeldDimension[] = [];
+  for (const r of raw) {
+    if (!isObj(r)) continue;
+    const root = r.root as CornerId;
+    const pk = (name: unknown) => POINT_KEYS.find((k) => cornerParam(root, POINT_NAMES[k]) === name);
+    const a = pk(r.a), b = pk(r.b);
+    if (!(CORNER_IDS as string[]).includes(String(root)) || !a || !b || !(DIM_MEASURES as string[]).includes(String(r.measure))
+      || typeof r.value !== 'number' || !Number.isFinite(r.value)) {
+      warnings.push(`held dimension ${String(r.a)} → ${String(r.b)}: not understood, dropped`);
+      continue;
+    }
+    out.push({ id: newDimId(), root, a, b, measure: r.measure as HeldDimension['measure'], value: r.value, travel: typeof r.travel === 'number' ? r.travel : null });
+  }
+  return out;
+}
 
 /** Ranges and goals shared by both optimizer setups. */
 function readRangesGoals<G extends Record<string, { on: boolean; target: Field; weight: Field }>>(
@@ -410,6 +439,7 @@ export function importProject(data: unknown): ImportResult {
     optimizer: readOptimizer(f.optimizer, warnings),
     vehicleOptimizer: readVehicleOptimizer(f.vehicleOptimizer, warnings),
     grip: isObj(f.grip) ? readRecord(f.grip, GRIP_KEYS, (k) => GRIP_META[k].quantity, defaultGrip(), 'grip', warnings) : defaultGrip(),
+    dimensions: readDimensions(f.dimensions, warnings),
   };
   Object.assign(design, corners[rootOf(activeCorner, links)]);
   return { design, name: typeof f.name === 'string' && f.name ? f.name : 'Imported layout', warnings };

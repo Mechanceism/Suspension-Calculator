@@ -103,7 +103,7 @@ const VEHICLE_TABS = [
 export function VehicleSidebar({ model }: { model: VehicleModel | null }) {
   const tab = useApp((s) => s.vehicleTab);
   const set = useApp((s) => s.set);
-  const nLocks = useApp((s) => Object.keys(s.locks).length);
+  const nLocks = useApp((s) => Object.keys(s.locks).length + s.dimensions.length);
   return (
     <>
       <nav className="tabs" role="tablist">

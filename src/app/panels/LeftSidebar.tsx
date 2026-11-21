@@ -20,7 +20,7 @@ const TABS = [
 export function LeftSidebar({ model }: { model: Model }) {
   const tab = useApp((s) => s.leftTab);
   const set = useApp((s) => s.set);
-  const nLocks = useApp((s) => Object.keys(s.locks).length);
+  const nLocks = useApp((s) => Object.keys(s.locks).length + s.dimensions.length);
   return (
     <>
       <div className="corner-bar">

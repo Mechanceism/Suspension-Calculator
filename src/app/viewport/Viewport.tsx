@@ -170,10 +170,10 @@ export function Viewport({ model }: { model: Model }) {
       {measureMode && (
         <div className="viewport-banner">
           {measureCount < 2 ? `Measure: click ${measureCount === 0 ? 'the first' : 'the second'} point` : 'Click another point to start a new measurement'}
-          {' · Esc to exit'}
+          <button className="banner-btn" onClick={() => useApp.getState().toggleMeasure()} title="Leave the measure tool (Esc)">Cancel</button>
         </div>
       )}
-      {measureMode && measureCount === 2 && <MeasurePanel />}
+      {measureMode && measureCount === 2 && <MeasurePanel cur={model.current} />}
       {model.error && <div className="viewport-error">{model.error}</div>}
     </div>
   );

@@ -11,7 +11,7 @@ import { create, type StoreApi, type UseBoundStore } from 'zustand';
 import { parseValue, type Quantity } from '../../core/units/units';
 import {
   GOAL_KINDS, GOAL_META, sampleCorner, goalValue,
-  type GoalKind, type GoalMeta, type ProgressInfo, type HardpointId, type Variable,
+  type GoalKind, type GoalMeta, type ProgressInfo, type HardpointId, type Variable, type Hold,
 } from '../../core/optimize/corner';
 import {
   VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, evaluateVehicle, vehicleGoalValue,
@@ -310,12 +310,20 @@ function RunArea({ useRun, blockers, notes, label, start, current, meta, onApply
   );
 }
 
-const skippedNote = (skipped: string[], label: (k: string) => string, holds: { arm: string; which: string; root?: string }[]) => (
+const holdLabel = (h: Hold & { root?: string }) => {
+  const r = h.root ? `${h.root} ` : '';
+  if ('dimension' in h) {
+    const d = h.dimension;
+    return `${r}${POINT_LABELS[pointKeyOf(d.a)]} → ${POINT_LABELS[pointKeyOf(d.b)]} ${MEASURE_SHORT[d.measure]}`;
+  }
+  return `${r}${h.arm.toUpperCase()} ${h.which === 'planAngle' ? 'plan angle' : h.which === 'frontViewAngle' ? 'front-view angle' : h.which}`;
+};
+const MEASURE_SHORT: Record<string, string> = { distance: 'distance', dx: 'ΔX', dy: 'ΔY', dz: 'ΔZ', front: 'front-view angle', side: 'side-view angle', top: 'top-view angle', slope: 'slope' };
+
+const skippedNote = (skipped: string[], label: (k: string) => string, holds: (Hold & { root?: string })[]) => (
   <>
     {skipped.length > 0 && <p className="hint">Skipped (locked): {skipped.map(label).join(', ')}</p>}
-    {holds.length > 0 && (
-      <p className="hint">Held (locked): {holds.map((h) => `${h.root ? `${h.root} ` : ''}${h.arm.toUpperCase()} ${h.which === 'planAngle' ? 'plan angle' : h.which}`).join(', ')}</p>
-    )}
+    {holds.length > 0 && <p className="hint">Held (locked): {holds.map(holdLabel).join(', ')}</p>}
   </>
 );
 

@@ -17,6 +17,7 @@ import { DoubleWishbone, type CornerState, type DoubleWishboneGeometry } from '.
 import { characteristics, deg, rad, type Characteristics } from '../suspension/characteristics';
 import { armMetrics } from '../suspension/armGeometry';
 import { boundedLeastSquares, type LsqResult } from './leastSquares';
+import { dimensionValue, type DimensionSpec } from '../suspension/dimensions';
 
 export type HardpointId =
   | 'ucaFwd' | 'ucaAft' | 'ucaOut' | 'lcaFwd' | 'lcaAft' | 'lcaOut'
@@ -61,7 +62,13 @@ export const GOAL_KINDS = Object.keys(GOAL_META) as GoalKind[];
 
 export interface Goal { kind: GoalKind; target: number; weight: number }
 export interface Variable { point: HardpointId; axis: 0 | 1 | 2; lo: number; hi: number }
-export type Hold = { arm: 'uca' | 'lca'; which: 'length' | 'inclination' | 'planAngle' | 'frontViewAngle' };
+/** Something the optimizer must keep: a locked arm dimension, or a held dimension between two points. */
+export type Hold =
+  | { arm: 'uca' | 'lca'; which: 'length' | 'inclination' | 'planAngle' | 'frontViewAngle' }
+  | { dimension: DimensionSpec };
+
+/** The value a hold must keep (arm dimensions: as they are now; held dimensions: their set value). */
+export const holdTarget = (g: DoubleWishboneGeometry, h: Hold): number => ('dimension' in h ? h.dimension.value : holdValue(g, h));
 
 export interface CornerProblem {
   geometry: DoubleWishboneGeometry;
@@ -294,6 +301,7 @@ export function cornerGoalResiduals(goal: Goal, s: CornerSamples, ref?: number |
 }
 
 export function holdValue(g: DoubleWishboneGeometry, h: Hold): number {
+  if ('dimension' in h) return dimensionValue(g, h.dimension) ?? NaN;
   const m = armMetrics(g[h.arm]);
   return h.which === 'length' ? m.length : deg(h.which === 'inclination' ? m.inclination : h.which === 'planAngle' ? m.planAngle : m.frontViewAngle);
 }
@@ -342,7 +350,7 @@ export function optimizeCorner(p: CornerProblem, onIteration?: (info: ProgressIn
   const x0 = vars.map((v) => variableValue(p.geometry, v));
   const lo = vars.map((v) => Math.min(v.lo, v.hi));
   const hi = vars.map((v) => Math.max(v.lo, v.hi));
-  const holds = (p.holds ?? []).map((h) => ({ h, v0: holdValue(p.geometry, h) }));
+  const holds = (p.holds ?? []).map((h) => ({ h, v0: holdTarget(p.geometry, h) }));
   const keep = Math.sqrt(p.keepClose ?? 0.01);
   const opts = sampleOpts(p, goals);
   const start = sampleCorner(p.geometry, opts);

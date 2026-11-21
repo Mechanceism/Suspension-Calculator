@@ -4,7 +4,7 @@
  * (highlighting it in the viewport), opens the inspector and flashes the row that holds the setting.
  */
 import {
-  useApp, mergedCorners, toGeometry, VEHICLE_META, STEER_META, SHARED_META, SPRING_META, DAMPER_META, TIRE_META, SCALAR_META,
+  useApp, mergedCorners, toGeometry, rootOf, VEHICLE_META, STEER_META, SHARED_META, SPRING_META, DAMPER_META, TIRE_META, SCALAR_META,
   type DesignState, type PointKey,
 } from '../store';
 import { describeLock, flashLockRow, type LockInfo } from '../locks';
@@ -14,6 +14,8 @@ import { switchWorkspace } from '../viewport/SafeHtml';
 import type { CornerId } from '../../core/vehicle/vehicle';
 import { fmt } from './FieldRows';
 import { useDisplay } from '../units';
+import { dimensionLabel, holdLabel } from '../heldDimensions';
+import type { PointKey as PK } from '../store';
 
 const AXIS = { x: 0, y: 1, z: 2 } as const;
 
@@ -52,6 +54,14 @@ export function lockValue(s: DesignState, key: string): string {
   }
 }
 
+/** Go to a held dimension: its corner in the Corner view, with the measure tool on its two points. */
+export function goToDimension(root: CornerId, a: PK, b: PK): void {
+  const s = useApp.getState();
+  if (s.activeCorner !== root && rootOf(s.activeCorner, s.links) !== root) s.setActiveCorner(root);
+  const open = () => useApp.getState().startMeasure([a, b]);
+  if (s.workspace !== 'corner') { switchWorkspace('corner'); setTimeout(open, 120); } else open();
+}
+
 /** Go to a lock: workspace, corner, selection, inspector tab, then flash its row. */
 export function goToLock(info: LockInfo): void {
   const s = useApp.getState();
@@ -82,6 +92,9 @@ export function LocksPanel({ compact = false }: { compact?: boolean }) {
   const clearLocks = useApp((s) => s.clearLocks);
   const state = useApp((s) => s);
   const items = Object.keys(locks).sort().map((k) => describeLock(k, links));
+  const dims = useApp((s) => s.dimensions);
+  const violations = useApp((s) => s.dimViolations);
+  const removeDimension = useApp((s) => s.removeDimension);
   const disp = useDisplay();
   // "200 mm" → display units
   const showValue = (v: string) => {
@@ -101,7 +114,30 @@ export function LocksPanel({ compact = false }: { compact?: boolean }) {
           built or bought with the 🔓 buttons next to values, joints and parts. Click an item to find it.
         </p>
       )}
-      {items.length === 0 && <p className="muted">Nothing is locked yet.</p>}
+      {items.length === 0 && dims.length === 0 && <p className="muted">Nothing is locked yet.</p>}
+      {dims.length > 0 && (
+        <div className="locks-group">
+          <div className="locks-head">Held dimensions <span className="muted">({dims.length})</span></div>
+          <ul>
+            {dims.map((d) => {
+              const bad = violations.includes(d.id);
+              const v = d.measure === 'distance' || d.measure === 'dx' || d.measure === 'dy' || d.measure === 'dz'
+                ? `${disp.text(d.value.toFixed(2), 'mm').text} ${disp.conv('mm').unit}` : `${d.value.toFixed(2)}°`;
+              return (
+                <li key={d.id}>
+                  <button className={`lock-item${bad ? ' bad' : ''}`} title={`Show and edit (${d.root}${bad ? ', NOT MET' : ''})`}
+                    onClick={() => goToDimension(d.root, d.a, d.b)}>
+                    <span className="lock-icon">{bad ? '⚠' : '🔒'}</span>
+                    <span className="lock-label">{d.root} {dimensionLabel(d)} <span className="muted">· {holdLabel(d.travel)}</span></span>
+                    <span className="lock-val mono">{v}</span>
+                  </button>
+                  <button className="icon-btn lock-x" title="Release this dimension" onClick={() => removeDimension(d.id)}>✕</button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
       {[...groups].map(([group, list]) => (
         <div key={group} className="locks-group">
           <div className="locks-head">{group} <span className="muted">({list.length})</span></div>
@@ -120,7 +156,7 @@ export function LocksPanel({ compact = false }: { compact?: boolean }) {
         </div>
       ))}
       {items.length > 0 && (
-        <button className="wide-btn" onClick={() => { if (confirm(`Unlock all ${items.length} locked values?`)) clearLocks(); }}>
+        <button className="wide-btn" onClick={() => { if (confirm(`Unlock all ${items.length} locked values? (Held dimensions stay.)`)) clearLocks(); }}>
           Unlock all
         </button>
       )}

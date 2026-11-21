@@ -17,6 +17,7 @@ import { parseTireSize } from '../core/tire/size';
 import { GOAL_KINDS, GOAL_META, type GoalKind } from '../core/optimize/corner';
 import { VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, type VehicleGoalKind } from '../core/optimize/vehicle';
 import { DEFAULT_GRIP } from '../core/tire/grip';
+import type { DimMeasure } from '../core/suspension/dimensions';
 
 export interface Field {
   text: string;
@@ -129,7 +130,7 @@ export interface EditableGeometry {
 
 export const VIS_KEYS = [
   'chassis', 'uca', 'lca', 'upright', 'tieRod', 'wheel',
-  'spring', 'patch', 'steeringAxis', 'icConstruction', 'rollCenter', 'ground', 'datum', 'labels',
+  'spring', 'patch', 'steeringAxis', 'icConstruction', 'rollCenter', 'ground', 'datum', 'labels', 'dimensions',
 ] as const;
 export type VisKey = (typeof VIS_KEYS)[number];
 
@@ -302,6 +303,11 @@ export interface AppState extends DesignState {
   applyVehicleOptimized(updates: { root: CornerId; key: PointKey; axis: 0 | 1 | 2; value: number }[]): void;
   undoVehicleOptimized(): void;
   vehOptUndo: Partial<Record<CornerId, EditableGeometry>> | null;
+  /** Hold a dimension (replaces one with the same points and measure). */
+  holdDimension(d: Omit<HeldDimension, 'id'>): void;
+  removeDimension(id: string): void;
+  /** Held dimensions that couldn't be met after the last edit (ids). */
+  dimViolations: string[];
   /** Geometry before the last applied optimization (for Undo), with the corner it belongs to. */
   optUndo: { root: CornerId; geom: EditableGeometry } | null;
 
@@ -506,6 +512,9 @@ export const defaultGrip = (): Record<GripKey, Field> =>
 
 export const OPT_DEFAULT_RANGE = 25;
 
+let dimCounter = 0;
+export const newDimId = () => `dim-${Date.now().toString(36)}-${(dimCounter++).toString(36)}`;
+
 export function defaultOptimizerSetup(): OptimizerSetup {
   return {
     ranges: {},
@@ -550,6 +559,20 @@ export interface DesignState {
   vehicleOptimizer: VehicleOptimizerSetup;
   /** Tire grip model. */
   grip: Record<GripKey, Field>;
+  /** Held dimensions between two points (Measure → set, hold). Kept like CAD sketch dimensions. */
+  dimensions: HeldDimension[];
+}
+
+/** A held dimension of one corner design. travel null = permanent (part dimension). */
+export interface HeldDimension {
+  id: string;
+  root: CornerId;
+  a: PointKey;
+  b: PointKey;
+  measure: DimMeasure;
+  /** mm or degrees. */
+  value: number;
+  travel: number | null;
 }
 
 /** The working (active corner) fields as a CornerDesign. */
@@ -589,7 +612,7 @@ export const pickDesign = (s: DesignState): DesignState => ({
   droop: s.droop, bump: s.bump, driver: s.driver,
   corners: s.corners, links: s.links, settings: s.settings, activeCorner: s.activeCorner,
   vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode, shared: s.shared, locks: s.locks,
-  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip,
+  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, dimensions: s.dimensions,
 });
 
 /** The default layout (File → New). */
@@ -658,6 +681,7 @@ export function defaultDesign(presetId = 'C'): DesignState {
     optimizer: {},
     vehicleOptimizer: defaultVehicleOptimizerSetup(),
     grip: defaultGrip(),
+    dimensions: [],
   };
 }
 
@@ -682,6 +706,7 @@ export const useApp = create<AppState>((set, get) => ({
   visibility: {
     chassis: true, uca: true, lca: true, upright: true, tieRod: true, wheel: true, spring: true,
     patch: true, steeringAxis: true, icConstruction: true, rollCenter: true, ground: true, datum: true, labels: params.get('labels') === '1',
+    dimensions: true,
   },
   projection: params.get('projection') === 'perspective' ? 'perspective' : 'orthographic',
   focus: 'corner',
@@ -738,6 +763,7 @@ export const useApp = create<AppState>((set, get) => ({
     const corners = { ...before };
     const locks = { ...s.locks };
     const optimizer = { ...s.optimizer };
+    const dimensions = [...s.dimensions];
     for (const id of CORNER_IDS) {
       const oldRoot = rootOf(id, s.links);
       const newRoot = rootOf(id, links);
@@ -747,9 +773,11 @@ export const useApp = create<AppState>((set, get) => ({
         for (const k of Object.keys(s.locks)) if (k.startsWith(`${oldRoot}.`)) locks[`${id}${k.slice(oldRoot.length)}`] = true;
         // ...and the same optimizer setup.
         if (s.optimizer[oldRoot]) optimizer[id] = structuredClone(s.optimizer[oldRoot]);
+        // ...and the same held dimensions.
+        for (const d of s.dimensions) if (d.root === oldRoot) dimensions.push({ ...d, id: newDimId(), root: id });
       }
     }
-    set({ links, corners, locks, optimizer, ...corners[rootOf(s.activeCorner, links)] });
+    set({ links, corners, locks, optimizer, dimensions, ...corners[rootOf(s.activeCorner, links)] });
   },
   toggleLock: (key) => {
     const locks = { ...get().locks };
@@ -785,6 +813,13 @@ export const useApp = create<AppState>((set, get) => ({
     set({ grip: { ...g, [key]: parseField(text, GRIP_META[key].quantity, g[key]) } });
   },
   vehOptUndo: null,
+  dimViolations: [],
+  holdDimension: (d) => {
+    const rest = get().dimensions.filter((x) => !(x.root === d.root && x.measure === d.measure
+      && ((x.a === d.a && x.b === d.b) || (x.a === d.b && x.b === d.a))));
+    set({ dimensions: [...rest, { ...d, id: newDimId() }] });
+  },
+  removeDimension: (id) => set({ dimensions: get().dimensions.filter((d) => d.id !== id), dimViolations: get().dimViolations.filter((v) => v !== id) }),
   applyVehicleOptimized: (updates) => {
     const s = get();
     const merged = mergedCorners(s);

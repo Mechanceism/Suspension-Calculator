@@ -24,6 +24,7 @@ const CONSTRUCTION: { key: VisKey; label: string; color: string }[] = [
   { key: 'ground', label: 'Ground plane', color: COLORS.ground },
   { key: 'datum', label: 'Origin axes', color: '#ffffff' },
   { key: 'labels', label: 'Point labels', color: '#ffffff' },
+  { key: 'dimensions', label: 'Held dimensions', color: '#ffd60a' },
 ];
 
 function Row({ label, color, checked, onToggle, onEdit }: { label: string; color: string; checked: boolean; onToggle: () => void; onEdit?: () => void }) {

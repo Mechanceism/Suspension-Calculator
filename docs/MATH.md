@@ -322,6 +322,7 @@ Set dimension (Measure tool) moves one point; the other is fixed. With d = B −
 - **ΔX/ΔY/ΔZ:** replace one component of d.
 - **View angles** from the horizontal: front atan2(ΔY, |ΔX|), side atan2(ΔY, |ΔZ|), top atan2(ΔZ, |ΔX|), slope atan2(ΔY, √(ΔX²+ΔZ²)). Setting one keeps the line's length in that view and the coordinate out of that view (slope keeps the 3D length and plan direction).
 - **Along a line:** p′ = p + s·(q − p)/|q − p| (s > 0 toward q).
+- **Held dimensions** (`src/core/suspension/dimensions.ts`): a measure between two hardpoints held at a travel position (0 = ride height; evaluated on the solved corner at that travel) or permanently (on the design itself; only offered when it can't change through travel: a distance within one rigid part, or anything between chassis points). After an edit, `resolveDimensions` moves the free coordinates of the points involved (not the edited or locked ones) by bounded least squares: residuals (value − held)/(10⁻⁴ mm or °), plus 10⁻³·Δx so the smallest move wins. A dimension it can't meet is reported (drawn red). Both optimizers hold them as stiff penalties (tolerance 0.001).
 - **Arm front-view angle (static):** the pivot axis swings around the ball joint (Rodrigues rotation of the foot → ball-joint vector about the axis direction), keeping the axis direction, arm length and pivot spacing; solved by bisection. Lockable and held by the optimizer like the other arm dimensions.
 
 ## L7: Optimizer — corner, first version ✅ (`src/core/optimize/`)

@@ -7,6 +7,7 @@ import { ViewMenu } from './panels/ViewMenu';
 import { UnitsMenu } from './panels/UnitsMenu';
 import { HelpOverlay } from './panels/HelpOverlay';
 import { initHistory, undo, redo, useHistory } from './history';
+import { initHeldDimensions } from './heldDimensions';
 import { save, useDirty } from './fileActions';
 import { Viewport } from './viewport/Viewport';
 import { LeftSidebar } from './panels/LeftSidebar';
@@ -30,6 +31,7 @@ export function App() {
     const s = useApp.getState();
     if (s.savedSnapshot === null && s.fileName === null) s.markSaved(null, designSnapshot(pickDesign(s)));
     initHistory();
+    initHeldDimensions();
   }, []);
   const [help, setHelp] = useState(false);
   const canUndo = useHistory((h) => h.canUndo);

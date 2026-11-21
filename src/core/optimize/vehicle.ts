@@ -22,7 +22,7 @@ import {
 } from '../vehicle/vehicle';
 import { boundedLeastSquares, type LsqResult } from './leastSquares';
 import {
-  withVariables, variableValue, sampleCorner, cornerGoalResiduals, goalValue, holdValue,
+  withVariables, variableValue, sampleCorner, cornerGoalResiduals, goalValue, holdValue, holdTarget,
   type Variable, type Hold, type ProgressInfo,
 } from './corner';
 
@@ -314,7 +314,7 @@ export function optimizeVehicle(p: VehicleProblem, onIteration?: (info: Progress
   const x0 = p.variables.map((v) => variableValue(p.designs[v.root]!.geometry, v));
   const lo = p.variables.map((v) => Math.min(v.lo, v.hi));
   const hi = p.variables.map((v) => Math.max(v.lo, v.hi));
-  const holds = (p.holds ?? []).map((h) => ({ h, v0: holdValue(p.designs[h.root]!.geometry, h) }));
+  const holds = (p.holds ?? []).map((h) => ({ h, v0: holdTarget(p.designs[h.root]!.geometry, h) }));
   const keep = Math.sqrt(p.keepClose ?? 0.01);
   const guesses: Partial<Record<string, ChassisPose>> = {};
   const start = evaluateVehicle(p, geometriesFor(p, x0), guesses);

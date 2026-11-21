@@ -20,6 +20,7 @@ import {
 } from './store';
 import { STATE_KEY } from './anchors';
 import { lockKeys, pointAxisLocked } from './locks';
+import { toSpec } from './heldDimensions';
 
 const AXES = ['x', 'y', 'z'] as const;
 export const varKey = (k: PointKey, axis: 0 | 1 | 2) => `${k}.${AXES[axis]}`;
@@ -60,7 +61,7 @@ export const toAxleShared = (a: SharedDesign): AxleShared => ({
 });
 
 const holdsFor = (s: AppState, root: CornerId): Hold[] => {
-  const out: Hold[] = [];
+  const out: Hold[] = s.dimensions.filter((d) => d.root === root).map((d) => ({ dimension: toSpec(d) }));
   for (const arm of ['uca', 'lca'] as const) {
     for (const which of ['length', 'inclination', 'planAngle', 'frontViewAngle'] as const) {
       if (s.locks[lockKeys.derived(root, arm, which)]) out.push({ arm, which });

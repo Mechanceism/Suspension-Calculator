@@ -15,6 +15,7 @@ import { Joint, Seg, Polyline, Tri, Wheel, Label, PatchMesh, Coilover, HitLink }
 import { MoveGizmo } from './JointGizmo';
 import { componentDefs } from '../components';
 import { MeasureOverlay } from './MeasureOverlay';
+import { DimensionsOverlay } from './DimensionsOverlay';
 
 export const COLORS = {
   chassis: '#8b93a1',
@@ -373,6 +374,7 @@ export function Scene({ model }: { model: Model }) {
         <MoveGizmo ids={selectedPoints(selection, (c) => componentDefs(damperArm)[c].points)} cur={cur} />
       )}
       {measureMode && <MeasureOverlay cur={cur} />}
+      {vis.dimensions && <DimensionsOverlay cur={cur} />}
     </group>
   );
 }

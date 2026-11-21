@@ -17,3 +17,5 @@ export * from './suspension/armGeometry';
 export * from './suspension/steering';
 export * from './vehicle/cornerTable';
 export * from './vehicle/vehicle';
+export * from './optimize/leastSquares';
+export * from './optimize/corner';

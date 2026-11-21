@@ -14,6 +14,7 @@ import { add, sub } from '../core/math/vec3';
 import type { TireProfile } from '../core/tire/geometry';
 import type { TireForceModel } from '../core/tire/model';
 import { parseTireSize } from '../core/tire/size';
+import { GOAL_KINDS, GOAL_META, type GoalKind } from '../core/optimize/corner';
 
 export interface Field {
   text: string;
@@ -241,7 +242,7 @@ export interface AppState extends DesignState {
   steer: Record<SteerKey, Field>;
 
   selection: Selection;
-  leftTab: 'inspector' | 'browser' | 'table' | 'locks';
+  leftTab: 'inspector' | 'browser' | 'table' | 'locks' | 'optimize';
   nudgeStep: number;
   /** Round dragged joint coordinates to the grid. */
   snapToGrid: boolean;
@@ -284,6 +285,13 @@ export interface AppState extends DesignState {
   /** Lock or unlock several keys at once (e.g. all three coordinates of a point). */
   setLocks(keys: string[], locked: boolean): void;
   clearLocks(): void;
+  /** Change the optimizer setup of the active corner's design. */
+  updateOptimizer(fn: (o: OptimizerSetup) => OptimizerSetup): void;
+  /** Write optimized coordinates into the design, keeping the previous geometry for Undo. */
+  applyOptimized(updates: { key: PointKey; axis: 0 | 1 | 2; value: number }[]): void;
+  undoOptimized(): void;
+  /** Geometry before the last applied optimization (for Undo), with the corner it belongs to. */
+  optUndo: { root: CornerId; geom: EditableGeometry } | null;
 
   /** Replace the whole design (File → New / Open / Import). */
   applyDesign(design: DesignState, fileName: string | null, savedSnapshot: string | null): void;
@@ -429,6 +437,34 @@ export const FORCE_META: Record<ForceKey, { label: string; color: string; hint: 
   inertia: { label: 'Inertia (d’Alembert)', color: '#8ecae6', hint: '−m·a at the sprung CG: what the body "feels" when cornering, braking or accelerating' },
 };
 
+/** One optimizer goal: on/off, target (in the goal's unit) and weight. */
+export interface GoalSetting { on: boolean; target: Field; weight: Field }
+
+/** Optimizer setup for one corner design (keyed by its root corner). */
+export interface OptimizerSetup {
+  /** Free coordinates, key `${PointKey}.${x|y|z}` → allowed range (absolute, mm). */
+  ranges: Record<string, { lo: Field; hi: Field }>;
+  goals: Record<GoalKind, GoalSetting>;
+  /** Body roll angle for the roll-camber goal, deg. */
+  rollAngle: Field;
+  /** Also check bump steer at ± this rack travel (mm); 0 = only straight ahead. */
+  rackCheck: Field;
+  /** Weight of the "prefer small changes" term. */
+  keepClose: Field;
+}
+
+export const OPT_DEFAULT_RANGE = 25;
+
+export function defaultOptimizerSetup(): OptimizerSetup {
+  return {
+    ranges: {},
+    goals: Object.fromEntries(GOAL_KINDS.map((k) => [k, { on: false, target: field(GOAL_META[k].target, 'ratio'), weight: field(1, 'ratio') }])) as Record<GoalKind, GoalSetting>,
+    rollAngle: field(2, 'angle'),
+    rackCheck: field(0),
+    keepClose: field(0.01, 'ratio'),
+  };
+}
+
 export interface DesignState {
   presetId: string;
   geom: EditableGeometry;
@@ -456,6 +492,8 @@ export interface DesignState {
   shared: Record<Axle, SharedDesign>;
   /** Locked values (see locks.ts for the key format). The optimizer must work around them. */
   locks: Record<string, true>;
+  /** Optimizer setup per corner design (keyed by root corner). */
+  optimizer: Partial<Record<CornerId, OptimizerSetup>>;
 }
 
 /** The working (active corner) fields as a CornerDesign. */
@@ -495,6 +533,7 @@ export const pickDesign = (s: DesignState): DesignState => ({
   droop: s.droop, bump: s.bump, driver: s.driver,
   corners: s.corners, links: s.links, settings: s.settings, activeCorner: s.activeCorner,
   vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode, shared: s.shared, locks: s.locks,
+  optimizer: s.optimizer,
 });
 
 /** The default layout (File → New). */
@@ -560,6 +599,7 @@ export function defaultDesign(presetId = 'C'): DesignState {
     cornerLoadMode: 'vehicle',
     shared: { front: defaultShared(), rear: defaultShared() },
     locks: {},
+    optimizer: {},
   };
 }
 
@@ -639,6 +679,7 @@ export const useApp = create<AppState>((set, get) => ({
     // A corner that stops following another starts from a copy of the design it was using.
     const corners = { ...before };
     const locks = { ...s.locks };
+    const optimizer = { ...s.optimizer };
     for (const id of CORNER_IDS) {
       const oldRoot = rootOf(id, s.links);
       const newRoot = rootOf(id, links);
@@ -646,9 +687,11 @@ export const useApp = create<AppState>((set, get) => ({
         corners[id] = before[oldRoot];
         // The new copy starts with the same locks as the design it came from.
         for (const k of Object.keys(s.locks)) if (k.startsWith(`${oldRoot}.`)) locks[`${id}${k.slice(oldRoot.length)}`] = true;
+        // ...and the same optimizer setup.
+        if (s.optimizer[oldRoot]) optimizer[id] = structuredClone(s.optimizer[oldRoot]);
       }
     }
-    set({ links, corners, locks, ...corners[rootOf(s.activeCorner, links)] });
+    set({ links, corners, locks, optimizer, ...corners[rootOf(s.activeCorner, links)] });
   },
   toggleLock: (key) => {
     const locks = { ...get().locks };
@@ -661,6 +704,23 @@ export const useApp = create<AppState>((set, get) => ({
     set({ locks });
   },
   clearLocks: () => set({ locks: {} }),
+  updateOptimizer: (fn) => {
+    const s = get();
+    const root = rootOf(s.activeCorner, s.links);
+    set({ optimizer: { ...s.optimizer, [root]: fn(s.optimizer[root] ?? defaultOptimizerSetup()) } });
+  },
+  optUndo: null,
+  applyOptimized: (updates) => {
+    const s = get();
+    const before = s.geom;
+    s.setPointsAxis(updates.map((u) => ({ ...u, value: Number(u.value.toFixed(2)) })));
+    set({ optUndo: { root: rootOf(s.activeCorner, s.links), geom: before } });
+  },
+  undoOptimized: () => {
+    const s = get();
+    if (!s.optUndo || s.optUndo.root !== rootOf(s.activeCorner, s.links)) return;
+    set({ geom: s.optUndo.geom, optUndo: null, presetId: 'custom' });
+  },
   setCornerSetting: (id, key, value) => {
     const s = get();
     set({ settings: { ...s.settings, [id]: { ...s.settings[id], [key]: value } }, ...(key === 'steered' && !value && id === s.activeCorner ? { rack: 0 } : {}) });

@@ -9,12 +9,14 @@ import { SteeringPanel } from './SteeringPanel';
 import { CornerSetup } from './VehiclePanels';
 import { Section } from './FieldRows';
 import { LocksPanel } from './LocksPanel';
+import { OptimizePanel } from './OptimizePanel';
 
 const TABS = [
   { id: 'inspector', label: 'Inspector' },
   { id: 'browser', label: 'Browser' },
-  { id: 'table', label: 'All inputs' },
+  { id: 'table', label: 'Inputs' },
   { id: 'locks', label: 'Locks' },
+  { id: 'optimize', label: 'Optimize' },
 ] as const;
 
 export function LeftSidebar({ model }: { model: Model }) {
@@ -39,6 +41,7 @@ export function LeftSidebar({ model }: { model: Model }) {
         {tab === 'inspector' && <Inspector model={model} />}
         {tab === 'browser' && <Browser />}
         {tab === 'locks' && <LocksPanel />}
+        {tab === 'optimize' && <OptimizePanel />}
         {tab === 'table' && (
           <>
             <Hardpoints />

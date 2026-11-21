@@ -1,0 +1,317 @@
+/**
+ * Corner optimizer (L7, first version): move free hardpoint coordinates, each within its own range,
+ * so the corner's motion meets the chosen goals. Everything not listed as a variable stays put, so
+ * locked parts and values are respected simply by never making them variables. Locked derived
+ * dimensions (arm length, pivot-axis angles) are held by stiff penalty terms.
+ *
+ * Each goal turns into residuals (miss ÷ tolerance, × √weight); the bounded least-squares solver
+ * minimizes their sum of squares. A small "prefer small changes" term keeps the answer close to the
+ * starting design when the goals alone don't pin it down (e.g. six free tie-rod coordinates for one
+ * toe curve).
+ */
+import { vec3, type Vec3 } from '../math/vec3';
+import { DoubleWishbone, type CornerState, type DoubleWishboneGeometry } from '../suspension/doubleWishbone';
+import { characteristics, deg, rad, type Characteristics } from '../suspension/characteristics';
+import { armMetrics } from '../suspension/armGeometry';
+import { boundedLeastSquares, type LsqResult } from './leastSquares';
+
+export type HardpointId =
+  | 'ucaFwd' | 'ucaAft' | 'ucaOut' | 'lcaFwd' | 'lcaAft' | 'lcaOut'
+  | 'trInner' | 'trOuter' | 'wheelCenter' | 'damperChassis' | 'damperArm';
+
+export type GoalKind =
+  | 'bumpSteer' | 'camberGain' | 'rollCamber' | 'rollCenter' | 'rcMigration'
+  | 'kpi' | 'caster' | 'scrubRadius' | 'trail' | 'antiAngle' | 'motionRatio';
+
+export interface GoalMeta {
+  /** Short name for narrow tables. */
+  short: string;
+  label: string;
+  /** Unit of the target and of the reported value. */
+  unit: string;
+  /** Default target. */
+  target: number;
+  /** One "unit of miss" for a residual (in the goal's unit). */
+  tolerance: number;
+  hint: string;
+}
+
+export const GOAL_META: Record<GoalKind, GoalMeta> = {
+  bumpSteer: { short: 'Bump steer', label: 'Bump steer', unit: '°/100 mm', target: 0, tolerance: 0.01, hint: 'Toe change through the travel range should follow this slope (0 = no bump steer). + = toe-in in bump. Reported: largest deviation, °.' },
+  camberGain: { short: 'Camber gain', label: 'Camber gain in heave', unit: '°/100 mm', target: -1.5, tolerance: 0.02, hint: 'Camber change per 100 mm of bump (− = top in under bump). Fitted over the travel range.' },
+  rollCamber: { short: 'Roll inclination', label: 'Outside wheel inclination in roll', unit: '°', target: -1, tolerance: 0.05, hint: 'Wheel inclination to the ground of the outside wheel at the roll angle below (+ = top outboard). Most tires grip best slightly negative.' },
+  rollCenter: { short: 'RC height', label: 'Roll center height (static)', unit: 'mm', target: 50, tolerance: 2, hint: 'Above ground, assuming a mirrored opposite corner.' },
+  rcMigration: { short: 'RC migration', label: 'Roll center migration in heave', unit: 'mm/100 mm', target: 0, tolerance: 2, hint: 'Roll-center height change per 100 mm of bump.' },
+  kpi: { short: 'KPI', label: 'KPI (static)', unit: '°', target: 8, tolerance: 0.1, hint: 'Kingpin inclination.' },
+  caster: { short: 'Caster', label: 'Caster (static)', unit: '°', target: 4, tolerance: 0.1, hint: '+ = top of the steering axis rearward.' },
+  scrubRadius: { short: 'Scrub radius', label: 'Scrub radius (static)', unit: 'mm', target: 10, tolerance: 1, hint: '+ = axis meets the ground inboard of the contact point.' },
+  trail: { short: 'Trail', label: 'Mechanical trail (static)', unit: 'mm', target: 15, tolerance: 1, hint: '+ = axis meets the ground ahead of the contact point.' },
+  antiAngle: { short: 'Anti angle', label: 'Side-view anti angle (static)', unit: '°', target: 3, tolerance: 0.1, hint: 'Angle of the contact patch → side-view IC line (anti-dive / anti-lift with outboard brakes).' },
+  motionRatio: { short: 'Motion ratio', label: 'Motion ratio (static)', unit: '', target: 0.7, tolerance: 0.005, hint: 'Damper travel per wheel travel at design height.' },
+};
+export const GOAL_KINDS = Object.keys(GOAL_META) as GoalKind[];
+
+export interface Goal { kind: GoalKind; target: number; weight: number }
+export interface Variable { point: HardpointId; axis: 0 | 1 | 2; lo: number; hi: number }
+export type Hold = { arm: 'uca' | 'lca'; which: 'length' | 'inclination' | 'planAngle' };
+
+export interface CornerProblem {
+  geometry: DoubleWishboneGeometry;
+  /** Travel range (wheel center, mm): droop (negative) to bump. */
+  droop: number;
+  bump: number;
+  /** Travel samples across the range (odd, includes 0). */
+  samples?: number;
+  /** Also check bump steer at these rack positions (mm), besides 0. */
+  rackPositions?: number[];
+  /** Body roll angle for the roll-camber goal (deg). */
+  rollAngle?: number;
+  goals: Goal[];
+  variables: Variable[];
+  holds?: Hold[];
+  /** Weight of the "prefer small changes" term (per 10 mm moved). */
+  keepClose?: number;
+  maxIterations?: number;
+}
+
+const AXES = ['x', 'y', 'z'] as const;
+
+export function getPoint(g: DoubleWishboneGeometry, id: HardpointId): Vec3 | undefined {
+  switch (id) {
+    case 'ucaFwd': return g.uca.fwd; case 'ucaAft': return g.uca.aft; case 'ucaOut': return g.uca.out;
+    case 'lcaFwd': return g.lca.fwd; case 'lcaAft': return g.lca.aft; case 'lcaOut': return g.lca.out;
+    case 'trInner': return g.tieRod.inner; case 'trOuter': return g.tieRod.outer;
+    case 'wheelCenter': return g.wheel.center;
+    case 'damperChassis': return g.damper?.chassis; case 'damperArm': return g.damper?.armPoint;
+  }
+}
+
+/** A copy of the geometry with the variables set to x. */
+export function withVariables(g: DoubleWishboneGeometry, vars: Variable[], x: number[]): DoubleWishboneGeometry {
+  const pts = new Map<HardpointId, Vec3>();
+  vars.forEach((v, i) => {
+    const p = pts.get(v.point) ?? getPoint(g, v.point);
+    if (!p) return;
+    pts.set(v.point, vec3(v.axis === 0 ? x[i]! : p.x, v.axis === 1 ? x[i]! : p.y, v.axis === 2 ? x[i]! : p.z));
+  });
+  const P = (id: HardpointId) => pts.get(id) ?? getPoint(g, id)!;
+  return {
+    ...g,
+    uca: { fwd: P('ucaFwd'), aft: P('ucaAft'), out: P('ucaOut') },
+    lca: { fwd: P('lcaFwd'), aft: P('lcaAft'), out: P('lcaOut') },
+    tieRod: { inner: P('trInner'), outer: P('trOuter') },
+    wheel: { ...g.wheel, center: P('wheelCenter') },
+    damper: g.damper ? { ...g.damper, chassis: P('damperChassis'), armPoint: P('damperArm') } : undefined,
+  };
+}
+
+export const variableValue = (g: DoubleWishboneGeometry, v: Variable): number => getPoint(g, v.point)?.[AXES[v.axis]] ?? NaN;
+
+/** Solved samples of one geometry, the raw material for every goal. */
+export interface CornerSamples {
+  travels: number[];
+  chars: Characteristics[];
+  /** Index of travel 0. */
+  i0: number;
+  /** Toe through travel at each extra rack position. */
+  rackToe: { rack: number; toe: number[] }[];
+  /** Outside-wheel travel and characteristics at the roll angle. */
+  roll: { travel: number; chars: Characteristics; angle: number } | null;
+  /** Motion ratio at design height (null without a damper). */
+  motionRatio: number | null;
+}
+
+export function travelSamples(droop: number, bump: number, n = 9): number[] {
+  const lo = Math.min(0, droop), hi = Math.max(0, bump);
+  const k = Math.max(3, n | 1);
+  const out = new Set<number>([0]);
+  for (let i = 0; i < k; i++) out.add(Number((lo + ((hi - lo) * i) / (k - 1)).toFixed(6)));
+  return [...out].sort((a, b) => a - b);
+}
+
+const converged = (s: CornerState) => s.solve.status === 'converged';
+
+/** Sweep the geometry and gather what the goals need. null = the linkage can't be assembled. */
+export function sampleCorner(geometry: DoubleWishboneGeometry, p: Omit<CornerProblem, 'geometry' | 'goals' | 'variables'> & { goals?: Goal[] }): CornerSamples | null {
+  let corner: DoubleWishbone;
+  try { corner = new DoubleWishbone(geometry); } catch { return null; }
+  const travels = travelSamples(p.droop, p.bump, p.samples);
+  const states = corner.sweep(travels, (travel) => ({ travel }));
+  if (!states.every(converged)) return null;
+  const chars = states.map(characteristics);
+  const i0 = travels.indexOf(0);
+  const need = new Set((p.goals ?? []).map((g) => g.kind));
+  const all = !p.goals;
+
+  const rackToe: CornerSamples['rackToe'] = [];
+  if (all || need.has('bumpSteer')) {
+    for (const rack of p.rackPositions ?? []) {
+      if (!rack) continue;
+      const rs = corner.sweep(travels, (travel) => ({ travel, rack }));
+      if (!rs.every(converged)) return null;
+      rackToe.push({ rack, toe: rs.map((s) => characteristics(s).toe) });
+    }
+  }
+
+  let roll: CornerSamples['roll'] = null;
+  if ((all || need.has('rollCamber')) && p.rollAngle) {
+    // Outside wheel: the body rolls φ over it, so it moves up ≈ half track · tan φ relative to the body.
+    const phi = rad(Math.abs(p.rollAngle));
+    const travel = chars[i0]!.halfTrack * Math.tan(phi);
+    const s = corner.solve({ travel }, states[i0]!.poses);
+    if (!converged(s)) return null;
+    roll = { travel, chars: characteristics(s), angle: phi };
+  }
+
+  let motionRatio: number | null = null;
+  if ((all || need.has('motionRatio')) && geometry.damper) {
+    const d = 1;
+    const a = corner.solve({ travel: -d }, states[i0]!.poses);
+    const b = corner.solve({ travel: d }, states[i0]!.poses);
+    const ca = characteristics(a), cb = characteristics(b);
+    if (converged(a) && converged(b) && ca.damperLength !== undefined && cb.damperLength !== undefined) {
+      motionRatio = -(cb.damperLength - ca.damperLength) / (cb.contactPoint.y - ca.contactPoint.y);
+    }
+  }
+  return { travels, chars, i0, rackToe, roll, motionRatio };
+}
+
+/** Least-squares slope through the origin-shifted points (x, y − y0). */
+const slopeThrough = (xs: number[], ys: number[], i0: number) => {
+  let sxy = 0, sxx = 0;
+  xs.forEach((x, i) => { sxy += x * (ys[i]! - ys[i0]!); sxx += x * x; });
+  return sxx > 0 ? sxy / sxx : 0;
+};
+
+/**
+ * The value reported for a goal (in its unit). For bump steer this is the largest deviation of the toe
+ * curve from the target slope (°), so "0" means none at all.
+ */
+export function goalValue(kind: GoalKind, s: CornerSamples, target = GOAL_META[kind].target): number | null {
+  const c0 = s.chars[s.i0]!;
+  switch (kind) {
+    case 'bumpSteer': {
+      const curves = [s.chars.map((c) => c.toe), ...s.rackToe.map((r) => r.toe)];
+      let worst = 0;
+      for (const toe of curves) {
+        s.travels.forEach((t, i) => { worst = Math.max(worst, Math.abs(deg(toe[i]! - toe[s.i0]!) - (target / 100) * t)); });
+      }
+      return worst;
+    }
+    case 'camberGain': return 100 * deg(slopeThrough(s.travels, s.chars.map((c) => c.camber), s.i0));
+    case 'rollCamber': return s.roll ? deg(s.roll.chars.camber + s.roll.angle) : null;
+    case 'rollCenter': return c0.rollCenterHeight;
+    case 'rcMigration': {
+      const rc = s.chars.map((c) => c.rollCenterHeight);
+      if (rc.some((v) => v === null)) return null;
+      return 100 * slopeThrough(s.travels, rc as number[], s.i0);
+    }
+    case 'kpi': return deg(c0.kpi);
+    case 'caster': return deg(c0.caster);
+    case 'scrubRadius': return c0.scrubRadius;
+    case 'trail': return c0.mechanicalTrail;
+    case 'antiAngle': return deg(c0.antiAngleContact);
+    case 'motionRatio': return s.motionRatio;
+  }
+}
+
+const BAD = 1e3;
+
+/** Residuals of one goal (already divided by its tolerance, before the weight). */
+function goalResiduals(goal: Goal, s: CornerSamples): number[] {
+  const tol = GOAL_META[goal.kind].tolerance;
+  switch (goal.kind) {
+    case 'bumpSteer': {
+      const curves = [s.chars.map((c) => c.toe), ...s.rackToe.map((r) => r.toe)];
+      return curves.flatMap((toe) => s.travels.map((t, i) => (deg(toe[i]! - toe[s.i0]!) - (goal.target / 100) * t) / tol));
+    }
+    case 'camberGain':
+      return s.travels.map((t, i) => (deg(s.chars[i]!.camber - s.chars[s.i0]!.camber) - (goal.target / 100) * t) / tol);
+    case 'rcMigration': {
+      const rc0 = s.chars[s.i0]!.rollCenterHeight;
+      return s.travels.map((t, i) => {
+        const rc = s.chars[i]!.rollCenterHeight;
+        return rc === null || rc0 === null ? BAD : (rc - rc0 - (goal.target / 100) * t) / tol;
+      });
+    }
+    default: {
+      const v = goalValue(goal.kind, s, goal.target);
+      return [v === null || !Number.isFinite(v) ? BAD : (v - goal.target) / tol];
+    }
+  }
+}
+
+function holdValue(g: DoubleWishboneGeometry, h: Hold): number {
+  const m = armMetrics(g[h.arm]);
+  return h.which === 'length' ? m.length : deg(h.which === 'inclination' ? m.inclination : m.planAngle);
+}
+
+export interface GoalReport { kind: GoalKind; target: number; before: number | null; after: number | null }
+
+export interface CornerReport {
+  geometry: DoubleWishboneGeometry;
+  /** Variable values before / after, and whether each ended on its range limit. */
+  variables: (Variable & { before: number; after: number; atLimit: boolean })[];
+  goals: GoalReport[];
+}
+
+export interface CornerOptimizeResult extends CornerReport { lsq: LsqResult }
+
+export type ProgressInfo = { iteration: number; cost: number; cost0: number; evaluations: number; x: number[] };
+
+const sampleOpts = (p: CornerProblem, goals?: Goal[]) =>
+  ({ droop: p.droop, bump: p.bump, samples: p.samples, rackPositions: p.rackPositions, rollAngle: p.rollAngle, goals });
+
+/** Before / after report for variable values x (also used for a stopped run's best point so far). */
+export function reportCorner(p: CornerProblem, x: number[]): CornerReport {
+  const geometry = withVariables(p.geometry, p.variables, x);
+  const before = sampleCorner(p.geometry, sampleOpts(p));
+  const after = sampleCorner(geometry, sampleOpts(p));
+  const tol = 1e-9;
+  return {
+    geometry,
+    variables: p.variables.map((v, i) => {
+      const b = variableValue(p.geometry, v);
+      const a = x[i]!;
+      const onLimit = a <= Math.min(v.lo, v.hi) + tol || a >= Math.max(v.lo, v.hi) - tol;
+      return { ...v, before: b, after: a, atLimit: onLimit && Math.abs(a - b) > 1e-6 };
+    }),
+    goals: p.goals.map((g) => ({
+      kind: g.kind, target: g.target,
+      before: before ? goalValue(g.kind, before, g.target) : null,
+      after: after ? goalValue(g.kind, after, g.target) : null,
+    })),
+  };
+}
+
+export function optimizeCorner(p: CornerProblem, onIteration?: (info: ProgressInfo) => boolean | void): CornerOptimizeResult {
+  const vars = p.variables;
+  const goals = p.goals.filter((g) => g.weight > 0);
+  const x0 = vars.map((v) => variableValue(p.geometry, v));
+  const lo = vars.map((v) => Math.min(v.lo, v.hi));
+  const hi = vars.map((v) => Math.max(v.lo, v.hi));
+  const holds = (p.holds ?? []).map((h) => ({ h, v0: holdValue(p.geometry, h) }));
+  const keep = Math.sqrt(p.keepClose ?? 0.01);
+  const opts = sampleOpts(p, goals);
+
+  const residuals = (x: number[]): number[] | null => {
+    const g = withVariables(p.geometry, vars, x);
+    const s = sampleCorner(g, opts);
+    if (!s) return null;
+    const r: number[] = [];
+    for (const goal of goals) {
+      const w = Math.sqrt(goal.weight);
+      for (const v of goalResiduals(goal, s)) r.push(w * v);
+    }
+    // Held (locked) derived dimensions: stiff, tolerance 0.001 mm / 0.001°.
+    for (const { h, v0 } of holds) r.push((holdValue(g, h) - v0) / 1e-3);
+    x.forEach((v, i) => r.push((keep * (v - x0[i]!)) / 10));
+    return r;
+  };
+
+  const lsq = boundedLeastSquares(residuals, x0, lo, hi, {
+    maxIterations: p.maxIterations ?? 60, step: 0.01, relTol: 1e-7,
+    onIteration: onIteration ? (i) => onIteration({ iteration: i.iteration, cost: i.cost, cost0: i.cost0, evaluations: i.evaluations, x: i.x }) : undefined,
+  });
+  return { lsq, ...reportCorner(p, lsq.x) };
+}

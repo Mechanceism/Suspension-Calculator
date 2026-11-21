@@ -14,6 +14,7 @@
  *   2  four corners + links + per-corner settings + vehicle inputs (L6)
  *   3  brakes per corner, brake bias, shared components per axle (anti-roll bar, heave spring)
  *   4  drive mount per corner, drive split, locks
+ *   5  optimizer setup per corner design (free coordinates + ranges, goals)
  */
 import pkg from '../../package.json';
 import { parseValue, type Quantity } from '../core/units/units';
@@ -21,12 +22,13 @@ import { CORNER_IDS, type CornerId } from '../core/vehicle/vehicle';
 import {
   defaultDesign, mergedCorners, rootOf, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META, SPRING_KEYS, SPRING_META,
   DAMPER_KEYS, DAMPER_META, STEER_KEYS, STEER_META, TIRE_KEYS, TIRE_META, VEHICLE_KEYS, VEHICLE_META,
-  DEFAULT_LINKS, DEFAULT_SETTINGS, SHARED_META, defaultShared,
+  DEFAULT_LINKS, DEFAULT_SETTINGS, SHARED_META, defaultShared, defaultOptimizerSetup,
+  type OptimizerSetup,
   type DesignState, type CornerDesign, type Field, type CornerLinks, type CornerSettings, type SharedDesign, type Axle,
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 4;
+export const FORMAT_VERSION = 5;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -66,7 +68,15 @@ export interface ProjectFile {
   }>;
   /** Locked values (keys as in locks.ts). */
   locks: string[];
+  /** Optimizer setup per corner design (root corner). */
+  optimizer: Partial<Record<CornerId, OptimizerJson>>;
   presetId?: string;
+}
+
+interface OptimizerJson {
+  ranges: Record<string, { lo: FieldJson; hi: FieldJson }>;
+  goals: Record<string, { on: boolean; target: FieldJson; weight: FieldJson }>;
+  rollAngle: FieldJson; rackCheck: FieldJson; keepClose: FieldJson;
 }
 
 const fj = (f: Field): FieldJson => ({ text: f.text, value: f.value });
@@ -113,6 +123,11 @@ export function serializeProject(d: DesignState, name: string): ProjectFile {
       }];
     })) as unknown as ProjectFile['shared'],
     locks: Object.keys(d.locks).sort(),
+    optimizer: Object.fromEntries(Object.entries(d.optimizer).filter(([, o]) => o).map(([id, o]) => [id, {
+      ranges: Object.fromEntries(Object.entries(o!.ranges).map(([k, r]) => [k, { lo: fj(r.lo), hi: fj(r.hi) }])),
+      goals: Object.fromEntries(Object.entries(o!.goals).map(([k, g]) => [k, { on: g.on, target: fj(g.target), weight: fj(g.weight) }])),
+      rollAngle: fj(o!.rollAngle), rackCheck: fj(o!.rackCheck), keepClose: fj(o!.keepClose),
+    }])),
     presetId: d.presetId,
   };
 }
@@ -157,7 +172,43 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   2: (f) => ({ ...f, formatVersion: 3 }),
   // 3 → 4: drive mount (chassis diff), drive split and locks (none). Missing values take defaults.
   3: (f) => ({ ...f, formatVersion: 4 }),
+  // 4 → 5: optimizer setups (none).
+  4: (f) => ({ ...f, formatVersion: 5 }),
 };
+
+const AXIS_KEYS = ['x', 'y', 'z'];
+
+/** Read the optimizer setups; anything unknown is dropped quietly (it's a setup, not the design). */
+function readOptimizer(raw: unknown, warnings: string[]): Partial<Record<CornerId, OptimizerSetup>> {
+  if (!isObj(raw)) return {};
+  const out: Partial<Record<CornerId, OptimizerSetup>> = {};
+  for (const id of CORNER_IDS) {
+    const o = raw[id];
+    if (!isObj(o)) continue;
+    const d = defaultOptimizerSetup();
+    const rf = (x: unknown, q: Quantity, fb: Field, where: string) => readField(x, q, fb, `optimizer ${id} ${where}`, warnings);
+    const ranges: OptimizerSetup['ranges'] = {};
+    for (const [k, r] of Object.entries(isObj(o.ranges) ? o.ranges : {})) {
+      const [pk, ax] = k.split('.');
+      if (!(POINT_KEYS as readonly string[]).includes(pk!) || !AXIS_KEYS.includes(ax!) || !isObj(r)) continue;
+      ranges[k] = { lo: rf(r.lo, 'length', { text: '0', value: 0 }, `${k} min`), hi: rf(r.hi, 'length', { text: '0', value: 0 }, `${k} max`) };
+    }
+    const goals = d.goals;
+    const gRaw = isObj(o.goals) ? o.goals : {};
+    for (const k of Object.keys(goals) as (keyof typeof goals)[]) {
+      const g = gRaw[k];
+      if (!isObj(g)) continue;
+      goals[k] = { on: g.on === true, target: rf(g.target, 'ratio', goals[k].target, `${k} target`), weight: rf(g.weight, 'ratio', goals[k].weight, `${k} weight`) };
+    }
+    out[id] = {
+      ranges, goals,
+      rollAngle: o.rollAngle ? rf(o.rollAngle, 'angle', d.rollAngle, 'roll angle') : d.rollAngle,
+      rackCheck: o.rackCheck ? rf(o.rackCheck, 'length', d.rackCheck, 'rack check') : d.rackCheck,
+      keepClose: o.keepClose ? rf(o.keepClose, 'ratio', d.keepClose, 'keep close') : d.keepClose,
+    };
+  }
+  return out;
+}
 
 export interface ImportResult {
   design: DesignState;
@@ -305,6 +356,7 @@ export function importProject(data: unknown): ImportResult {
     cornerLoadMode: vehicleRaw.cornerLoadMode === 'manual' ? 'manual' : 'vehicle',
     shared: { front: readShared(f.shared, 'front', older ? [] : warnings), rear: readShared(f.shared, 'rear', older ? [] : warnings) },
     locks: Object.fromEntries((Array.isArray(f.locks) ? f.locks : []).filter((k): k is string => typeof k === 'string').map((k) => [k, true as const])),
+    optimizer: readOptimizer(f.optimizer, warnings),
   };
   Object.assign(design, corners[rootOf(activeCorner, links)]);
   return { design, name: typeof f.name === 'string' && f.name ? f.name : 'Imported layout', warnings };

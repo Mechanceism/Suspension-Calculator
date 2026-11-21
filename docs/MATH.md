@@ -28,7 +28,7 @@ Status key: ✅ agreed · 🔶 open / under discussion
 | L4 Tire force | Gas-law model, stiffness model | ✅ implemented + tested (`src/core/tire/model.ts`, `src/core/suspension/loaded.ts`) |
 | L5 Quasi-static corner | Load-driven equilibrium with spring and tire | ✅ implemented + tested, coilover option 1 (`src/core/suspension/spring.ts`) |
 | L6 Vehicle | Mass, CG, four corners, roll centers, load transfer | ✅ implemented + tested (`src/core/vehicle/`) |
-| L7 Optimizer | Objectives and constraint handling | later |
+| L7 Optimizer | Objectives and constraint handling | ✅ corner optimizer, first version (`src/core/optimize/`); vehicle-level goals later |
 
 Build order: **L0 → L1 → L2** (drives the visualizer), then **L3 → L4**, then L5+.
 
@@ -316,11 +316,40 @@ Two operating modes:
 
 ---
 
-## L7: Optimizer (later)
+## L7: Optimizer — corner, first version ✅ (`src/core/optimize/`)
+
+**What moves.** Free variables are single hardpoint coordinates, each with its own range (min/max, absolute mm). Everything else stays where it is, so locked values are respected by never becoming variables: a locked coordinate, point or part is simply skipped. Locked **derived** dimensions (arm length, pivot-axis inclination / plan angle) are held by stiff penalty residuals (tolerance 0.001 mm / 0.001°). Static camber and toe are set by the design spin axis, so moving points never changes them.
+
+**Goals → residuals.** Each goal is a miss divided by its tolerance, times √weight; the optimizer minimizes ½·Σr². The corner is swept over 9 travel samples from droop to bump (the motion-bar range), plus extra sweeps where a goal needs them.
+
+| Goal | Residuals | Tolerance |
+|---|---|---|
+| Bump steer | toe(t) − toe(0) − slope·t at every sample (slope = target, °/100 mm; 0 = none); optionally also with the rack at ± a set travel | 0.01° |
+| Camber gain in heave | camber(t) − camber(0) − gain·t at every sample | 0.02° |
+| Outside-wheel inclination in roll | camber(t_φ) + φ − target, with t_φ = half track · tan φ (the outside wheel rises that much relative to the body). Checked against the whole-car solve: inclination = camber at the actual travel + body roll | 0.05° |
+| Roll-center height / migration | RC(0) − target; RC(t) − RC(0) − slope·t | 2 mm |
+| KPI, caster, anti angle (static) | value − target | 0.1° |
+| Scrub radius, mechanical trail (static) | value − target | 1 mm |
+| Motion ratio (static) | −ΔL_damper/Δy_contact at ±1 mm − target | 0.005 |
+| Prefer small changes | √w·Δx/10 mm per variable (default w = 0.01) | — |
+
+The small-change term matters when the goals don't pin the answer down (six free tie-rod coordinates for one toe curve): it picks the nearest design that meets the goals.
+
+**Solver.** Bounded Levenberg–Marquardt (`boundedLeastSquares`): forward-difference Jacobian (0.01 mm steps, stepping inward at an upper bound), Marquardt diagonal damping, and a projected step with a simple active set (variables on a bound whose gradient points outward are held for that step). A design the linkage can't assemble counts as infinitely bad, so the step is rejected and damping raised. It reports which variables ended **on their range limit** (widen the range or free more coordinates). Tested: Rosenbrock with and without an active bound; bump steer 2.16° → 0.001° in 12 iterations (~0.3 s) moving six tie-rod coordinates; camber-gain target with the UCA length held to < 0.01 mm; RC height + KPI targets together.
+
+**Bump steer by tie-rod placement.** The preset frees the classic knobs: inner tie-rod X (tie-rod length, along the rack) and Y, and outer tie-rod Y (heights), ±25 mm, unless locked. Outer X/Z are left fixed by default because they also change the steering arm (ratio, Ackermann); free them if you want.
+
+### Next for the optimizer
+- **Ranges for other values** (spring, tire, scalars) and the **derived-dimension ranges** (e.g. arm length between A and B).
+- **Vehicle-level goals** through the whole-car solve: inclination of the loaded tires at a lateral g, LLTD, anti-dive / anti-squat %, ride height — and optimizing several corners together (front and rear).
+- **Maximum contact area / friction** objectives from the tire model (L7 objectives below).
+- A ghost preview of the optimized corner before applying.
+
+## L7: Optimizer objectives and requirements
 
 ### Requirements (noted 2026-11-21)
-- **Bump-steer minimization by tie-rod placement:** an option to optimize the tie-rod mounting points (inner and/or outer, within user limits) so bump steer (toe change through travel) is reduced as far as possible.
-- **Simple locking** ✅ (UI done, the optimizer will read it): any component or value can be locked — a whole part (e.g. the lower arm), individual hardpoints, single coordinates, or derived values such as an arm length — and the optimizer must work around everything locked. Users often start from something already built, so the optimizer has to respect the parts they can't or won't change. Ranges ("between A and B") are the in-between option.
+- **Bump-steer minimization by tie-rod placement** ✅: an option to optimize the tie-rod mounting points (inner and/or outer, within user limits) so bump steer (toe change through travel) is reduced as far as possible.
+- **Simple locking** ✅ (the optimizer reads it): any component or value can be locked — a whole part (e.g. the lower arm), individual hardpoints, single coordinates, or derived values such as an arm length — and the optimizer must work around everything locked. Users often start from something already built, so the optimizer has to respect the parts they can't or won't change. Ranges ("between A and B") are the in-between option.
 - **Lock keys** (`src/app/locks.ts`, saved in the project file from format v4): `FL.point.trInner.y` (one coordinate), `FL.part.uca` (every point of a part, including the coilover mount on the arm that carries it), `FL.derived.uca.length` / `inclination` / `planAngle`, `FL.spring|damper|tire|scalar.<key>`, `vehicle.<key>`, `shared.<axle>.<key>` (and `shared.front.dropLink.x`), `steer.<key>`. Linked corners share one design, so they share its locks; unlinking a corner copies them. A locked value can still be typed by hand; dragging and nudging a locked coordinate is blocked.
 
 ### Objectives

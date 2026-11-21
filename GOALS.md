@@ -34,7 +34,7 @@ Calculating and visualizing come first. **Later:** export to modeling software (
 | 1 | **Math core**: single corner, double wishbone (SLA), full motion through travel. Spec: [docs/MATH.md](docs/MATH.md) | ✅ Kinematics (L0–L2), tire (L3–L4) and loaded corner with coilover (L5) done. Pushrod/rocker spring layout planned. |
 | 2 | **Visualizer**: 3D view of the core components, driven by the math core | ✅ First version (`npm run dev`) |
 | 3 | **More variables**: add the remaining characteristics to both the math and the UI | |
-| 4 | **Constraints and optimizer**: lock / range / free per variable; solve for free values once the visualizer and math agree | Locks done (values, coordinates, points, whole parts, derived dimensions; Locks tab). Ranges and the optimizer next. |
+| 4 | **Constraints and optimizer**: lock / range / free per variable; solve for free values once the visualizer and math agree | ✅ Locks (values, coordinates, points, whole parts, derived dimensions; Locks tab). Corner optimizer: free coordinates with ranges, weighted goals (bump steer, camber gain, roll inclination, RC, KPI, caster, scrub, trail, anti angle, motion ratio), bump-steer preset, Apply / Undo. Vehicle-level goals and ranges for non-coordinate values next. |
 | 5 | **Export and integration** (only after calculating and visualizing are solid): file exports and an optional Fusion 360 add-in (Python + HTML panel) | |
 | 6 | **Multi-corner**: add more corners, inter-corner interactions (sway bars, shared shocks, pushrods/rockers) | ✅ Four independent corners, whole-car equilibrium, brakes, drive (chassis diff or hub motor), anti-roll bars and heave springs, force arrows in the view (L6). Scale-weight CG utility later. |
 | 7 | **Other suspension types**: MacPherson, multilink, etc., plus user-defined linkages | |
@@ -107,7 +107,7 @@ All options are available for manual adjustment and placement. The lock/range co
 - **Model toggles:** e.g. "Apply tire volume change" so the user can see how much a modeling assumption affects the results.
 
 ### Optimizer Objectives
-Maximum contact area is a proxy, not the same as maximum grip. Objectives are selectable and can be weighted: target inclination under load (default), maximum contact area, or maximum friction force from a tire model. See [docs/MATH.md](docs/MATH.md#l7-optimizer-objectives-later).
+Maximum contact area is a proxy, not the same as maximum grip. Objectives are selectable and can be weighted: target inclination under load (default), maximum contact area, or maximum friction force from a tire model. See [docs/MATH.md](docs/MATH.md#l7-optimizer-objectives-and-requirements).
 
 ---
 

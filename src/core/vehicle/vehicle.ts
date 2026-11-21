@@ -19,6 +19,8 @@ import { localPatch, type TireProfile } from '../tire/geometry';
 import { tireForce, solveLoadedHeight, type TireForceModel } from '../tire/model';
 import { springForce, type SpringSpec } from '../suspension/spring';
 import type { CornerTable } from './cornerTable';
+import { patchGrip, type GripModel } from '../tire/grip';
+import { Y_AXIS } from '../math/vec3';
 
 export type CornerId = 'FL' | 'FR' | 'RL' | 'RR';
 export const CORNER_IDS: CornerId[] = ['FL', 'FR', 'RL', 'RR'];
@@ -49,7 +51,11 @@ export interface VehicleCorner {
    */
   brake?: BrakeMount;
   drive?: DriveMount;
+  /** Anti-lock brakes (default true). Without ABS a tire braked past its grip locks and slides. */
+  abs?: boolean;
 }
+
+export type DiffType = 'open' | 'locked' | 'lsd';
 
 /** Anti-roll bar between the two corners of an axle. */
 export type AntiRollBar =
@@ -96,6 +102,53 @@ export interface VehicleInput {
   driveSplit?: number;
   /** Shared components per axle. */
   shared?: { front: AxleShared; rear: AxleShared };
+  /**
+   * Share of gravity normal to the road (cos grade · cos bank, default 1). Grade and bank also add to
+   * the longitudinal / lateral accelerations the tires must provide; the caller folds those in.
+   */
+  gravityScale?: number;
+  /** Ground height change under each wheel, mm (+ = bump, − = pothole). */
+  groundOffset?: Partial<Record<CornerId, number>>;
+  /**
+   * Tire grip model. When given: lateral force within each axle is shared so both tires use the same
+   * fraction of their grip (combined with braking / drive force), and the result reports grip use and
+   * slip. Without it, lateral force within an axle follows tire load.
+   */
+  grip?: GripModel;
+  /** Sliding friction ÷ peak friction (default 0.8). */
+  slidingRatio?: number;
+  /** Differential per axle for chassis-driven corners (default open). */
+  diff?: { front?: DiffType; rear?: DiffType };
+  /** Limited-slip torque bias ratio (default 2.5). */
+  lsdBias?: number;
+}
+
+export type SlipState = 'grip' | 'sliding' | 'abs-limit' | 'locked' | 'wheelspin';
+
+export interface CornerGrip {
+  /** Peak friction force the patch can carry, N. */
+  capacity: number;
+  /** √(Fx² + Fy²) ÷ capacity (> 1 = more than the tire can do). */
+  utilization: number;
+  state: SlipState;
+  /** Force the tire actually delivers when over its limit (sliding: sliding friction; ABS: peak), N. */
+  deliverable: number;
+  /** Required − deliverable, N (0 when gripping). */
+  shortfall: number;
+}
+
+export type LimitKind = 'understeer' | 'oversteer' | 'braking' | 'lock-up' | 'traction';
+
+export interface GripSummary {
+  corners: Record<CornerId, CornerGrip>;
+  /** Lateral grip use per axle (the axle's share of the cornering force ÷ what its tires can still give). */
+  axles: { front: number; rear: number };
+  /** Every tire within its grip? */
+  passed: boolean;
+  /** What limits the car here (empty when passed). */
+  limits: { kind: LimitKind; corners: CornerId[]; text: string }[];
+  /** Worst tire grip use. */
+  maxUtilization: number;
 }
 
 /** Corner frame → vehicle frame. */
@@ -152,6 +205,10 @@ export interface CornerResult {
   wheelCenter: Vec3;
   /** Wheel inclination to the ground, rad, + = top toward the corner's outboard side. */
   inclination: number;
+  /** Spin axis in world coordinates (outboard). */
+  axisWorld: Vec3;
+  /** Ground height under this wheel (world Y), mm. */
+  groundY: number;
 }
 
 export interface VehicleResult {
@@ -165,6 +222,8 @@ export interface VehicleResult {
   sprungCg: Vec3;
   /** Things the user should know about the inputs (e.g. acceleration without powered corners). */
   notes: string[];
+  /** Grip use and slip per tire (when a grip model is given). */
+  grip?: GripSummary;
 }
 
 function sprungProperties(input: VehicleInput) {
@@ -228,7 +287,8 @@ function cornerWork(
   // Tire forces work through the material point at the contact (not the lowest-point path).
   const dcp = P.rot(pl.dir(s.dcpm));
   const dwc = P.rot(pl.dir(s.dwc));
-  const h0 = wc.y - input.groundY;
+  const gY = input.groundY + (input.groundOffset?.[c.id] ?? 0);
+  const h0 = wc.y - gY;
   // Tilt toward the corner's own outboard direction (mirrored axis already points outboard).
   const patch = localPatch(c.tire.profile, h0, axis.y);
   const ft = tireForce(c.tire.model, c.tire.profile, patch).force;
@@ -239,12 +299,12 @@ function cornerWork(
     + f.brake * (inboard ? dwc.z : dcp.z)
     // Drive force: at the wheel center (chassis diff, halfshaft) or the patch (hub motor).
     + f.drive * (hub ? dcp.z : dwc.z)
-    - c.unsprungMass * G * dwc.y
+    - c.unsprungMass * G * (input.gravityScale ?? 1) * dwc.y
     - c.unsprungMass * input.lateralG * G * dwc.x
     - c.unsprungMass * f.aZ * dwc.z
     + (Number.isFinite(s.dL) ? fs * s.dL : 0)
     + fShared;
-  return { work, ft, fs, fShared, s, wc, axis, P, pl };
+  return { work, ft, fs, fShared, s, wc, axis, P, pl, gY };
 }
 
 function cornerResult(c: VehicleCorner, input: VehicleInput, f: CornerLoads, q: number, status: CornerStatus, r: ReturnType<typeof cornerWork>): CornerResult {
@@ -253,9 +313,10 @@ function cornerResult(c: VehicleCorner, input: VehicleInput, f: CornerLoads, q: 
     id: c.id, travel: q, status, tireLoad: r.ft, lateralForce: f.lateral, longitudinalForce: f.brake + f.drive,
     brakeForce: f.brake, driveForce: f.drive,
     springForce: r.fs, sharedForce: r.fShared,
-    contact: vec3(cpWorld.x, input.groundY, cpWorld.z), wheelCenter: r.wc,
+    contact: vec3(cpWorld.x, r.gY, cpWorld.z), wheelCenter: r.wc,
     // Axis points outboard; its upward component means the top leans inboard (negative camber sense).
     inclination: -Math.asin(Math.max(-1, Math.min(1, r.axis.y))),
+    axisWorld: r.axis, groundY: r.gY,
   };
 }
 
@@ -354,9 +415,42 @@ function brakeShares(input: VehicleInput, loads: Record<CornerId, number>): Reco
   return out;
 }
 
+/**
+ * Share an axle's lateral force F between its tires so both use the same fraction u of their grip
+ * (friction circle with their longitudinal forces Fx). Returns the lateral forces and u.
+ */
+export function shareLateral(F: number, fx: number[], cap: number[]): { fy: number[]; u: number } {
+  const need = Math.abs(F);
+  const lat = (u: number) => cap.map((c, i) => Math.sqrt(Math.max(0, (u * c) ** 2 - fx[i]! ** 2)));
+  const total = (u: number) => lat(u).reduce((a, b) => a + b, 0);
+  if (cap.every((c) => !(c > 0))) return { fy: cap.map(() => F / cap.length), u: Infinity };
+  let lo = 0, hi = 1;
+  while (total(hi) < need && hi < 1e3) hi *= 2;
+  for (let i = 0; i < 60; i++) { const m = (lo + hi) / 2; if (total(m) < need) lo = m; else hi = m; }
+  const u = hi;
+  const f = lat(u);
+  const sum = f.reduce((a, b) => a + b, 0) || 1;
+  return { fy: f.map((v) => (Math.sign(F) * v * need) / sum), u };
+}
+
+/** Within-axle drive split for a differential (forces in proportion; sums to 1). */
+function diffSplit(diff: DiffType, loadL: number, loadR: number, bias: number): [number, number] {
+  if (diff === 'open') return [0.5, 0.5];
+  const l = Math.max(loadL, 0), r = Math.max(loadR, 0);
+  if (l + r <= 0) return [0.5, 0.5];
+  let a = l / (l + r);
+  if (diff === 'lsd') {
+    // The more-loaded side can take at most `bias` times the other side's torque.
+    const lim = bias / (1 + bias);
+    a = Math.min(lim, Math.max(1 - lim, a));
+  }
+  return [a, 1 - a];
+}
+
 export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions = {}): VehicleResult {
   const sp = sprungProperties(input);
-  const W = input.totalMass * G;
+  const gs = input.gravityScale ?? 1;
+  const W = input.totalMass * G * gs;
   const latTotal = input.totalMass * input.lateralG * G;
   const notes: string[] = [];
   const brakingG = Math.max(0, input.brakingG ?? 0);
@@ -379,6 +473,13 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
     for (const c of fp) driveShares[c.id] = split / fp.length;
     for (const c of rp) driveShares[c.id] = (1 - split) / rp.length;
   }
+  // Chassis-driven axles with both wheels powered: the differential sets the left/right split.
+  const diffOf = (front: boolean): DiffType => (front ? input.diff?.front : input.diff?.rear) ?? 'open';
+  const chassisAxle = (l: CornerId, r: CornerId) => [l, r].every((id) => (input.corners.find((c) => c.id === id)?.drive ?? 'none') === 'chassis');
+  // Cornering force: front/rear shares come from the CG position (yaw balance), not from the tires.
+  const L = input.wheelbase;
+  const frontLatShare = L > 0 ? Math.min(1, Math.max(0, (L + input.cg.z) / L)) : 0.5;
+  let caps: Record<CornerId, number> | null = null;
   const byId = Object.fromEntries(input.corners.map((c) => [c.id, c])) as Partial<Record<CornerId, VehicleCorner>>;
   const axleOf = (id: CornerId) => (isFront(id) ? input.shared?.front : input.shared?.rear) ?? NO_SHARED;
   const isCoupled = (a: AxleShared) => a.antiRollBar.kind !== 'none' || a.heaveSpring.kind !== 'none';
@@ -391,12 +492,29 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
     const total = CORNER_IDS.reduce((s, id) => s + Math.max(0, loads[id]), 0);
     const bShares = brakeShares(input, loads);
     const corners = {} as Record<CornerId, CornerResult>;
-    const forces = (id: CornerId): CornerLoads => ({
-      lateral: total > 0 ? (latTotal * Math.max(0, loads[id])) / total : 0,
-      brake: -brakeTotal * bShares[id],
-      drive: driveTotal * driveShares[id],
-      aZ,
-    });
+    const dShares = { ...driveShares };
+    for (const [l, r, front] of [['FL', 'FR', true], ['RL', 'RR', false]] as const) {
+      if (!chassisAxle(l, r)) continue;
+      const axleShare = dShares[l] + dShares[r];
+      const [a, b] = diffSplit(diffOf(front), loads[l], loads[r], input.lsdBias ?? 2.5);
+      dShares[l] = axleShare * a; dShares[r] = axleShare * b;
+    }
+    const brakeF = (id: CornerId) => -brakeTotal * bShares[id];
+    const driveF = (id: CornerId) => driveTotal * dShares[id];
+    const lat: Record<CornerId, number> = { FL: 0, FR: 0, RL: 0, RR: 0 };
+    for (const [l, r, share] of [['FL', 'FR', frontLatShare], ['RL', 'RR', 1 - frontLatShare]] as const) {
+      const F = latTotal * share;
+      if (caps) {
+        const sh = shareLateral(F, [brakeF(l) + driveF(l), brakeF(r) + driveF(r)], [caps[l], caps[r]]);
+        lat[l] = sh.fy[0]!; lat[r] = sh.fy[1]!;
+      } else {
+        const t = Math.max(0, loads[l]) + Math.max(0, loads[r]);
+        lat[l] = t > 0 ? (F * Math.max(0, loads[l])) / t : F / 2;
+        lat[r] = F - lat[l];
+      }
+    }
+    void total;
+    const forces = (id: CornerId): CornerLoads => ({ lateral: lat[id], brake: brakeF(id), drive: driveF(id), aZ });
     for (const [l, r] of [['FL', 'FR'], ['RL', 'RR']] as const) {
       const cl = byId[l];
       const cr = byId[r];
@@ -422,10 +540,10 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
       fy += r.tireLoad;
       add2(momentOf(r.contact, vec3(r.lateralForce, r.tireLoad, r.longitudinalForce)));
       // Unsprung weight and inertia (lateral, braking) at the wheel center.
-      add2(momentOf(r.wheelCenter, vec3(-c.unsprungMass * input.lateralG * G, -c.unsprungMass * G, -c.unsprungMass * aZ)));
+      add2(momentOf(r.wheelCenter, vec3(-c.unsprungMass * input.lateralG * G, -c.unsprungMass * G * gs, -c.unsprungMass * aZ)));
     }
     const cg = P.point(sp.cg);
-    add2(momentOf(cg, vec3(-sp.mass * input.lateralG * G, -sp.mass * G, -sp.mass * aZ)));
+    add2(momentOf(cg, vec3(-sp.mass * input.lateralG * G, -sp.mass * G * gs, -sp.mass * aZ)));
     return { corners, res: [fy - W, mRoll / 1000, mPitch / 1000] as [number, number, number] };
   };
 
@@ -438,8 +556,13 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
   for (; it < maxIt; it++) {
     // Update the tire-force shares and partner travels from the latest solution.
     const nextLoads = Object.fromEntries(CORNER_IDS.map((id) => [id, cur.corners[id]?.tireLoad ?? 0])) as Record<CornerId, number>;
-    const loadsMoved = CORNER_IDS.some((id) => Math.abs(nextLoads[id] - loads[id]) > 1e-4 * W);
+    let loadsMoved = CORNER_IDS.some((id) => Math.abs(nextLoads[id] - loads[id]) > 1e-4 * W);
     loads = nextLoads;
+    if (input.grip) {
+      const next = capacities(input, cur.corners);
+      if (!caps || CORNER_IDS.some((id) => Math.abs(next[id] - caps![id]) > 1e-4 * W)) loadsMoved = true;
+      caps = next;
+    }
     if (loadsMoved) cur = evaluate(pose);
     for (const id of CORNER_IDS) cornerGuess[id] = cur.corners[id]?.travel;
     if (norm(cur.res) < tolN && !loadsMoved) break;
@@ -467,10 +590,60 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
     }
     if (!accepted) break;
   }
-  return {
+  const out: VehicleResult = {
     pose, corners: cur.corners, converged: norm(cur.res) < 1e-5, iterations: it, residual: cur.res,
     sprungMass: sp.mass, sprungCg: sp.cg, notes,
   };
+  if (input.grip) out.grip = gripSummary(input, out, capacities(input, cur.corners), frontLatShare, latTotal);
+  return out;
+}
+
+/** Peak friction force of each tire at its solved load and patch. */
+function capacities(input: VehicleInput, corners: Record<CornerId, CornerResult>): Record<CornerId, number> {
+  const out = { FL: 0, FR: 0, RL: 0, RR: 0 } as Record<CornerId, number>;
+  for (const c of input.corners) {
+    const r = corners[c.id];
+    if (!r) continue;
+    out[c.id] = patchGrip(r.wheelCenter, r.axisWorld, { point: vec3(0, r.groundY, 0), normal: Y_AXIS }, c.tire.profile, Math.max(r.tireLoad, 0), input.grip!, 20, 8).capacity;
+  }
+  return out;
+}
+
+/** Grip use, slip states and what limits the car (see docs/MATH.md § Grip and slip). */
+function gripSummary(input: VehicleInput, r: VehicleResult, cap: Record<CornerId, number>, frontShare: number, latTotal: number): GripSummary {
+  const slide = input.slidingRatio ?? 0.8;
+  const byId = Object.fromEntries(input.corners.map((c) => [c.id, c])) as Partial<Record<CornerId, VehicleCorner>>;
+  const corners = {} as Record<CornerId, CornerGrip>;
+  for (const id of CORNER_IDS) {
+    const c = r.corners[id];
+    const C = Math.max(cap[id], 1e-9);
+    const fx = c.longitudinalForce, fy = c.lateralForce;
+    const need = Math.hypot(fx, fy);
+    const u = need / C;
+    let state: SlipState = 'grip';
+    if (c.brakeForce < 0 && Math.abs(fx) > C) state = byId[id]?.abs === false ? 'locked' : 'abs-limit';
+    else if (c.driveForce > 0 && Math.abs(fx) > C) state = 'wheelspin';
+    else if (u > 1) state = 'sliding';
+    const deliverable = state === 'grip' ? need : state === 'abs-limit' ? C : slide * C;
+    corners[id] = { capacity: cap[id], utilization: u, state, deliverable, shortfall: Math.max(0, need - deliverable) };
+  }
+  const axleU = (l: CornerId, rr: CornerId, share: number) =>
+    shareLateral(latTotal * share, [r.corners[l].longitudinalForce, r.corners[rr].longitudinalForce], [cap[l], cap[rr]]).u;
+  const axles = { front: Math.abs(latTotal) > 1e-6 ? axleU('FL', 'FR', frontShare) : 0, rear: Math.abs(latTotal) > 1e-6 ? axleU('RL', 'RR', 1 - frontShare) : 0 };
+  const limits: GripSummary['limits'] = [];
+  const over = (ids: CornerId[], states: SlipState[]) => ids.filter((id) => states.includes(corners[id].state));
+  const locked = over(CORNER_IDS, ['locked']);
+  if (locked.length) limits.push({ kind: 'lock-up', corners: locked, text: `${locked.join(', ')} lock up (no ABS): sliding, no steering grip` });
+  const abs = over(CORNER_IDS, ['abs-limit']);
+  if (abs.length) limits.push({ kind: 'braking', corners: abs, text: `${abs.join(', ')} at the ABS limit: can't brake this hard` });
+  const spin = over(CORNER_IDS, ['wheelspin']);
+  if (spin.length) limits.push({ kind: 'traction', corners: spin, text: `${spin.join(', ')} wheelspin: not enough traction` });
+  if (axles.front > 1 && axles.front >= axles.rear) limits.push({ kind: 'understeer', corners: ['FL', 'FR'], text: `Front axle out of grip (${(axles.front * 100).toFixed(0)}%): understeer, the car runs wide` });
+  if (axles.rear > 1 && axles.rear > axles.front) limits.push({ kind: 'oversteer', corners: ['RL', 'RR'], text: `Rear axle out of grip (${(axles.rear * 100).toFixed(0)}%): oversteer, the rear slides` });
+  const sliding = over(CORNER_IDS, ['sliding']).filter((id) => !limits.some((l) => l.corners.includes(id)));
+  if (sliding.length) limits.push({ kind: isFront(sliding[0]!) ? 'understeer' : 'oversteer', corners: sliding, text: `${sliding.join(', ')} sliding` });
+  const maxUtilization = Math.max(...CORNER_IDS.map((id) => corners[id].utilization));
+  return { corners, axles, passed: limits.length === 0 && maxUtilization <= 1, limits, maxUtilization };
 }
 
 /**

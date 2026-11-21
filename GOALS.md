@@ -38,6 +38,11 @@ Calculating and visualizing come first. **Later:** export to modeling software (
 | 5 | **Export and integration** (only after calculating and visualizing are solid): file exports and an optional Fusion 360 add-in (Python + HTML panel) | |
 | 6 | **Multi-corner**: add more corners, inter-corner interactions (sway bars, shared shocks, pushrods/rockers) | ✅ Four independent corners, whole-car equilibrium, brakes, drive (chassis diff or hub motor), anti-roll bars and heave springs, force arrows in the view (L6). Scale-weight CG utility later. |
 | 7 | **Other suspension types**: MacPherson, multilink, etc., plus user-defined linkages | |
+| 8 | **Tests workspace** (alongside Corner and Vehicle, sharing one design): chainable / combinable test segments (speed change over distance, straight / left / right turn with radius, flat / grade / bank / bumps / potholes / lumpy), per-tire grip use and slip detection, speed limits, test goals for the optimizer | Phase A (quasi-static segments) in progress; Phase B (time-domain ride: transients, bumps at speed, lumpy roads, dampers) and Phase C (handling: tire slip, yaw, path following) planned |
+
+### Future goals (noted 2026-11-22)
+- **Official tire grip model.** The contact-patch grip model (pressure distribution + load-sensitive friction) is a **placeholder** with default parameters; the official model (fitted to tire data, with camber thrust and a peak → sliding friction curve) has **not been implemented yet**. Grip, contact-area and slip / pass-fail results depend on it.
+- **Aero.** Assumed negligible for now. When added: drag acts on the **body** as a braking force (not through the tires), and lift / downforce acts on the body at a center of pressure, so it can lift, lower, pitch or twist (roll / yaw moment) the body, and with that change tire loads and grip. Inputs: CdA, ClA (front/rear or center of pressure), air density; speed comes from the test segments.
 
 Note: the tool simulates whatever linkage the user builds, including ones whose camber motion is far from ideal. Motion quality is judged from the motion itself (IC, characteristic curves, toggle positions), not from a linkage classification; "optimal" is defined by the user's chosen objectives.
 
@@ -107,7 +112,7 @@ All options are available for manual adjustment and placement. The lock/range co
 - **Model toggles:** e.g. "Apply tire volume change" so the user can see how much a modeling assumption affects the results.
 
 ### Optimizer Objectives
-Maximum contact area is a proxy, not the same as maximum grip. Objectives are selectable and can be weighted: target inclination under load (default), maximum contact area, or maximum friction force from a tire model. See [docs/MATH.md](docs/MATH.md#l7-optimizer-objectives-and-requirements).
+Maximum contact area is a proxy, not the same as maximum grip. Objectives are selectable and can be weighted: target inclination under load (default), maximum contact area, or maximum friction force from a tire model. **Note:** the tire grip model used today is a placeholder; the official model has not been implemented yet. See [docs/MATH.md](docs/MATH.md#l7-optimizer-objectives-and-requirements).
 
 ---
 

@@ -23,3 +23,5 @@ export * from './tire/grip';
 export * from './optimize/vehicle';
 export * from './math/dimension';
 export * from './suspension/dimensions';
+export * from './tests/segments';
+export * from './tests/run';

@@ -3,6 +3,8 @@ import type { Model } from '../useModel';
 import { Section, fmt } from './FieldRows';
 import { SteeringReadout } from './SteeringPanel';
 import { useDisplay } from '../units';
+import { useApp } from '../store';
+import { dampingRatio } from '../../core/suspension/spring';
 
 const STATUS_TEXT: Record<string, string> = {
   converged: 'Solved',
@@ -11,8 +13,11 @@ const STATUS_TEXT: Record<string, string> = {
   'not-converged': 'Cannot reach position',
 };
 
+const G = 9.80665;
+
 export function Readout({ model }: { model: Model }) {
   const d = useDisplay();
+  const damper = useApp((s) => s.damper);
   const cur = model.current;
   if (!cur) return <section className="panel"><h2>Characteristics</h2><p className="muted">{model.error ?? 'No solution'}</p></section>;
   const c = cur.chars;
@@ -48,6 +53,8 @@ export function Readout({ model }: { model: Model }) {
     ['Tire rate', fmt(sp.tireRate, 0), 'N/mm'],
     ['Ride rate', fmt(sp.rideRate, 1), 'N/mm', 'wheel rate in series with tire'],
     ['Ride frequency', fmt(sp.frequency, 2), 'Hz', 'sprung corner'],
+    ['Damping ratio, bump', fmt(dampingRatio(damper.bumpDamping.value, sp.motionRatio, sp.rideRate, sp.sprungLoad / G), 2), '', 'ζ = damper rate · MR² / (2·√(ride rate · sprung mass)). 0.25–0.4 ride, 0.6–0.7 handling'],
+    ['Damping ratio, rebound', fmt(dampingRatio(damper.reboundDamping.value, sp.motionRatio, sp.rideRate, sp.sprungLoad / G), 2), ''],
   ] : [];
   const STATUS: Record<string, string> = { 'droop-limit': 'At droop limit', 'bump-limit': 'At bump limit' };
   const l = cur.loaded;

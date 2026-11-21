@@ -18,9 +18,10 @@ import { patchGrip, DEFAULT_GRIP, type GripModel, type PatchGrip } from '../tire
 import { CornerTable } from '../vehicle/cornerTable';
 import {
   CORNER_IDS, isFront, placement, poseFns, solveVehicle, staticCornerLoads, designGroundY,
-  type AxleShared, type BrakeMount, type CornerId, type DriveMount, type VehicleCorner, type VehicleResult, type ChassisPose,
+  type AxleShared, type BrakeMount, type CornerId, type DriveMount, type VehicleCorner, type VehicleResult, type ChassisPose, type DiffType,
 } from '../vehicle/vehicle';
 import { boundedLeastSquares, type LsqResult } from './leastSquares';
+import type { RoadState } from '../tests/segments';
 import {
   withVariables, variableValue, sampleCorner, cornerGoalResiduals, goalValue, holdValue, holdTarget,
   type Variable, type Hold, type ProgressInfo,
@@ -29,7 +30,7 @@ import {
 const G = 9.80665;
 
 export type VehicleGoalKind =
-  | 'grip' | 'contactArea' | 'inclination' | 'roll' | 'lltd' | 'pitch' | 'antiDive' | 'antiSquat' | 'bumpSteer';
+  | 'grip' | 'contactArea' | 'inclination' | 'roll' | 'lltd' | 'pitch' | 'antiDive' | 'antiSquat' | 'bumpSteer' | 'testPass';
 
 export interface VehicleGoalMeta {
   short: string; label: string; unit: string; target: number; tolerance: number; hint: string; maximize?: boolean;
@@ -46,6 +47,7 @@ export const VEHICLE_GOAL_META: Record<VehicleGoalKind, VehicleGoalMeta> = {
   pitch: { short: 'Brake pitch', label: 'Pitch under braking', unit: '°', target: 0.5, tolerance: 0.02, uses: 'braking', hint: 'Nose-down pitch in the braking case.' },
   antiDive: { short: 'Anti-dive', label: 'Anti-dive (front, braking)', unit: '%', target: 20, tolerance: 1, uses: 'geometry', hint: 'Classic geometric anti-dive at static height from the side-view IC, brake mount and bias.' },
   antiSquat: { short: 'Anti-squat', label: 'Anti-squat (rear, accelerating)', unit: '%', target: 30, tolerance: 1, uses: 'geometry', hint: 'Classic geometric anti-squat of the powered rear corners (needs powered rear corners).' },
+  testPass: { short: 'Test passes', label: 'Every tire within its grip (test must pass)', unit: '%', target: 90, tolerance: 1, uses: 'all', hint: 'No tire in any load case may use more than this share of its grip (100% = sliding). With a test selected as the load cases, this makes the test pass with margin. Grip model is a placeholder until real tire data.' },
   bumpSteer: { short: 'Bump steer', label: 'Bump steer (every design)', unit: '°', target: 0, tolerance: 0.01, uses: 'geometry', hint: 'Keeps every corner design free of bump steer over the travel range while the rest is optimized. Reported: worst deviation, °.' },
 };
 export const VEHICLE_GOAL_KINDS = Object.keys(VEHICLE_GOAL_META) as VehicleGoalKind[];
@@ -69,7 +71,13 @@ export interface VehicleProblem {
   designs: Partial<Record<CornerId, VehicleDesignIn>>;
   /** Root (design) of each corner. */
   roots: Record<CornerId, CornerId>;
-  settings: Record<CornerId, { brake: BrakeMount; drive: DriveMount }>;
+  settings: Record<CornerId, { brake: BrakeMount; drive: DriveMount; abs?: boolean }>;
+  /** Differential per axle (chassis-driven axles). */
+  diff?: { front?: DiffType; rear?: DiffType };
+  /** Sliding ÷ peak friction (default 0.8). */
+  slidingRatio?: number;
+  /** Test states: when given, they replace the fixed load cases. */
+  states?: RoadState[];
   mass: number;
   /** CG: x (+ left), height above ground, z (from the front axle, + forward). */
   cg: { x: number; height: number; z: number };
@@ -95,8 +103,12 @@ export interface VehicleProblem {
 }
 
 export interface CaseEval {
-  name: 'lateral' | 'braking' | 'accel';
+  /** 'lateral' | 'braking' | 'accel' for the fixed cases, or the test state's name. */
+  name: string;
+  kind: 'lateral' | 'braking' | 'accel' | 'state';
   g: number;
+  /** The road state solved (test states only). */
+  state?: RoadState;
   result: VehicleResult;
   grip: Record<CornerId, PatchGrip>;
 }
@@ -117,8 +129,17 @@ const geometriesFor = (p: VehicleProblem, x: number[]) => {
   return out;
 };
 
-/** Build the corners and run every load case for the given geometries. null = can't be assembled/solved. */
-export function evaluateVehicle(p: VehicleProblem, geometries: Partial<Record<CornerId, DoubleWishboneGeometry>>, guesses?: Partial<Record<string, ChassisPose>>): VehicleEval | null {
+/** The car built from these geometries: corners, ground, CG. */
+export interface AssembledVehicle {
+  corners: VehicleCorner[];
+  groundY: number;
+  cg: Vec3;
+  chars: Record<CornerId, Characteristics>;
+  built: Map<CornerId, DoubleWishbone>;
+  designState: Map<CornerId, ReturnType<DoubleWishbone['design']>>;
+}
+
+export function assembleVehicle(p: VehicleProblem, geometries: Partial<Record<CornerId, DoubleWishboneGeometry>>): AssembledVehicle | null {
   const range: [number, number] = [-Math.abs(p.droop), Math.abs(p.bump)];
   const n = p.tableSamples ?? 21;
   const built = new Map<CornerId, DoubleWishbone>();
@@ -154,7 +175,7 @@ export function evaluateVehicle(p: VehicleProblem, geometries: Partial<Record<Co
     const freeLength = p.autoPreload ? fitFreeLength(built.get(root)!, d.springRate, Math.max(0, loads[id] - d.unsprungMass * G)) : d.freeLength;
     corners.push({
       id, table, unsprungMass: d.unsprungMass, tire: { profile: d.profile, model: d.model },
-      brake: p.settings[id].brake, drive: p.settings[id].drive,
+      brake: p.settings[id].brake, drive: p.settings[id].drive, abs: p.settings[id].abs ?? true,
       spring: { rate: d.springRate, freeLength, ...(d.bumpStop ? { bumpStopLength: d.bumpStop.length, bumpStopRate: d.bumpStop.rate } : {}) },
     });
   }
@@ -163,35 +184,64 @@ export function evaluateVehicle(p: VehicleProblem, geometries: Partial<Record<Co
     const d = p.designs[p.roots[id]]!;
     return { contactY: ds.points.contact.y, profile: d.profile, model: d.model, staticLoad: loads[id], tilt: ds.spinAxis.y };
   }));
-  const cg = vec3(p.cg.x, groundY + p.cg.height, p.cg.z);
-  const grip = p.grip ?? DEFAULT_GRIP;
+  return { corners, groundY, cg: vec3(p.cg.x, groundY + p.cg.height, p.cg.z), chars, built, designState };
+}
 
-  const caseList: { name: CaseEval['name']; g: number; lateralG: number; brakingG: number; accelG: number }[] = [];
-  if (p.cases.lateralG) caseList.push({ name: 'lateral', g: p.cases.lateralG, lateralG: p.cases.lateralG, brakingG: 0, accelG: 0 });
-  if (p.cases.brakingG) caseList.push({ name: 'braking', g: p.cases.brakingG, lateralG: 0, brakingG: p.cases.brakingG, accelG: 0 });
-  if (p.cases.accelG) caseList.push({ name: 'accel', g: p.cases.accelG, lateralG: 0, brakingG: 0, accelG: p.cases.accelG });
+export interface CaseSpec {
+  name: string; kind: CaseEval['kind']; g: number;
+  lateralG: number; brakingG: number; accelG: number; gravityScale?: number; groundOffset?: Partial<Record<CornerId, number>>;
+  state?: RoadState;
+}
 
-  const cases: CaseEval[] = [];
-  for (const c of caseList) {
-    const result = solveVehicle({
-      corners, totalMass: p.mass, cg, wheelbase: p.wheelbase, groundY,
-      lateralG: c.lateralG, brakingG: c.brakingG, brakeBias: p.brakeBias, accelG: c.accelG, driveSplit: p.driveSplit, shared: p.shared,
-    }, { guess: guesses?.[c.name] });
-    if (!result.converged) return null;
-    if (guesses) guesses[c.name] = result.pose;
-    const P = poseFns(result.pose);
-    const g = {} as Record<CornerId, PatchGrip>;
-    for (const id of CORNER_IDS) {
-      const root = p.roots[id];
-      const st = built.get(root)!.solve({ travel: result.corners[id].travel }, designState.get(root)!.poses);
-      const pl = placement(id, p.wheelbase);
-      const wc = P.point(pl.point(st.points.wheelCenter));
-      const axis = P.rot(pl.dir(st.spinAxis));
-      g[id] = patchGrip(wc, axis, { point: vec3(0, groundY, 0), normal: Y_AXIS }, p.designs[root]!.profile, result.corners[id].tireLoad, grip);
-    }
-    cases.push({ name: c.name, g: c.g, result, grip: g });
+/** The load cases of a problem: its test states, or the fixed cornering / braking / accelerating cases. */
+export function caseList(p: VehicleProblem): CaseSpec[] {
+  if (p.states?.length) {
+    return p.states.map((st) => ({
+      name: st.name, kind: 'state' as const, g: Math.hypot(st.ay, st.ax),
+      lateralG: st.lateralG, brakingG: st.brakingG, accelG: st.accelG, gravityScale: st.gravityScale, groundOffset: st.groundOffset, state: st,
+    }));
   }
-  return { geometries, cases, chars };
+  const out: CaseSpec[] = [];
+  if (p.cases.lateralG) out.push({ name: 'lateral', kind: 'lateral', g: p.cases.lateralG, lateralG: p.cases.lateralG, brakingG: 0, accelG: 0 });
+  if (p.cases.brakingG) out.push({ name: 'braking', kind: 'braking', g: p.cases.brakingG, lateralG: 0, brakingG: p.cases.brakingG, accelG: 0 });
+  if (p.cases.accelG) out.push({ name: 'accel', kind: 'accel', g: p.cases.accelG, lateralG: 0, brakingG: 0, accelG: p.cases.accelG });
+  return out;
+}
+
+/** Solve one load case on an assembled car. null = didn't converge. */
+export function solveCase(p: VehicleProblem, asm: AssembledVehicle, c: CaseSpec, guess?: ChassisPose): CaseEval | null {
+  const grip = p.grip ?? DEFAULT_GRIP;
+  const result = solveVehicle({
+    corners: asm.corners, totalMass: p.mass, cg: asm.cg, wheelbase: p.wheelbase, groundY: asm.groundY,
+    lateralG: c.lateralG, brakingG: c.brakingG, brakeBias: p.brakeBias, accelG: c.accelG, driveSplit: p.driveSplit, shared: p.shared,
+    gravityScale: c.gravityScale, groundOffset: c.groundOffset, grip, slidingRatio: p.slidingRatio, diff: p.diff,
+  }, { guess });
+  if (!result.converged) return null;
+  const P = poseFns(result.pose);
+  const g = {} as Record<CornerId, PatchGrip>;
+  for (const id of CORNER_IDS) {
+    const root = p.roots[id];
+    const st = asm.built.get(root)!.solve({ travel: result.corners[id].travel }, asm.designState.get(root)!.poses);
+    const pl = placement(id, p.wheelbase);
+    const wc = P.point(pl.point(st.points.wheelCenter));
+    const axis = P.rot(pl.dir(st.spinAxis));
+    g[id] = patchGrip(wc, axis, { point: vec3(0, result.corners[id].groundY, 0), normal: Y_AXIS }, p.designs[root]!.profile, result.corners[id].tireLoad, grip);
+  }
+  return { name: c.name, kind: c.kind, g: c.g, state: c.state, result, grip: g };
+}
+
+/** Build the corners and run every load case for the given geometries. null = can't be assembled/solved. */
+export function evaluateVehicle(p: VehicleProblem, geometries: Partial<Record<CornerId, DoubleWishboneGeometry>>, guesses?: Partial<Record<string, ChassisPose>>): VehicleEval | null {
+  const asm = assembleVehicle(p, geometries);
+  if (!asm) return null;
+  const cases: CaseEval[] = [];
+  for (const c of caseList(p)) {
+    const e = solveCase(p, asm, c, guesses?.[c.name]);
+    if (!e) return null;
+    if (guesses) guesses[c.name] = e.result.pose;
+    cases.push(e);
+  }
+  return { geometries, cases, chars: asm.chars };
 }
 
 const mean = (v: number[]) => (v.length ? v.reduce((a, b) => a + b, 0) / v.length : NaN);
@@ -203,8 +253,13 @@ function lltdOf(c: CaseEval): number | null {
   return tf + tr !== 0 ? (100 * tf) / (tf + tr) : null;
 }
 
-/** Outside corners in a left turn (lateral > 0 loads the right side). */
-const OUTSIDE: CornerId[] = ['FR', 'RR'];
+/** Outside corners: a left turn (lateral > 0) loads the right side. */
+const outsideOf = (c: CaseEval): CornerId[] => (c.result.corners.FR.tireLoad >= c.result.corners.FL.tireLoad ? ['FR', 'RR'] : ['FL', 'RL']);
+/** The most-cornering and the hardest-braking case (fixed or test states). */
+const latGOf = (c: CaseEval) => (c.kind === 'state' ? c.state!.lateralG : c.kind === 'lateral' ? c.g : 0);
+const brakeGOf = (c: CaseEval) => (c.kind === 'state' ? c.state!.brakingG : c.kind === 'braking' ? c.g : 0);
+const latCase = (e: VehicleEval) => e.cases.filter((c) => Math.abs(latGOf(c)) > 0.05).sort((a, b) => Math.abs(latGOf(b)) - Math.abs(latGOf(a)))[0];
+const brakeCase = (e: VehicleEval) => e.cases.filter((c) => brakeGOf(c) > 0.05).sort((a, b) => brakeGOf(b) - brakeGOf(a))[0];
 
 function antiOf(p: VehicleProblem, e: VehicleEval, kind: 'antiDive' | 'antiSquat'): number | null {
   const h = p.cg.height;
@@ -232,13 +287,14 @@ const bumpOpts = (p: VehicleProblem) => ({ droop: -Math.abs(p.droop), bump: Math
 
 /** Reported value of a vehicle goal. */
 export function vehicleGoalValue(kind: VehicleGoalKind, p: VehicleProblem, e: VehicleEval): number | null {
-  const lat = e.cases.find((c) => c.name === 'lateral');
-  const brk = e.cases.find((c) => c.name === 'braking');
+  const lat = latCase(e);
+  const brk = brakeCase(e);
   switch (kind) {
     case 'grip': return e.cases.length ? mean(e.cases.map((c) => CORNER_IDS.reduce((a, id) => a + c.grip[id].capacity, 0))) / (p.mass * G) : null;
     case 'contactArea': return e.cases.length ? mean(e.cases.map((c) => CORNER_IDS.reduce((a, id) => a + c.grip[id].area, 0))) / 100 : null;
-    case 'inclination': return lat ? mean(OUTSIDE.map((id) => deg(lat.result.corners[id].inclination))) : null;
-    case 'roll': return lat ? Math.abs(deg(lat.result.pose.roll)) / Math.abs(lat.g) : null;
+    case 'inclination': return lat ? mean(outsideOf(lat).map((id) => deg(lat.result.corners[id].inclination))) : null;
+    case 'roll': return lat ? Math.abs(deg(lat.result.pose.roll)) / Math.abs(latGOf(lat)) : null;
+    case 'testPass': return e.cases.length ? 100 * Math.max(...e.cases.map((c) => c.result.grip?.maxUtilization ?? 0)) : null;
     case 'lltd': return lat ? lltdOf(lat) : null;
     case 'pitch': return brk ? deg(brk.result.pose.pitch) : null;
     case 'antiDive': case 'antiSquat': return antiOf(p, e, kind);
@@ -263,8 +319,13 @@ function vehicleResiduals(goal: VehicleGoal, p: VehicleProblem, e: VehicleEval, 
     return [v === null || !(v > 0) || !ref ? BAD : (ref / v) / Math.sqrt(meta.tolerance)];
   }
   if (goal.kind === 'inclination') {
-    const lat = e.cases.find((c) => c.name === 'lateral');
-    return lat ? OUTSIDE.map((id) => (deg(lat.result.corners[id].inclination) - goal.target) / meta.tolerance) : [];
+    const lat = latCase(e);
+    return lat ? outsideOf(lat).map((id) => (deg(lat.result.corners[id].inclination) - goal.target) / meta.tolerance) : [];
+  }
+  if (goal.kind === 'testPass') {
+    // Every tire in every case at or under the allowed grip use: one-sided (only overuse counts).
+    const limit = goal.target / 100;
+    return e.cases.flatMap((c) => CORNER_IDS.map((id) => Math.max(0, (c.result.grip?.corners[id].utilization ?? 0) - limit) / (meta.tolerance / 100)));
   }
   if (goal.kind === 'bumpSteer') {
     const r: number[] = [];

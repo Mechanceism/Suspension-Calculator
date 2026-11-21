@@ -17,6 +17,7 @@
  *   5  optimizer setup per corner design (free coordinates + ranges, goals)
  *   6  vehicle optimizer setup, tire grip model, roll load factor (corner optimizer)
  *   7  held dimensions (Measure → set, hold at a travel or permanently)
+ *   8  damping rates, ABS and differential per corner, test definitions, road inputs
  */
 import pkg from '../../package.json';
 import { parseValue, type Quantity } from '../core/units/units';
@@ -32,7 +33,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 7;
+export const FORMAT_VERSION = 8;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -202,6 +203,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   5: (f) => ({ ...f, formatVersion: 6 }),
   // 6 → 7: held dimensions (none).
   6: (f) => ({ ...f, formatVersion: 7 }),
+  // 7 → 8: damping rates, ABS (on) and open differentials per corner, tests (none). Defaults apply.
+  7: (f) => ({ ...f, formatVersion: 8 }),
 };
 
 /** Read held dimensions; unknown points or measures are dropped with a warning. */
@@ -325,7 +328,7 @@ function readRecord<K extends string>(
   return Object.fromEntries(keys.map((k) => [k, readField(obj[k], quantity(k), defaults[k], `${section}.${k}`, warnings)])) as Record<K, Field>;
 }
 
-function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: string[]): CornerDesign {
+function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: string[], original = FORMAT_VERSION): CornerDesign {
   const c = isObj(raw) ? raw : {};
   if (!isObj(raw)) warnings.push(`${id}: missing, using the default corner`);
   const w = isObj(raw) ? warnings : [];
@@ -350,7 +353,8 @@ function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: str
   return {
     geom: { points, scalars, damperArm: c.damperArm === 'uca' ? 'uca' : 'lca' },
     spring: readRecord(c.spring, SPRING_KEYS, (k) => SPRING_META[k].quantity, def.spring, `${id}.spring`, w),
-    damper: readRecord(damperRaw.fields, DAMPER_KEYS, (k) => DAMPER_META[k].quantity, def.damper, `${id}.damper`, w),
+    // Damping rates are new in format 8: older files take the defaults quietly.
+    damper: readRecord(damperRaw.fields, DAMPER_KEYS, (k) => DAMPER_META[k].quantity, def.damper, `${id}.damper`, original < 8 ? [] : w),
     bumpStop: typeof damperRaw.bumpStop === 'boolean' ? damperRaw.bumpStop : def.bumpStop,
     tireModel: model,
     tire: readRecord(tireRaw.fields, TIRE_KEYS, (k) => TIRE_META[k].quantity, def.tire, `${id}.tire`, w),
@@ -400,7 +404,7 @@ export function importProject(data: unknown): ImportResult {
   const older = original < 3;
   const olderThan4 = original < 4;
   const cornersRaw = isObj(f.corners) ? f.corners : {};
-  const corners = Object.fromEntries(CORNER_IDS.map((id) => [id, readCorner(cornersRaw[id], id, defCorner, warnings)])) as Record<CornerId, CornerDesign>;
+  const corners = Object.fromEntries(CORNER_IDS.map((id) => [id, readCorner(cornersRaw[id], id, defCorner, warnings, original)])) as Record<CornerId, CornerDesign>;
   const linksRaw = isObj(f.links) ? f.links : {};
   const links: CornerLinks = {
     frontPair: typeof linksRaw.frontPair === 'boolean' ? linksRaw.frontPair : DEFAULT_LINKS.frontPair,
@@ -415,6 +419,8 @@ export function importProject(data: unknown): ImportResult {
       powered: typeof r.powered === 'boolean' ? r.powered : DEFAULT_SETTINGS[id].powered,
       brake: r.brake === 'none' || r.brake === 'inboard' || r.brake === 'outboard' ? r.brake : DEFAULT_SETTINGS[id].brake,
       drive: r.drive === 'hub' ? 'hub' : 'chassis',
+      abs: typeof r.abs === 'boolean' ? r.abs : true,
+      diff: r.diff === 'locked' || r.diff === 'lsd' ? r.diff : 'open',
     }];
   })) as Record<CornerId, CornerSettings>;
   const activeCorner = (CORNER_IDS as string[]).includes(String(f.activeCorner)) ? f.activeCorner as CornerId : 'FL';

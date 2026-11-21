@@ -2,6 +2,8 @@ import { useApp, SPRING_KEYS, SPRING_META, DAMPER_KEYS, DAMPER_META, rootOf, typ
 import { lockKeys } from '../locks';
 import type { Model } from '../useModel';
 import { FieldRows, fmt } from './FieldRows';
+import { useState } from 'react';
+import { dampingRatio, dampingForRatio } from '../../core/suspension/spring';
 
 /** Spring layout, rate, free length (+ fit) and the corner-load inputs it carries. */
 export function SpringFields({ keys = SPRING_KEYS }: { keys?: readonly SpringKey[] }) {
@@ -56,6 +58,7 @@ export function DamperFields({ model }: { model: Model }) {
         label: DAMPER_META[k].label, field: damper[k], unit: DAMPER_META[k].unit, onCommit: (t: string) => setDamperField(k, t),
         lockKey: lockKeys.field(root, 'damper', k),
       }))} />
+      <DampingFit model={model} />
       <label className="check-row">
         <input type="checkbox" checked={bumpStop} onChange={() => set('bumpStop', !bumpStop)} />
         Bump stop
@@ -79,5 +82,38 @@ export function SpringPanel({ model }: { model: Model }) {
       <h3 className="subhead">Damper & bump stop</h3>
       <DamperFields model={model} />
     </section>
+  );
+}
+
+const G = 9.80665;
+
+/** Damping ratio now, and set the damper rates for a target ratio (bump / rebound). */
+function DampingFit({ model }: { model: Model }) {
+  const damper = useApp((s) => s.damper);
+  const setDamperField = useApp((s) => s.setDamperField);
+  const sp = model.current?.spring;
+  const [zb, setZb] = useState('0.3');
+  const [zr, setZr] = useState('0.5');
+  if (!sp) return null;
+  const m = sp.sprungLoad / G;
+  const now = (c: number) => fmt(dampingRatio(c, sp.motionRatio, sp.rideRate, m), 2);
+  const fit = () => {
+    const b = Number(zb), r = Number(zr);
+    if (Number.isFinite(b) && b > 0) setDamperField('bumpDamping', String(Math.round(dampingForRatio(b, sp.motionRatio, sp.rideRate, m))));
+    if (Number.isFinite(r) && r > 0) setDamperField('reboundDamping', String(Math.round(dampingForRatio(r, sp.motionRatio, sp.rideRate, m))));
+  };
+  return (
+    <div className="damping-fit">
+      <div className="muted small-text">
+        Damping ratio now: bump <b>{now(damper.bumpDamping.value)}</b> · rebound <b>{now(damper.reboundDamping.value)}</b>
+        {' '}(0.25–0.4 ride, 0.6–0.7 handling). Dampers act in motion: they matter in the time-based tests (planned); steady states don't use them.
+      </div>
+      <div className="jm-row">
+        <span className="muted">Target ζ</span>
+        <input className="value-input small" value={zb} onChange={(e) => setZb(e.target.value)} title="Bump damping ratio" />
+        <input className="value-input small" value={zr} onChange={(e) => setZr(e.target.value)} title="Rebound damping ratio" />
+        <button className="chip on" onClick={fit} title="Set the bump / rebound damper rates for these damping ratios at the static position">Set damper rates</button>
+      </div>
+    </div>
   );
 }

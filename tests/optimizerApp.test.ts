@@ -45,7 +45,7 @@ describe('optimizer setup (app)', () => {
     d.vehicleOptimizer.lateralG = f(1.2);
     d.grip.sensitivity = f(0.25);
     const file = JSON.parse(JSON.stringify(serializeProject(d, 'Opt')));
-    expect(file.formatVersion).toBe(7);
+    expect(file.formatVersion).toBe(8);
     const r = importProject(file);
     expect(r.warnings).toEqual([]);
     expect(r.design.optimizer).toEqual(d.optimizer);
@@ -60,7 +60,7 @@ describe('optimizer setup (app)', () => {
     delete file.vehicleOptimizer;
     delete file.grip;
     const r = importProject(file);
-    expect(r.warnings).toEqual(['Upgraded from file format 4 to 5.', 'Upgraded from file format 5 to 6.', 'Upgraded from file format 6 to 7.']);
+    expect(r.warnings).toEqual(['Upgraded from file format 4 to 5.', 'Upgraded from file format 5 to 6.', 'Upgraded from file format 6 to 7.', 'Upgraded from file format 7 to 8.']);
     expect(r.design.optimizer).toEqual({});
     expect(r.design.vehicleOptimizer).toEqual(defaultDesign().vehicleOptimizer);
     expect(r.design.grip).toEqual(defaultDesign().grip);

@@ -183,3 +183,19 @@ export function rideMetrics(wheelRate: number, tireRate: number, sprungMass: num
   const frequency = sprungMass > 0 && rideRate > 0 ? Math.sqrt((rideRate * 1000) / sprungMass) / (2 * Math.PI) : NaN;
   return { rideRate, frequency };
 }
+
+/**
+ * Damping ratio of a corner (quarter-car, sprung mass): ζ = c_wheel / (2·√(k·m)), with the damper rate
+ * moved to the wheel by the motion ratio squared (c_wheel = c·MR²), k the ride rate (wheel rate in
+ * series with the tire, N/mm) and m the sprung corner mass (kg). Typical: 0.25–0.4 ride, 0.6–0.7 handling.
+ */
+export function dampingRatio(dampingNsPerM: number, motionRatio: number, rideRateNPerMm: number, sprungMassKg: number): number {
+  const k = rideRateNPerMm * 1000; // N/m
+  return (dampingNsPerM * motionRatio * motionRatio) / (2 * Math.sqrt(Math.max(k * sprungMassKg, 1e-12)));
+}
+
+/** Damper rate (N·s/m) that gives a damping ratio ζ (inverse of dampingRatio). */
+export function dampingForRatio(zeta: number, motionRatio: number, rideRateNPerMm: number, sprungMassKg: number): number {
+  const k = rideRateNPerMm * 1000;
+  return (zeta * 2 * Math.sqrt(Math.max(k * sprungMassKg, 0))) / Math.max(motionRatio * motionRatio, 1e-9);
+}

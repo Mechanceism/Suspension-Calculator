@@ -6,7 +6,7 @@
  * `1ft 2in`, `-12.5`. The original text is kept for display; only the base value is used in math.
  */
 
-export type Quantity = 'length' | 'angle' | 'pressure' | 'force' | 'rate' | 'torsion' | 'altitude' | 'ratio' | 'percent' | 'mass' | 'temperature';
+export type Quantity = 'length' | 'angle' | 'pressure' | 'force' | 'rate' | 'torsion' | 'altitude' | 'ratio' | 'percent' | 'mass' | 'temperature' | 'speed' | 'distance' | 'damping';
 
 /**
  * Factors to base units: length → mm, angle → deg, pressure → kPa, force → N, rate → N/mm,
@@ -24,10 +24,14 @@ export const UNITS: Record<Quantity, Record<string, number>> = {
   percent: { '%': 1, x: 100 },
   mass: { kg: 1, g: 0.001, lb: 0.45359237, lbm: 0.45359237, oz: 0.028349523125 },
   temperature: { C: 1 },
+  speed: { 'm/s': 1, mph: 0.44704, 'km/h': 1 / 3.6, kph: 1 / 3.6, 'ft/s': 0.3048 },
+  distance: { m: 1, km: 1000, ft: 0.3048, yd: 0.9144, mi: 1609.344, mm: 0.001 },
+  damping: { 'N·s/m': 1, 'Ns/m': 1, 'N·s/mm': 1000, 'Ns/mm': 1000, 'lbf·s/in': 175.126835, 'lbfs/in': 175.126835 },
 };
 
 export const DEFAULT_UNIT: Record<Quantity, string> = {
   length: 'mm', angle: 'deg', pressure: 'kPa', force: 'N', rate: 'N/mm', torsion: 'Nm/deg', altitude: 'm', ratio: 'x', percent: '%', mass: 'kg', temperature: 'C',
+  speed: 'm/s', distance: 'm', damping: 'N·s/m',
 };
 
 export type ParseResult = { ok: true; value: number } | { ok: false; error: string };

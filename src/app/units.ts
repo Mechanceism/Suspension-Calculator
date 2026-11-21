@@ -11,7 +11,7 @@
 import { create } from 'zustand';
 
 export type UnitSystem = 'metric' | 'imperial' | 'custom';
-export type DisplayQuantity = 'length' | 'mass' | 'force' | 'pressure' | 'torque' | 'temperature' | 'angle' | 'altitude' | 'area';
+export type DisplayQuantity = 'length' | 'distance' | 'speed' | 'mass' | 'force' | 'pressure' | 'torque' | 'damping' | 'temperature' | 'angle' | 'area';
 
 interface UnitDef { label: string; /** Size of one unit in base units. */ factor: number; offset?: number }
 
@@ -24,18 +24,21 @@ export const DISPLAY_UNITS: Record<DisplayQuantity, Record<string, UnitDef>> = {
   torque: { 'N·m': { label: 'N·m', factor: 1 }, 'lbf·ft': { label: 'lbf·ft', factor: 1.3558179483 }, 'lbf·in': { label: 'lbf·in', factor: 0.1129848290 } },
   temperature: { '°C': { label: '°C', factor: 1 }, '°F': { label: '°F', factor: 5 / 9, offset: -32 } },
   angle: { '°': { label: '°', factor: 1 }, rad: { label: 'rad', factor: 180 / Math.PI } },
-  altitude: { m: { label: 'm', factor: 1 }, ft: { label: 'ft', factor: 0.3048 } },
+  distance: { m: { label: 'm', factor: 1 }, km: { label: 'km', factor: 1000 }, ft: { label: 'ft', factor: 0.3048 }, yd: { label: 'yd', factor: 0.9144 }, mi: { label: 'mi', factor: 1609.344 } },
+  speed: { 'm/s': { label: 'm/s', factor: 1 }, mph: { label: 'mph', factor: 0.44704 }, 'km/h': { label: 'km/h', factor: 1 / 3.6 }, 'ft/s': { label: 'ft/s', factor: 0.3048 } },
+  damping: { 'N·s/m': { label: 'N·s/m', factor: 1 }, 'N·s/mm': { label: 'N·s/mm', factor: 1000 }, 'lbf·s/in': { label: 'lbf·s/in', factor: 175.126835 } },
   area: { 'mm²': { label: 'mm²', factor: 1 }, 'cm²': { label: 'cm²', factor: 100 }, 'in²': { label: 'in²', factor: 645.16 } },
 };
 
 export const QUANTITY_LABELS: Record<DisplayQuantity, string> = {
   length: 'Length', mass: 'Mass', force: 'Force', pressure: 'Pressure', torque: 'Torque', temperature: 'Temperature',
-  angle: 'Angle', altitude: 'Altitude', area: 'Area',
+  angle: 'Angle', distance: 'Distance / altitude', speed: 'Speed', damping: 'Damping', area: 'Area',
 };
 
 export const PRESETS: Record<'metric' | 'imperial', Record<DisplayQuantity, string>> = {
-  metric: { length: 'mm', mass: 'kg', force: 'N', pressure: 'kPa', torque: 'N·m', temperature: '°C', angle: '°', altitude: 'm', area: 'cm²' },
-  imperial: { length: 'in', mass: 'lb', force: 'lbf', pressure: 'psi', torque: 'lbf·ft', temperature: '°F', angle: '°', altitude: 'ft', area: 'in²' },
+  // Speed defaults to mph in both (user preference); km/h and m/s are available in Custom.
+  metric: { length: 'mm', distance: 'm', speed: 'mph', mass: 'kg', force: 'N', pressure: 'kPa', torque: 'N·m', damping: 'N·s/m', temperature: '°C', angle: '°', area: 'cm²' },
+  imperial: { length: 'in', distance: 'ft', speed: 'mph', mass: 'lb', force: 'lbf', pressure: 'psi', torque: 'lbf·ft', damping: 'lbf·s/in', temperature: '°F', angle: '°', area: 'in²' },
 };
 
 /** Base unit strings used in the UI → quantity and size in that quantity's base unit. */
@@ -50,7 +53,9 @@ const BASE: Record<string, { q: DisplayQuantity; size: number }> = {
   '°C': { q: 'temperature', size: 1 },
   '°': { q: 'angle', size: 1 },
   deg: { q: 'angle', size: 1 },
-  m: { q: 'altitude', size: 1 },
+  m: { q: 'distance', size: 1 },
+  'm/s': { q: 'speed', size: 1 },
+  'N·s/m': { q: 'damping', size: 1 },
 };
 /** Compound units: numerator / denominator (each a BASE unit). Torsion is torque per angle. */
 const COMPOUND: Record<string, [string, string]> = {

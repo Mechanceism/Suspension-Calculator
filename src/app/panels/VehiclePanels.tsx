@@ -6,7 +6,7 @@ import { CORNER_IDS, type CornerId } from '../../core/vehicle/vehicle';
 import { deg } from '../../core/suspension/characteristics';
 import {
   useApp, VEHICLE_KEYS, VEHICLE_META, CORNER_NAMES, SHARED_META, rootOf,
-  type CornerLinks, type Axle, type SharedDesign,
+  type CornerLinks, type DiffType, type Axle, type SharedDesign,
 } from '../store';
 import type { BrakeMount } from '../../core/vehicle/vehicle';
 import { ValueInput } from './ValueInput';
@@ -67,6 +67,19 @@ export function CornerSetup({ compact = false }: { compact?: boolean }) {
           </select>
         </div>
       )}
+      {settings[active].powered && settings[active].drive === 'chassis' && (
+        <div className="row">
+          <span className="muted">Differential</span>
+          <select
+            value={settings[active].diff} onChange={(e) => setCornerSetting(active, 'diff', e.target.value as DiffType)}
+            title="Open: equal torque to both wheels (the weaker tire limits the axle). Locked: both wheels turn together (force follows grip). Limited-slip: in between (up to 2.5× torque bias). The axle uses its left corner's setting."
+          >
+            <option value="open">Open</option>
+            <option value="lsd">Limited-slip</option>
+            <option value="locked">Locked / spool</option>
+          </select>
+        </div>
+      )}
       <div className="row">
         <span className="muted">Brake</span>
         <select
@@ -77,6 +90,12 @@ export function CornerSetup({ compact = false }: { compact?: boolean }) {
           <option value="inboard">Inboard (on the chassis)</option>
           <option value="none">None</option>
         </select>
+        {settings[active].brake !== 'none' && (
+          <label className="check-inline" title="Anti-lock brakes on this corner. Without ABS a tire braked past its grip locks and slides (less braking force, no cornering grip).">
+            <input type="checkbox" checked={settings[active].abs} onChange={(e) => setCornerSetting(active, 'abs', e.target.checked)} />
+            ABS
+          </label>
+        )}
       </div>
       {!compact && (
         <div className="link-rows">

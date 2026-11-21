@@ -84,13 +84,15 @@ export const sprungLoad = (f: Record<SpringKey, Field>, loadFactor: number) =>
   Math.max(0, (f.cornerLoad.value - f.unsprungMass.value * G) * loadFactor);
 
 /** Damper stroke and bump stop (docs/MATH.md § L5). */
-export const DAMPER_KEYS = ['maxLength', 'minLength', 'bumpStopLength', 'bumpStopRate'] as const;
+export const DAMPER_KEYS = ['maxLength', 'minLength', 'bumpStopLength', 'bumpStopRate', 'bumpDamping', 'reboundDamping'] as const;
 export type DamperKey = (typeof DAMPER_KEYS)[number];
 export const DAMPER_META: Record<DamperKey, { label: string; quantity: Quantity; unit: string }> = {
   maxLength: { label: 'Damper fully extended', quantity: 'length', unit: 'mm' },
   minLength: { label: 'Damper fully compressed', quantity: 'length', unit: 'mm' },
   bumpStopLength: { label: 'Bump stop engages at', quantity: 'length', unit: 'mm' },
   bumpStopRate: { label: 'Bump stop rate', quantity: 'rate', unit: 'N/mm' },
+  bumpDamping: { label: 'Damping, bump (compression)', quantity: 'damping', unit: 'N·s/m' },
+  reboundDamping: { label: 'Damping, rebound (extension)', quantity: 'damping', unit: 'N·s/m' },
 };
 
 /** Steering system and tire-force inputs (docs/MATH.md § Steering). */
@@ -381,7 +383,12 @@ export interface CornerSettings {
   brake: BrakeMount;
   /** How a powered corner is driven: chassis diff + halfshaft, or hub motor. */
   drive: 'chassis' | 'hub';
+  /** Anti-lock brakes on this corner (default on). Without ABS a tire braked past its grip locks and slides. */
+  abs: boolean;
+  /** Differential for a chassis-driven corner (the axle uses its left corner's setting). */
+  diff: DiffType;
 }
+export type DiffType = 'open' | 'locked' | 'lsd';
 
 /** Shared (left–right) components per axle; each can be absent or one of several types. */
 export interface SharedDesign {
@@ -618,8 +625,8 @@ export const pickDesign = (s: DesignState): DesignState => ({
 /** The default layout (File → New). */
 export const DEFAULT_LINKS: CornerLinks = { frontPair: true, rearPair: true, rearFromFront: true };
 export const DEFAULT_SETTINGS: Record<CornerId, CornerSettings> = {
-  FL: { steered: true, powered: false, brake: 'outboard', drive: 'chassis' }, FR: { steered: true, powered: false, brake: 'outboard', drive: 'chassis' },
-  RL: { steered: false, powered: false, brake: 'outboard', drive: 'chassis' }, RR: { steered: false, powered: false, brake: 'outboard', drive: 'chassis' },
+  FL: { steered: true, powered: false, brake: 'outboard', drive: 'chassis', abs: true, diff: 'open' }, FR: { steered: true, powered: false, brake: 'outboard', drive: 'chassis', abs: true, diff: 'open' },
+  RL: { steered: false, powered: false, brake: 'outboard', drive: 'chassis', abs: true, diff: 'open' }, RR: { steered: false, powered: false, brake: 'outboard', drive: 'chassis', abs: true, diff: 'open' },
 };
 export const defaultShared = (): SharedDesign => ({
   antiRollBar: 'none',
@@ -652,7 +659,7 @@ export function defaultDesign(presetId = 'C'): DesignState {
       springRate: field(SAMPLE_SPRING.rate, 'rate'),
       freeLength: field(SAMPLE_SPRING.freeLength),
     },
-    damper: { maxLength: field(430), minLength: field(330), bumpStopLength: field(345), bumpStopRate: field(400, 'rate') },
+    damper: { maxLength: field(430), minLength: field(330), bumpStopLength: field(345), bumpStopRate: field(400, 'rate'), bumpDamping: field(1500, 'damping'), reboundDamping: field(2500, 'damping') },
     bumpStop: true,
     tireModel: 'gas',
     tire: Object.fromEntries(TIRE_KEYS.map((k) => [k, field(TIRE_META[k].initial, TIRE_META[k].quantity)])) as Record<TireKey, Field>,

@@ -18,6 +18,7 @@ import { GOAL_KINDS, GOAL_META, type GoalKind } from '../core/optimize/corner';
 import { VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, type VehicleGoalKind } from '../core/optimize/vehicle';
 import { DEFAULT_GRIP } from '../core/tire/grip';
 import type { DimMeasure } from '../core/suspension/dimensions';
+import type { TestDesign } from './tests';
 
 export interface Field {
   text: string;
@@ -250,6 +251,14 @@ export interface AppState extends DesignState {
   leftTab: 'inspector' | 'browser' | 'table' | 'locks' | 'optimize';
   /** Vehicle workspace sidebar tab. */
   vehicleTab: 'inputs' | 'locks' | 'optimize';
+  /** Road under the Vehicle view: grade (%, + uphill), bank (deg, + left side lower), bumps per wheel (mm). */
+  roadGrade: number;
+  /** Tests workspace: the test being edited, and the selected result state (segment, sample). */
+  activeTestId: string | null;
+  testView: { segment: number; sample: number } | null;
+  updateTests(fn: (t: TestDesign[]) => TestDesign[]): void;
+  roadBank: number;
+  wheelBumps: Record<CornerId, number>;
   nudgeStep: number;
   /** Round dragged joint coordinates to the grid. */
   snapToGrid: boolean;
@@ -449,7 +458,7 @@ export const VEHICLE_META: Record<VehicleKey, { label: string; quantity: Quantit
   driveSplit: { label: 'Drive split (front share)', quantity: 'percent', unit: '%', hint: 'Only used when both axles have powered corners; within an axle the drive is shared equally (open differential)' },
 };
 
-export type Workspace = 'corner' | 'vehicle';
+export type Workspace = 'corner' | 'vehicle' | 'tests';
 
 /** Forces that can be drawn in the Vehicle view. */
 export const FORCE_KEYS = ['tireVertical', 'tireLateral', 'tireLongitudinal', 'springs', 'shared', 'weights', 'inertia'] as const;
@@ -492,6 +501,8 @@ export interface VehicleOptimizerSetup {
   brakingG: Field;
   accelG: Field;
   keepClose: Field;
+  /** Load cases: the fixed ones above, or a test's segments (test id). */
+  caseSource?: string;
 }
 
 export function defaultVehicleOptimizerSetup(): VehicleOptimizerSetup {
@@ -568,6 +579,8 @@ export interface DesignState {
   grip: Record<GripKey, Field>;
   /** Held dimensions between two points (Measure → set, hold). Kept like CAD sketch dimensions. */
   dimensions: HeldDimension[];
+  /** Tests (chains of segments) for the Tests workspace. */
+  tests: TestDesign[];
 }
 
 /** A held dimension of one corner design. travel null = permanent (part dimension). */
@@ -619,7 +632,7 @@ export const pickDesign = (s: DesignState): DesignState => ({
   droop: s.droop, bump: s.bump, driver: s.driver,
   corners: s.corners, links: s.links, settings: s.settings, activeCorner: s.activeCorner,
   vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode, shared: s.shared, locks: s.locks,
-  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, dimensions: s.dimensions,
+  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, dimensions: s.dimensions, tests: s.tests,
 });
 
 /** The default layout (File → New). */
@@ -689,6 +702,7 @@ export function defaultDesign(presetId = 'C'): DesignState {
     vehicleOptimizer: defaultVehicleOptimizerSetup(),
     grip: defaultGrip(),
     dimensions: [],
+    tests: [],
   };
 }
 
@@ -882,6 +896,12 @@ export const useApp = create<AppState>((set, get) => ({
   selection: null,
   leftTab: 'inspector',
   vehicleTab: 'inputs',
+  roadGrade: 0,
+  activeTestId: null,
+  testView: null,
+  updateTests: (fn) => set({ tests: fn(get().tests) }),
+  roadBank: 0,
+  wheelBumps: { FL: 0, FR: 0, RL: 0, RR: 0 },
   nudgeStep: 1,
   snapToGrid: true,
   gridSize: 1,

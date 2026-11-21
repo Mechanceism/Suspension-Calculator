@@ -20,6 +20,8 @@ import {
 } from '../core/vehicle/vehicle';
 import type { SharedDesign } from './store';
 import { vec3, Y_AXIS, type Vec3 } from '../core/math/vec3';
+import { roadEffective } from '../core/tests/segments';
+import { gripModelOf } from './optimizer';
 
 const G = 9.80665;
 /** A "rigid" tire is modelled as a very stiff one so every corner has a defined tire force. */
@@ -85,10 +87,17 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
   const s = useApp(useShallow(pickVehicleInputs));
   // Motion inputs are separate so moving a slider doesn't rebuild the corners (or their cached curves).
   const rack = useApp((st) => st.rack);
-  const lateralG = useApp((st) => st.lateralG);
+  const lateralGKin = useApp((st) => st.lateralG);
   const longitudinalG = useApp((st) => st.longitudinalG);
-  const brakingG = Math.max(0, -longitudinalG);
-  const accelG = Math.max(0, longitudinalG);
+  const roadGrade = useApp((st) => st.roadGrade);
+  const roadBank = useApp((st) => st.roadBank);
+  const wheelBumps = useApp((st) => st.wheelBumps);
+  const gripFields = useApp((st) => st.grip);
+  // Grade and bank fold into what the tires must supply (see core/tests/segments.ts).
+  const road = roadEffective(lateralGKin, longitudinalG, Math.atan(roadGrade / 100), (roadBank * Math.PI) / 180);
+  const lateralG = road.lateralG;
+  const brakingG = road.brakingG;
+  const accelG = road.accelG;
   const tableCache = useRef(new WeakMap<object, Map<string, CornerTable>>());
   const lastPose = useRef<ChassisPose | undefined>(undefined);
 
@@ -154,7 +163,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
           ? fitFreeLength(b.corner, d.spring.springRate.value, Math.max(0, staticLoads[id] - mu * G))
           : d.spring.freeLength.value;
         corners.push({
-          id, table, unsprungMass: mu, tire: { profile: b.profile, model: b.model }, brake: s.settings[id].brake,
+          id, table, unsprungMass: mu, tire: { profile: b.profile, model: b.model }, brake: s.settings[id].brake, abs: s.settings[id].abs,
           drive: s.settings[id].powered ? s.settings[id].drive : 'none',
           spring: {
             rate: d.spring.springRate.value, freeLength,
@@ -180,6 +189,8 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
           corners, totalMass: v.mass.value, cg, wheelbase, groundY, lateralG, brakingG, brakeBias: bias,
           accelG, driveSplit: v.driveSplit.value / 100,
           shared: { front: toAxle(s.shared.front), rear: toAxle(s.shared.rear) },
+          gravityScale: road.gravityScale, groundOffset: wheelBumps, grip: gripModelOf(gripFields),
+          diff: { front: s.settings.FL.diff, rear: s.settings.RL.diff },
         },
         { guess: lastPose.current },
       );
@@ -195,7 +206,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         const pl = placement(c.id, wheelbase);
         const wcWorld = P.point(pl.point(state.points.wheelCenter));
         const axisWorld = P.rot(pl.dir(state.spinAxis));
-        const patch = contactPatch(wcWorld, axisWorld, { point: vec3(0, groundY, 0), normal: Y_AXIS }, b.profile, 24);
+        const patch = contactPatch(wcWorld, axisWorld, { point: vec3(0, res.corners[c.id].groundY, 0), normal: Y_AXIS }, b.profile, 24);
         const axleShared = s.shared[isFront(c.id) ? 'front' : 'rear'];
         const dropLink = axleShared.antiRollBar === 'torsionBar'
           ? b.corner.pointOn(state, 'lca', vec3(axleShared.dropLink[0].value, axleShared.dropLink[1].value, axleShared.dropLink[2].value))
@@ -276,7 +287,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
     } catch (e) {
       return { ...empty, error: e instanceof Error ? e.message : String(e) };
     }
-  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, rack, lateralG, brakingG, accelG]);
+  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, rack, lateralG, brakingG, accelG, road.gravityScale, wheelBumps, gripFields]);
 
   return result;
 }

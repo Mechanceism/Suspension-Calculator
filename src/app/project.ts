@@ -23,6 +23,7 @@ import pkg from '../../package.json';
 import { parseValue, type Quantity } from '../core/units/units';
 import { CORNER_IDS, type CornerId } from '../core/vehicle/vehicle';
 import { DIM_MEASURES } from '../core/suspension/dimensions';
+import { newSegment, newTestId, OFF, type TestDesign, type TestSegment } from './tests';
 import {
   defaultDesign, mergedCorners, rootOf, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META, SPRING_KEYS, SPRING_META,
   DAMPER_KEYS, DAMPER_META, STEER_KEYS, STEER_META, TIRE_KEYS, TIRE_META, VEHICLE_KEYS, VEHICLE_META,
@@ -78,10 +79,12 @@ export interface ProjectFile {
   vehicleOptimizer: {
     ranges: Record<string, { lo: FieldJson; hi: FieldJson }>;
     goals: Record<string, { on: boolean; target: FieldJson; weight: FieldJson }>;
-    lateralG: FieldJson; brakingG: FieldJson; accelG: FieldJson; keepClose: FieldJson;
+    lateralG: FieldJson; brakingG: FieldJson; accelG: FieldJson; keepClose: FieldJson; caseSource?: string;
   };
   /** Tire grip model. */
   grip: Record<string, FieldJson>;
+  /** Tests (chains of segments). */
+  tests?: unknown[];
   /** Held dimensions (points named per corner, e.g. FL_UCA_Fwd). */
   dimensions: { root: CornerId; a: string; b: string; measure: string; value: number; travel: number | null }[];
   presetId?: string;
@@ -147,8 +150,10 @@ export function serializeProject(d: DesignState, name: string): ProjectFile {
       goals: Object.fromEntries(Object.entries(d.vehicleOptimizer.goals).map(([k, g]) => [k, { on: g.on, target: fj(g.target), weight: fj(g.weight) }])),
       lateralG: fj(d.vehicleOptimizer.lateralG), brakingG: fj(d.vehicleOptimizer.brakingG),
       accelG: fj(d.vehicleOptimizer.accelG), keepClose: fj(d.vehicleOptimizer.keepClose),
+      ...(d.vehicleOptimizer.caseSource ? { caseSource: d.vehicleOptimizer.caseSource } : {}),
     },
     grip: mapFields(GRIP_KEYS, d.grip),
+    tests: JSON.parse(JSON.stringify(d.tests)) as unknown[],
     dimensions: d.dimensions.map((x) => ({
       root: x.root, a: cornerParam(x.root, POINT_NAMES[x.a]), b: cornerParam(x.root, POINT_NAMES[x.b]),
       measure: x.measure, value: x.value, travel: x.travel,
@@ -207,6 +212,44 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   7: (f) => ({ ...f, formatVersion: 8 }),
 };
 
+/** Read tests; anything malformed is dropped (with a warning) or takes defaults. */
+function readTests(raw: unknown, warnings: string[]): TestDesign[] {
+  if (!Array.isArray(raw)) return [];
+  const out: TestDesign[] = [];
+  const fieldOr = (x: unknown, q: Quantity, d: Field, where: string): Field =>
+    (isObj(x) && typeof x.text === 'string' && x.text.trim() === '' ? { text: '', value: NaN } : readField(x, q, d, where, warnings));
+  for (const t of raw) {
+    if (!isObj(t) || !Array.isArray(t.segments)) { warnings.push('a test could not be read, dropped'); continue; }
+    const name = typeof t.name === 'string' ? t.name : 'Test';
+    const segments = t.segments.filter(isObj).map((sr) => {
+      const d = newSegment();
+      const where = (k: string) => `test "${name}" ${k}`;
+      const bumpsRaw = isObj(sr.bumps) ? sr.bumps : {};
+      return {
+        ...d,
+        name: typeof sr.name === 'string' ? sr.name : d.name,
+        distance: fieldOr(sr.distance, 'distance', d.distance, where('distance')),
+        speedStart: fieldOr(sr.speedStart, 'speed', d.speedStart, where('start speed')),
+        speedEnd: fieldOr(sr.speedEnd, 'speed', d.speedEnd, where('end speed')),
+        path: sr.path === 'left' || sr.path === 'right' ? sr.path : 'straight',
+        radius: fieldOr(sr.radius, 'distance', d.radius, where('radius')),
+        latG: fieldOr(sr.latG, 'ratio', OFF, where('lateral g')),
+        longG: fieldOr(sr.longG, 'ratio', OFF, where('longitudinal g')),
+        grade: fieldOr(sr.grade, 'percent', d.grade, where('grade')),
+        bank: fieldOr(sr.bank, 'angle', d.bank, where('bank')),
+        bumps: Object.fromEntries(CORNER_IDS.map((id) => [id, fieldOr(bumpsRaw[id], 'length', d.bumps[id], where(`bump ${id}`))])) as TestSegment['bumps'],
+        lumpy: sr.lumpy === true,
+      } as TestSegment;
+    });
+    out.push({
+      id: typeof t.id === 'string' ? t.id : newTestId('test'), name, segments,
+      margin: fieldOr(t.margin, 'percent', { text: '10', value: 10 }, `test "${name}" margin`),
+      onFail: t.onFail === 'lift' ? 'lift' : 'report',
+    });
+  }
+  return out;
+}
+
 /** Read held dimensions; unknown points or measures are dropped with a warning. */
 function readDimensions(raw: unknown, warnings: string[]): HeldDimension[] {
   if (!Array.isArray(raw)) return [];
@@ -255,7 +298,7 @@ function readVehicleOptimizer(raw: unknown, warnings: string[]): VehicleOptimize
   };
   const { ranges, goals } = readRangesGoals(raw, d.goals, valid, rf);
   const opt = (k: 'lateralG' | 'brakingG' | 'accelG' | 'keepClose') => (raw[k] ? rf(raw[k], 'ratio', d[k], k) : d[k]);
-  return { ranges, goals, lateralG: opt('lateralG'), brakingG: opt('brakingG'), accelG: opt('accelG'), keepClose: opt('keepClose') };
+  return { ranges, goals, lateralG: opt('lateralG'), brakingG: opt('brakingG'), accelG: opt('accelG'), keepClose: opt('keepClose'), ...(typeof raw.caseSource === 'string' ? { caseSource: raw.caseSource } : {}) };
 }
 
 const AXIS_KEYS = ['x', 'y', 'z'];
@@ -446,6 +489,7 @@ export function importProject(data: unknown): ImportResult {
     vehicleOptimizer: readVehicleOptimizer(f.vehicleOptimizer, warnings),
     grip: isObj(f.grip) ? readRecord(f.grip, GRIP_KEYS, (k) => GRIP_META[k].quantity, defaultGrip(), 'grip', warnings) : defaultGrip(),
     dimensions: readDimensions(f.dimensions, warnings),
+    tests: readTests(f.tests, warnings),
   };
   Object.assign(design, corners[rootOf(activeCorner, links)]);
   return { design, name: typeof f.name === 'string' && f.name ? f.name : 'Imported layout', warnings };

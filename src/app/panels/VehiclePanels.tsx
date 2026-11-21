@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { Num, UnitLabel } from './UnitText';
+import { useConversion, toDisplay, fromDisplay } from '../units';
+import type { GripSummary, SlipState } from '../../core/vehicle/vehicle';
 import { LocksPanel } from './LocksPanel';
 import { VehicleOptimizePanel } from './OptimizePanel';
 import { CORNER_IDS, type CornerId } from '../../core/vehicle/vehicle';
@@ -252,6 +254,7 @@ export function VehicleResults({ model }: { model: VehicleModel | null }) {
         Vehicle results
         <span className={`status ${r.converged ? 'status-converged' : 'status-not-converged'}`}>{r.converged ? 'Settled' : 'Not converged'}</span>
       </h2>
+      {r.grip && <GripSection grip={r.grip} />}
       <Section title="Body">
         <FieldRows rows={[
           { label: 'Roll', value: fmt(deg(r.pose.roll), 3), unit: '°', hint: '+ = top leans toward −X (right)' },
@@ -385,7 +388,73 @@ export function VehicleMotionBar() {
         </label>
         <button className={playingSteer ? 'active' : ''} onClick={() => set('playingSteer', !playingSteer)}>{playingSteer ? '❚❚' : '▶'} Steer</button>
       </div>
+      <RoadControls />
     </div>
+  );
+}
+
+/** Road under the car: grade, bank and a bump / pothole under each wheel (steady state). */
+function RoadControls() {
+  const grade = useApp((s) => s.roadGrade);
+  const bank = useApp((s) => s.roadBank);
+  const bumps = useApp((s) => s.wheelBumps);
+  const set = useApp((s) => s.set);
+  const lenC = useConversion('mm');
+  const anyBump = CORNER_IDS.some((id) => bumps[id] !== 0);
+  return (
+    <div className="motion-group road-group">
+      <label className="slider" title="Road grade, % (+ = uphill)">
+        <span>Grade <b>{grade.toFixed(0)}</b> % {grade > 0 ? '(uphill)' : grade < 0 ? '(downhill)' : ''}</span>
+        <input type="range" min={-30} max={30} step={1} value={grade} onChange={(e) => set('roadGrade', Number(e.target.value))} onDoubleClick={() => set('roadGrade', 0)} />
+      </label>
+      <label className="slider" title="Road bank, deg (+ = left side lower)">
+        <span>Bank <b>{bank.toFixed(0)}</b>°</span>
+        <input type="range" min={-20} max={20} step={1} value={bank} onChange={(e) => set('roadBank', Number(e.target.value))} onDoubleClick={() => set('roadBank', 0)} />
+      </label>
+      <div className="bump-inputs" title="Ground height under each wheel: + bump, − pothole">
+        <span className="muted">Bumps ({lenC.unit})</span>
+        {CORNER_IDS.map((id) => (
+          <label key={id} className="small">
+            {id}
+            <input type="number" step={lenC.identity ? 5 : 0.25} value={Number(toDisplay(bumps[id], lenC).toFixed(3))}
+              onChange={(e) => { const v = Number(e.target.value); if (Number.isFinite(v)) set('wheelBumps', { ...bumps, [id]: fromDisplay(v, lenC) }); }} />
+          </label>
+        ))}
+        {(anyBump || grade !== 0 || bank !== 0) && (
+          <button onClick={() => { set('wheelBumps', { FL: 0, FR: 0, RL: 0, RR: 0 }); set('roadGrade', 0); set('roadBank', 0); }}>Flat</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const SLIP_TEXT: Record<SlipState, string> = { grip: 'grip', sliding: 'sliding', 'abs-limit': 'ABS limit', locked: 'locked', wheelspin: 'wheelspin' };
+
+/** Grip use per tire and what limits the car (placeholder grip model). */
+function GripSection({ grip }: { grip: GripSummary }) {
+  return (
+    <Section title="Grip (tires)" extra={<span className={`status ${grip.passed ? 'status-converged' : 'status-not-converged'}`}>{grip.passed ? 'All gripping' : 'Over the limit'}</span>}>
+      <table className="corner-table grip-table">
+        <thead><tr><th /><th title="Combined force ÷ what the tire can carry (100% = sliding)">Grip use</th><th>State</th><th>Capacity <UnitLabel unit="N" /></th></tr></thead>
+        <tbody>
+          {CORNER_IDS.map((id) => {
+            const c = grip.corners[id];
+            const cls = c.utilization > 1 ? 'bad' : c.utilization > 0.9 ? 'warn' : '';
+            return (
+              <tr key={id} className={cls}>
+                <td><b>{id}</b></td>
+                <td>{fmt(c.utilization * 100, 0)} %</td>
+                <td>{SLIP_TEXT[c.state]}</td>
+                <td><Num text={fmt(c.capacity, 0)} unit="N" /></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p className="small-text">Axles (cornering): front {fmt(grip.axles.front * 100, 0)} % · rear {fmt(grip.axles.rear * 100, 0)} %</p>
+      {grip.limits.map((l) => <p key={l.text} className="hint warn-text">{l.text}</p>)}
+      <p className="hint">Tire grip model is a placeholder (Optimize → Tire grip model) until real tire data is added.</p>
+    </Section>
   );
 }
 

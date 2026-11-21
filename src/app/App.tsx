@@ -5,6 +5,7 @@ import { designSnapshot } from './project';
 import { FileMenu, Notice } from './panels/FileMenu';
 import { ViewMenu } from './panels/ViewMenu';
 import { UnitsMenu } from './panels/UnitsMenu';
+import { TestsSidebar, TestResults, TestViewBar } from './panels/TestsPanels';
 import { HelpOverlay } from './panels/HelpOverlay';
 import { initHistory, undo, redo, useHistory } from './history';
 import { initHeldDimensions } from './heldDimensions';
@@ -23,7 +24,7 @@ export function App() {
   const model = useModel();
   const workspace = useApp((s) => s.workspace);
   const setWorkspace = switchWorkspace;
-  const vehicle = useVehicle(workspace === 'vehicle');
+  const vehicle = useVehicle(workspace !== 'corner');
   const dirty = useDirty();
 
   // The startup layout counts as "saved" (nothing to lose yet).
@@ -92,8 +93,9 @@ export function App() {
         <nav className="workspace-switch" role="tablist" aria-label="Workspace">
           <button role="tab" aria-selected={workspace === 'corner'} className={workspace === 'corner' ? 'on' : ''} onClick={() => setWorkspace('corner')}>Corner</button>
           <button role="tab" aria-selected={workspace === 'vehicle'} className={workspace === 'vehicle' ? 'on' : ''} onClick={() => setWorkspace('vehicle')}>Vehicle</button>
+          <button role="tab" aria-selected={workspace === 'tests'} className={workspace === 'tests' ? 'on' : ''} onClick={() => setWorkspace('tests')} title="Chains of driving segments run on the whole car">Tests</button>
         </nav>
-        <span className="muted topbar-note">{workspace === 'corner' ? 'Chassis fixed · one corner' : 'Whole car · quasi-static'}</span>
+        <span className="muted topbar-note">{workspace === 'corner' ? 'Chassis fixed · one corner' : workspace === 'vehicle' ? 'Whole car · quasi-static' : 'Tests · steady states (Phase A)'}</span>
         <button className="menu-btn help-btn" onClick={() => setHelp(true)} title="Keyboard & mouse help (?)">?</button>
       </header>
       {help && <HelpOverlay onClose={() => setHelp(false)} />}
@@ -113,6 +115,17 @@ export function App() {
             <Readout model={model} />
             <Plots model={model} />
           </aside>
+        </>
+      ) : workspace === 'tests' ? (
+        <>
+          <aside className="left"><div className="tab-body"><TestsSidebar /></div></aside>
+          <Splitter area="lsplit" width={leftW} setWidth={setLeftW} sign={1} />
+          <main className="center">
+            <VehicleViewport model={vehicle} />
+            <TestViewBar />
+          </main>
+          <Splitter area="rsplit" width={rightW} setWidth={setRightW} sign={-1} />
+          <aside className="right"><TestResults /></aside>
         </>
       ) : (
         <>

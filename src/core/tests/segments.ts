@@ -57,6 +57,9 @@ export interface RoadState {
   accelG: number;
   gravityScale: number;
   groundOffset: Partial<Record<CornerId, number>>;
+  /** Road grade and bank, rad (to show the state again). */
+  grade: number;
+  bank: number;
 }
 
 /** Longitudinal acceleration of a segment, g (+ accelerating). */
@@ -97,7 +100,7 @@ export function segmentStates(s: SegmentSpec, index: number, speedScale = 1): Ro
     const eff = roadEffective(ay, ax, s.grade, s.bank);
     out.push({
       name: `${index + 1}${n > 1 ? `.${i + 1}` : ''}`, segment: index, speed: v, ay, ax,
-      ...eff, groundOffset: { ...(s.bumps ?? {}) },
+      ...eff, groundOffset: { ...(s.bumps ?? {}) }, grade: s.grade, bank: s.bank,
     });
   }
   return out;

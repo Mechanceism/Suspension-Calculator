@@ -21,6 +21,9 @@ import {
 import { STATE_KEY } from './anchors';
 import { lockKeys, pointAxisLocked } from './locks';
 import { toSpec } from './heldDimensions';
+import { testStates, type SegmentSpec } from '../core/tests/segments';
+import type { TestRun, TestRunOptions } from '../core/tests/run';
+import { segmentSpec } from './tests';
 
 const AXES = ['x', 'y', 'z'] as const;
 export const varKey = (k: PointKey, axis: 0 | 1 | 2) => `${k}.${AXES[axis]}`;
@@ -145,14 +148,19 @@ export function buildVehicleProblem(s: AppState): BuiltProblem<VehicleProblem> {
     designs,
     roots: Object.fromEntries(CORNER_IDS.map((id) => [id, rootOf(id, s.links)])) as Record<CornerId, CornerId>,
     settings: Object.fromEntries(CORNER_IDS.map((id) => [id, {
-      brake: s.settings[id].brake, drive: s.settings[id].powered ? s.settings[id].drive : 'none',
+      brake: s.settings[id].brake, drive: s.settings[id].powered ? s.settings[id].drive : 'none', abs: s.settings[id].abs,
     }])) as VehicleProblem['settings'],
+    diff: { front: s.settings.FL.diff, rear: s.settings.RL.diff },
     mass: v.mass.value, cg: { x: v.cgX.value, height: v.cgY.value, z: v.cgZ.value }, wheelbase: v.wheelbase.value,
     brakeBias: v.brakeBias.value / 100, driveSplit: v.driveSplit.value / 100, autoPreload: s.autoPreload,
     shared: { front: toAxleShared(s.shared.front), rear: toAxleShared(s.shared.rear) },
     dropLinks: { front: dl(s.shared.front), rear: dl(s.shared.rear) },
     droop: Math.abs(s.droop), bump: Math.abs(s.bump),
     cases: { lateralG: Math.max(0, o.lateralG.value), brakingG: Math.max(0, o.brakingG.value), accelG: Math.max(0, o.accelG.value) },
+    states: (() => {
+      const t = o.caseSource ? s.tests.find((x) => x.id === o.caseSource) : undefined;
+      return t ? testStates(t.segments.map(segmentSpec)) : undefined;
+    })(),
     goals, variables, holds, grip: gripModelOf(s.grip), keepClose: Math.max(0, o.keepClose.value),
   };
   const blockers: string[] = [];
@@ -160,7 +168,7 @@ export function buildVehicleProblem(s: AppState): BuiltProblem<VehicleProblem> {
   if (!variables.length) blockers.push(skippedLocked.length ? 'Every free coordinate is locked.' : 'Add at least one free coordinate.');
   if (goals.length && goals.every((g) => g.weight <= 0)) blockers.push('Every goal has weight 0.');
   const c = problem.cases;
-  if (!c.lateralG && !c.brakingG && !c.accelG && goals.some((g) => !['antiDive', 'antiSquat', 'bumpSteer'].includes(g.kind))) {
+  if (!problem.states?.length && !c.lateralG && !c.brakingG && !c.accelG && goals.some((g) => !['antiDive', 'antiSquat', 'bumpSteer'].includes(g.kind))) {
     blockers.push('Turn on at least one load case (cornering, braking or accelerating).');
   }
   return { problem, skippedLocked, blockers };
@@ -206,3 +214,18 @@ export const runOptimizer = (problem: CornerProblem, onProgress: (p: ProgressInf
 
 export const runVehicleOptimizer = (problem: VehicleProblem, onProgress: (p: ProgressInfo) => void): RunHandle<VehicleReport> =>
   run('vehicle', problem, onProgress, (x) => reportVehicle(problem, x ?? problem.variables.map((v) => variableValue(problem.designs[v.root]!.geometry, v))));
+
+/** Run a test in the worker. */
+export function runTestJob(problem: VehicleProblem, segments: SegmentSpec[], opts: TestRunOptions): { done: Promise<TestRun>; cancel(): void } {
+  const worker = new Worker(new URL('./optimizer.worker.ts', import.meta.url), { type: 'module' });
+  const done = new Promise<TestRun>((res, rej) => {
+    worker.onmessage = (e: MessageEvent) => {
+      const m = e.data as { type: 'done'; result: TestRun } | { type: 'error'; message: string };
+      worker.terminate();
+      if (m.type === 'error') rej(new Error(m.message)); else res(m.result);
+    };
+    worker.onerror = (e) => { worker.terminate(); rej(new Error(e.message || 'Test worker failed')); };
+  });
+  worker.postMessage({ kind: 'test', problem, segments, opts });
+  return { done, cancel: () => worker.terminate() };
+}

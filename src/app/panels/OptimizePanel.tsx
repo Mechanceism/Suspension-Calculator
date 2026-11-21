@@ -333,7 +333,7 @@ const useProblemDeps = () => [
   useApp((s) => s.locks), useApp((s) => s.links), useApp((s) => s.activeCorner), useApp((s) => s.droop), useApp((s) => s.bump),
   useApp((s) => s.settings), useApp((s) => s.tire), useApp((s) => s.tireModel), useApp((s) => s.volumeChange), useApp((s) => s.spring),
   useApp((s) => s.damper), useApp((s) => s.bumpStop), useApp((s) => s.vehicle), useApp((s) => s.grip), useApp((s) => s.shared),
-  useApp((s) => s.cornerLoadMode), useApp((s) => s.autoPreload),
+  useApp((s) => s.cornerLoadMode), useApp((s) => s.autoPreload), useApp((s) => s.tests),
 ];
 
 // ---------------------------------------------------------------- corner optimizer
@@ -507,6 +507,7 @@ function VehiclePresets() {
 export function VehicleOptimizePanel() {
   const o = useApp((s) => s.vehicleOptimizer);
   const update = useApp((s) => s.updateVehicleOptimizer);
+  const tests = useApp((s) => s.tests);
   const links = useApp((s) => s.links);
   const locks = useApp((s) => s.locks);
   const interacting = useApp((s) => s.interacting);
@@ -577,6 +578,18 @@ export function VehicleOptimizePanel() {
         </p>
       )}
       <Section title="Load cases">
+        <div className="jm-row">
+          <span className="muted">Use</span>
+          <select value={o.caseSource && tests.some((t) => t.id === o.caseSource) ? o.caseSource : ''}
+            onChange={(e) => update((v) => ({ ...v, caseSource: e.target.value || undefined }))}
+            title="Fixed cases below, or every segment of a test (Tests workspace)">
+            <option value="">Fixed cases (below)</option>
+            {tests.map((t) => <option key={t.id} value={t.id}>Test: {t.name}</option>)}
+          </select>
+        </div>
+        {o.caseSource && tests.some((t) => t.id === o.caseSource) && (
+          <p className="hint">Every segment's speed samples of that test are load cases ({built.problem.states?.length ?? 0} states). Turn on <b>Test passes</b> to make every tire stay within its grip.</p>
+        )}
         <table className="opt-table">
           <tbody>
             <tr><td>Cornering (left turn)</td><td className="nowrap"><ValueInput field={o.lateralG} unit="g" width={52} onCommit={(t) => setField('lateralG', t)} /> g</td></tr>

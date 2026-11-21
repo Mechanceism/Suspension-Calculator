@@ -1,14 +1,25 @@
 /// <reference lib="webworker" />
-/** Runs an optimizer (corner or whole vehicle) off the main thread; posts progress after every iteration. */
+/** Runs optimizers (corner / whole vehicle) and tests off the main thread; posts progress after every iteration. */
 import { optimizeCorner, type CornerProblem } from '../core/optimize/corner';
 import { optimizeVehicle, type VehicleProblem } from '../core/optimize/vehicle';
+import { runTest, type TestRunOptions } from '../core/tests/run';
+import type { SegmentSpec } from '../core/tests/segments';
 
-type Job = { kind: 'corner'; problem: CornerProblem } | { kind: 'vehicle'; problem: VehicleProblem };
+type Job =
+  | { kind: 'corner'; problem: CornerProblem }
+  | { kind: 'vehicle'; problem: VehicleProblem }
+  | { kind: 'test'; problem: VehicleProblem; segments: SegmentSpec[]; opts: TestRunOptions };
 
 self.onmessage = (e: MessageEvent<Job>) => {
   try {
+    const j = e.data;
+    if (j.kind === 'test') {
+      const geometries = Object.fromEntries(Object.entries(j.problem.designs).map(([r, d]) => [r, d!.geometry]));
+      self.postMessage({ type: 'done', result: runTest(j.problem, geometries, j.segments, j.opts) });
+      return;
+    }
     const progress = (info: unknown) => { self.postMessage({ type: 'progress', info }); };
-    const result = e.data.kind === 'vehicle' ? optimizeVehicle(e.data.problem, progress) : optimizeCorner(e.data.problem, progress);
+    const result = j.kind === 'vehicle' ? optimizeVehicle(j.problem, progress) : optimizeCorner(j.problem, progress);
     self.postMessage({ type: 'done', result });
   } catch (err) {
     self.postMessage({ type: 'error', message: err instanceof Error ? err.message : String(err) });

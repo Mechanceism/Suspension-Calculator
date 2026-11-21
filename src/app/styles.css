@@ -472,3 +472,26 @@ input[type='range']:disabled { opacity: 0.4; }
 .viewport-banner { display: flex; align-items: center; gap: 10px; }
 .banner-btn { pointer-events: auto; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 8px; cursor: pointer; color: var(--text); }
 .banner-btn:hover { border-color: var(--accent); }
+
+/* Grip + road */
+.grip-table tr.bad td { color: #ff7b7b; }
+.grip-table tr.warn td { color: #ffb703; }
+.road-group { flex-wrap: wrap; }
+.bump-inputs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.bump-inputs input { width: 56px; }
+
+/* Tests workspace */
+.tests-sidebar .wide-text { width: 100%; text-align: left; }
+.seg-tools { display: inline-flex; gap: 1px; margin-left: auto; }
+.seg-summary { margin: -2px 0 4px; }
+.seg-table td:first-child { color: var(--muted); white-space: nowrap; }
+.seg-layer td { color: var(--accent) !important; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; padding-top: 6px !important; }
+.bump-grid { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+.bump-grid label { display: inline-flex; gap: 3px; align-items: center; }
+.seg-info { color: var(--muted); margin: 4px 0 0; }
+.test-table tr { cursor: pointer; }
+.test-table tr.bad td { color: #ff7b7b; }
+.test-table tr.sel td { background: var(--panel-2); }
+.seg-fail { border-left: 3px solid #ff5c5c; padding: 2px 8px; margin: 6px 0; }
+.bad-chip { border-color: #ff5c5c !important; }
+.test-view-bar { min-height: 34px; }

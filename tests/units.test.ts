@@ -34,6 +34,9 @@ describe('parseValue', () => {
     expect(parseValue('', 'length').ok).toBe(false);
     expect(parseValue('5 furlongs', 'length').ok).toBe(false);
     expect(parseValue('abc', 'length').ok).toBe(false);
+    expect(parseValue('13in320', 'length').ok).toBe(false);
+    expect(parseValue('10 20', 'length').ok).toBe(false);
+    expect(parseValue('1ft2in', 'length').ok).toBe(true);
   });
 });
 

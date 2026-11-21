@@ -1,0 +1,102 @@
+/** Small reusable 3D pieces. Scene units are mm; axes map 1:1 (X outboard, Y up, Z forward). */
+import { useLayoutEffect, useMemo, useRef } from 'react';
+import * as THREE from 'three';
+import { Line, Html } from '@react-three/drei';
+import type { Vec3 } from '../../core/math/vec3';
+
+export type V3 = [number, number, number];
+export const arr = (v: Vec3): V3 => [v.x, v.y, v.z];
+
+export function Joint({ p, color, r = 7 }: { p: Vec3; color: string; r?: number }) {
+  return (
+    <mesh position={arr(p)}>
+      <sphereGeometry args={[r, 16, 12]} />
+      <meshStandardMaterial color={color} />
+    </mesh>
+  );
+}
+
+export function Seg({ a, b, color, width = 2, dashed = false, opacity = 1 }: {
+  a: Vec3; b: Vec3; color: string; width?: number; dashed?: boolean; opacity?: number;
+}) {
+  return (
+    <Line
+      points={[arr(a), arr(b)]} color={color} lineWidth={width}
+      dashed={dashed} dashSize={20} gapSize={12} transparent={opacity < 1} opacity={opacity}
+    />
+  );
+}
+
+export function Polyline({ pts, color, width = 2, opacity = 1, dashed = false }: {
+  pts: Vec3[]; color: string; width?: number; opacity?: number; dashed?: boolean;
+}) {
+  if (pts.length < 2) return null;
+  return (
+    <Line
+      points={pts.map(arr)} color={color} lineWidth={width}
+      transparent={opacity < 1} opacity={opacity} dashed={dashed} dashSize={20} gapSize={12}
+    />
+  );
+}
+
+/** Filled triangle whose vertices update in place (no geometry churn while animating). */
+export function Tri({ a, b, c, color, opacity = 0.35 }: { a: Vec3; b: Vec3; c: Vec3; color: string; opacity?: number }) {
+  const positions = useMemo(() => new Float32Array(9), []);
+  const geom = useRef<THREE.BufferGeometry>(null);
+  useLayoutEffect(() => {
+    positions.set([a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z]);
+    const g = geom.current;
+    if (!g) return;
+    g.getAttribute('position').needsUpdate = true;
+    g.computeVertexNormals();
+    g.computeBoundingSphere();
+  }, [a, b, c, positions]);
+  return (
+    <mesh>
+      <bufferGeometry ref={geom}>
+        <bufferAttribute attach="attributes-position" args={[positions, 3]} />
+      </bufferGeometry>
+      <meshStandardMaterial color={color} side={THREE.DoubleSide} transparent opacity={opacity} depthWrite={false} />
+    </mesh>
+  );
+}
+
+const circlePoints = (r: number, y: number, n = 72): V3[] =>
+  Array.from({ length: n + 1 }, (_, i) => {
+    const t = (i / n) * Math.PI * 2;
+    return [r * Math.cos(t), y, r * Math.sin(t)];
+  });
+
+/** Tire as an open cylinder aligned with the spin axis, plus center-plane and sidewall circles. */
+export function Wheel({ center, axis, radius, width, color, ghost = false }: {
+  center: Vec3; axis: Vec3; radius: number; width: number; color: string; ghost?: boolean;
+}) {
+  const quat = useMemo(
+    () => new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(axis.x, axis.y, axis.z)),
+    [axis],
+  );
+  const mid = useMemo(() => circlePoints(radius, 0), [radius]);
+  const outer = useMemo(() => circlePoints(radius, width / 2), [radius, width]);
+  const inner = useMemo(() => circlePoints(radius, -width / 2), [radius, width]);
+  return (
+    <group position={arr(center)} quaternion={quat}>
+      {!ghost && (
+        <mesh>
+          <cylinderGeometry args={[radius, radius, width, 72, 1, true]} />
+          <meshStandardMaterial color={color} transparent opacity={0.14} side={THREE.DoubleSide} depthWrite={false} />
+        </mesh>
+      )}
+      <Line points={mid} color={color} lineWidth={ghost ? 1 : 1.5} transparent opacity={ghost ? 0.35 : 0.9} dashed={!ghost} dashSize={25} gapSize={15} />
+      {!ghost && <Line points={outer} color={color} lineWidth={2} />}
+      {!ghost && <Line points={inner} color={color} lineWidth={2} />}
+    </group>
+  );
+}
+
+export function Label({ p, text }: { p: Vec3; text: string }) {
+  return (
+    <Html position={arr(p)} style={{ pointerEvents: 'none' }}>
+      <div className="scene-label">{text}</div>
+    </Html>
+  );
+}

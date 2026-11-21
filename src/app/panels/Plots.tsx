@@ -1,0 +1,82 @@
+import { deg } from '../../core/suspension/characteristics';
+import type { Model, Sample } from '../useModel';
+import { useApp } from '../store';
+
+const W = 300;
+const H = 120;
+const PAD = { l: 44, r: 8, t: 10, b: 22 };
+
+function niceRange(lo: number, hi: number): [number, number] {
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return [-1, 1];
+  if (hi - lo < 1e-6) { const m = Math.max(Math.abs(lo) * 0.1, 0.05); return [lo - m, hi + m]; }
+  const pad = (hi - lo) * 0.08;
+  return [lo - pad, hi + pad];
+}
+
+function Chart({ title, unit, data, current, digits = 2 }: {
+  title: string; unit: string; data: { x: number; y: number }[]; current: { x: number; y: number } | null; digits?: number;
+}) {
+  const pts = data.filter((d) => Number.isFinite(d.y));
+  if (pts.length < 2) return null;
+  const xs = pts.map((d) => d.x);
+  const ys = pts.map((d) => d.y);
+  const [x0, x1] = [Math.min(...xs), Math.max(...xs)];
+  const [y0, y1] = niceRange(Math.min(...ys), Math.max(...ys));
+  const sx = (x: number) => PAD.l + ((x - x0) / (x1 - x0)) * (W - PAD.l - PAD.r);
+  const sy = (y: number) => H - PAD.b - ((y - y0) / (y1 - y0)) * (H - PAD.t - PAD.b);
+  const path = pts.map((d, i) => `${i ? 'L' : 'M'}${sx(d.x).toFixed(1)},${sy(d.y).toFixed(1)}`).join('');
+  const zeroY = y0 < 0 && y1 > 0 ? sy(0) : null;
+  return (
+    <figure className="chart">
+      <figcaption>
+        {title} <span className="muted">({unit})</span>
+        {current && Number.isFinite(current.y) && <b className="chart-value">{current.y.toFixed(digits)}</b>}
+      </figcaption>
+      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`${title} vs travel`}>
+        <line className="axis" x1={PAD.l} x2={W - PAD.r} y1={H - PAD.b} y2={H - PAD.b} />
+        {zeroY !== null && <line className="zero" x1={PAD.l} x2={W - PAD.r} y1={zeroY} y2={zeroY} />}
+        <line className="zero" x1={sx(0)} x2={sx(0)} y1={PAD.t} y2={H - PAD.b} />
+        <text className="tick" x={PAD.l - 4} y={sy(y1) + 4} textAnchor="end">{y1.toFixed(digits)}</text>
+        <text className="tick" x={PAD.l - 4} y={sy(y0)} textAnchor="end">{y0.toFixed(digits)}</text>
+        <text className="tick" x={PAD.l} y={H - 6} textAnchor="start">{x0.toFixed(0)}</text>
+        <text className="tick" x={W - PAD.r} y={H - 6} textAnchor="end">{x1.toFixed(0)} mm</text>
+        <path className="series" d={path} />
+        {current && Number.isFinite(current.y) && (
+          <>
+            <line className="cursor" x1={sx(current.x)} x2={sx(current.x)} y1={PAD.t} y2={H - PAD.b} />
+            <circle className="dot" cx={sx(current.x)} cy={sy(current.y)} r={3.5} />
+          </>
+        )}
+      </svg>
+    </figure>
+  );
+}
+
+type Getter = (s: Sample) => number;
+
+export function Plots({ model }: { model: Model }) {
+  const travel = useApp((s) => s.travel);
+  const cur = model.current;
+  const base = model.sweep.reduce<Sample | null>((b, q) => (!b || Math.abs(q.travel) < Math.abs(b.travel) ? q : b), null);
+  const baseTrack = base?.chars.halfTrack ?? 0;
+  const series: { title: string; unit: string; get: Getter; digits?: number }[] = [
+    { title: 'Camber', unit: '°', get: (s) => deg(s.chars.camber), digits: 3 },
+    { title: 'Toe (bump steer)', unit: '°', get: (s) => deg(s.chars.toe), digits: 3 },
+    { title: 'Roll center height', unit: 'mm', get: (s) => s.chars.rollCenterHeight ?? NaN, digits: 1 },
+    { title: 'Half track change', unit: 'mm', get: (s) => s.chars.halfTrack - baseTrack, digits: 2 },
+    { title: 'Caster', unit: '°', get: (s) => deg(s.chars.caster), digits: 2 },
+    { title: 'Scrub radius', unit: 'mm', get: (s) => s.chars.scrubRadius, digits: 1 },
+  ];
+  return (
+    <section className="panel">
+      <h2>Through travel</h2>
+      {series.map((s) => (
+        <Chart
+          key={s.title} title={s.title} unit={s.unit} digits={s.digits}
+          data={model.sweep.map((q) => ({ x: q.travel, y: s.get(q) }))}
+          current={cur ? { x: travel, y: s.get(cur) } : null}
+        />
+      ))}
+    </section>
+  );
+}

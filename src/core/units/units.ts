@@ -29,13 +29,18 @@ export function parseValue(text: string, quantity: Quantity, defaultUnit = DEFAU
   let pos = 0;
   let total = 0;
   let terms = 0;
+  let prevHadUnit = false;
   while (pos < src.length) {
     while (src[pos] === ' ') pos++;
     if (pos >= src.length) break;
     TERM.lastIndex = pos;
     const m = TERM.exec(src);
     if (!m || m[0].trim() === '') return { ok: false, error: `Cannot read "${src.slice(pos)}"` };
-    // After the first term, a sign or whitespace must separate terms (handled by the regex).
+    // A term without + / − is only allowed as a compound unit, e.g. "1ft 2in" (both have units).
+    if (terms > 0 && !m[1] && !(prevHadUnit && m[4])) {
+      return { ok: false, error: `Use + or − between values ("${src.slice(pos)}")` };
+    }
+    prevHadUnit = Boolean(m[4]);
     const sign = m[1] === '-' ? -1 : 1;
     const num = parseFloat(m[2]! + (m[3] ? `e${m[3]}` : ''));
     const unit = m[4] || defaultUnit;

@@ -53,6 +53,15 @@ Calculating and visualizing come first. **Later:** export to modeling software (
    - **Range exploration:** one extra pass with the min/max ranges relaxed to see whether a better design lies outside them; show what would change and **ask the user** before using it.
 6. **Save and export.** Tests are saved with the model; Export / Import get three options: **model and tests**, **model only**, **tests only**. Unsaved-change tracking per part (model, tests), with a prompt on close or New / Open when a part changed since its last save or export.
 
+### Tests: decisions (noted 2026-11-22)
+- **Rough roads:** each segment can have a seeded random road surface (height map): seed, max height, scale (bump size / spacing, i.e. how many), coverage (smooth vs. rough patches). A preview shows the map with the four wheel paths and the height profile under each wheel. Single bumps / potholes stay available as positioned features (position and length within the segment). Phase A playback samples the map at each wheel; Phase B uses it dynamically.
+- **Weights:** a priority per test and a weight per segment inside a test.
+- **Improve after passing:** if nothing fails, maximize the priority-weighted average (grip reserve, passing speed); if something fails, the failing segments get extra weight until they pass.
+- **Pass / Warning / Fail** ("passing fail" = Warning: reported, the test still passes). Every check has a user-selectable severity and, where it makes sense, a threshold, editable in the Tests workspace:
+  near the grip limit (Warning, reserve %), understeer (Fail, allowed % over), oversteer / drift (Fail; allowed % over with front reserve to catch it), wheelspin (Fail, allowed % over), ABS active (**Warning**, allowed shortfall %), lock-up (Fail), speed not reached (Fail), bump-stop contact (Warning), bottoming / topping out (Fail), wheel lift (Warning), rollover (always Fail), no solution (always Fail).
+- **Profiles** set all severities at once (Street strict, Track, Drift, Off-road, plus user-saved custom profiles); chosen per test with per-segment overrides. The optimizer treats Fail checks as hard requirements, Warning checks as soft penalties, and ignores Pass checks.
+- **Settings export / import:** a settings file with all user preferences (units, view options, custom failure profiles and defaults), separate from model and tests.
+
 ### Future goals (noted 2026-11-22)
 - **Official tire grip model.** The contact-patch grip model (pressure distribution + load-sensitive friction) is a **placeholder** with default parameters; the official model (fitted to tire data, with camber thrust and a peak → sliding friction curve) has **not been implemented yet**. Grip, contact-area and slip / pass-fail results depend on it.
 - **Aero.** Assumed negligible for now. When added: drag acts on the **body** as a braking force (not through the tires), and lift / downforce acts on the body at a center of pressure, so it can lift, lower, pitch or twist (roll / yaw moment) the body, and with that change tire loads and grip. Inputs: CdA, ClA (front/rear or center of pressure), air density; speed comes from the test segments.

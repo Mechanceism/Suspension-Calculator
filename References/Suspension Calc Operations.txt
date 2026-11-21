@@ -1,0 +1,92 @@
+The math is broken down into subsections:
+Tire computation by itself:
+A tire can be approximated by a cylinder.
+The conic section of a cylinder is an ellipse except when the angle of the plane is perpendicular to the 2 flat surfaces of the cylinder, then it is a rectangle.
+We can account for the rounded edges on the cylinder since tires do not have a sharp edge.
+
+The tire has a diameter/Radius dimension and a width dimension. 
+When the tire is loaded, the contact patch of the tire on the ground is the same/similar to conic section of the cylinder when the ground plane is the plane that slices the cylinder.
+Note: I found that the equation for the contact patch area was case dependent. 
+Ex: tire level, conic section is a rectangle. Any other angle, the conic section includes an ellipse. The ellipse centerline is not necessarily on the contact patch and the path of the ellipse may go off of the tire contact area. 
+
+While the tire only needs dimensions Radius and width, the plane that makes the conic section only needs 1 axis of rotation and 1 distance from the centerline of the tire. If we were to imagine the front view of the tire sitting on the ground, that view is the plane rotation that the ground plane moves in. The other 2 rotation planes are not needed since rotating in the plane of cutting does nothing and the other doesn't matter due to the tire's radial symmetry. 
+I have attached on page 3 a rough diagram idea of this. Please confirm the understanding of the conic section before moving on.
+
+Area/Volume:
+This is on page 3 and 5.
+The area of the conic section made by the ground plane and the cylinder is the contact patch area.
+On page 3 I had some convoluted was to calculate this area. In short. I created a plane that the ellipse existed on by an angle in regards to the normal vector of the cylinder's flat face. 
+At the intersection point of the cylinder's normal vector and the ellipse's plane I placed the center of the ellipse. The center of the ellipse is able to slide on the cylinder's face's normal vector. I do not recommend this strategy since to approximate a rectangle conic section, the intersection point has to be an infinite point away and then the ellipse has to have a half width from this infinite point to where the extrema ends. Ideally, the real calculation has a better area calculator than that. 
+Once the area is found, the center point location of the conic section is needed. (This will be used later to calculate scrub radius force applied)
+The volume of the cylinder below the ground plane is also needed.
+
+Why Area and Volume matter here:
+This is on page 5.
+If we look at the ideal gas law, PV=nRT, then we can see the relation of those 2 values. 
+Since we know final equals initial, we can say (PV/nRT)_1 = (PV/nRT)_2. I didn't see the need for n or R since those are not factors that change during driving or suspension travel.
+So, I simplified to (PV/T)_1 = (PV/T)_2.
+Now a tire only has a contact area if there is a force bringing the tire and the ground together. This can come from 2 ways while static and a few more while dynamic.
+The tire has mass (Un-sprung) and the vehicle has mass (sprung). The tire can also experience a force from inertial loading.
+Let's simplify this all to a few values that can be used by the other equations later.
+Force=M*a and Pressure=F/A. Substitute, Pressure=M*a/A=P_2. 
+Now we can replug that into the simplified ideal gas law. P_2=(P_1*V_1/T_1)*(T_2/V_2)= Ma/A. Solve for A/V, (A_2/V_2)=(M*a*T_1)/(P_1*V_1*T_2)
+"A" is actually A_2 because we are assuming that the initial A_1 is the tire under no load at all and thus there would be no contact patch and thus no contact area. 
+The pressure in the tire increases as the contact patch increases because even though the area is calculated by the conic section, the air is still staying inside the tire. We are essentially just decreasing the volume while keeping the same amount of gas molecules "n". The gas in the tire is like a spring. So, when the tire deforms more/ the contact area gets bigger, the more force is applied back on the contact area. With a given force on the tire, there is an equilibrium point between the volume in the tire pushing down and the force of the loaded contact area pushing back. 
+So, now we have a correlation of the a Area and Volume equations. The equation given can be used to balance the forces. I left it here since the math from earlier or the future functions to calculate the area and volume can easily be applied on one side. My area and volume equations were based on the distance from the center of the tire. The new ones do not have to be, but my reason was so we would have the value of how far the tire's hub is to the ground, effectively lowering the tires distance to the ground. This is necessary when calculating camber/caster/etc. throughout cornering, bumps, and general loading.
+Note: "a" was used as general acceleration, but "a" is a combination of other factors such as gravity + other acceleration loadings such as braking, cornering, etc. It may be better to simplify the equations to solve for forces and work back from there instead of solving for distances and working backwards.
+
+Possible Angling of the tire:
+Examples on page 1.
+Let's review where all the pivots are that a tire can rotate on. There is an upper and lower ball joint.
+On the tire's hub are 2 ball joints. The angle they make viewed from the plane parallel to the cylinders flat surface is called the steering axis (Caster angle).
+Half of the horizontal distance (In the Z axis) between the 2 ball joints is the center of steering axis. The distance from this point horizontal to the vertical center of the tire is the steering axis offset.
+Where the line of steering axis touches the ground, the distance from that point to the center of contact patch area (or where the vertical center line touches the ground, depends of case) is the distance known as mechanical trail.
+The angle the steering axis makes with the tire's vertical axis is the caster angle. 
+Positive caster is where the mechanical trail is positive (In front of the tire's center). Negative caster is where the mechanical trail is negative (Behind of the tire's center).
+Now viewed from the front of the vehicle, 
+Again, a line from the 2 ball joints create the steering axis (kingpin angle).
+Extend this line to the ground and compare it to where the tire's vertical axis touches the ground. The distance between these 2 points is called the scrub radius. If the steering axis contacts the ground more outboard from the center of the wheel's centerline, then it is negative, if more inboard, then positive. 
+That last partassumes the tire is static and level which we can't do. I believe this needs to be based on the tire's contact patch area and center instead. We need to review this.
+The is important because this affects the force is takes to turn the tire (scrub the radius). We need to calculate the torque using the force the tire is applying to the ground at the center location of the contact patch to the location of the kingpin angle touches the surface. Please verify this is correct.
+
+Calculating tire height through steering:
+On page 4.
+The cylinder (tire) rotates around the steering axis. Let's ignore the contact patch and deformation of the tire and assume it is purly ridged for a moment.
+Because the tire rotates around an angled vector, depending on the to and from angle, the tire could lift or lower the vehicle. This is called jacking. 
+I used Rodrigues' rotation formula to go this and solved for the change in vertical height (I used Z as vertical on this problem alone, rewriten can be in the same coordinate space as the other equations) of the normal vector of the circle's plain offset by an amount from the graph center.
+I assumed the steering axis contact with the bottom of the tire was the origin and the distance from that point to the outer plane of the tire was that offset.
+Then since this Z height is only of the offset center of the circle height, we need the height the tire contacts the ground. Using pythagorus, the angle and radius can be used to find the additional change in height. These 2 distances can be added to get the overall change in Z height. If there is a computationally simplier way or a function for this, please use.
+Now that we have the change in height, we can use the angles to find the conic section plane and recalculate the deformation distance to find the real vertical height change.
+
+Calculating the suspension travel angles:
+This is where the locations of the linkages really matter. Till this point all suspension types are essentially treated as the same.
+What matters is where the tire pivots around. The IC or instantaneous center is where the tire pivots around at that instant. The types of suspension affect where this point exists.
+To find this point, draw out a line from each of the 2 ball joints. Where the lines intersect is the IC.
+An additional line from the center of tire contact area to the IC can be drawn. Where this line from both sides of the vehicles tires intersect is the vehicle's roll center. 
+For a moment, let's assume we know where the center of gravity of the vehicle is. The distance from the roll center to the CG is the roll moment (please correct me if I'm wrong).
+This torque/moment can be used to find tipping point from cornering using centrifugal acceleration v^2/r. This is also important to calculate extra loading on outer tires and less loading on inner tires to calculate the new contact patch area.
+Now the real reason IC is important is to determine the camber angle of the tire throughout travel.
+For a double A arm suspension, the upper and lower control arm exist along the lines from the ball joints to the IC.
+Determining the length of the upper and lower control arm determines the camber characteristics. I used Grashof's law of a 4 bar linkage to determine this. 
+The ideal motion is a double crank mechanism. 
+
+Job of the optimizer:
+The real determining case for the optimizer is choosing an ideal static position of the tires, then using the location of the CG and attempted roll center to determine the angle/roll of the body and go through the travel the suspension would have to make then apply the load deformation to the tires and what angle that puts the vehicle at. Adjusting the upper and lower control arm changes that camber at that angle and can be tuned for the largest contact area of the tires. The non-trivial part is that changing that angle changes the area/volume ratio which changes the vehicles angle on the ground again. Essentially, this needs to be run over and over again until it has essentially settled the suspension with the given loads for this optimal contact patch area.
+
+Shocks and coils:
+Obviously, the tires will not support the frame without a restoring force from the coils and some dampening from the shocks. For the moment let's ignore the shocks and only look at the force the coil provides. The K spring constant and coil mounting position and angle are very critical for this. This I don't believe is something the optimizer can solve for directly yet unless the angle makes the coil more or less effect at a certain point in travel. I am not sure how necessary for the optimizer to calculate shock mounting location vs just user input at the moment. This will have to be determined later after all this other implementation. 
+
+One note, all of my math assumes that the pivot points of the control arms on the vehicle are parallel to the Z axis and the upper and lower control arms have its pivots vertically centered to its corresponding ball joint. The default assumption is for this to be true. However, this is not always true and can help/hinder other suspension characteristics. Such as, the upper control arm has an angle going upward towards the front of the vehicle about 2 to 5 degrees since this can help align the travel more with the camber angle and can help in front loaded situations. (Please correct me if I'm wrong) This needs to be accounted for.
+
+Once the 1 corner has been solved, then the front pair of corners have been solved, the rear can be solved for. Once the rear suspension is solved for, then the loading front to rear can be solved. An example would be when braking the weight shifts forwards onto the front tires or when accelerating the weight shifts back more onto the rear. This also affects the loading on the tires and the contact patch area.
+
+Note: The CG should be used to calculate the weight each tire handles, this way the user does not have to enter each value individually unless they want to. Knowing the tire's weight and the overall vehicles weight is important to know the sprung and unsprung mass. (Ex: Unsprung weight = Total weight- 4*tire weight)
+The CG is not 1 value. The CG is from the sprung weight combined with the 4 unsprung weights at a given moment. A tire is supported by the ground but the sprung weight is supported by the suspension through the tires. So, for body roll, the sprung weight CG is the priority. (Please correct me if I'm wrong)
+
+Note on vehicle dynamics:
+steering causes jacking, centrifugal acceleration affects body roll. Their inputs are separate, but can be used to try to balance each other with set conditions.
+(Ex: If the vehicle is designed for a specific track with specific corners and speeds, then a certain amount of jacking angle can be designed for to try to keep the vehicle level/centered thus optimizing contact patch area.)
+
+Since each corner is solved for separately, There needs to be an option of if each tire is powered/passive and if it can steer or is fixed. 
+
+No vehicle is good at everything, balancing the required characteristics help narrow down to the user's need.

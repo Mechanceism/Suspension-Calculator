@@ -22,7 +22,7 @@ Calculating and visualizing come first. **Later:** export to modeling software (
 - **Full 3D.** All geometry is 3D. Simplified 2D views exist only for viewing.
 - **Each corner is its own system.** A corner is a self-contained linkage that interacts with the outside only through simple, defined connections (chassis motion, shared sway bar, shared shock, etc.). Corners do not have to match: FL can be SLA while FR is MacPherson.
 - **CAD-agnostic and standalone.** The tool must not require Fusion 360. Fusion is one optional integration among several.
-- **Math built layer by layer.** The author's original hand-derived process is reviewed one layer at a time. Each layer becomes a set of relations in the system rather than a step in a fixed sequence. Each layer is verified (against Fusion demonstrations where needed) before the next is added.
+- **Math built layer by layer.** The author's original hand-derived process ([References/](References/)) is reviewed one layer at a time and recorded in [docs/MATH.md](docs/MATH.md). Each layer becomes a set of relations in the system rather than a step in a fixed sequence. Each layer is verified (against Fusion demonstrations where needed) before the next is added.
 
 ---
 
@@ -31,7 +31,7 @@ Calculating and visualizing come first. **Later:** export to modeling software (
 | Phase | Goal | Status |
 |---|---|---|
 | 0 | Fundamentals and characteristic hierarchy (leaders vs. followers) | ✅ Done |
-| 1 | **Math core**: single corner, double wishbone (SLA), full motion through travel | ⏳ Next |
+| 1 | **Math core**: single corner, double wishbone (SLA), full motion through travel. Spec: [docs/MATH.md](docs/MATH.md) | ⏳ In progress |
 | 2 | **Visualizer**: 3D view of the core components, driven by the math core | |
 | 3 | **More variables**: add the remaining characteristics to both the math and the UI | |
 | 4 | **Constraints and optimizer**: lock / range / free per variable; solve for free values once the visualizer and math agree | |
@@ -97,6 +97,14 @@ Every input in the UI is a variable with:
 
 All options are available for manual adjustment and placement. The lock/range control is an optional checkbox or dropdown per variable. The optimizer (Phase 4) only moves Free and Ranged variables.
 
+### Special Inputs
+- **Tire size:** a dropdown of tire-number formats (metric `225/45R17`, flotation `31x10.50R15`, racing `20.5x7.0-13`) that are parsed into dimensions, or **simple** entry (outer diameter, width, rim). Every parsed value can be overridden.
+- **Environment:** altitude (or ambient pressure directly) and temperature, for both the condition the tire pressure was set at and the operating condition.
+- **Model toggles:** e.g. "Apply tire volume change" so the user can see how much a modeling assumption affects the results.
+
+### Optimizer Objectives
+Maximum contact area is a proxy, not the same as maximum grip. Objectives are selectable and can be weighted: target inclination under load (default), maximum contact area, or maximum friction force from a tire model. See [docs/MATH.md](docs/MATH.md#l7-optimizer-objectives-later).
+
 ---
 
 ## Visualizer Requirements
@@ -106,6 +114,7 @@ All options are available for manual adjustment and placement. The lock/range co
 - **Fusion-style browser:** a component tree with visibility toggles per part and group.
 - **Hierarchy view (experimental):** a parent/child "family tree" or node graph showing how parts connect and how values feed each other. To be tested; may not be needed.
 - **Motion controls:** sweep through bump/droop, roll and steer, with plots of characteristics vs. travel.
+- **Motion trail toggle:** draw the paths of selected points and bodies (ball joints, knuckle, wheel center, contact patch) through the full travel in one view, as ghosted positions and/or traced curves.
 
 ---
 
@@ -183,6 +192,7 @@ Avoid codes that look like numeric error values (`Inf`, `NaN`, `Err`, `Null`).
 1. **Mirroring for other corners.** Each corner gets its own local frame using the same rules (X always outboard), mapped to a shared vehicle frame. Confirm when multi-corner work starts.
 2. **Fusion integration style:** embedded panel vs. external bridge (see above).
 3. **Hierarchy view:** browser tree vs. node graph vs. both. Decide after experimenting.
+4. **Grashof class:** design requirement vs. diagnostic. See [docs/MATH.md](docs/MATH.md#grashof-classification-).
 
 ### Resolved
 - **Handedness:** right-handed system. X outboard, Y up, Z forward.

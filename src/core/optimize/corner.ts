@@ -9,7 +9,10 @@
  * starting design when the goals alone don't pin it down (e.g. six free tie-rod coordinates for one
  * toe curve).
  */
-import { vec3, type Vec3 } from '../math/vec3';
+import { vec3, addScaled, dot, Y_AXIS, type Vec3 } from '../math/vec3';
+import { patchGrip, DEFAULT_GRIP, type GripModel, type PatchGrip } from '../tire/grip';
+import { solveLoadedHeight, type TireForceModel } from '../tire/model';
+import type { TireProfile } from '../tire/geometry';
 import { DoubleWishbone, type CornerState, type DoubleWishboneGeometry } from '../suspension/doubleWishbone';
 import { characteristics, deg, rad, type Characteristics } from '../suspension/characteristics';
 import { armMetrics } from '../suspension/armGeometry';
@@ -21,7 +24,8 @@ export type HardpointId =
 
 export type GoalKind =
   | 'bumpSteer' | 'camberGain' | 'rollCamber' | 'rollCenter' | 'rcMigration'
-  | 'kpi' | 'caster' | 'scrubRadius' | 'trail' | 'antiAngle' | 'motionRatio';
+  | 'kpi' | 'caster' | 'scrubRadius' | 'trail' | 'antiAngle' | 'motionRatio'
+  | 'contactArea' | 'grip';
 
 export interface GoalMeta {
   /** Short name for narrow tables. */
@@ -34,6 +38,8 @@ export interface GoalMeta {
   /** One "unit of miss" for a residual (in the goal's unit). */
   tolerance: number;
   hint: string;
+  /** Maximized (no target): the residual is start value / value, tolerance = relative change. */
+  maximize?: boolean;
 }
 
 export const GOAL_META: Record<GoalKind, GoalMeta> = {
@@ -47,6 +53,8 @@ export const GOAL_META: Record<GoalKind, GoalMeta> = {
   scrubRadius: { short: 'Scrub radius', label: 'Scrub radius (static)', unit: 'mm', target: 10, tolerance: 1, hint: '+ = axis meets the ground inboard of the contact point.' },
   trail: { short: 'Trail', label: 'Mechanical trail (static)', unit: 'mm', target: 15, tolerance: 1, hint: '+ = axis meets the ground ahead of the contact point.' },
   antiAngle: { short: 'Anti angle', label: 'Side-view anti angle (static)', unit: '°', target: 3, tolerance: 0.1, hint: 'Angle of the contact patch → side-view IC line (anti-dive / anti-lift with outboard brakes).' },
+  contactArea: { short: 'Contact area', label: 'Contact area (largest)', unit: 'cm²', target: 0, tolerance: 0.01, maximize: true, hint: 'Patch area, averaged over the static case and the outside wheel in roll (at the roll angle and roll load below). Needs a tire model.' },
+  grip: { short: 'Grip', label: 'Grip: friction capacity (largest)', unit: 'N', target: 0, tolerance: 0.01, maximize: true, hint: 'Friction the patch can carry, from its pressure distribution and load-sensitive rubber (tire grip model). Averaged over the static case and the outside wheel in roll.' },
   motionRatio: { short: 'Motion ratio', label: 'Motion ratio (static)', unit: '', target: 0.7, tolerance: 0.005, hint: 'Damper travel per wheel travel at design height.' },
 };
 export const GOAL_KINDS = Object.keys(GOAL_META) as GoalKind[];
@@ -71,6 +79,8 @@ export interface CornerProblem {
   holds?: Hold[];
   /** Weight of the "prefer small changes" term (per 10 mm moved). */
   keepClose?: number;
+  /** Tire, static corner load and grip model, for the contact-area and grip goals. */
+  tire?: { profile: TireProfile; model: TireForceModel; staticLoad: number; rollLoadFactor: number; grip?: GripModel };
   maxIterations?: number;
 }
 
@@ -119,6 +129,18 @@ export interface CornerSamples {
   roll: { travel: number; chars: Characteristics; angle: number } | null;
   /** Motion ratio at design height (null without a damper). */
   motionRatio: number | null;
+  /** Patch grip: static (travel 0, static load) and outside wheel in roll (roll load). */
+  grip: { static: PatchGrip; roll: PatchGrip | null } | null;
+}
+
+/**
+ * Grip of the tire on a corner state against ground with normal `n` (corner frame), carrying `load`.
+ * The ground height is solved so the tire carries the load.
+ */
+export function cornerGrip(state: CornerState, n: Vec3, profile: TireProfile, model: TireForceModel, load: number, grip: GripModel): PatchGrip {
+  const wc = state.points.wheelCenter;
+  const h = solveLoadedHeight(model, profile, dot(n, state.spinAxis), Math.max(load, 1)).centerHeight;
+  return patchGrip(wc, state.spinAxis, { point: addScaled(wc, n, -h), normal: n }, profile, load, grip);
 }
 
 export function travelSamples(droop: number, bump: number, n = 9): number[] {
@@ -154,13 +176,27 @@ export function sampleCorner(geometry: DoubleWishboneGeometry, p: Omit<CornerPro
   }
 
   let roll: CornerSamples['roll'] = null;
-  if ((all || need.has('rollCamber')) && p.rollAngle) {
+  const needGrip = (all || need.has('contactArea') || need.has('grip')) && !!p.tire;
+  let rollState: CornerState | null = null;
+  if ((all || need.has('rollCamber') || needGrip) && p.rollAngle) {
     // Outside wheel: the body rolls φ over it, so it moves up ≈ half track · tan φ relative to the body.
     const phi = rad(Math.abs(p.rollAngle));
     const travel = chars[i0]!.halfTrack * Math.tan(phi);
     const s = corner.solve({ travel }, states[i0]!.poses);
     if (!converged(s)) return null;
     roll = { travel, chars: characteristics(s), angle: phi };
+    rollState = s;
+  }
+
+  let grip: CornerSamples['grip'] = null;
+  if (needGrip && p.tire) {
+    const t = p.tire;
+    const gm = t.grip ?? DEFAULT_GRIP;
+    const st = cornerGrip(states[i0]!, Y_AXIS, t.profile, t.model, t.staticLoad, gm);
+    // Outside wheel in roll: the ground tilts by phi relative to the body (top of the wheel leans out).
+    const phi = roll?.angle ?? 0;
+    const rl = rollState ? cornerGrip(rollState, vec3(-Math.sin(phi), Math.cos(phi), 0), t.profile, t.model, t.staticLoad * t.rollLoadFactor, gm) : null;
+    grip = { static: st, roll: rl };
   }
 
   let motionRatio: number | null = null;
@@ -173,7 +209,7 @@ export function sampleCorner(geometry: DoubleWishboneGeometry, p: Omit<CornerPro
       motionRatio = -(cb.damperLength - ca.damperLength) / (cb.contactPoint.y - ca.contactPoint.y);
     }
   }
-  return { travels, chars, i0, rackToe, roll, motionRatio };
+  return { travels, chars, i0, rackToe, roll, motionRatio, grip };
 }
 
 /** Least-squares slope through the origin-shifted points (x, y − y0). */
@@ -212,14 +248,30 @@ export function goalValue(kind: GoalKind, s: CornerSamples, target = GOAL_META[k
     case 'trail': return c0.mechanicalTrail;
     case 'antiAngle': return deg(c0.antiAngleContact);
     case 'motionRatio': return s.motionRatio;
+    case 'contactArea': {
+      if (!s.grip) return null;
+      const v = [s.grip.static.area, ...(s.grip.roll ? [s.grip.roll.area] : [])];
+      return v.reduce((a, b) => a + b, 0) / v.length / 100; // cm²
+    }
+    case 'grip': {
+      if (!s.grip) return null;
+      const v = [s.grip.static.capacity, ...(s.grip.roll ? [s.grip.roll.capacity] : [])];
+      return v.reduce((a, b) => a + b, 0) / v.length;
+    }
   }
 }
 
 const BAD = 1e3;
 
 /** Residuals of one goal (already divided by its tolerance, before the weight). */
-function goalResiduals(goal: Goal, s: CornerSamples): number[] {
+export function cornerGoalResiduals(goal: Goal, s: CornerSamples, ref?: number | null): number[] {
   const tol = GOAL_META[goal.kind].tolerance;
+  if (GOAL_META[goal.kind].maximize) {
+    // Larger is better: start value / value, scaled so a 1 % gain counts about as much as removing
+    // one tolerance of miss on a target goal.
+    const v = goalValue(goal.kind, s);
+    return [v === null || !(v > 0) || !ref ? BAD : (ref / v) / Math.sqrt(tol)];
+  }
   switch (goal.kind) {
     case 'bumpSteer': {
       const curves = [s.chars.map((c) => c.toe), ...s.rackToe.map((r) => r.toe)];
@@ -241,7 +293,7 @@ function goalResiduals(goal: Goal, s: CornerSamples): number[] {
   }
 }
 
-function holdValue(g: DoubleWishboneGeometry, h: Hold): number {
+export function holdValue(g: DoubleWishboneGeometry, h: Hold): number {
   const m = armMetrics(g[h.arm]);
   return h.which === 'length' ? m.length : deg(h.which === 'inclination' ? m.inclination : m.planAngle);
 }
@@ -260,7 +312,7 @@ export interface CornerOptimizeResult extends CornerReport { lsq: LsqResult }
 export type ProgressInfo = { iteration: number; cost: number; cost0: number; evaluations: number; x: number[] };
 
 const sampleOpts = (p: CornerProblem, goals?: Goal[]) =>
-  ({ droop: p.droop, bump: p.bump, samples: p.samples, rackPositions: p.rackPositions, rollAngle: p.rollAngle, goals });
+  ({ droop: p.droop, bump: p.bump, samples: p.samples, rackPositions: p.rackPositions, rollAngle: p.rollAngle, tire: p.tire, goals });
 
 /** Before / after report for variable values x (also used for a stopped run's best point so far). */
 export function reportCorner(p: CornerProblem, x: number[]): CornerReport {
@@ -293,6 +345,8 @@ export function optimizeCorner(p: CornerProblem, onIteration?: (info: ProgressIn
   const holds = (p.holds ?? []).map((h) => ({ h, v0: holdValue(p.geometry, h) }));
   const keep = Math.sqrt(p.keepClose ?? 0.01);
   const opts = sampleOpts(p, goals);
+  const start = sampleCorner(p.geometry, opts);
+  const refs = new Map(goals.filter((g) => GOAL_META[g.kind].maximize).map((g) => [g.kind, start ? goalValue(g.kind, start) : null]));
 
   const residuals = (x: number[]): number[] | null => {
     const g = withVariables(p.geometry, vars, x);
@@ -301,7 +355,7 @@ export function optimizeCorner(p: CornerProblem, onIteration?: (info: ProgressIn
     const r: number[] = [];
     for (const goal of goals) {
       const w = Math.sqrt(goal.weight);
-      for (const v of goalResiduals(goal, s)) r.push(w * v);
+      for (const v of cornerGoalResiduals(goal, s, refs.get(goal.kind))) r.push(w * v);
     }
     // Held (locked) derived dimensions: stiff, tolerance 0.001 mm / 0.001°.
     for (const { h, v0 } of holds) r.push((holdValue(g, h) - v0) / 1e-3);

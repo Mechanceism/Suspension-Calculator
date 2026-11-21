@@ -339,11 +339,46 @@ The small-change term matters when the goals don't pin the answer down (six free
 
 **Bump steer by tie-rod placement.** The preset frees the classic knobs: inner tie-rod X (tie-rod length, along the rack) and Y, and outer tie-rod Y (heights), ±25 mm, unless locked. Outer X/Z are left fixed by default because they also change the steering arm (ratio, Ackermann); free them if you want.
 
-### Next for the optimizer
-- **Ranges for other values** (spring, tire, scalars) and the **derived-dimension ranges** (e.g. arm length between A and B).
-- **Vehicle-level goals** through the whole-car solve: inclination of the loaded tires at a lateral g, LLTD, anti-dive / anti-squat %, ride height — and optimizing several corners together (front and rear).
-- **Maximum contact area / friction** objectives from the tire model (L7 objectives below).
-- A ghost preview of the optimized corner before applying.
+### Contact area and grip ✅ (`src/core/tire/grip.ts`)
+The main optimizer goal: the largest contact area, then the highest friction at the patch, for the best grip. Both are goals per tire (corner optimizer) and for all four tires together (vehicle optimizer).
+
+**Pressure over the patch.** The patch is sampled with the slice method (L3). The air carries load evenly; the carcass and belt carry load where the tire is pushed in most. A share β of the load follows the local deflection δ (how far the undeformed tire would sink below the ground at that point):
+
+    p(x) = (1 − β)·Fz / A  +  β·Fz·δ(x) / ∫δ dA
+
+A level wheel gives a fairly even pressure; an inclined one gives a wedge of δ, so one shoulder carries much more.
+
+**Load-sensitive friction.** μ(p) = μ_ref·(p / p_ref)^(−n); friction capacity F = ∫ μ(p)·p dA. Because p^(1−n) is concave, for a given load F is largest when the pressure is even and the area large, so "largest area, then highest friction" is one number. Defaults (placeholders until there is tire data, all editable in *Tire grip model*): μ_ref = 1.0 at 100 kPa, n = 0.2, β = 0.5. Tested: even pressure with n = 0 gives exactly μ_ref·Fz; grip peaks with the wheel level and falls symmetrically with inclination; more load per tire gives a lower effective μ.
+
+**What the tire model implies.** With the **air-spring** tire the area is set by load ÷ pressure (the gas law fixes it), so geometry hardly changes one tire's area (< 1 % from 0° to 2° inclination); grip then changes only through the pressure distribution (~0.4 %). With the **stiffness** tire the patch shrinks quickly with inclination (about 45 % less area at 2°), so area and grip respond strongly. Real tires sit in between: calibrate β and n against tire data when available. Camber thrust (most tires peak slightly negative) is not in this model; use the inclination goal for that.
+
+**Corner goals.** *Contact area* and *Grip* are averaged over two cases: static (travel 0, static corner load) and the outside wheel in roll (travel = half track · tan φ, ground tilted φ relative to the body, load = static × the *outside-wheel load in roll* factor, default 1.5). The tire's ground height is re-solved for each load. Maximized goals use the residual (start ÷ value)/√tol (tol = 1 %), so a 1 % gain counts about as much as removing one tolerance of miss on a target goal.
+
+## L7: Vehicle optimizer ✅ (`src/core/optimize/vehicle.ts`)
+Same solver; every evaluation rebuilds the corners from the candidate hardpoints (corner tables with 21 samples) and runs the whole-car solve (L6) for each load case that is on: **cornering** (left turn, g), **braking** (g), **accelerating** (g). Springs are re-fitted to the static loads when *preload per corner* is on, so ride height stays at design. Variables belong to a corner design (root corner): with front and rear linked, one move applies to all four corners.
+
+| Goal | Value | Tolerance |
+|---|---|---|
+| Total grip (max) | Σ friction capacity of the four tires ÷ vehicle weight (g), averaged over the cases | 1 % |
+| Total contact area (max) | Σ patch areas, averaged over the cases | 1 % |
+| Outside-tire inclination | inclination to the ground of the two loaded tires in cornering (residual per tire) | 0.05° |
+| Roll gradient | body roll ÷ lateral g | 0.02°/g |
+| LLTD front | front share of lateral load transfer | 0.5 % |
+| Brake pitch | nose-down pitch in the braking case | 0.02° |
+| Anti-dive / anti-squat | classic geometric % at static height (brake / drive mount, bias / split) | 1 % |
+| Bump steer (every design) | as in the corner optimizer, for every design | 0.01° |
+
+Because load sensitivity rewards evenly loaded tires, the grip goal also cares how load transfer is split. Front/rear differences (LLTD) need separate front and rear designs (untick *Rear same dimensions as front*). Tested: identical front and rear give LLTD ≈ the weight split (50.4 %); moving the four UCA pivot heights reaches a 55 % target within the ranges in ~2 s; one evaluation (two cases, two designs) takes ~0.1 s.
+
+### Possible next steps for the optimizer
+- **Ranges for other values**: spring rate and length, tire pressure, static camber/toe, and **derived-dimension ranges** (e.g. arm length between A and B), not only hardpoint coordinates.
+- **Ghost preview** of the optimized geometry in the viewport before applying.
+- **Tire data**: fit μ_ref, n and β (or a full Pacejka-style model with camber thrust) from measured data, per tire.
+- **Per-tire grip model** (different tires front and rear) instead of one shared model.
+- **Steady-state cornering balance**: find the lateral g where the front or rear axle saturates (friction limit) and maximize it, instead of a fixed g.
+- **Combined cases**: braking in a turn, a weighted mix of cases, and a track-specific case list.
+- **Multi-start / global search** for problems with several local optima (the solver is local).
+- Optimize anti-roll bar rate and spring rates along with geometry.
 
 ## L7: Optimizer objectives and requirements
 

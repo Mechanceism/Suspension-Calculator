@@ -60,6 +60,7 @@ export function goToLock(info: LockInfo): void {
     if (t.corner && t.corner !== now.activeCorner) now.setActiveCorner(t.corner);
     if (t.selection) useApp.getState().select(t.selection);
     else if (t.workspace === 'corner') useApp.getState().set('leftTab', 'inspector');
+    if (t.workspace === 'vehicle') useApp.getState().set('vehicleTab', 'inputs');
     flashLockRow(info.key);
   };
   if (s.workspace === t.workspace) { finish(); return; }

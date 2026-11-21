@@ -1,7 +1,6 @@
 import { useApp } from '../store';
 import type { Model } from '../useModel';
 import { Inspector } from './Inspector';
-import { Browser } from './Browser';
 import { Hardpoints } from './Hardpoints';
 import { SpringPanel } from './SpringPanel';
 import { TirePanel } from './TirePanel';
@@ -13,7 +12,6 @@ import { OptimizePanel } from './OptimizePanel';
 
 const TABS = [
   { id: 'inspector', label: 'Inspector' },
-  { id: 'browser', label: 'Browser' },
   { id: 'table', label: 'Inputs' },
   { id: 'locks', label: 'Locks' },
   { id: 'optimize', label: 'Optimize' },
@@ -39,7 +37,6 @@ export function LeftSidebar({ model }: { model: Model }) {
       </nav>
       <div className="tab-body">
         {tab === 'inspector' && <Inspector model={model} />}
-        {tab === 'browser' && <Browser />}
         {tab === 'locks' && <LocksPanel />}
         {tab === 'optimize' && <OptimizePanel />}
         {tab === 'table' && (

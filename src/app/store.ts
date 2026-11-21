@@ -15,6 +15,8 @@ import type { TireProfile } from '../core/tire/geometry';
 import type { TireForceModel } from '../core/tire/model';
 import { parseTireSize } from '../core/tire/size';
 import { GOAL_KINDS, GOAL_META, type GoalKind } from '../core/optimize/corner';
+import { VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, type VehicleGoalKind } from '../core/optimize/vehicle';
+import { DEFAULT_GRIP } from '../core/tire/grip';
 
 export interface Field {
   text: string;
@@ -243,6 +245,8 @@ export interface AppState extends DesignState {
 
   selection: Selection;
   leftTab: 'inspector' | 'browser' | 'table' | 'locks' | 'optimize';
+  /** Vehicle workspace sidebar tab. */
+  vehicleTab: 'inputs' | 'locks' | 'optimize';
   nudgeStep: number;
   /** Round dragged joint coordinates to the grid. */
   snapToGrid: boolean;
@@ -290,6 +294,12 @@ export interface AppState extends DesignState {
   /** Write optimized coordinates into the design, keeping the previous geometry for Undo. */
   applyOptimized(updates: { key: PointKey; axis: 0 | 1 | 2; value: number }[]): void;
   undoOptimized(): void;
+  updateVehicleOptimizer(fn: (o: VehicleOptimizerSetup) => VehicleOptimizerSetup): void;
+  setGripField(key: GripKey, text: string): void;
+  /** Write vehicle-optimized coordinates into each corner design (Undo keeps the previous geometry). */
+  applyVehicleOptimized(updates: { root: CornerId; key: PointKey; axis: 0 | 1 | 2; value: number }[]): void;
+  undoVehicleOptimized(): void;
+  vehOptUndo: Partial<Record<CornerId, EditableGeometry>> | null;
   /** Geometry before the last applied optimization (for Undo), with the corner it belongs to. */
   optUndo: { root: CornerId; geom: EditableGeometry } | null;
 
@@ -451,7 +461,44 @@ export interface OptimizerSetup {
   rackCheck: Field;
   /** Weight of the "prefer small changes" term. */
   keepClose: Field;
+  /** Outside-wheel load in roll, × static corner load (contact-area / grip goals). */
+  rollLoadFactor: Field;
 }
+
+/** Whole-vehicle optimizer setup. */
+export interface VehicleOptimizerSetup {
+  /** Free coordinates, key `${root}.${PointKey}.${x|y|z}` → allowed range (absolute, mm). */
+  ranges: Record<string, { lo: Field; hi: Field }>;
+  goals: Record<VehicleGoalKind, GoalSetting>;
+  /** Load cases, g (0 = off). */
+  lateralG: Field;
+  brakingG: Field;
+  accelG: Field;
+  keepClose: Field;
+}
+
+export function defaultVehicleOptimizerSetup(): VehicleOptimizerSetup {
+  return {
+    ranges: {},
+    goals: Object.fromEntries(VEHICLE_GOAL_KINDS.map((k) => [k, { on: false, target: field(VEHICLE_GOAL_META[k].target, 'ratio'), weight: field(1, 'ratio') }])) as Record<VehicleGoalKind, GoalSetting>,
+    lateralG: field(1, 'ratio'),
+    brakingG: field(1, 'ratio'),
+    accelG: field(0, 'ratio'),
+    keepClose: field(0.01, 'ratio'),
+  };
+}
+
+/** Tire grip model (contact-patch pressure + load-sensitive friction), shared by all tires for now. */
+export const GRIP_KEYS = ['muRef', 'pRef', 'sensitivity', 'carcassShare'] as const;
+export type GripKey = (typeof GRIP_KEYS)[number];
+export const GRIP_META: Record<GripKey, { label: string; quantity: Quantity; unit: string; hint: string }> = {
+  muRef: { label: 'Friction coefficient μ', quantity: 'ratio', unit: '', hint: 'Rubber friction at the reference pressure' },
+  pRef: { label: 'at reference pressure', quantity: 'pressure', unit: 'kPa', hint: 'Contact pressure where μ applies' },
+  sensitivity: { label: 'Load sensitivity n', quantity: 'ratio', unit: '', hint: 'μ ∝ (p / p_ref)^−n. 0 = none; rubber is typically 0.1–0.3' },
+  carcassShare: { label: 'Carcass share of load', quantity: 'ratio', unit: '', hint: '0 = even pressure over the patch (pure air spring); 1 = pressure follows the local tire deflection' },
+};
+export const defaultGrip = (): Record<GripKey, Field> =>
+  Object.fromEntries(GRIP_KEYS.map((k) => [k, field(DEFAULT_GRIP[k], GRIP_META[k].quantity)])) as Record<GripKey, Field>;
 
 export const OPT_DEFAULT_RANGE = 25;
 
@@ -462,6 +509,7 @@ export function defaultOptimizerSetup(): OptimizerSetup {
     rollAngle: field(2, 'angle'),
     rackCheck: field(0),
     keepClose: field(0.01, 'ratio'),
+    rollLoadFactor: field(1.5, 'ratio'),
   };
 }
 
@@ -494,6 +542,10 @@ export interface DesignState {
   locks: Record<string, true>;
   /** Optimizer setup per corner design (keyed by root corner). */
   optimizer: Partial<Record<CornerId, OptimizerSetup>>;
+  /** Whole-vehicle optimizer setup. */
+  vehicleOptimizer: VehicleOptimizerSetup;
+  /** Tire grip model. */
+  grip: Record<GripKey, Field>;
 }
 
 /** The working (active corner) fields as a CornerDesign. */
@@ -533,7 +585,7 @@ export const pickDesign = (s: DesignState): DesignState => ({
   droop: s.droop, bump: s.bump, driver: s.driver,
   corners: s.corners, links: s.links, settings: s.settings, activeCorner: s.activeCorner,
   vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode, shared: s.shared, locks: s.locks,
-  optimizer: s.optimizer,
+  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip,
 });
 
 /** The default layout (File → New). */
@@ -600,6 +652,8 @@ export function defaultDesign(presetId = 'C'): DesignState {
     shared: { front: defaultShared(), rear: defaultShared() },
     locks: {},
     optimizer: {},
+    vehicleOptimizer: defaultVehicleOptimizerSetup(),
+    grip: defaultGrip(),
   };
 }
 
@@ -721,6 +775,48 @@ export const useApp = create<AppState>((set, get) => ({
     if (!s.optUndo || s.optUndo.root !== rootOf(s.activeCorner, s.links)) return;
     set({ geom: s.optUndo.geom, optUndo: null, presetId: 'custom' });
   },
+  updateVehicleOptimizer: (fn) => set({ vehicleOptimizer: fn(get().vehicleOptimizer) }),
+  setGripField: (key, text) => {
+    const g = get().grip;
+    set({ grip: { ...g, [key]: parseField(text, GRIP_META[key].quantity, g[key]) } });
+  },
+  vehOptUndo: null,
+  applyVehicleOptimized: (updates) => {
+    const s = get();
+    const merged = mergedCorners(s);
+    const activeRoot = rootOf(s.activeCorner, s.links);
+    const before: Partial<Record<CornerId, EditableGeometry>> = {};
+    const corners = { ...s.corners };
+    let working = s.geom;
+    for (const root of new Set(updates.map((u) => u.root))) {
+      const g0 = root === activeRoot ? s.geom : merged[root].geom;
+      before[root] = g0;
+      const points = { ...g0.points };
+      for (const u of updates.filter((x) => x.root === root)) {
+        const triple = [...points[u.key]] as [Field, Field, Field];
+        triple[u.axis] = field(Number(u.value.toFixed(2)));
+        points[u.key] = triple;
+      }
+      const g1 = { ...g0, points };
+      if (root === activeRoot) working = g1;
+      else corners[root] = { ...merged[root], geom: g1 };
+    }
+    set({ corners, geom: working, presetId: 'custom', vehOptUndo: before });
+  },
+  undoVehicleOptimized: () => {
+    const s = get();
+    const snap = s.vehOptUndo;
+    if (!snap) return;
+    const merged = mergedCorners(s);
+    const activeRoot = rootOf(s.activeCorner, s.links);
+    const corners = { ...s.corners };
+    let working = s.geom;
+    for (const root of Object.keys(snap) as CornerId[]) {
+      if (root === activeRoot) working = snap[root]!;
+      else corners[root] = { ...merged[root], geom: snap[root]! };
+    }
+    set({ corners, geom: working, presetId: 'custom', vehOptUndo: null });
+  },
   setCornerSetting: (id, key, value) => {
     const s = get();
     set({ settings: { ...s.settings, [id]: { ...s.settings[id], [key]: value } }, ...(key === 'steered' && !value && id === s.activeCorner ? { rack: 0 } : {}) });
@@ -739,6 +835,7 @@ export const useApp = create<AppState>((set, get) => ({
 
   selection: null,
   leftTab: 'inspector',
+  vehicleTab: 'inputs',
   nudgeStep: 1,
   snapToGrid: true,
   gridSize: 1,

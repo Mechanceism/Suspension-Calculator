@@ -19,3 +19,5 @@ export * from './vehicle/cornerTable';
 export * from './vehicle/vehicle';
 export * from './optimize/leastSquares';
 export * from './optimize/corner';
+export * from './tire/grip';
+export * from './optimize/vehicle';

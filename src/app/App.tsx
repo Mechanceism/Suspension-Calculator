@@ -1,8 +1,9 @@
-import { useEffect } from 'react';
+import { useEffect, useState, type PointerEvent as RPointerEvent } from 'react';
 import { useModel } from './useModel';
 import { useApp, pickDesign } from './store';
 import { designSnapshot } from './project';
 import { FileMenu, Notice } from './panels/FileMenu';
+import { ViewMenu } from './panels/ViewMenu';
 import { save, useDirty } from './fileActions';
 import { Viewport } from './viewport/Viewport';
 import { LeftSidebar } from './panels/LeftSidebar';
@@ -12,7 +13,7 @@ import { Plots } from './panels/Plots';
 import { useVehicle } from './useVehicle';
 import { VehicleViewport } from './viewport/VehicleView';
 import { switchWorkspace } from './viewport/SafeHtml';
-import { VehicleInputs, VehicleResults, VehicleMotionBar } from './panels/VehiclePanels';
+import { VehicleSidebar, VehicleResults, VehicleMotionBar } from './panels/VehiclePanels';
 
 export function App() {
   const model = useModel();
@@ -57,11 +58,16 @@ export function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  // Side panel widths: drag the edges to resize (not saved; the defaults come back on reload).
+  const [leftW, setLeftW] = useState(330);
+  const [rightW, setRightW] = useState(320);
+
   return (
-    <div className="app">
+    <div className="app" style={{ gridTemplateColumns: `${leftW}px 5px minmax(200px, 1fr) 5px ${rightW}px` }}>
       <header className="topbar">
         <h1>Suspension Calculator</h1>
         <FileMenu />
+        <ViewMenu />
         <nav className="workspace-switch" role="tablist" aria-label="Workspace">
           <button role="tab" aria-selected={workspace === 'corner'} className={workspace === 'corner' ? 'on' : ''} onClick={() => setWorkspace('corner')}>Corner</button>
           <button role="tab" aria-selected={workspace === 'vehicle'} className={workspace === 'vehicle' ? 'on' : ''} onClick={() => setWorkspace('vehicle')}>Vehicle</button>
@@ -74,10 +80,12 @@ export function App() {
           <aside className="left">
             <LeftSidebar model={model} />
           </aside>
+          <Splitter area="lsplit" width={leftW} setWidth={setLeftW} sign={1} />
           <main className="center">
             <Viewport model={model} />
             <MotionBar model={model} />
           </main>
+          <Splitter area="rsplit" width={rightW} setWidth={setRightW} sign={-1} />
           <aside className="right">
             <Readout model={model} />
             <Plots model={model} />
@@ -85,14 +93,32 @@ export function App() {
         </>
       ) : (
         <>
-          <aside className="left"><div className="tab-body"><VehicleInputs model={vehicle} /></div></aside>
+          <aside className="left"><VehicleSidebar model={vehicle} /></aside>
+          <Splitter area="lsplit" width={leftW} setWidth={setLeftW} sign={1} />
           <main className="center">
             <VehicleViewport model={vehicle} />
             <VehicleMotionBar />
           </main>
+          <Splitter area="rsplit" width={rightW} setWidth={setRightW} sign={-1} />
           <aside className="right"><VehicleResults model={vehicle} /></aside>
         </>
       )}
     </div>
+  );
+}
+
+/** Drag handle between a side panel and the viewport. */
+function Splitter({ area, width, setWidth, sign }: { area: string; width: number; setWidth: (w: number) => void; sign: 1 | -1 }) {
+  const [drag, setDrag] = useState<{ x: number; w: number } | null>(null);
+  const clamp = (w: number) => Math.round(Math.min(Math.max(w, 220), Math.min(760, window.innerWidth * 0.45)));
+  return (
+    <div
+      className={`splitter${drag ? ' active' : ''}`} style={{ gridArea: area }}
+      role="separator" aria-orientation="vertical" title="Drag to resize · double-click to reset"
+      onPointerDown={(e: RPointerEvent) => { (e.target as Element).setPointerCapture(e.pointerId); setDrag({ x: e.clientX, w: width }); }}
+      onPointerMove={(e: RPointerEvent) => { if (drag) setWidth(clamp(drag.w + sign * (e.clientX - drag.x))); }}
+      onPointerUp={(e: RPointerEvent) => { (e.target as Element).releasePointerCapture(e.pointerId); setDrag(null); }}
+      onDoubleClick={() => setWidth(sign === 1 ? 330 : 320)}
+    />
   );
 }

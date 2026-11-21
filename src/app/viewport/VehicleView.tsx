@@ -13,7 +13,7 @@ import { closestPointOnLine, lineThrough } from '../../core/math/geom';
 import { CORNER_IDS, placement, poseFns, type CornerId } from '../../core/vehicle/vehicle';
 import { useApp, FORCE_KEYS, FORCE_META, type ForceKey } from '../store';
 import type { VehicleModel, VehicleCornerView } from '../useVehicle';
-import { CameraRig, DevProjectBridge, ViewButtons, type FocusTarget } from './Viewport';
+import { CameraRig, DevProjectBridge, ViewButtons, useMiddleDoubleClick, type FocusTarget } from './Viewport';
 import { COLORS } from './Scene';
 import { Joint, Seg, Polyline, Tri, Wheel, PatchMesh, Coilover, Arrow } from './primitives';
 
@@ -21,6 +21,7 @@ import { Joint, Seg, Polyline, Tri, Wheel, PatchMesh, Coilover, Arrow } from './
  *  scale on the group would flip the line quads' winding and cull them). */
 function CornerDrawing({ view, onOpen, active, wheelbase }: { view: VehicleCornerView; onOpen: () => void; active: boolean; wheelbase: number }) {
   const simpleTire = useApp((s) => s.simpleTire);
+  const vis = useApp((s) => s.visibility);
   const pl = placement(view.id, wheelbase);
   const raw = view.state.points;
   const p = {
@@ -39,20 +40,21 @@ function CornerDrawing({ view, onOpen, active, wheelbase }: { view: VehicleCorne
       onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = 'pointer'; }}
       onPointerOut={() => { document.body.style.cursor = ''; }}
     >
-      <Tri a={p.ucaFwd} b={p.ucaAft} c={p.ucaOut} color={COLORS.uca} opacity={0.22} />
-      <Polyline pts={[p.ucaFwd, p.ucaOut, p.ucaAft]} color={COLORS.uca} width={w} />
-      <Tri a={p.lcaFwd} b={p.lcaAft} c={p.lcaOut} color={COLORS.lca} opacity={0.22} />
-      <Polyline pts={[p.lcaFwd, p.lcaOut, p.lcaAft]} color={COLORS.lca} width={w} />
-      <Polyline pts={[p.ucaOut, p.lcaOut, p.trOuter, p.ucaOut]} color={COLORS.upright} width={w} />
-      <Seg a={foot} b={p.wheelCenter} color={COLORS.upright} width={w} />
-      <Seg a={p.trInner} b={p.trOuter} color={COLORS.tieRod} width={w} />
-      {p.damperChassis && p.damperArm && <Coilover a={p.damperChassis} b={p.damperArm} color={COLORS.spring} radius={22} coils={7} />}
-      {[p.ucaOut, p.lcaOut].map((q, i) => <Joint key={i} p={q} color={i ? COLORS.lca : COLORS.uca} r={8} />)}
-      <Wheel
+      {vis.uca && <Tri a={p.ucaFwd} b={p.ucaAft} c={p.ucaOut} color={COLORS.uca} opacity={0.22} />}
+      {vis.uca && <Polyline pts={[p.ucaFwd, p.ucaOut, p.ucaAft]} color={COLORS.uca} width={w} />}
+      {vis.lca && <Tri a={p.lcaFwd} b={p.lcaAft} c={p.lcaOut} color={COLORS.lca} opacity={0.22} />}
+      {vis.lca && <Polyline pts={[p.lcaFwd, p.lcaOut, p.lcaAft]} color={COLORS.lca} width={w} />}
+      {vis.upright && <Polyline pts={[p.ucaOut, p.lcaOut, p.trOuter, p.ucaOut]} color={COLORS.upright} width={w} />}
+      {vis.upright && <Seg a={foot} b={p.wheelCenter} color={COLORS.upright} width={w} />}
+      {vis.tieRod && <Seg a={p.trInner} b={p.trOuter} color={COLORS.tieRod} width={w} />}
+      {vis.spring && p.damperChassis && p.damperArm && <Coilover a={p.damperChassis} b={p.damperArm} color={COLORS.spring} radius={22} coils={7} />}
+      {(vis.uca || vis.upright) && <Joint p={p.ucaOut} color={COLORS.uca} r={8} />}
+      {(vis.lca || vis.upright) && <Joint p={p.lcaOut} color={COLORS.lca} r={8} />}
+      {vis.wheel && <Wheel
         center={p.wheelCenter} axis={axis} radius={view.profile.radius} width={view.profile.width}
         rimRadius={view.profile.rimRadius} color={active ? '#ffffff' : COLORS.wheel} simple={simpleTire}
         shoulder={simpleTire ? 0 : view.profile.shoulderRadius}
-      />
+      />}
     </group>
   );
 }
@@ -181,7 +183,7 @@ function VehicleScene({ model, arrows }: { model: VehicleModel; arrows: ForceArr
       )}
       {/* Chassis (everything sprung) moves with the solved pose. */}
       <group position={[0, pose.heave, 0]} rotation={euler}>
-        <Frame model={model} />
+        {vis.chassis && <Frame model={model} />}
         {CORNER_IDS.map((id) => {
           const v = model.corners[id];
           if (!v) return null;
@@ -286,8 +288,9 @@ export function VehicleViewport({ model }: { model: VehicleModel | null }) {
   const arrows = useMemo(() => forceList(model ?? ({} as VehicleModel)).filter((a) => vis[a.kind]), [model, vis]);
   const labels = useMemo(() => overlayLabels(model, arrows, showValues, k), [model, arrows, showValues, k]);
   const layer = useRef<HTMLDivElement>(null);
+  const onMiddle = useMiddleDoubleClick();
   return (
-    <div className="viewport">
+    <div className="viewport" onMouseDown={onMiddle}>
       <Canvas key={projection} dpr={[1, 2]} style={{ position: 'absolute', inset: 0 }}>
         <color attach="background" args={[bg]} />
         {projection === 'orthographic'

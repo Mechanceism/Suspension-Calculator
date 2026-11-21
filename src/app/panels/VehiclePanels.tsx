@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { LocksPanel } from './LocksPanel';
+import { VehicleOptimizePanel } from './OptimizePanel';
 import { CORNER_IDS, type CornerId } from '../../core/vehicle/vehicle';
 import { deg } from '../../core/suspension/characteristics';
 import {
@@ -91,12 +92,32 @@ export function CornerSetup({ compact = false }: { compact?: boolean }) {
   );
 }
 
-function LocksSection() {
-  const n = useApp((s) => Object.keys(s.locks).length);
+const VEHICLE_TABS = [
+  { id: 'inputs', label: 'Inputs' },
+  { id: 'locks', label: 'Locks' },
+  { id: 'optimize', label: 'Optimize' },
+] as const;
+
+/** Vehicle workspace sidebar: inputs, locks, and the whole-vehicle optimizer. */
+export function VehicleSidebar({ model }: { model: VehicleModel | null }) {
+  const tab = useApp((s) => s.vehicleTab);
+  const set = useApp((s) => s.set);
+  const nLocks = useApp((s) => Object.keys(s.locks).length);
   return (
-    <Section title={`Locks (${n})`} open={n > 0}>
-      <LocksPanel compact />
-    </Section>
+    <>
+      <nav className="tabs" role="tablist">
+        {VEHICLE_TABS.map((t) => (
+          <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? 'on' : ''} onClick={() => set('vehicleTab', t.id)}>
+            {t.label}{t.id === 'locks' && nLocks > 0 && <span className="tab-count">{nLocks}</span>}
+          </button>
+        ))}
+      </nav>
+      <div className="tab-body">
+        {tab === 'inputs' && <VehicleInputs model={model} />}
+        {tab === 'locks' && <LocksPanel />}
+        {tab === 'optimize' && <VehicleOptimizePanel />}
+      </div>
+    </>
   );
 }
 
@@ -144,7 +165,6 @@ export function VehicleInputs({ model }: { model: VehicleModel | null }) {
       <Section title="Corners">
         <CornerSetup />
       </Section>
-      <LocksSection />
     </div>
   );
 }

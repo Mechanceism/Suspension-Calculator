@@ -101,8 +101,24 @@ export function DevProjectBridge() {
   return null;
 }
 
+/**
+ * Double middle-click anywhere in a viewport: fit everything in view. (Browsers fire no dblclick for
+ * the middle button, so two middle presses within 400 ms count.)
+ */
+export function useMiddleDoubleClick() {
+  const last = useRef(0);
+  return (e: { button: number; preventDefault: () => void }) => {
+    if (e.button !== 1) return;
+    e.preventDefault(); // no auto-scroll
+    const t = performance.now();
+    if (t - last.current < 400) { useApp.getState().focusOn('corner'); last.current = 0; }
+    else last.current = t;
+  };
+}
+
 export function ViewButtons({ measure = true }: { measure?: boolean }) {
   const requestView = useApp((s) => s.requestView);
+  const focusOn = useApp((s) => s.focusOn);
   const projection = useApp((s) => s.projection);
   const set = useApp((s) => s.set);
   const measureMode = useApp((s) => s.measureMode);
@@ -120,6 +136,7 @@ export function ViewButtons({ measure = true }: { measure?: boolean }) {
       >
         {projection === 'orthographic' ? 'Ortho' : 'Persp'}
       </button>
+      <button onClick={() => focusOn('corner')} title="Fit everything in view (or double middle-click)">⤢ Fit</button>
     </div>
   );
 }
@@ -133,8 +150,9 @@ export function Viewport({ model }: { model: Model }) {
   const radius = useApp((s) => s.geom.scalars.tireDiameter.value / 2);
   const target = focusSphere(model, focus, radius);
   const bg = useMemo(() => getComputedStyle(document.documentElement).getPropertyValue('--viewport-bg').trim() || '#16191e', []);
+  const onMiddle = useMiddleDoubleClick();
   return (
-    <div className="viewport">
+    <div className="viewport" onMouseDown={onMiddle}>
       <Canvas
         key={projection} dpr={[1, 2]} style={{ position: 'absolute', inset: 0 }}
         onPointerMissed={(e) => { if (e.type === 'click' && !measureMode) select(null); }}

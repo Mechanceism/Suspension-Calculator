@@ -1,12 +1,23 @@
 /**
- * App side of the corner optimizer: turns the active corner's setup (free coordinates + ranges, goals,
- * locks) into a CornerProblem, and runs it in a Web Worker so the UI stays responsive.
+ * App side of the optimizers: turns the setups (free coordinates + ranges, goals, locks) into a
+ * CornerProblem or a VehicleProblem, and runs them in a Web Worker so the UI stays responsive.
  */
 import {
-  GOAL_KINDS, type CornerProblem, type CornerOptimizeResult, type CornerReport, type HardpointId, type ProgressInfo, type Variable, type Hold,
+  GOAL_KINDS, GOAL_META, reportCorner, variableValue,
+  type CornerProblem, type CornerReport, type HardpointId, type ProgressInfo, type Variable, type Hold,
 } from '../core/optimize/corner';
-import { reportCorner, variableValue } from '../core/optimize/corner';
-import { POINT_KEYS, rootOf, toGeometry, defaultOptimizerSetup, type AppState, type PointKey, type OptimizerSetup } from './store';
+import {
+  VEHICLE_GOAL_KINDS, reportVehicle,
+  type VehicleProblem, type VehicleReport, type VehicleVariable, type VehicleHold,
+} from '../core/optimize/vehicle';
+import type { GripModel } from '../core/tire/grip';
+import type { TireForceModel } from '../core/tire/model';
+import { CORNER_IDS, type AxleShared, type CornerId } from '../core/vehicle/vehicle';
+import { vec3 } from '../core/math/vec3';
+import {
+  POINT_KEYS, rootOf, toGeometry, toProfile, toForceModel, mergedCorners, vehicleStaticLoads, defaultOptimizerSetup, GRIP_KEYS,
+  type AppState, type PointKey, type OptimizerSetup, type SharedDesign, type GripKey, type Field,
+} from './store';
 import { STATE_KEY } from './anchors';
 import { lockKeys, pointAxisLocked } from './locks';
 
@@ -17,6 +28,14 @@ export function parseVarKey(key: string): { k: PointKey; axis: 0 | 1 | 2 } | nul
   const axis = AXES.indexOf(a as 'x');
   return (POINT_KEYS as readonly string[]).includes(k!) && axis >= 0 ? { k: k as PointKey, axis: axis as 0 | 1 | 2 } : null;
 }
+/** Vehicle optimizer keys carry the design (root corner): `FL.trInner.y`. */
+export const vehVarKey = (root: CornerId, k: PointKey, axis: 0 | 1 | 2) => `${root}.${varKey(k, axis)}`;
+export function parseVehVarKey(key: string): { root: CornerId; k: PointKey; axis: 0 | 1 | 2 } | null {
+  const i = key.indexOf('.');
+  const root = key.slice(0, i);
+  const rest = parseVarKey(key.slice(i + 1));
+  return (CORNER_IDS as string[]).includes(root) && rest ? { root: root as CornerId, ...rest } : null;
+}
 const POINT_OF: Record<HardpointId, PointKey> = Object.fromEntries(
   Object.entries(STATE_KEY).map(([pk, hp]) => [hp, pk]),
 ) as Record<HardpointId, PointKey>;
@@ -24,15 +43,41 @@ export const pointKeyOf = (id: HardpointId): PointKey => POINT_OF[id];
 
 export const setupOf = (s: AppState): OptimizerSetup => s.optimizer[rootOf(s.activeCorner, s.links)] ?? defaultOptimizerSetup();
 
-export interface BuiltProblem {
-  problem: CornerProblem;
-  /** Free coordinates skipped because they're locked. */
+/** A "rigid" tire is modelled as a very stiff one so every corner has a defined tire force. */
+export const RIGID_TIRE: TireForceModel = { kind: 'stiffness', rate: 1e5 };
+
+export const gripModelOf = (g: Record<GripKey, Field>): GripModel =>
+  Object.fromEntries(GRIP_KEYS.map((k) => [k, g[k].value])) as unknown as GripModel;
+
+/** Shared components of an axle, in solver units. */
+export const toAxleShared = (a: SharedDesign): AxleShared => ({
+  antiRollBar: a.antiRollBar === 'wheelRate' ? { kind: 'wheelRate', rate: a.arbRate.value }
+    : a.antiRollBar === 'torsionBar'
+      // N·m/deg → N·mm/rad
+      ? { kind: 'torsionBar', barRate: a.barRate.value * 1000 * (180 / Math.PI), lever: a.lever.value }
+      : { kind: 'none' },
+  heaveSpring: a.heaveSpring === 'wheelRate' ? { kind: 'wheelRate', rate: a.heaveRate.value } : { kind: 'none' },
+});
+
+const holdsFor = (s: AppState, root: CornerId): Hold[] => {
+  const out: Hold[] = [];
+  for (const arm of ['uca', 'lca'] as const) {
+    for (const which of ['length', 'inclination', 'planAngle'] as const) {
+      if (s.locks[lockKeys.derived(root, arm, which)]) out.push({ arm, which });
+    }
+  }
+  return out;
+};
+
+export interface BuiltProblem<P> {
+  problem: P;
+  /** Free coordinates skipped because they're locked (or belong to a design that no longer exists). */
   skippedLocked: string[];
   /** Why it can't run yet (no goals, no variables…). */
   blockers: string[];
 }
 
-export function buildProblem(s: AppState): BuiltProblem {
+export function buildProblem(s: AppState): BuiltProblem<CornerProblem> {
   const o = setupOf(s);
   const root = rootOf(s.activeCorner, s.links);
   const geometry = toGeometry(s.geom);
@@ -44,40 +89,98 @@ export function buildProblem(s: AppState): BuiltProblem {
     if (pointAxisLocked(s.locks, root, v.k, v.axis, s.geom.damperArm)) { skippedLocked.push(key); continue; }
     variables.push({ point: STATE_KEY[v.k] as HardpointId, axis: v.axis, lo: r.lo.value, hi: r.hi.value });
   }
-  const holds: Hold[] = [];
-  for (const arm of ['uca', 'lca'] as const) {
-    for (const which of ['length', 'inclination', 'planAngle'] as const) {
-      if (s.locks[lockKeys.derived(root, arm, which)]) holds.push({ arm, which });
-    }
-  }
   const goals = GOAL_KINDS.filter((k) => o.goals[k].on).map((k) => ({ kind: k, target: o.goals[k].target.value, weight: o.goals[k].weight.value }));
   const rack = Math.abs(o.rackCheck.value);
+  const model = toForceModel(s.tireModel, s.tire, s.volumeChange);
+  const staticLoad = s.cornerLoadMode === 'vehicle'
+    ? vehicleStaticLoads(s.vehicle, mergedCorners(s), s.links)[s.activeCorner]
+    : s.spring.cornerLoad.value;
   const problem: CornerProblem = {
     geometry, droop: -Math.abs(s.droop), bump: Math.abs(s.bump), samples: 9,
     rackPositions: rack > 0 && s.settings[s.activeCorner].steered ? [-rack, rack] : [],
-    rollAngle: o.rollAngle.value, goals, variables, holds, keepClose: Math.max(0, o.keepClose.value),
+    rollAngle: o.rollAngle.value, goals, variables, holds: holdsFor(s, root), keepClose: Math.max(0, o.keepClose.value),
+    tire: model ? { profile: toProfile(s.geom), model, staticLoad, rollLoadFactor: o.rollLoadFactor.value, grip: gripModelOf(s.grip) } : undefined,
   };
   const blockers: string[] = [];
   if (!goals.length) blockers.push('Turn on at least one goal.');
   if (!variables.length) blockers.push(skippedLocked.length ? 'Every free coordinate is locked.' : 'Add at least one free coordinate.');
   if (goals.length && goals.every((g) => g.weight <= 0)) blockers.push('Every goal has weight 0.');
+  if (!model && goals.some((g) => GOAL_META[g.kind].maximize)) blockers.push('Contact area and grip need a tire model (Tire: stiffness or air spring).');
   return { problem, skippedLocked, blockers };
 }
 
-export interface RunHandle {
-  stop(): void;
-  done: Promise<{ result: CornerReport & { status: string; iterations: number; cost0: number; cost: number }; stopped: boolean }>;
+/** The corner designs in use (root corners) and which corners share each. */
+export function designRoots(s: Pick<AppState, 'links'>): { root: CornerId; corners: CornerId[] }[] {
+  const roots = [...new Set(CORNER_IDS.map((id) => rootOf(id, s.links)))];
+  return roots.map((root) => ({ root, corners: CORNER_IDS.filter((id) => rootOf(id, s.links) === root) }));
 }
 
-/** Run in a worker. Stop keeps the best point found so far. */
-export function runOptimizer(problem: CornerProblem, onProgress: (p: ProgressInfo) => void): RunHandle {
+export function buildVehicleProblem(s: AppState): BuiltProblem<VehicleProblem> {
+  const o = s.vehicleOptimizer;
+  const all = mergedCorners(s);
+  const roots = designRoots(s).map((r) => r.root);
+  const designs: VehicleProblem['designs'] = {};
+  for (const root of roots) {
+    const d = all[root];
+    designs[root] = {
+      geometry: toGeometry(d.geom), profile: toProfile(d.geom), model: toForceModel(d.tireModel, d.tire, d.volumeChange) ?? RIGID_TIRE,
+      springRate: d.spring.springRate.value, freeLength: d.spring.freeLength.value, unsprungMass: d.spring.unsprungMass.value,
+      bumpStop: d.bumpStop ? { length: d.damper.bumpStopLength.value, rate: d.damper.bumpStopRate.value } : undefined,
+    };
+  }
+  const variables: VehicleVariable[] = [];
+  const skippedLocked: string[] = [];
+  for (const [key, r] of Object.entries(o.ranges)) {
+    const v = parseVehVarKey(key);
+    if (!v) continue;
+    if (!roots.includes(v.root) || pointAxisLocked(s.locks, v.root, v.k, v.axis, all[v.root].geom.damperArm)) { skippedLocked.push(key); continue; }
+    variables.push({ root: v.root, point: STATE_KEY[v.k] as HardpointId, axis: v.axis, lo: r.lo.value, hi: r.hi.value });
+  }
+  const holds: VehicleHold[] = roots.flatMap((root) => holdsFor(s, root).map((h) => ({ ...h, root })));
+  const goals = VEHICLE_GOAL_KINDS.filter((k) => o.goals[k].on).map((k) => ({ kind: k, target: o.goals[k].target.value, weight: o.goals[k].weight.value }));
+  const v = s.vehicle;
+  const dl = (a: SharedDesign) => (a.antiRollBar === 'torsionBar' ? vec3(a.dropLink[0].value, a.dropLink[1].value, a.dropLink[2].value) : null);
+  const problem: VehicleProblem = {
+    designs,
+    roots: Object.fromEntries(CORNER_IDS.map((id) => [id, rootOf(id, s.links)])) as Record<CornerId, CornerId>,
+    settings: Object.fromEntries(CORNER_IDS.map((id) => [id, {
+      brake: s.settings[id].brake, drive: s.settings[id].powered ? s.settings[id].drive : 'none',
+    }])) as VehicleProblem['settings'],
+    mass: v.mass.value, cg: { x: v.cgX.value, height: v.cgY.value, z: v.cgZ.value }, wheelbase: v.wheelbase.value,
+    brakeBias: v.brakeBias.value / 100, driveSplit: v.driveSplit.value / 100, autoPreload: s.autoPreload,
+    shared: { front: toAxleShared(s.shared.front), rear: toAxleShared(s.shared.rear) },
+    dropLinks: { front: dl(s.shared.front), rear: dl(s.shared.rear) },
+    droop: Math.abs(s.droop), bump: Math.abs(s.bump),
+    cases: { lateralG: Math.max(0, o.lateralG.value), brakingG: Math.max(0, o.brakingG.value), accelG: Math.max(0, o.accelG.value) },
+    goals, variables, holds, grip: gripModelOf(s.grip), keepClose: Math.max(0, o.keepClose.value),
+  };
+  const blockers: string[] = [];
+  if (!goals.length) blockers.push('Turn on at least one goal.');
+  if (!variables.length) blockers.push(skippedLocked.length ? 'Every free coordinate is locked.' : 'Add at least one free coordinate.');
+  if (goals.length && goals.every((g) => g.weight <= 0)) blockers.push('Every goal has weight 0.');
+  const c = problem.cases;
+  if (!c.lateralG && !c.brakingG && !c.accelG && goals.some((g) => !['antiDive', 'antiSquat', 'bumpSteer'].includes(g.kind))) {
+    blockers.push('Turn on at least one load case (cornering, braking or accelerating).');
+  }
+  return { problem, skippedLocked, blockers };
+}
+
+export type RunResult<R> = R & { status: string; iterations: number; cost0: number; cost: number };
+export interface RunHandle<R> {
+  stop(): void;
+  done: Promise<{ result: RunResult<R>; stopped: boolean }>;
+}
+
+type Msg<R> = { type: 'progress'; info: ProgressInfo } | { type: 'done'; result: R & { lsq: { status: string; iterations: number; cost0: number; cost: number } } } | { type: 'error'; message: string };
+
+function run<P, R>(kind: 'corner' | 'vehicle', problem: P, onProgress: (p: ProgressInfo) => void, reportAt: (x: number[] | null) => R): RunHandle<R> {
   const worker = new Worker(new URL('./optimizer.worker.ts', import.meta.url), { type: 'module' });
   let last: ProgressInfo | null = null;
-  let finish: (v: Awaited<RunHandle['done']>) => void = () => {};
+  let finish: (v: Awaited<RunHandle<R>['done']>) => void = () => {};
   let fail: (e: unknown) => void = () => {};
-  const done = new Promise<Awaited<RunHandle['done']>>((res, rej) => { finish = res; fail = rej; });
+  const done = new Promise<Awaited<RunHandle<R>['done']>>((res, rej) => { finish = res; fail = rej; });
   worker.onmessage = (e: MessageEvent) => {
-    const m = e.data as { type: 'progress'; info: ProgressInfo } | { type: 'done'; result: CornerOptimizeResult } | { type: 'error'; message: string };
+    const m = e.data as Msg<R>;
     if (m.type === 'progress') { last = m.info; onProgress(m.info); return; }
     worker.terminate();
     if (m.type === 'error') { fail(new Error(m.message)); return; }
@@ -85,15 +188,20 @@ export function runOptimizer(problem: CornerProblem, onProgress: (p: ProgressInf
     finish({ result: { ...r, status: r.lsq.status, iterations: r.lsq.iterations, cost0: r.lsq.cost0, cost: r.lsq.cost }, stopped: false });
   };
   worker.onerror = (e) => { worker.terminate(); fail(new Error(e.message || 'Optimizer worker failed')); };
-  worker.postMessage(problem);
+  worker.postMessage({ kind, problem });
   return {
     done,
     stop: () => {
       worker.terminate();
       // Best point so far (or the start, if no iteration finished yet).
-      const x = last?.x ?? problem.variables.map((v) => variableValue(problem.geometry, v));
-      const report = reportCorner(problem, x);
+      const report = reportAt(last?.x ?? null);
       finish({ result: { ...report, status: 'stopped', iterations: last?.iteration ?? 0, cost0: last?.cost0 ?? NaN, cost: last?.cost ?? NaN }, stopped: true });
     },
   };
 }
+
+export const runOptimizer = (problem: CornerProblem, onProgress: (p: ProgressInfo) => void): RunHandle<CornerReport> =>
+  run('corner', problem, onProgress, (x) => reportCorner(problem, x ?? problem.variables.map((v) => variableValue(problem.geometry, v))));
+
+export const runVehicleOptimizer = (problem: VehicleProblem, onProgress: (p: ProgressInfo) => void): RunHandle<VehicleReport> =>
+  run('vehicle', problem, onProgress, (x) => reportVehicle(problem, x ?? problem.variables.map((v) => variableValue(problem.designs[v.root]!.geometry, v))));

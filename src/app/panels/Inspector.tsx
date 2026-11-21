@@ -2,7 +2,7 @@
  * Inspector: the editable variables of whatever is selected (click a part or joint in the viewport),
  * plus its 1st and 2nd family so related settings are one click away.
  */
-import { useApp, POINT_NAMES, SPRING_META, type ComponentId, type PointKey } from '../store';
+import { useApp, POINT_NAMES, activeParam, SPRING_META, vehicleStaticLoads, mergedCorners, type ComponentId, type PointKey } from '../store';
 import { toGeometry } from '../store';
 import { componentDefs, family, ownersOf, POINT_LABELS } from '../components';
 import { armMetrics } from '../../core/suspension/armGeometry';
@@ -54,7 +54,7 @@ function PointsTable({ points }: { points: PointKey[] }) {
         {points.map((k) => (
           <tr key={k}>
             <td>
-              <button className="link-btn" title={`${POINT_NAMES[k]} — open joint menu`} onClick={() => select({ kind: 'point', id: k })}>
+              <button className="link-btn" title={`${activeParam(POINT_NAMES[k])} — open joint menu`} onClick={() => select({ kind: 'point', id: k })}>
                 {POINT_LABELS[k]}
               </button>
             </td>
@@ -137,14 +137,26 @@ function WheelSection() {
 function ChassisSection() {
   const spring = useApp((s) => s.spring);
   const setSpringField = useApp((s) => s.setSpringField);
+  const mode = useApp((s) => s.cornerLoadMode);
+  const vehicleLoad = useApp((s) => vehicleStaticLoads(s.vehicle, mergedCorners(s), s.links)[s.activeCorner]);
   const droop = useApp((s) => s.droop);
   const bump = useApp((s) => s.bump);
   const set = useApp((s) => s.set);
   return (
     <>
-      <FieldRows rows={(['cornerLoad', 'unsprungMass'] as const).map((k) => ({
-        label: SPRING_META[k].label, field: spring[k], unit: SPRING_META[k].unit, onCommit: (t: string) => setSpringField(k, t),
-      }))} />
+      <div className="row">
+        <span className="muted">Corner load</span>
+        <select value={mode} onChange={(e) => set('cornerLoadMode', e.target.value as 'vehicle' | 'manual')}>
+          <option value="vehicle">From vehicle CG ({vehicleLoad.toFixed(0)} N)</option>
+          <option value="manual">Manual (study this corner alone)</option>
+        </select>
+      </div>
+      <FieldRows rows={[
+        ...(mode === 'manual'
+          ? [{ label: SPRING_META.cornerLoad.label, field: spring.cornerLoad, unit: 'N', onCommit: (t: string) => setSpringField('cornerLoad', t) }]
+          : [{ label: SPRING_META.cornerLoad.label, value: vehicleLoad.toFixed(0), unit: 'N', hint: 'Static weight on this corner from the vehicle mass and CG' }]),
+        { label: SPRING_META.unsprungMass.label, field: spring.unsprungMass, unit: SPRING_META.unsprungMass.unit, onCommit: (t: string) => setSpringField('unsprungMass', t) },
+      ]} />
       <FieldRows rows={[
         { label: 'Droop travel', field: derivedField(droop, 1), unit: 'mm', onCommit: (t) => set('droop', Math.max(1, Math.abs(Number(t) || droop))) },
         { label: 'Bump travel', field: derivedField(bump, 1), unit: 'mm', onCommit: (t) => set('bump', Math.max(1, Math.abs(Number(t) || bump))) },
@@ -226,7 +238,7 @@ function PointInspector({ id }: { id: PointKey }) {
         <span className="swatch big" style={{ background: '#ffffff' }} />
         <div>
           <b>{POINT_LABELS[id]}</b>
-          <div className="mono muted">{POINT_NAMES[id]}</div>
+          <div className="mono muted">{activeParam(POINT_NAMES[id])}</div>
         </div>
       </div>
       <div className="family">
@@ -277,7 +289,7 @@ function PointsInspector({ ids }: { ids: PointKey[] }) {
       <div className="family-row wrap">
         {ids.map((k) => (
           <span key={k} className="family-chip">
-            <button className="link-btn" onClick={() => select({ kind: 'point', id: k })} title={POINT_NAMES[k]}>{POINT_LABELS[k]}</button>
+            <button className="link-btn" onClick={() => select({ kind: 'point', id: k })} title={activeParam(POINT_NAMES[k])}>{POINT_LABELS[k]}</button>
             <button className="icon-btn tiny" onClick={() => toggle([k])} title="Remove from selection">✕</button>
           </span>
         ))}

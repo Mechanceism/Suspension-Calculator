@@ -1,0 +1,210 @@
+/**
+ * Vehicle view model (L6): builds all four corners from their (linked) designs, solves the whole-car
+ * equilibrium, and derives the results shown in the Vehicle view.
+ */
+import { useMemo, useRef } from 'react';
+import { useShallow } from 'zustand/react/shallow';
+import {
+  useApp, toGeometry, toProfile, toForceModel, mergedCorners, rootOf, vehicleStaticLoads,
+  type CornerDesign, type DesignState,
+} from './store';
+import { DoubleWishbone, type CornerState } from '../core/suspension/doubleWishbone';
+import { characteristics, type Characteristics } from '../core/suspension/characteristics';
+import { fitFreeLength } from '../core/suspension/spring';
+import { contactPatch, type ContactPatch, type TireProfile } from '../core/tire/geometry';
+import type { TireForceModel } from '../core/tire/model';
+import { CornerTable } from '../core/vehicle/cornerTable';
+import {
+  CORNER_IDS, isLeft, isFront, placement, poseFns, solveVehicle, designGroundY, axleRollCenter,
+  type CornerId, type VehicleResult, type ChassisPose, type VehicleCorner,
+} from '../core/vehicle/vehicle';
+import { vec3, Y_AXIS, type Vec3 } from '../core/math/vec3';
+
+const G = 9.80665;
+/** A "rigid" tire is modelled as a very stiff one so every corner has a defined tire force. */
+const RIGID_TIRE: TireForceModel = { kind: 'stiffness', rate: 1e5 };
+
+export interface VehicleCornerView {
+  id: CornerId;
+  root: CornerId;
+  rack: number;
+  state: CornerState;
+  chars: Characteristics;
+  patch: ContactPatch | null;
+  /** World spin axis (outboard). */
+  axisWorld: Vec3;
+  profile: TireProfile;
+}
+
+export interface AxleTransfer {
+  /** Lateral load transfer, N (+ = outside tire gains load). */
+  total: number;
+  /** Part carried through the links (roll-center height), N. */
+  geometric: number;
+  /** Part carried through the springs (body roll), N. */
+  elastic: number;
+}
+
+export interface VehicleModel {
+  error: string | null;
+  result: VehicleResult | null;
+  corners: Partial<Record<CornerId, VehicleCornerView>>;
+  staticLoads: Record<CornerId, number>;
+  groundY: number;
+  /** Roll centers in world coordinates (x, y) and height above ground. */
+  rollCenters: { front: { x: number; y: number; h: number } | null; rear: { x: number; y: number; h: number } | null };
+  rideHeight: { front: number; rear: number };
+  transfer: { front: AxleTransfer; rear: AxleTransfer; lltdFront: number };
+  rolloverG: number;
+  sprungCgWorld: Vec3 | null;
+  wheelbase: number;
+}
+
+const pickVehicleInputs = (s: DesignState) => ({
+  geom: s.geom, spring: s.spring, damper: s.damper, bumpStop: s.bumpStop, tireModel: s.tireModel, tire: s.tire,
+  volumeChange: s.volumeChange, tireSizeText: s.tireSizeText, corners: s.corners, links: s.links,
+  settings: s.settings, activeCorner: s.activeCorner, vehicle: s.vehicle, autoPreload: s.autoPreload,
+  droop: s.droop, bump: s.bump,
+});
+
+export function useVehicle(enabled: boolean): VehicleModel | null {
+  const s = useApp(useShallow(pickVehicleInputs));
+  // Motion inputs are separate so moving a slider doesn't rebuild the corners (or their cached curves).
+  const rack = useApp((st) => st.rack);
+  const lateralG = useApp((st) => st.lateralG);
+  const tableCache = useRef(new WeakMap<object, Map<string, CornerTable>>());
+  const lastPose = useRef<ChassisPose | undefined>(undefined);
+
+  // Corners: linked corners share a design object (and so a DoubleWishbone and its tables).
+  const setup = useMemo(() => {
+    if (!enabled) return null;
+    try {
+      const all = mergedCorners(s as unknown as DesignState);
+      const built = new Map<CornerDesign, { corner: DoubleWishbone; model: TireForceModel; profile: ReturnType<typeof toProfile> }>();
+      for (const id of CORNER_IDS) {
+        const d = all[rootOf(id, s.links)];
+        if (!built.has(d)) {
+          built.set(d, {
+            corner: new DoubleWishbone(toGeometry(d.geom)),
+            model: toForceModel(d.tireModel, d.tire, d.volumeChange) ?? RIGID_TIRE,
+            profile: toProfile(d.geom),
+          });
+        }
+      }
+      return { all, built, error: null as string | null };
+    } catch (e) {
+      return { all: null, built: null, error: e instanceof Error ? e.message : String(e) };
+    }
+  }, [enabled, s.geom, s.spring, s.damper, s.bumpStop, s.tireModel, s.tire, s.volumeChange, s.tireSizeText, s.corners, s.links, s.activeCorner]);
+
+  const result = useMemo<VehicleModel | null>(() => {
+    if (!enabled || !setup) return null;
+    const v = s.vehicle;
+    const wheelbase = v.wheelbase.value;
+    const empty: VehicleModel = {
+      error: setup.error, result: null, corners: {}, staticLoads: { FL: 0, FR: 0, RL: 0, RR: 0 }, groundY: 0,
+      rollCenters: { front: null, rear: null }, rideHeight: { front: NaN, rear: NaN },
+      transfer: { front: { total: 0, geometric: 0, elastic: 0 }, rear: { total: 0, geometric: 0, elastic: 0 }, lltdFront: NaN },
+      rolloverG: NaN, sprungCgWorld: null, wheelbase,
+    };
+    if (!setup.all || !setup.built) return empty;
+    const all = setup.all;
+    try {
+      const staticLoads = vehicleStaticLoads(v, all, s.links);
+      const range: [number, number] = [-Math.abs(s.droop), Math.abs(s.bump)];
+      const corners: VehicleCorner[] = [];
+      const racks = {} as Record<CornerId, number>;
+      const groundInputs: Parameters<typeof designGroundY>[0] = [];
+      for (const id of CORNER_IDS) {
+        const d = all[rootOf(id, s.links)];
+        const b = setup.built.get(d)!;
+        const cornerRack = s.settings[id].steered ? (isLeft(id) ? rack : -rack) : 0;
+        racks[id] = cornerRack;
+        let byRack = tableCache.current.get(b.corner);
+        if (!byRack) { byRack = new Map(); tableCache.current.set(b.corner, byRack); }
+        const key = `${cornerRack.toFixed(3)}|${range[0]}|${range[1]}`;
+        let table = byRack.get(key);
+        if (!table) { table = new CornerTable(b.corner, cornerRack, range); byRack.set(key, table); if (byRack.size > 24) byRack.delete(byRack.keys().next().value!); }
+        const mu = d.spring.unsprungMass.value;
+        const freeLength = s.autoPreload
+          ? fitFreeLength(b.corner, d.spring.springRate.value, Math.max(0, staticLoads[id] - mu * G))
+          : d.spring.freeLength.value;
+        corners.push({
+          id, table, unsprungMass: mu, tire: { profile: b.profile, model: b.model },
+          spring: {
+            rate: d.spring.springRate.value, freeLength,
+            ...(d.bumpStop ? { bumpStopLength: d.damper.bumpStopLength.value, bumpStopRate: d.damper.bumpStopRate.value } : {}),
+          },
+        });
+        const design = b.corner.design();
+        groundInputs.push({ contactY: design.points.contact.y, profile: b.profile, model: b.model, staticLoad: staticLoads[id], tilt: design.spinAxis.y });
+      }
+      const groundY = designGroundY(groundInputs);
+      const cg = vec3(v.cgX.value, groundY + v.cgY.value, v.cgZ.value);
+      const res = solveVehicle(
+        { corners, totalMass: v.mass.value, cg, wheelbase, groundY, lateralG },
+        { guess: lastPose.current },
+      );
+      if (res.converged) lastPose.current = res.pose;
+      const P = poseFns(res.pose);
+
+      // Exact corner states at the solved travels, for drawing and characteristics.
+      const views: Partial<Record<CornerId, VehicleCornerView>> = {};
+      for (const c of corners) {
+        const d = all[rootOf(c.id, s.links)];
+        const b = setup.built.get(d)!;
+        const state = b.corner.solve({ travel: res.corners[c.id].travel, rack: racks[c.id] });
+        const pl = placement(c.id, wheelbase);
+        const wcWorld = P.point(pl.point(state.points.wheelCenter));
+        const axisWorld = P.rot(pl.dir(state.spinAxis));
+        const patch = contactPatch(wcWorld, axisWorld, { point: vec3(0, groundY, 0), normal: Y_AXIS }, b.profile, 24);
+        views[c.id] = { id: c.id, root: rootOf(c.id, s.links), rack: racks[c.id], state, chars: characteristics(state), patch, axisWorld, profile: b.profile };
+      }
+
+      // Roll centers from the actual left/right corners (front view, world).
+      const rcFor = (l: CornerId, r: CornerId) => {
+        const side = (id: CornerId) => {
+          const view = views[id]!;
+          const pl = placement(id, wheelbase);
+          const toW = (p: Vec3) => P.point(pl.point(p));
+          return { contact: toW(view.chars.contactPoint), ic: view.chars.frontViewIC ? toW(view.chars.frontViewIC) : null };
+        };
+        const rc = axleRollCenter(side(l), side(r));
+        return rc ? { ...rc, h: rc.y - groundY } : null;
+      };
+      const rollCenters = { front: rcFor('FL', 'FR'), rear: rcFor('RL', 'RR') };
+
+      // Lateral load transfer per axle, split into link (geometric) and spring (elastic) parts.
+      const outsideSign = Math.sign(lateralG) || 1; // left turn (+) loads the right side
+      const axle = (l: CornerId, r: CornerId, rc: { h: number } | null): AxleTransfer => {
+        const L = res.corners[l];
+        const R = res.corners[r];
+        const total = (outsideSign * (R.tireLoad - L.tireLoad)) / 2;
+        const track = L.contact.x - R.contact.x;
+        const lateral = Math.abs(L.lateralForce + R.lateralForce);
+        const geometric = rc && track > 0 ? (lateral * rc.h) / track : 0;
+        return { total, geometric, elastic: total - geometric };
+      };
+      const front = axle('FL', 'FR', rollCenters.front);
+      const rear = axle('RL', 'RR', rollCenters.rear);
+      const trackF = res.corners.FL.contact.x - res.corners.FR.contact.x;
+      const trackR = res.corners.RL.contact.x - res.corners.RR.contact.x;
+      const ride = (z: number) => P.point(vec3(0, 0, z)).y - groundY;
+      return {
+        error: res.converged ? null : 'Vehicle solve did not fully converge — check corner travel ranges and loads.',
+        result: res, corners: views, staticLoads, groundY, rollCenters,
+        rideHeight: { front: ride(0), rear: ride(-wheelbase) },
+        transfer: { front, rear, lltdFront: front.total + rear.total !== 0 ? front.total / (front.total + rear.total) : NaN },
+        rolloverG: (0.5 * (trackF + trackR)) / (2 * v.cgY.value),
+        sprungCgWorld: P.point(res.sprungCg),
+        wheelbase,
+      };
+    } catch (e) {
+      return { ...empty, error: e instanceof Error ? e.message : String(e) };
+    }
+  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, rack, lateralG]);
+
+  return result;
+}
+
+export { isFront };

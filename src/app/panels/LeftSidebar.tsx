@@ -6,6 +6,8 @@ import { Hardpoints } from './Hardpoints';
 import { SpringPanel } from './SpringPanel';
 import { TirePanel } from './TirePanel';
 import { SteeringPanel } from './SteeringPanel';
+import { CornerSetup } from './VehiclePanels';
+import { Section } from './FieldRows';
 
 const TABS = [
   { id: 'inspector', label: 'Inspector' },
@@ -18,6 +20,11 @@ export function LeftSidebar({ model }: { model: Model }) {
   const set = useApp((s) => s.set);
   return (
     <>
+      <div className="corner-bar">
+        <Section title="Corner" extra={<span className="muted small-text">pick · settings · links</span>}>
+          <CornerSetup />
+        </Section>
+      </div>
       <nav className="tabs" role="tablist">
         {TABS.map((t) => (
           <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? 'on' : ''} onClick={() => set('leftTab', t.id)}>

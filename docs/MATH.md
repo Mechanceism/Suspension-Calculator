@@ -27,7 +27,7 @@ Status key: ✅ agreed · 🔶 open / under discussion
 | L3 Tire geometry | Patch area, centroid, displaced volume (slice method) | ✅ implemented + tested (`src/core/tire/geometry.ts`) |
 | L4 Tire force | Gas-law model, stiffness model | ✅ implemented + tested (`src/core/tire/model.ts`, `src/core/suspension/loaded.ts`) |
 | L5 Quasi-static corner | Load-driven equilibrium with spring and tire | ✅ implemented + tested, coilover option 1 (`src/core/suspension/spring.ts`) |
-| L6 Vehicle | Mass, CG, multi-corner, roll center, load transfer | later |
+| L6 Vehicle | Mass, CG, four corners, roll centers, load transfer | ✅ implemented + tested (`src/core/vehicle/`) |
 | L7 Optimizer | Objectives and constraint handling | later |
 
 Build order: **L0 → L1 → L2** (drives the visualizer), then **L3 → L4**, then L5+.
@@ -271,17 +271,37 @@ Two operating modes:
 
 ---
 
-## L6: Vehicle (later)
-- **Masses:** sprung mass = total − Σ unsprung. Unsprung mass per corner includes the wheel, tire, hub, upright, brakes, and roughly half the arms, tie rod, spring, damper and driveshaft (per-corner input with defaults).
-- **CG:** entered directly, or calculated from corner scale weights + a tilt measurement (page 6 of the hand math). The sprung CG governs body roll.
-- **Lateral load transfer (per axle):** total `ΔW = m · a_y · h_CG / t`. Roll center height **does not change the total**; it splits it into:
-  - Geometric (through the links): `m · a_y · h_RC / t`
-  - Elastic (through the springs → body roll): `m · a_y · (h_CG − h_RC) / t`
-- **Roll moment** = sprung mass · a_y · **roll moment arm**, where the arm is the distance from the sprung CG to the roll axis (the line joining front and rear roll centers).
-- **Rollover threshold** depends on CG height and track, not on the roll center.
-- **Longitudinal transfer:** `ΔW = m · a_x · h_CG / L`, split by the anti-dive / anti-squat geometry.
-- Corner options: powered / passive, steered / fixed.
-- Steering jacking and centrifugal roll are separate inputs that can be balanced against each other for specific conditions (e.g. a known track).
+## L6: Vehicle ✅ (`src/core/vehicle/`)
+
+**Corners.** Four corners, each its own system (all double wishbone for now). Each keeps its local frame (X outboard, Y up, Z forward from its own axle); left corners map X as-is, right corners mirror X, rear corners shift Z by −wheelbase. Dimensions can be linked ("front L/R same", "rear L/R same", "rear same as front"); unlinking gives a corner its own copy. Per-corner settings (never linked): steered / locked, powered / passive. Defaults: all passive, fronts steer.
+
+**Inputs.** Total mass (incl. unsprung), the whole-car CG (X, height above ground, Z) at static ride height, wheelbase, unsprung mass per corner, lateral acceleration (g), steering. Static corner weights follow from the CG (each axle as a beam: front/rear by CG Z, left/right by CG X).
+
+**Design ground.** The hardpoints describe the car at static ride height on level ground, so the ground plane includes the average static tire compression.
+
+**Ride-height preload (default on).** Each corner's spring free length is fitted to its own static weight — like setting each coilover's collar — so the static car sits at its design ride height. Off = each corner's own free length.
+
+**Equilibrium (relations, solved together).**
+- Unknowns: chassis heave, roll (about +Z) and pitch (about +X) relative to the design pose.
+- For a chassis pose, each corner settles independently: the travel q where the virtual work along its one degree of freedom balances —
+  `F_tire·dy_c + F_lat·dx_c − m_u·g·dy_wc − m_u·a_y·dx_wc + F_spring·dL = 0`
+  (tire vertical force from the tire model at that height and tilt; lateral force at the patch; unsprung weight and inertia at the wheel center; spring incl. bump stop). Jacking forces through the instant centers come out of this automatically — no roll-center formula is used in the solve.
+- Whole car: Σ vertical tire force = total weight; roll and pitch moments of tire forces, weights and lateral inertia (sprung at the sprung CG, unsprung at the wheel centers) = 0. Newton on (heave, roll, pitch) with a line search.
+- Lateral tire forces are shared in proportion to each tire's vertical load (equal grip use), updated alongside Newton.
+- Speed: each corner is solved once on a grid of travel and interpolated (Catmull–Rom, smooth values and slopes); the whole-car solve then takes milliseconds.
+
+**Results.** Corner loads and Δ from static, travel, inclination to ground, toe; roll, pitch, heave, ride height front/rear; front and rear **roll centers from the actual left/right corners** (no mirrored assumption; lateral position too) and the roll axis; lateral load transfer per axle split into *through the links* (`F_lat,axle · h_RC / track`) and *through the springs* (the rest), and the front share (LLTD); rigid rollover threshold (half track ÷ CG height).
+
+**Verified.** Static car with fitted preload sits at design height with no roll and ~0 pitch, loads matching the CG split; at 1 g the outside tires gain load, the body rolls to the outside, Σ lateral force = m·a, and ΣΔW·track agrees with m·a·h (within the small shift from roll); CG offset loads that side; the axle roll center from two mirrored corners equals the single-corner value.
+
+**Background (classic formulas, for cross-checking).** Total lateral transfer per axle `ΔW = m·a_y·h_CG/t`; the roll center splits it into geometric `m·a_y·h_RC/t` and elastic `m·a_y·(h_CG − h_RC)/t`. Roll moment = sprung mass · a_y · roll moment arm (sprung CG to roll axis). Rollover threshold depends on CG height and track, not the roll center.
+
+### Planned for later (noted 2026-11-21)
+- **Shared components between corners:** anti-roll (sway) bars, shared shocks / heave springs, pushrods across corners. Needed after the corners are set up.
+- **Longitudinal forces:** braking (brake bias; brakes inboard vs outboard changes where the force acts and so anti-dive) and drive for powered corners (anti-squat). Anti-dive / anti-squat % then come from the same virtual-work solve.
+- **CG from scales (page 6 of the hand math):** a utility to find the CG from four corner scale weights level and with one axle raised (tilt). For now the CG is entered directly.
+- **Other suspension types per corner** (MacPherson, multilink, user linkages) and pushrod / rocker spring layouts.
+- Steering jacking and centrifugal roll can be balanced against each other for specific conditions (e.g. a known track).
 
 ---
 

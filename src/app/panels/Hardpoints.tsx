@@ -1,9 +1,10 @@
-import { useApp, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META } from '../store';
+import { useApp, forCorner, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META } from '../store';
 import { SAMPLE_LAYOUTS } from '../../examples/sampleLayouts';
 import { ValueInput } from './ValueInput';
 
 export function Hardpoints() {
   const geom = useApp((s) => s.geom);
+  const active = useApp((s) => s.activeCorner);
   const presetId = useApp((s) => s.presetId);
   const loadPreset = useApp((s) => s.loadPreset);
   const setPoint = useApp((s) => s.setPoint);
@@ -26,7 +27,7 @@ export function Hardpoints() {
         <tbody>
           {POINT_KEYS.map((k) => (
             <tr key={k}>
-              <td className="mono">{POINT_NAMES[k]}</td>
+              <td className="mono">{forCorner(active, POINT_NAMES[k])}</td>
               {([0, 1, 2] as const).map((axis) => (
                 <td key={axis}>
                   <ValueInput field={geom.points[k][axis]} unit="mm" onCommit={(t) => setPoint(k, axis, t)} />
@@ -40,7 +41,7 @@ export function Hardpoints() {
         <tbody>
           {SCALAR_KEYS.filter((k) => k === 'staticCamber' || k === 'staticToe').map((k) => (
             <tr key={k}>
-              <td className="mono">{SCALAR_META[k].name}</td>
+              <td className="mono">{forCorner(active, SCALAR_META[k].name)}</td>
               <td>
                 <ValueInput
                   field={geom.scalars[k]} unit={SCALAR_META[k].quantity === 'angle' ? 'deg' : 'mm'}

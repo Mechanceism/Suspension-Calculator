@@ -5,23 +5,43 @@
  * On import, older files are upgraded step by step through MIGRATIONS; unknown or missing values
  * fall back to defaults and are reported as warnings, so files keep opening as variables change.
  *
- * Hardpoints and wheel scalars are keyed by their parameter names (FL_UCA_Fwd, FL_Whl_Camber…), the
+ * Hardpoints and wheel scalars are keyed by their parameter names (FL_UCA_Fwd, RR_Whl_Camber…), the
  * same names planned for CAD parameters. Each value keeps the text the user typed ("5in") and its
  * base-unit value.
+ *
+ * Format history
+ *   1  single corner (FL)
+ *   2  four corners + links + per-corner settings + vehicle inputs (L6)
  */
 import pkg from '../../package.json';
 import { parseValue, type Quantity } from '../core/units/units';
+import { CORNER_IDS, type CornerId } from '../core/vehicle/vehicle';
 import {
-  defaultDesign, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META, SPRING_KEYS, SPRING_META,
-  DAMPER_KEYS, DAMPER_META, STEER_KEYS, STEER_META, TIRE_KEYS, TIRE_META,
-  type DesignState, type Field, type TireModelKind,
+  defaultDesign, mergedCorners, rootOf, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META, SPRING_KEYS, SPRING_META,
+  DAMPER_KEYS, DAMPER_META, STEER_KEYS, STEER_META, TIRE_KEYS, TIRE_META, VEHICLE_KEYS, VEHICLE_META,
+  DEFAULT_LINKS, DEFAULT_SETTINGS,
+  type DesignState, type CornerDesign, type Field, type CornerLinks, type CornerSettings,
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 1;
+export const FORMAT_VERSION = 2;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
+type Json = Record<string, unknown>;
+
+/** Parameter name for a corner: FL_UCA_Fwd → RR_UCA_Fwd. */
+export const cornerParam = (id: CornerId, flName: string) => flName.replace(/^FL_/, `${id}_`);
+
+export interface CornerJson {
+  type: 'doubleWishbone';
+  points: Record<string, { x: FieldJson; y: FieldJson; z: FieldJson }>;
+  scalars: Record<string, FieldJson>;
+  damperArm: 'lca' | 'uca';
+  spring: Record<string, FieldJson>;
+  damper: { fields: Record<string, FieldJson>; bumpStop: boolean };
+  tire: { model: DesignState['tireModel']; volumeChange: boolean; sizeText: string; fields: Record<string, FieldJson> };
+}
 
 export interface ProjectFile {
   format: typeof FILE_FORMAT;
@@ -31,17 +51,12 @@ export interface ProjectFile {
   savedAt: string;
   /** Base units the `value`s are stored in. */
   units: Record<'length' | 'angle' | 'force' | 'pressure' | 'mass' | 'rate', string>;
-  corner: {
-    id: 'FL';
-    type: 'doubleWishbone';
-    points: Record<string, { x: FieldJson; y: FieldJson; z: FieldJson }>;
-    scalars: Record<string, FieldJson>;
-    damperArm: 'lca' | 'uca';
-  };
-  spring: Record<string, FieldJson>;
-  damper: { fields: Record<string, FieldJson>; bumpStop: boolean };
+  corners: Record<CornerId, CornerJson>;
+  links: CornerLinks;
+  settings: Record<CornerId, CornerSettings>;
+  activeCorner: CornerId;
+  vehicle: { fields: Record<string, FieldJson>; autoPreload: boolean; cornerLoadMode: 'vehicle' | 'manual' };
   steering: Record<string, FieldJson>;
-  tire: { model: TireModelKind; volumeChange: boolean; sizeText: string; fields: Record<string, FieldJson> };
   motion: { droop: number; bump: number; driver: DesignState['driver'] };
   presetId?: string;
 }
@@ -50,7 +65,23 @@ const fj = (f: Field): FieldJson => ({ text: f.text, value: f.value });
 const mapFields = <K extends string>(keys: readonly K[], rec: Record<K, Field>) =>
   Object.fromEntries(keys.map((k) => [k, fj(rec[k])])) as Record<string, FieldJson>;
 
+function cornerToJson(id: CornerId, c: CornerDesign): CornerJson {
+  return {
+    type: 'doubleWishbone',
+    points: Object.fromEntries(POINT_KEYS.map((k) => {
+      const [x, y, z] = c.geom.points[k];
+      return [cornerParam(id, POINT_NAMES[k]), { x: fj(x), y: fj(y), z: fj(z) }];
+    })),
+    scalars: Object.fromEntries(SCALAR_KEYS.map((k) => [cornerParam(id, SCALAR_META[k].name), fj(c.geom.scalars[k])])),
+    damperArm: c.geom.damperArm,
+    spring: mapFields(SPRING_KEYS, c.spring),
+    damper: { fields: mapFields(DAMPER_KEYS, c.damper), bumpStop: c.bumpStop },
+    tire: { model: c.tireModel, volumeChange: c.volumeChange, sizeText: c.tireSizeText, fields: mapFields(TIRE_KEYS, c.tire) },
+  };
+}
+
 export function serializeProject(d: DesignState, name: string): ProjectFile {
+  const corners = mergedCorners(d);
   return {
     format: FILE_FORMAT,
     formatVersion: FORMAT_VERSION,
@@ -58,20 +89,12 @@ export function serializeProject(d: DesignState, name: string): ProjectFile {
     name,
     savedAt: new Date().toISOString(),
     units: { length: 'mm', angle: 'deg', force: 'N', pressure: 'kPa', mass: 'kg', rate: 'N/mm' },
-    corner: {
-      id: 'FL',
-      type: 'doubleWishbone',
-      points: Object.fromEntries(POINT_KEYS.map((k) => {
-        const [x, y, z] = d.geom.points[k];
-        return [POINT_NAMES[k], { x: fj(x), y: fj(y), z: fj(z) }];
-      })),
-      scalars: Object.fromEntries(SCALAR_KEYS.map((k) => [SCALAR_META[k].name, fj(d.geom.scalars[k])])),
-      damperArm: d.geom.damperArm,
-    },
-    spring: mapFields(SPRING_KEYS, d.spring),
-    damper: { fields: mapFields(DAMPER_KEYS, d.damper), bumpStop: d.bumpStop },
+    corners: Object.fromEntries(CORNER_IDS.map((id) => [id, cornerToJson(id, corners[id])])) as Record<CornerId, CornerJson>,
+    links: { ...d.links },
+    settings: structuredClone(d.settings),
+    activeCorner: d.activeCorner,
+    vehicle: { fields: mapFields(VEHICLE_KEYS, d.vehicle), autoPreload: d.autoPreload, cornerLoadMode: d.cornerLoadMode },
     steering: mapFields(STEER_KEYS, d.steer),
-    tire: { model: d.tireModel, volumeChange: d.volumeChange, sizeText: d.tireSizeText, fields: mapFields(TIRE_KEYS, d.tire) },
     motion: { droop: d.droop, bump: d.bump, driver: d.driver },
     presetId: d.presetId,
   };
@@ -80,14 +103,40 @@ export function serializeProject(d: DesignState, name: string): ProjectFile {
 /** The design part of a file, for "unsaved changes" comparison (no name or timestamp). */
 export function designSnapshot(d: DesignState): string {
   const f = serializeProject(d, '');
-  return JSON.stringify({ ...f, name: undefined, savedAt: undefined, appVersion: undefined });
+  return JSON.stringify({ ...f, name: undefined, savedAt: undefined, appVersion: undefined, activeCorner: undefined });
 }
 
 /**
- * Upgrades from formatVersion N to N + 1. Add one entry whenever the file layout changes, e.g.
- *   1: (f) => ({ ...f, formatVersion: 2, corner: { ...f.corner, newThing: default } }),
+ * Upgrades from formatVersion N to N + 1. Add one entry whenever the file layout changes.
  */
-const MIGRATIONS: Record<number, (f: Record<string, unknown>) => Record<string, unknown>> = {};
+const MIGRATIONS: Record<number, (f: Json) => Json> = {
+  // 1 → 2: the single corner becomes all four corners (linked, as before), plus default
+  // per-corner settings and vehicle inputs.
+  1: (f) => {
+    const corner = isObj(f.corner) ? f.corner : {};
+    const cornerFor = (id: CornerId) => {
+      const rename = (rec: unknown) => Object.fromEntries(Object.entries(isObj(rec) ? rec : {}).map(([k, v]) => [cornerParam(id, k), v]));
+      const damper = isObj(f.damper) ? f.damper : {};
+      return {
+        type: 'doubleWishbone',
+        points: rename(corner.points),
+        scalars: rename(corner.scalars),
+        damperArm: corner.damperArm,
+        spring: f.spring,
+        damper: { fields: damper.fields, bumpStop: damper.bumpStop },
+        tire: f.tire,
+      };
+    };
+    return {
+      ...f,
+      formatVersion: 2,
+      corners: Object.fromEntries(CORNER_IDS.map((id) => [id, cornerFor(id)])),
+      links: { ...DEFAULT_LINKS },
+      settings: structuredClone(DEFAULT_SETTINGS),
+      activeCorner: 'FL',
+    };
+  },
+};
 
 export interface ImportResult {
   design: DesignState;
@@ -95,9 +144,9 @@ export interface ImportResult {
   warnings: string[];
 }
 
-const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+const isObj = (v: unknown): v is Json => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-/** Read one saved value: re-parse its text (keeps "5in" exact), else use the stored number, else the default. */
+/** Read one saved value: keep the full-precision stored value if the text still agrees, else re-parse the text. */
 function readField(raw: unknown, quantity: Quantity, fallback: Field, where: string, warnings: string[]): Field {
   if (!isObj(raw)) {
     warnings.push(`${where}: missing, using default ${fallback.text}`);
@@ -107,8 +156,7 @@ function readField(raw: unknown, quantity: Quantity, fallback: Field, where: str
   const stored = typeof raw.value === 'number' && Number.isFinite(raw.value) ? raw.value : undefined;
   if (text !== undefined) {
     const r = parseValue(text, quantity);
-    // The text is rounded for display; keep the full-precision stored value unless the text was
-    // edited to mean something else (e.g. a hand-edited file).
+    // The text is rounded for display; keep the stored value unless the text was edited to mean something else.
     if (r.ok) return { text, value: stored !== undefined && Math.abs(r.value - stored) <= 1e-3 + 1e-4 * Math.abs(stored) ? stored : r.value };
   }
   if (stored !== undefined) return { text: text ?? String(stored), value: stored };
@@ -125,10 +173,44 @@ function readRecord<K extends string>(
   return Object.fromEntries(keys.map((k) => [k, readField(obj[k], quantity(k), defaults[k], `${section}.${k}`, warnings)])) as Record<K, Field>;
 }
 
+function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: string[]): CornerDesign {
+  const c = isObj(raw) ? raw : {};
+  if (!isObj(raw)) warnings.push(`${id}: missing, using the default corner`);
+  const w = isObj(raw) ? warnings : [];
+  const pts = isObj(c.points) ? c.points : {};
+  const points = { ...def.geom.points };
+  for (const k of POINT_KEYS) {
+    const name = cornerParam(id, POINT_NAMES[k]);
+    const p = pts[name];
+    const obj = isObj(p) ? p : {};
+    if (!isObj(p)) w.push(`${name}: missing, using default`);
+    points[k] = (['x', 'y', 'z'] as const).map((ax, i) =>
+      readField(obj[ax], 'length', def.geom.points[k][i]!, `${name}.${ax}`, isObj(p) ? w : [])) as [Field, Field, Field];
+  }
+  const sc = isObj(c.scalars) ? c.scalars : {};
+  const scalars = Object.fromEntries(SCALAR_KEYS.map((k) => {
+    const name = cornerParam(id, SCALAR_META[k].name);
+    return [k, readField(sc[name], SCALAR_META[k].quantity, def.geom.scalars[k], name, w)];
+  })) as CornerDesign['geom']['scalars'];
+  const damperRaw = isObj(c.damper) ? c.damper : {};
+  const tireRaw = isObj(c.tire) ? c.tire : {};
+  const model = tireRaw.model === 'rigid' || tireRaw.model === 'stiffness' || tireRaw.model === 'gas' ? tireRaw.model : def.tireModel;
+  return {
+    geom: { points, scalars, damperArm: c.damperArm === 'uca' ? 'uca' : 'lca' },
+    spring: readRecord(c.spring, SPRING_KEYS, (k) => SPRING_META[k].quantity, def.spring, `${id}.spring`, w),
+    damper: readRecord(damperRaw.fields, DAMPER_KEYS, (k) => DAMPER_META[k].quantity, def.damper, `${id}.damper`, w),
+    bumpStop: typeof damperRaw.bumpStop === 'boolean' ? damperRaw.bumpStop : def.bumpStop,
+    tireModel: model,
+    tire: readRecord(tireRaw.fields, TIRE_KEYS, (k) => TIRE_META[k].quantity, def.tire, `${id}.tire`, w),
+    volumeChange: typeof tireRaw.volumeChange === 'boolean' ? tireRaw.volumeChange : def.volumeChange,
+    tireSizeText: typeof tireRaw.sizeText === 'string' ? tireRaw.sizeText : '',
+  };
+}
+
 export function importProject(data: unknown): ImportResult {
   if (!isObj(data) || data.format !== FILE_FORMAT) throw new Error('Not a Suspension Calculator project file');
   const warnings: string[] = [];
-  let f: Record<string, unknown> = data;
+  let f: Json = data;
   let v = typeof f.formatVersion === 'number' ? f.formatVersion : 1;
   if (v > FORMAT_VERSION) {
     warnings.push(`Saved by a newer version (file format ${v}, app ${String(f.appVersion ?? '?')}); values this version doesn't know are ignored.`);
@@ -142,41 +224,41 @@ export function importProject(data: unknown): ImportResult {
   }
 
   const def = defaultDesign();
-  const corner = isObj(f.corner) ? f.corner : {};
-  const pts = isObj(corner.points) ? corner.points : {};
-  const points = { ...def.geom.points };
-  for (const k of POINT_KEYS) {
-    const p = pts[POINT_NAMES[k]];
-    const obj = isObj(p) ? p : {};
-    if (!isObj(p)) warnings.push(`${POINT_NAMES[k]}: missing, using default`);
-    points[k] = (['x', 'y', 'z'] as const).map((ax, i) =>
-      readField(obj[ax], 'length', def.geom.points[k][i]!, `${POINT_NAMES[k]}.${ax}`, isObj(p) ? warnings : [])) as [Field, Field, Field];
-  }
-  const sc = isObj(corner.scalars) ? corner.scalars : {};
-  const scalars = Object.fromEntries(SCALAR_KEYS.map((k) =>
-    [k, readField(sc[SCALAR_META[k].name], SCALAR_META[k].quantity, def.geom.scalars[k], SCALAR_META[k].name, warnings)])) as DesignState['geom']['scalars'];
-  const damperArm = corner.damperArm === 'uca' ? 'uca' : 'lca';
-
-  const damperRaw = isObj(f.damper) ? f.damper : {};
-  const tireRaw = isObj(f.tire) ? f.tire : {};
+  const defCorner: CornerDesign = def.corners.FL;
+  const cornersRaw = isObj(f.corners) ? f.corners : {};
+  const corners = Object.fromEntries(CORNER_IDS.map((id) => [id, readCorner(cornersRaw[id], id, defCorner, warnings)])) as Record<CornerId, CornerDesign>;
+  const linksRaw = isObj(f.links) ? f.links : {};
+  const links: CornerLinks = {
+    frontPair: typeof linksRaw.frontPair === 'boolean' ? linksRaw.frontPair : DEFAULT_LINKS.frontPair,
+    rearPair: typeof linksRaw.rearPair === 'boolean' ? linksRaw.rearPair : DEFAULT_LINKS.rearPair,
+    rearFromFront: typeof linksRaw.rearFromFront === 'boolean' ? linksRaw.rearFromFront : DEFAULT_LINKS.rearFromFront,
+  };
+  const settingsRaw = isObj(f.settings) ? f.settings : {};
+  const settings = Object.fromEntries(CORNER_IDS.map((id) => {
+    const r = isObj(settingsRaw[id]) ? settingsRaw[id] as Json : {};
+    return [id, {
+      steered: typeof r.steered === 'boolean' ? r.steered : DEFAULT_SETTINGS[id].steered,
+      powered: typeof r.powered === 'boolean' ? r.powered : DEFAULT_SETTINGS[id].powered,
+    }];
+  })) as Record<CornerId, CornerSettings>;
+  const activeCorner = (CORNER_IDS as string[]).includes(String(f.activeCorner)) ? f.activeCorner as CornerId : 'FL';
+  const vehicleRaw = isObj(f.vehicle) ? f.vehicle : {};
   const motion = isObj(f.motion) ? f.motion : {};
-  const model = tireRaw.model === 'rigid' || tireRaw.model === 'stiffness' || tireRaw.model === 'gas' ? tireRaw.model : def.tireModel;
   const num = (x: unknown, d: number) => (typeof x === 'number' && Number.isFinite(x) && x > 0 ? x : d);
 
   const design: DesignState = {
     presetId: typeof f.presetId === 'string' ? f.presetId : 'custom',
-    geom: { points, scalars, damperArm },
-    spring: readRecord(f.spring, SPRING_KEYS, (k) => SPRING_META[k].quantity, def.spring, 'spring', warnings),
-    damper: readRecord(damperRaw.fields, DAMPER_KEYS, (k) => DAMPER_META[k].quantity, def.damper, 'damper', warnings),
-    bumpStop: typeof damperRaw.bumpStop === 'boolean' ? damperRaw.bumpStop : def.bumpStop,
+    ...corners.FL, // replaced with the active corner's root below
     steer: readRecord(f.steering, STEER_KEYS, (k) => STEER_META[k].quantity, def.steer, 'steering', warnings),
-    tireModel: model,
-    tire: readRecord(tireRaw.fields, TIRE_KEYS, (k) => TIRE_META[k].quantity, def.tire, 'tire', warnings),
-    volumeChange: typeof tireRaw.volumeChange === 'boolean' ? tireRaw.volumeChange : def.volumeChange,
-    tireSizeText: typeof tireRaw.sizeText === 'string' ? tireRaw.sizeText : '',
     droop: num(motion.droop, def.droop),
     bump: num(motion.bump, def.bump),
     driver: motion.driver === 'contactPatch' ? 'contactPatch' : 'wheelCenter',
+    corners, links, settings, activeCorner,
+    // Files upgraded from format 1 had no vehicle inputs: use the defaults quietly.
+    vehicle: readRecord(vehicleRaw.fields, VEHICLE_KEYS, (k) => VEHICLE_META[k].quantity, def.vehicle, 'vehicle', data.formatVersion === 1 ? [] : warnings),
+    autoPreload: typeof vehicleRaw.autoPreload === 'boolean' ? vehicleRaw.autoPreload : def.autoPreload,
+    cornerLoadMode: vehicleRaw.cornerLoadMode === 'manual' ? 'manual' : 'vehicle',
   };
+  Object.assign(design, corners[rootOf(activeCorner, links)]);
   return { design, name: typeof f.name === 'string' && f.name ? f.name : 'Imported layout', warnings };
 }

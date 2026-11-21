@@ -8,6 +8,7 @@ import { vec3, type Vec3 } from '../core/math/vec3';
 import { DoubleWishbone, spinAxisFromCamberToe, type DoubleWishboneGeometry, type TravelDriver } from '../core/suspension/doubleWishbone';
 import { SAMPLE_LAYOUTS, SAMPLE_SPRING } from '../examples/sampleLayouts';
 import { fitFreeLength } from '../core/suspension/spring';
+import { CORNER_IDS, staticCornerLoads, type CornerId } from '../core/vehicle/vehicle';
 import { setArmLength, setPivotInclination, setPivotPlanAngle, transferArmPoint } from '../core/suspension/armGeometry';
 import { add, sub } from '../core/math/vec3';
 import type { TireProfile } from '../core/tire/geometry';
@@ -31,6 +32,11 @@ export const POINT_NAMES: Record<PointKey, string> = {
   trInner: 'FL_TR_In', trOuter: 'FL_TR_Out', wheelCenter: 'FL_Hub_Ctr',
   dmpChassis: 'FL_Dmp_Chs', dmpArm: 'FL_Dmp_Arm',
 };
+
+/** Parameter name of a hardpoint or scalar for a corner (FL_UCA_Fwd → RR_UCA_Fwd). */
+export const forCorner = (corner: string, flName: string) => flName.replace(/^FL_/, `${corner}_`);
+/** Hook-free helper for components: the active corner's parameter name. */
+export const activeParam = (flName: string) => forCorner(useApp.getState().activeCorner, flName);
 
 export const SCALAR_KEYS = ['staticCamber', 'staticToe', 'tireDiameter', 'tireWidth', 'rimDiameter', 'shoulderRadius'] as const;
 export type ScalarKey = (typeof SCALAR_KEYS)[number];
@@ -199,7 +205,7 @@ function parseField(text: string, quantity: Quantity, prev: Field): Field {
   return r.ok ? { text, value: r.value } : { text, value: prev.value, error: r.error };
 }
 
-export interface AppState {
+export interface AppState extends DesignState {
   presetId: string;
   geom: EditableGeometry;
   travel: number;
@@ -253,6 +259,18 @@ export interface AppState {
   /** Save-as dialog open. */
   saveAsOpen: boolean;
 
+  workspace: Workspace;
+  /** Briefly hides 3D labels while the 3D view is swapped (see SafeHtml). */
+  suspendHtml: boolean;
+  /** Vehicle lateral acceleration, g (+ = left turn). */
+  lateralG: number;
+  playingLateral: boolean;
+
+  setActiveCorner(id: CornerId): void;
+  setLink(key: keyof CornerLinks, value: boolean): void;
+  setCornerSetting(id: CornerId, key: keyof CornerSettings, value: boolean): void;
+  setVehicleField(key: VehicleKey, text: string): void;
+
   /** Replace the whole design (File → New / Open / Import). */
   applyDesign(design: DesignState, fileName: string | null, savedSnapshot: string | null): void;
   markSaved(fileName: string | null, snapshot: string): void;
@@ -288,10 +306,11 @@ export interface AppState {
 }
 
 /** Spring fields with the free length fitted so the static load sits at travel 0 (if solvable). */
-function fittedSpring(geom: EditableGeometry, f: Record<SpringKey, Field>): Record<SpringKey, Field> {
+function fittedSpring(geom: EditableGeometry, f: Record<SpringKey, Field>, cornerLoad?: number): Record<SpringKey, Field> {
   try {
     const corner = new DoubleWishbone(toGeometry(geom));
-    const fl = fitFreeLength(corner, f.springRate.value, sprungLoad(f, 1));
+    const load = cornerLoad === undefined ? sprungLoad(f, 1) : Math.max(0, cornerLoad - f.unsprungMass.value * G);
+    const fl = fitFreeLength(corner, f.springRate.value, load);
     if (!Number.isFinite(fl)) return f;
     return { ...f, freeLength: field(Math.round(fl * 10) / 10) };
   } catch {
@@ -300,6 +319,59 @@ function fittedSpring(geom: EditableGeometry, f: Record<SpringKey, Field>): Reco
 }
 
 /** Everything a saved layout holds (docs: project files). */
+/** Everything that defines one corner (shared between linked corners). */
+export interface CornerDesign {
+  geom: EditableGeometry;
+  spring: Record<SpringKey, Field>;
+  damper: Record<DamperKey, Field>;
+  bumpStop: boolean;
+  tireModel: TireModelKind;
+  tire: Record<TireKey, Field>;
+  volumeChange: boolean;
+  tireSizeText: string;
+}
+
+/** Per-corner settings that are never linked. */
+export interface CornerSettings {
+  steered: boolean;
+  powered: boolean;
+}
+
+/** Which corners share dimensions. */
+export interface CornerLinks {
+  /** FR uses FL's dimensions. */
+  frontPair: boolean;
+  /** RR uses RL's dimensions. */
+  rearPair: boolean;
+  /** The rear corners use the front corners' dimensions. */
+  rearFromFront: boolean;
+}
+
+/** The corner whose design a corner actually uses, following the links. */
+export function rootOf(id: CornerId, links: CornerLinks): CornerId {
+  switch (id) {
+    case 'FL': return 'FL';
+    case 'FR': return links.frontPair ? 'FL' : 'FR';
+    case 'RL': return links.rearFromFront ? 'FL' : 'RL';
+    case 'RR': return links.rearPair ? rootOf('RL', links) : links.rearFromFront ? rootOf('FR', links) : 'RR';
+  }
+}
+
+export const CORNER_NAMES: Record<CornerId, string> = { FL: 'Front left', FR: 'Front right', RL: 'Rear left', RR: 'Rear right' };
+
+/** Vehicle inputs (L6). */
+export const VEHICLE_KEYS = ['mass', 'cgX', 'cgY', 'cgZ', 'wheelbase'] as const;
+export type VehicleKey = (typeof VEHICLE_KEYS)[number];
+export const VEHICLE_META: Record<VehicleKey, { label: string; quantity: Quantity; unit: string; hint?: string }> = {
+  mass: { label: 'Total mass (incl. unsprung)', quantity: 'mass', unit: 'kg' },
+  cgX: { label: 'CG X (+ left of centerline)', quantity: 'length', unit: 'mm' },
+  cgY: { label: 'CG height above ground (static)', quantity: 'length', unit: 'mm' },
+  cgZ: { label: 'CG Z from front axle (+ forward)', quantity: 'length', unit: 'mm', hint: 'Negative = behind the front axle' },
+  wheelbase: { label: 'Wheelbase', quantity: 'length', unit: 'mm' },
+};
+
+export type Workspace = 'corner' | 'vehicle';
+
 export interface DesignState {
   presetId: string;
   geom: EditableGeometry;
@@ -314,6 +386,46 @@ export interface DesignState {
   droop: number;
   bump: number;
   driver: Extract<TravelDriver, 'wheelCenter' | 'contactPatch'>;
+  /** All four corners. The active corner's root design lives in the working fields above. */
+  corners: Record<CornerId, CornerDesign>;
+  links: CornerLinks;
+  settings: Record<CornerId, CornerSettings>;
+  activeCorner: CornerId;
+  vehicle: Record<VehicleKey, Field>;
+  /** Fit each corner's spring preload so the static car sits at its design ride height. */
+  autoPreload: boolean;
+  /** Corner workbench load: the vehicle's static load for that corner, or a manual value. */
+  cornerLoadMode: 'vehicle' | 'manual';
+}
+
+/** The working (active corner) fields as a CornerDesign. */
+export const workingDesign = (s: CornerDesign): CornerDesign => ({
+  geom: s.geom, spring: s.spring, damper: s.damper, bumpStop: s.bumpStop, tireModel: s.tireModel,
+  tire: s.tire, volumeChange: s.volumeChange, tireSizeText: s.tireSizeText,
+});
+
+/** All corner designs with the working fields written back into the active corner's root. */
+export function mergedCorners(s: DesignState): Record<CornerId, CornerDesign> {
+  return { ...s.corners, [rootOf(s.activeCorner, s.links)]: workingDesign(s) };
+}
+
+/** The design each corner actually uses (links resolved). */
+export function resolvedCorner(s: DesignState, id: CornerId): CornerDesign {
+  return mergedCorners(s)[rootOf(id, s.links)];
+}
+
+/** Static corner loads (N) from the vehicle mass and CG. */
+export function vehicleStaticLoads(
+  vehicle: Record<VehicleKey, Field>, corners: Record<CornerId, CornerDesign>, links: CornerLinks,
+): Record<CornerId, number> {
+  const contactX = Object.fromEntries(CORNER_IDS.map((id) => {
+    const g = corners[rootOf(id, links)].geom;
+    const radius = g.scalars.tireDiameter.value / 2;
+    const camber = (g.scalars.staticCamber.value * Math.PI) / 180;
+    return [id, g.points.wheelCenter[0].value - radius * Math.sin(camber)];
+  })) as Record<CornerId, number>;
+  const v = vehicle;
+  return staticCornerLoads(v.mass.value, vec3(v.cgX.value, v.cgY.value, v.cgZ.value), v.wheelbase.value, contactX);
 }
 
 /** The design part of the app state (what a file saves). */
@@ -321,30 +433,59 @@ export const pickDesign = (s: DesignState): DesignState => ({
   presetId: s.presetId, geom: s.geom, spring: s.spring, damper: s.damper, bumpStop: s.bumpStop, steer: s.steer,
   tireModel: s.tireModel, tire: s.tire, volumeChange: s.volumeChange, tireSizeText: s.tireSizeText,
   droop: s.droop, bump: s.bump, driver: s.driver,
+  corners: s.corners, links: s.links, settings: s.settings, activeCorner: s.activeCorner,
+  vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode,
 });
 
 /** The default layout (File → New). */
+export const DEFAULT_LINKS: CornerLinks = { frontPair: true, rearPair: true, rearFromFront: true };
+export const DEFAULT_SETTINGS: Record<CornerId, CornerSettings> = {
+  FL: { steered: true, powered: false }, FR: { steered: true, powered: false },
+  RL: { steered: false, powered: false }, RR: { steered: false, powered: false },
+};
+export const defaultVehicle = (): Record<VehicleKey, Field> => ({
+  mass: field(300, 'mass'),
+  cgX: field(0),
+  cgY: field(280),
+  cgZ: field(-728.5),
+  wheelbase: field(1550),
+});
+
 export function defaultDesign(presetId = 'C'): DesignState {
   const geom = editableFromLayout(presetId);
-  return {
-    presetId,
+  const vehicle = defaultVehicle();
+  const base: CornerDesign = {
     geom,
-    spring: fittedSpring(geom, {
+    spring: {
       cornerLoad: field(900, 'force'),
       unsprungMass: field(12, 'mass'),
       springRate: field(SAMPLE_SPRING.rate, 'rate'),
       freeLength: field(SAMPLE_SPRING.freeLength),
-    }),
+    },
     damper: { maxLength: field(430), minLength: field(330), bumpStopLength: field(345), bumpStopRate: field(400, 'rate') },
     bumpStop: true,
-    steer: Object.fromEntries(STEER_KEYS.map((k) => [k, field(STEER_META[k].initial, STEER_META[k].quantity)])) as Record<SteerKey, Field>,
     tireModel: 'gas',
     tire: Object.fromEntries(TIRE_KEYS.map((k) => [k, field(TIRE_META[k].initial, TIRE_META[k].quantity)])) as Record<TireKey, Field>,
     volumeChange: true,
     tireSizeText: '',
+  };
+  // Fit the shared spring to the front-left static load so the corner workbench starts at ride height.
+  const fl = Math.round(vehicleStaticLoads(vehicle, { FL: base, FR: base, RL: base, RR: base }, DEFAULT_LINKS).FL);
+  const design: CornerDesign = { ...base, spring: fittedSpring(geom, { ...base.spring, cornerLoad: field(fl, 'force') }) };
+  return {
+    presetId,
+    ...design,
+    steer: Object.fromEntries(STEER_KEYS.map((k) => [k, field(STEER_META[k].initial, STEER_META[k].quantity)])) as Record<SteerKey, Field>,
     droop: 50,
     bump: 50,
     driver: 'wheelCenter',
+    corners: { FL: design, FR: design, RL: design, RR: design },
+    links: { ...DEFAULT_LINKS },
+    settings: structuredClone(DEFAULT_SETTINGS),
+    activeCorner: 'FL',
+    vehicle,
+    autoPreload: true,
+    cornerLoadMode: 'vehicle',
   };
 }
 
@@ -385,8 +526,45 @@ export const useApp = create<AppState>((set, get) => ({
   savedSnapshot: null,
   notice: null,
   saveAsOpen: false,
+
+  workspace: params.get('workspace') === 'vehicle' ? 'vehicle' : 'corner',
+  lateralG: num('g', 0),
+  playingLateral: false,
+  suspendHtml: false,
+
+  setActiveCorner: (id) => {
+    const s = get();
+    if (id === s.activeCorner) return;
+    const corners = mergedCorners(s);
+    const root = rootOf(id, s.links);
+    set({
+      corners, activeCorner: id, ...corners[root],
+      selection: null, measure: [], rack: s.settings[id].steered ? s.rack : 0,
+    });
+  },
+  setLink: (key, value) => {
+    const s = get();
+    const before = mergedCorners(s);
+    const links = { ...s.links, [key]: value };
+    // A corner that stops following another starts from a copy of the design it was using.
+    const corners = { ...before };
+    for (const id of CORNER_IDS) {
+      const oldRoot = rootOf(id, s.links);
+      const newRoot = rootOf(id, links);
+      if (newRoot === id && oldRoot !== id) corners[id] = before[oldRoot];
+    }
+    set({ links, corners, ...corners[rootOf(s.activeCorner, links)] });
+  },
+  setCornerSetting: (id, key, value) => {
+    const s = get();
+    set({ settings: { ...s.settings, [id]: { ...s.settings[id], [key]: value } }, ...(key === 'steered' && !value && id === s.activeCorner ? { rack: 0 } : {}) });
+  },
+  setVehicleField: (key, text) => {
+    const v = get().vehicle;
+    set({ vehicle: { ...v, [key]: parseField(text, VEHICLE_META[key].quantity, v[key]) } });
+  },
   applyDesign: (design, fileName, savedSnapshot) => set({
-    ...design, fileName, savedSnapshot, tireSizeError: null,
+    ...design, ...design.corners[rootOf(design.activeCorner, design.links)], fileName, savedSnapshot, tireSizeError: null,
     travel: 0, rack: 0, loadFactor: 1, mode: 'kinematic', playing: false, playingSteer: false,
     selection: null, measure: [], measureMode: false,
   }),
@@ -491,7 +669,11 @@ export const useApp = create<AppState>((set, get) => ({
     };
     set({ geom: next, presetId: 'custom', spring: fittedSpring(next, get().spring) });
   },
-  fitSpring: () => set({ spring: fittedSpring(get().geom, get().spring) }),
+  fitSpring: () => {
+    const s = get();
+    const load = s.cornerLoadMode === 'vehicle' ? vehicleStaticLoads(s.vehicle, mergedCorners(s), s.links)[s.activeCorner] : undefined;
+    set({ spring: fittedSpring(s.geom, s.spring, load) });
+  },
 
   setTireField: (key, text) => {
     const tire = get().tire;

@@ -7,7 +7,7 @@
  * (motion ratio, wheel rate, ride rate, ride frequency).
  */
 import { useMemo, useRef } from 'react';
-import { useApp, toGeometry, toProfile, toForceModel, sprungLoad } from './store';
+import { useApp, toGeometry, toProfile, toForceModel, sprungLoad, vehicleStaticLoads, mergedCorners } from './store';
 import { DoubleWishbone, type CornerState } from '../core/suspension/doubleWishbone';
 import { characteristics, deg, type Characteristics } from '../core/suspension/characteristics';
 import { loadCorner, type LoadedCorner } from '../core/suspension/loaded';
@@ -108,7 +108,10 @@ const G = 9.80665;
 export function useModel(): Model {
   const geom = useApp((s) => s.geom);
   const sliderTravel = useApp((s) => s.travel);
-  const rack = useApp((s) => s.rack);
+  const rawRack = useApp((s) => s.rack);
+  // Corners that don't steer keep the rack (toe link) fixed.
+  const steered = useApp((s) => s.settings[s.activeCorner].steered);
+  const rack = steered ? rawRack : 0;
   const sliderDriver = useApp((s) => s.driver);
   const droop = useApp((s) => s.droop);
   const bump = useApp((s) => s.bump);
@@ -117,7 +120,13 @@ export function useModel(): Model {
   const volumeChange = useApp((s) => s.volumeChange);
   const mode = useApp((s) => s.mode);
   const loadFactor = useApp((s) => s.loadFactor);
-  const spring = useApp((s) => s.spring);
+  const manualSpring = useApp((s) => s.spring);
+  // The corner load follows the vehicle's static weight on this corner unless set manually.
+  const vehicleLoad = useApp((s) => (s.cornerLoadMode === 'vehicle' ? vehicleStaticLoads(s.vehicle, mergedCorners(s), s.links)[s.activeCorner] : null));
+  const spring = useMemo(
+    () => (vehicleLoad === null ? manualSpring : { ...manualSpring, cornerLoad: { text: vehicleLoad.toFixed(0), value: vehicleLoad } }),
+    [manualSpring, vehicleLoad],
+  );
   const damper = useApp((s) => s.damper);
   const bumpStop = useApp((s) => s.bumpStop);
   const steer = useApp((s) => s.steer);

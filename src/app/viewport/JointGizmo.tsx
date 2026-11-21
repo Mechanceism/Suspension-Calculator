@@ -6,7 +6,7 @@
  */
 import { useMemo, useRef, useState } from 'react';
 import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
-import { Html } from '@react-three/drei';
+import { SafeHtml as Html } from './SafeHtml';
 import * as THREE from 'three';
 import type { Vec3 } from '../../core/math/vec3';
 import { useApp, type PointKey } from '../store';

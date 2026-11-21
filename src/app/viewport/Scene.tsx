@@ -7,7 +7,7 @@ import { closestPointOnLine, lineThrough } from '../../core/math/geom';
 import type { CornerPoints, CornerState } from '../../core/suspension/doubleWishbone';
 import type { Characteristics } from '../../core/suspension/characteristics';
 import type { LoadedCorner } from '../../core/suspension/loaded';
-import { useApp, POINT_NAMES, selectedPoints, type AnchorId, type ComponentId, type PointKey } from '../store';
+import { useApp, POINT_NAMES, forCorner, selectedPoints, type AnchorId, type ComponentId, type PointKey } from '../store';
 import type { Model, Sample, Current } from '../useModel';
 import { STATE_KEY, anchorPosition } from '../anchors';
 import { Joint, Seg, Polyline, Tri, Wheel, Label, PatchMesh, Coilover, HitLink } from './primitives';
@@ -303,9 +303,10 @@ function Ghosts({ sweep, radius }: { sweep: Sample[]; radius: number }) {
 }
 
 function Labels({ state }: { state: CornerState }) {
+  const active = useApp((s) => s.activeCorner);
   const p = state.points;
   const entries: [Vec3, string][] = (Object.keys(STATE_KEY) as PointKey[])
-    .map((k) => [p[STATE_KEY[k]] as Vec3 | undefined, POINT_NAMES[k]] as const)
+    .map((k) => [p[STATE_KEY[k]] as Vec3 | undefined, forCorner(active, POINT_NAMES[k])] as const)
     .filter((e): e is [Vec3, string] => Boolean(e[0]));
   entries.push([p.contact, 'Contact']);
   return <>{entries.map(([q, t]) => <Label key={t} p={q} text={t} />)}</>;

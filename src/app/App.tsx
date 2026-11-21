@@ -9,9 +9,16 @@ import { LeftSidebar } from './panels/LeftSidebar';
 import { MotionBar } from './panels/MotionBar';
 import { Readout } from './panels/Readout';
 import { Plots } from './panels/Plots';
+import { useVehicle } from './useVehicle';
+import { VehicleViewport } from './viewport/VehicleView';
+import { switchWorkspace } from './viewport/SafeHtml';
+import { VehicleInputs, VehicleResults, VehicleMotionBar } from './panels/VehiclePanels';
 
 export function App() {
   const model = useModel();
+  const workspace = useApp((s) => s.workspace);
+  const setWorkspace = switchWorkspace;
+  const vehicle = useVehicle(workspace === 'vehicle');
   const dirty = useDirty();
 
   // The startup layout counts as "saved" (nothing to lose yet).
@@ -55,20 +62,37 @@ export function App() {
       <header className="topbar">
         <h1>Suspension Calculator</h1>
         <FileMenu />
-        <span className="muted topbar-note">Chassis fixed · front-left corner</span>
+        <nav className="workspace-switch" role="tablist" aria-label="Workspace">
+          <button role="tab" aria-selected={workspace === 'corner'} className={workspace === 'corner' ? 'on' : ''} onClick={() => setWorkspace('corner')}>Corner</button>
+          <button role="tab" aria-selected={workspace === 'vehicle'} className={workspace === 'vehicle' ? 'on' : ''} onClick={() => setWorkspace('vehicle')}>Vehicle</button>
+        </nav>
+        <span className="muted topbar-note">{workspace === 'corner' ? 'Chassis fixed · one corner' : 'Whole car · quasi-static'}</span>
       </header>
       <Notice />
-      <aside className="left">
-        <LeftSidebar model={model} />
-      </aside>
-      <main className="center">
-        <Viewport model={model} />
-        <MotionBar model={model} />
-      </main>
-      <aside className="right">
-        <Readout model={model} />
-        <Plots model={model} />
-      </aside>
+      {workspace === 'corner' ? (
+        <>
+          <aside className="left">
+            <LeftSidebar model={model} />
+          </aside>
+          <main className="center">
+            <Viewport model={model} />
+            <MotionBar model={model} />
+          </main>
+          <aside className="right">
+            <Readout model={model} />
+            <Plots model={model} />
+          </aside>
+        </>
+      ) : (
+        <>
+          <aside className="left"><div className="tab-body"><VehicleInputs model={vehicle} /></div></aside>
+          <main className="center">
+            <VehicleViewport model={vehicle} />
+            <VehicleMotionBar />
+          </main>
+          <aside className="right"><VehicleResults model={vehicle} /></aside>
+        </>
+      )}
     </div>
   );
 }

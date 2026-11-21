@@ -43,8 +43,12 @@ export function Section({ title, children, open = true, extra }: { title: string
   );
 }
 
-export const fmt = (v: number | null | undefined, digits = 2) =>
-  v === null || v === undefined || Number.isNaN(v) ? '—' : Number.isFinite(v) ? v.toFixed(digits) : '∞';
+export const fmt = (v: number | null | undefined, digits = 2) => {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—';
+  if (!Number.isFinite(v)) return '∞';
+  const s = v.toFixed(digits);
+  return /^-0(\.0+)?$/.test(s) ? s.slice(1) : s; // no "-0"
+};
 
 /** A transient Field for editing a derived value (shows the current value, commits text). */
 export const derivedField = (value: number, digits = 2): Field => ({ text: String(Number(value.toFixed(digits))), value });

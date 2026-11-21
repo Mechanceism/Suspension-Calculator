@@ -41,15 +41,15 @@ function focusSphere(model: Model, focus: FocusKey, radius: number): { center: V
   return { center: { x: sphere.center.x, y: sphere.center.y, z: sphere.center.z }, radius: Math.max(sphere.radius, 80) };
 }
 
-function CameraRig({ model }: { model: Model }) {
+export type FocusTarget = { center: Vec3; radius: number } | null;
+
+/** Camera controls with standard views, fit-to-target and optional follow. */
+export function CameraRig({ target }: { target: FocusTarget }) {
   const controls = useRef<ComponentRef<typeof CameraControls>>(null);
   // CameraControls is rebuilt when the default camera changes, so view requests re-apply then too.
   const camera = useThree((s) => s.camera);
   const request = useApp((s) => s.cameraRequest);
-  const focus = useApp((s) => s.focus);
   const follow = useApp((s) => s.followFocus);
-  const radius = useApp((s) => s.geom.scalars.tireDiameter.value / 2);
-  const target = focusSphere(model, focus, radius);
   const targetRef = useRef(target);
   targetRef.current = target;
 
@@ -86,7 +86,7 @@ function CameraRig({ model }: { model: Model }) {
 }
 
 /** Dev only: lets automated UI checks turn a 3D point into screen pixels (window.__project). */
-function DevProjectBridge() {
+export function DevProjectBridge() {
   const camera = useThree((s) => s.camera);
   const size = useThree((s) => s.size);
   const gl = useThree((s) => s.gl);
@@ -101,7 +101,7 @@ function DevProjectBridge() {
   return null;
 }
 
-export function ViewButtons() {
+export function ViewButtons({ measure = true }: { measure?: boolean }) {
   const requestView = useApp((s) => s.requestView);
   const projection = useApp((s) => s.projection);
   const set = useApp((s) => s.set);
@@ -109,7 +109,7 @@ export function ViewButtons() {
   const toggleMeasure = useApp((s) => s.toggleMeasure);
   return (
     <div className="view-buttons">
-      <button className={measureMode ? 'toggle on' : 'toggle'} onClick={toggleMeasure} title="Measure between two points (M)">📏 Measure</button>
+      {measure && <button className={measureMode ? 'toggle on' : 'toggle'} onClick={toggleMeasure} title="Measure between two points (M)">📏 Measure</button>}
       {(Object.keys(VIEWS) as ViewName[]).map((v) => (
         <button key={v} onClick={() => requestView(v)}>{VIEWS[v].label}</button>
       ))}
@@ -129,6 +129,9 @@ export function Viewport({ model }: { model: Model }) {
   const measureMode = useApp((s) => s.measureMode);
   const measureCount = useApp((s) => s.measure.length);
   const select = useApp((s) => s.select);
+  const focus = useApp((s) => s.focus);
+  const radius = useApp((s) => s.geom.scalars.tireDiameter.value / 2);
+  const target = focusSphere(model, focus, radius);
   const bg = useMemo(() => getComputedStyle(document.documentElement).getPropertyValue('--viewport-bg').trim() || '#16191e', []);
   return (
     <div className="viewport">
@@ -140,7 +143,7 @@ export function Viewport({ model }: { model: Model }) {
         {projection === 'orthographic'
           ? <OrthographicCamera makeDefault position={[300, 150, 5000]} zoom={0.6} near={1} far={100000} />
           : <PerspectiveCamera makeDefault position={[300, 150, 3500]} fov={30} near={1} far={100000} />}
-        <CameraRig model={model} />
+        <CameraRig target={target} />
         <DevProjectBridge />
         <Scene model={model} />
       </Canvas>

@@ -37,6 +37,7 @@ export function MotionBar({ model }: { model: Model }) {
   const mode = useApp((s) => s.mode);
   const loadFactor = useApp((s) => s.loadFactor);
   const set = useApp((s) => s.set);
+  const steers = useApp((s) => s.settings[s.activeCorner].steered);
   const hasSpring = Boolean(model.corner?.geometry.damper);
   const loaded = mode === 'loaded' && hasSpring;
   const swLimit = (rackLimit / cFactor) * 360;
@@ -94,9 +95,9 @@ export function MotionBar({ model }: { model: Model }) {
       </div>
       <div className="motion-group">
         <label className="slider">
-          <span>Steering wheel <b>{((rack / cFactor) * 360).toFixed(0)}</b>° · rack <b>{rack.toFixed(1)}</b> mm</span>
+          <span>Steering wheel <b>{((rack / cFactor) * 360).toFixed(0)}</b>° · rack <b>{rack.toFixed(1)}</b> mm{!steers && <em className="muted"> (this corner doesn't steer)</em>}</span>
           <input
-            type="range" min={-swLimit} max={swLimit} step={1} value={(rack / cFactor) * 360}
+            type="range" min={-swLimit} max={swLimit} step={1} value={(rack / cFactor) * 360} disabled={!steers}
             onChange={(e) => { set('playingSteer', false); set('rack', (Number(e.target.value) / 360) * cFactor); }}
             onDoubleClick={() => setRack(0)}
           />

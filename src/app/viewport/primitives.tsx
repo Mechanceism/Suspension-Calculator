@@ -1,7 +1,8 @@
 /** Small reusable 3D pieces. Scene units are mm; axes map 1:1 (X outboard, Y up, Z forward). */
 import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
-import { Line, Html } from '@react-three/drei';
+import { Line } from '@react-three/drei';
+import { SafeHtml as Html } from './SafeHtml';
 import type { Vec3 } from '../../core/math/vec3';
 
 export type V3 = [number, number, number];

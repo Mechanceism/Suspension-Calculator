@@ -36,7 +36,7 @@ Calculating and visualizing come first. **Later:** export to modeling software (
 | 3 | **More variables**: add the remaining characteristics to both the math and the UI | |
 | 4 | **Constraints and optimizer**: lock / range / free per variable; solve for free values once the visualizer and math agree | |
 | 5 | **Export and integration** (only after calculating and visualizing are solid): file exports and an optional Fusion 360 add-in (Python + HTML panel) | |
-| 6 | **Multi-corner**: add more corners, inter-corner interactions (sway bars, shared shocks, pushrods/rockers) | |
+| 6 | **Multi-corner**: add more corners, inter-corner interactions (sway bars, shared shocks, pushrods/rockers) | ✅ Four independent corners + whole-car equilibrium (L6). Shared components, braking/drive and the scale-weight CG utility are next. |
 | 7 | **Other suspension types**: MacPherson, multilink, etc., plus user-defined linkages | |
 
 Note: the tool simulates whatever linkage the user builds, including ones whose camber motion is far from ideal. Motion quality is judged from the motion itself (IC, characteristic curves, toggle positions), not from a linkage classification; "optimal" is defined by the user's chosen objectives.

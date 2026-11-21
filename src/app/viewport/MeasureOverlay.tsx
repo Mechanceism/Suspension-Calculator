@@ -1,5 +1,5 @@
 /** Measure tool: distance and ΔX/ΔY/ΔZ between two picked points, updating live with motion. */
-import { Html } from '@react-three/drei';
+import { SafeHtml as Html } from './SafeHtml';
 import { sub, length, lerp } from '../../core/math/vec3';
 import { useApp } from '../store';
 import { anchorLabel, anchorPosition } from '../anchors';

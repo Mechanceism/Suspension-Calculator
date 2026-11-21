@@ -30,6 +30,18 @@ describe('parseValue', () => {
     const r = parseValue('0.1rad', 'angle');
     expect(r.ok && r.value).toBeCloseTo(5.7295779513, 9);
   });
+  it('parses pressure, force, rate, altitude, ratio and temperature', () => {
+    const v = (t: string, q: Parameters<typeof parseValue>[1]) => { const r = parseValue(t, q); return r.ok ? r.value : NaN; };
+    expect(v('12psi', 'pressure')).toBeCloseTo(82.737, 3);
+    expect(v('2.2bar', 'pressure')).toBeCloseTo(220, 9);
+    expect(v('200lbf', 'force')).toBeCloseTo(889.644, 3);
+    expect(v('700lbf/in', 'rate')).toBeCloseTo(122.589, 3);
+    expect(v('5000ft', 'altitude')).toBeCloseTo(1524, 9);
+    expect(v('50%', 'ratio')).toBeCloseTo(0.5, 12);
+    expect(v('68F', 'temperature')).toBeCloseTo(20, 9);
+    expect(v('293.15K', 'temperature')).toBeCloseTo(20, 9);
+    expect(v('-5', 'temperature')).toBe(-5);
+  });
   it('rejects bad input', () => {
     expect(parseValue('', 'length').ok).toBe(false);
     expect(parseValue('5 furlongs', 'length').ok).toBe(false);

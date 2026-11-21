@@ -2,6 +2,7 @@ import { useModel } from './useModel';
 import { Viewport } from './viewport/Viewport';
 import { Browser } from './panels/Browser';
 import { Hardpoints } from './panels/Hardpoints';
+import { TirePanel } from './panels/TirePanel';
 import { MotionBar } from './panels/MotionBar';
 import { Readout } from './panels/Readout';
 import { Plots } from './panels/Plots';
@@ -17,6 +18,7 @@ export function App() {
       <aside className="left">
         <Browser />
         <Hardpoints />
+        <TirePanel />
       </aside>
       <main className="center">
         <Viewport model={model} />

@@ -3,9 +3,10 @@ import { vec3, sub, add, scale, normalize, length, type Vec3 } from '../../core/
 import { closestPointOnLine, lineThrough } from '../../core/math/geom';
 import type { CornerPoints, CornerState } from '../../core/suspension/doubleWishbone';
 import type { Characteristics } from '../../core/suspension/characteristics';
+import type { LoadedCorner } from '../../core/suspension/loaded';
 import { useApp, POINT_NAMES } from '../store';
 import type { Model, Sample } from '../useModel';
-import { Joint, Seg, Polyline, Tri, Wheel, Label } from './primitives';
+import { Joint, Seg, Polyline, Tri, Wheel, Label, PatchMesh } from './primitives';
 
 export const COLORS = {
   chassis: '#8b93a1',
@@ -18,6 +19,7 @@ export const COLORS = {
   ic: '#ff6b6b',
   rc: '#7ee081',
   ground: '#3a4150',
+  patch: '#ffb347',
 };
 
 const TRAIL_KEYS: { key: keyof CornerPoints; color: string }[] = [
@@ -105,7 +107,7 @@ function Chassis({ state, rackRange, rackAxis }: { state: CornerState; rackRange
   );
 }
 
-function Construction({ state, chars }: { state: CornerState; chars: Characteristics }) {
+function Construction({ state, chars, loaded }: { state: CornerState; chars: Characteristics; loaded: LoadedCorner | null }) {
   const vis = useApp((s) => s.visibility);
   const p = state.points;
   const cp = chars.contactPoint;
@@ -113,10 +115,14 @@ function Construction({ state, chars }: { state: CornerState; chars: Characteris
   const icNear = ic && length(sub(ic, cp)) < 20000 ? ic : null;
   const rc = chars.rollCenterHeight !== null ? vec3(0, chars.groundY + chars.rollCenterHeight, cp.z) : null;
   const axisTop = add(p.ucaOut, scale(sub(p.ucaOut, p.lcaOut), 0.35));
+  const axisGround = loaded ? loaded.steeringAxisAtGround : chars.steeringAxisAtGround;
   return (
     <group>
-      {vis.steeringAxis && chars.steeringAxisAtGround && (
-        <Seg a={chars.steeringAxisAtGround} b={axisTop} color={COLORS.steering} width={1.5} dashed />
+      {vis.steeringAxis && axisGround && (
+        <>
+          <Seg a={axisGround} b={axisTop} color={COLORS.steering} width={1.5} dashed />
+          <Joint p={axisGround} color={COLORS.steering} r={5} />
+        </>
       )}
       {vis.icConstruction && icNear && (
         <>
@@ -179,10 +185,13 @@ export function Scene({ model }: { model: Model }) {
   const ghosts = useApp((s) => s.ghosts);
   const rackRange = useApp((s) => s.rackRange);
   const width = useApp((s) => s.geom.scalars.tireWidth.value);
-  const radius = useApp((s) => s.geom.scalars.wheelRadius.value);
+  const radius = useApp((s) => s.geom.scalars.tireDiameter.value / 2);
   const cur = model.current;
   if (!cur || !model.corner) return null;
-  const { state, chars } = cur;
+  const { state, chars, loaded } = cur;
+  const groundY = loaded ? loaded.groundY : chars.groundY;
+  const cx = chars.contactPoint.x;
+  const cz = chars.contactPoint.z;
   return (
     <group>
       <ambientLight intensity={0.8} />
@@ -191,13 +200,19 @@ export function Scene({ model }: { model: Model }) {
       {vis.ground && (
         <>
           {/* Ground reference lines (the grid is invisible edge-on in front/side views) */}
-          <Seg a={vec3(-chars.contactPoint.x - 300, chars.groundY, chars.contactPoint.z)} b={vec3(chars.contactPoint.x + 400, chars.groundY, chars.contactPoint.z)} color="#566075" width={1.5} />
-          <Seg a={vec3(chars.contactPoint.x, chars.groundY, chars.contactPoint.z - 600)} b={vec3(chars.contactPoint.x, chars.groundY, chars.contactPoint.z + 600)} color="#566075" width={1.5} />
+          <Seg a={vec3(-cx - 300, groundY, cz)} b={vec3(cx + 400, groundY, cz)} color="#566075" width={1.5} />
+          <Seg a={vec3(cx, groundY, cz - 600)} b={vec3(cx, groundY, cz + 600)} color="#566075" width={1.5} />
+        </>
+      )}
+      {vis.patch && loaded?.patch.inContact && (
+        <>
+          <PatchMesh outline={loaded.patch.outline} centroid={loaded.patch.centroid!} color={loaded.bottomedOut ? '#f06363' : COLORS.patch} />
+          <Joint p={loaded.patch.centroid!} color={COLORS.patch} r={6} />
         </>
       )}
       {vis.ground && (
         <Grid
-          position={[0, chars.groundY, 0]} args={[6000, 6000]} cellSize={50} sectionSize={250}
+          position={[0, groundY, 0]} args={[6000, 6000]} cellSize={50} sectionSize={250}
           cellColor={COLORS.ground} sectionColor="#566075" fadeDistance={9000} infiniteGrid
         />
       )}
@@ -205,7 +220,7 @@ export function Scene({ model }: { model: Model }) {
       <Linkage state={state} />
       <Joints state={state} />
       {vis.wheel && <Wheel center={state.points.wheelCenter} axis={state.spinAxis} radius={radius} width={width} color={COLORS.wheel} />}
-      <Construction state={state} chars={chars} />
+      <Construction state={state} chars={chars} loaded={loaded} />
       {trails && <Trails sweep={model.sweep} />}
       {ghosts && <Ghosts sweep={model.sweep} radius={radius} />}
       {vis.labels && <Labels state={state} />}

@@ -7,6 +7,9 @@ import { parseValue, formatValue, type Quantity } from '../core/units/units';
 import { vec3, type Vec3 } from '../core/math/vec3';
 import { spinAxisFromCamberToe, type DoubleWishboneGeometry, type TravelDriver } from '../core/suspension/doubleWishbone';
 import { SAMPLE_LAYOUTS } from '../examples/sampleLayouts';
+import type { TireProfile } from '../core/tire/geometry';
+import type { TireForceModel } from '../core/tire/model';
+import { parseTireSize } from '../core/tire/size';
 
 export interface Field {
   text: string;
@@ -25,14 +28,31 @@ export const POINT_NAMES: Record<PointKey, string> = {
   trInner: 'FL_TR_In', trOuter: 'FL_TR_Out', wheelCenter: 'FL_Hub_Ctr',
 };
 
-export const SCALAR_KEYS = ['wheelRadius', 'tireWidth', 'staticCamber', 'staticToe'] as const;
+export const SCALAR_KEYS = ['staticCamber', 'staticToe', 'tireDiameter', 'tireWidth', 'rimDiameter', 'shoulderRadius'] as const;
 export type ScalarKey = (typeof SCALAR_KEYS)[number];
-export const SCALAR_META: Record<ScalarKey, { name: string; quantity: Quantity }> = {
-  wheelRadius: { name: 'FL_Tire_Rad', quantity: 'length' },
-  tireWidth: { name: 'FL_Tire_Wid', quantity: 'length' },
-  staticCamber: { name: 'FL_Whl_Camber', quantity: 'angle' },
-  staticToe: { name: 'FL_Whl_Toe', quantity: 'angle' },
+export const SCALAR_META: Record<ScalarKey, { name: string; quantity: Quantity; label: string }> = {
+  staticCamber: { name: 'FL_Whl_Camber', quantity: 'angle', label: 'Static camber' },
+  staticToe: { name: 'FL_Whl_Toe', quantity: 'angle', label: 'Static toe (+ in)' },
+  tireDiameter: { name: 'FL_Tire_Dia', quantity: 'length', label: 'Outer diameter' },
+  tireWidth: { name: 'FL_Tire_Wid', quantity: 'length', label: 'Section width' },
+  rimDiameter: { name: 'FL_Rim_Dia', quantity: 'length', label: 'Rim diameter' },
+  shoulderRadius: { name: 'FL_Tire_Shldr', quantity: 'length', label: 'Shoulder radius' },
 };
+
+/** Tire load / force-model inputs (docs/MATH.md § L4). */
+export const TIRE_KEYS = ['load', 'rate', 'pressure', 'setAltitude', 'setTemperature', 'opAltitude', 'opTemperature', 'volumeFactor'] as const;
+export type TireKey = (typeof TIRE_KEYS)[number];
+export const TIRE_META: Record<TireKey, { label: string; quantity: Quantity; unit: string; initial: number; models: TireModelKind[] }> = {
+  load: { label: 'Vertical load', quantity: 'force', unit: 'N', initial: 900, models: ['stiffness', 'gas'] },
+  rate: { label: 'Vertical stiffness', quantity: 'rate', unit: 'N/mm', initial: 120, models: ['stiffness'] },
+  pressure: { label: 'Set pressure (gauge)', quantity: 'pressure', unit: 'kPa', initial: 82.737, models: ['gas'] },
+  setAltitude: { label: 'Set at altitude', quantity: 'altitude', unit: 'm', initial: 0, models: ['gas'] },
+  setTemperature: { label: 'Set at temperature', quantity: 'temperature', unit: '°C', initial: 20, models: ['gas'] },
+  opAltitude: { label: 'Driving altitude', quantity: 'altitude', unit: 'm', initial: 0, models: ['gas'] },
+  opTemperature: { label: 'Driving temperature', quantity: 'temperature', unit: '°C', initial: 20, models: ['gas'] },
+  volumeFactor: { label: 'Volume-loss factor', quantity: 'ratio', unit: '×', initial: 1, models: ['gas'] },
+};
+export type TireModelKind = 'rigid' | 'stiffness' | 'gas';
 
 export interface EditableGeometry {
   points: Record<PointKey, [Field, Field, Field]>;
@@ -41,7 +61,7 @@ export interface EditableGeometry {
 
 export const VIS_KEYS = [
   'chassis', 'uca', 'lca', 'upright', 'tieRod', 'wheel',
-  'steeringAxis', 'icConstruction', 'rollCenter', 'ground', 'datum', 'labels',
+  'patch', 'steeringAxis', 'icConstruction', 'rollCenter', 'ground', 'datum', 'labels',
 ] as const;
 export type VisKey = (typeof VIS_KEYS)[number];
 
@@ -61,10 +81,12 @@ export function editableFromLayout(id: string): EditableGeometry {
       wheelCenter: fields(g.wheel.center),
     },
     scalars: {
-      wheelRadius: field(g.wheel.radius),
-      tireWidth: field(g.wheel.width ?? 200),
       staticCamber: field(0, 'angle'),
       staticToe: field(0, 'angle'),
+      tireDiameter: field(2 * g.wheel.radius),
+      tireWidth: field(g.wheel.width ?? 200),
+      rimDiameter: { text: '13in', value: 13 * 25.4 },
+      shoulderRadius: field(25),
     },
   };
 }
@@ -79,10 +101,34 @@ export function toGeometry(e: EditableGeometry): DoubleWishboneGeometry {
     wheel: {
       center: p('wheelCenter'),
       spinAxis: spinAxisFromCamberToe((s.staticCamber.value * Math.PI) / 180, (s.staticToe.value * Math.PI) / 180),
-      radius: s.wheelRadius.value,
+      radius: s.tireDiameter.value / 2,
       width: s.tireWidth.value,
     },
   };
+}
+
+export function toProfile(e: EditableGeometry): TireProfile {
+  const s = e.scalars;
+  return {
+    radius: s.tireDiameter.value / 2,
+    width: s.tireWidth.value,
+    shoulderRadius: s.shoulderRadius.value,
+    rimRadius: s.rimDiameter.value / 2,
+  };
+}
+
+export function toForceModel(kind: TireModelKind, f: Record<TireKey, Field>, volumeChange: boolean): TireForceModel | null {
+  if (kind === 'stiffness') return { kind: 'stiffness', rate: f.rate.value };
+  if (kind === 'gas') {
+    return {
+      kind: 'gas', volumeChange, volumeFactor: f.volumeFactor.value,
+      conditions: {
+        setPressure: f.pressure.value, setAltitude: f.setAltitude.value, setTemperature: f.setTemperature.value,
+        operatingAltitude: f.opAltitude.value, operatingTemperature: f.opTemperature.value,
+      },
+    };
+  }
+  return null;
 }
 
 function parseField(text: string, quantity: Quantity, prev: Field): Field {
@@ -109,7 +155,15 @@ interface AppState {
   /** Incremented to ask the camera to move; `view` null = refocus only. */
   cameraRequest: { view: ViewName | null; nonce: number };
 
+  tireModel: TireModelKind;
+  tire: Record<TireKey, Field>;
+  volumeChange: boolean;
+  tireSizeText: string;
+  tireSizeError: string | null;
+
   loadPreset(id: string): void;
+  setTireField(key: TireKey, text: string): void;
+  applyTireSize(text: string): void;
   setPoint(key: PointKey, axis: 0 | 1 | 2, text: string): void;
   setScalar(key: ScalarKey, text: string): void;
   set<K extends keyof AppState>(key: K, value: AppState[K]): void;
@@ -139,13 +193,38 @@ export const useApp = create<AppState>((set, get) => ({
   ghosts: true,
   visibility: {
     chassis: true, uca: true, lca: true, upright: true, tieRod: true, wheel: true,
-    steeringAxis: true, icConstruction: true, rollCenter: true, ground: true, datum: true, labels: params.get('labels') === '1',
+    patch: true, steeringAxis: true, icConstruction: true, rollCenter: true, ground: true, datum: true, labels: params.get('labels') === '1',
   },
   projection: params.get('projection') === 'perspective' ? 'perspective' : 'orthographic',
   focus: 'corner',
   followFocus: false,
   cameraRequest: { view: initialView, nonce: 0 },
 
+  tireModel: (['rigid', 'stiffness', 'gas'] as string[]).includes(params.get('tire') ?? '') ? (params.get('tire') as TireModelKind) : 'gas',
+  tire: Object.fromEntries(TIRE_KEYS.map((k) => [k, field(TIRE_META[k].initial, TIRE_META[k].quantity)])) as Record<TireKey, Field>,
+  volumeChange: true,
+  tireSizeText: '',
+  tireSizeError: null,
+
+  setTireField: (key, text) => {
+    const tire = get().tire;
+    set({ tire: { ...tire, [key]: parseField(text, TIRE_META[key].quantity, tire[key]) } });
+  },
+  applyTireSize: (text) => {
+    const size = parseTireSize(text);
+    if (!size) { set({ tireSizeText: text, tireSizeError: 'Unrecognized size (try 225/45R17, 31x10.50R15 or 20.5x7.0-13)' }); return; }
+    const geom = get().geom;
+    set({
+      tireSizeText: text, tireSizeError: null, presetId: 'custom',
+      geom: {
+        ...geom,
+        scalars: {
+          ...geom.scalars,
+          tireDiameter: field(size.outerDiameter), tireWidth: field(size.sectionWidth), rimDiameter: field(size.rimDiameter),
+        },
+      },
+    });
+  },
   loadPreset: (id) => set({ presetId: id, geom: editableFromLayout(id), travel: 0, rack: 0 }),
   setPoint: (key, axis, text) => {
     const geom = get().geom;

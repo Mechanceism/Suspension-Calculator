@@ -24,8 +24,8 @@ Status key: ✅ agreed · 🔶 open / under discussion
 | L0 Geometry | Vectors, frames, rotations, planes, lines, intersections | ✅ implemented + tested (`src/core/math`) |
 | L1 Corner kinematics | Constraint solve for upright/wheel position from travel and steer inputs | ✅ implemented + tested (`src/core/solver`, `src/core/suspension/doubleWishbone.ts`) |
 | L2 Characteristics | Camber, toe, caster, KPI, offsets, IC, RC, anti %, bump steer, motion ratio | ✅ implemented + tested (`src/core/suspension/characteristics.ts`, `fourBar.ts`) |
-| L3 Tire geometry | Patch area, centroid, displaced volume (slice method) | ✅ agreed |
-| L4 Tire force | Gas-law model, stiffness model | ✅ agreed |
+| L3 Tire geometry | Patch area, centroid, displaced volume (slice method) | ✅ implemented + tested (`src/core/tire/geometry.ts`) |
+| L4 Tire force | Gas-law model, stiffness model | ✅ implemented + tested (`src/core/tire/model.ts`, `src/core/suspension/loaded.ts`) |
 | L5 Quasi-static corner | Load-driven equilibrium with spring and tire | ✅ planned |
 | L6 Vehicle | Mass, CG, multi-corner, roll center, load transfer | later |
 | L7 Optimizer | Objectives and constraint handling | later |
@@ -163,6 +163,10 @@ Purpose: for a given wheel pose and ground plane, compute **contact-patch area, 
 - Two-variable inverses (depth and γ together) can have multiple solutions. These are handled by the optimizer with user ranges.
 - **Report:** bottoming out (penetration beyond the sidewall height → rim contact) and loss of contact.
 
+**Implementation notes:** contact intervals are found by sign changes of R(s) − d(s) between profile breakpoints (refined by bisection); each interval is integrated with a cosine change of variable + 24-point Gauss–Legendre, which cancels the √ behaviour at the patch edges. Verified against an independent ground-plane grid count (< 1%) and exact level-tire formulas.
+
+**Effective scrub / trail (loaded):** in kinematic mode with a tire load, the level ground rises until the tire force equals the load; scrub radius and trail are then also reported to the patch centroid on that loaded ground. Positive camber loads the outer tread edge (centroid outboard); negative camber loads the inner edge.
+
 **Caveat:** a rigid-cylinder intersection is a geometric approximation of the real patch (real tires flatten and wrap). It's suitable for comparing designs; it can be calibrated later.
 
 ---
@@ -188,7 +192,8 @@ The tire model is **swappable**. All models share the L3 geometry.
 **Volume change (toggle):** a real tire bulges at the sidewalls, so its volume drops only by a few percent and pressure barely rises.
 - `V₂ = V₁ − k_v · V_disp`
 - **Checkbox:** "Apply volume change". Off: `V₂ = V₁` (constant pressure). On: uses `k_v`.
-- `k_v` is a user-adjustable factor (default to be calibrated, roughly 0.03–0.10 range to test). A fixed "3%" would not scale with load, so it's a factor on the displaced volume instead.
+- `k_v` is the fraction of the geometric displaced volume actually lost from the air (0–1). Default 1 (the author's original rigid-cylinder assumption); a real tire is lower because it bulges. A fixed "3%" would not scale with load, so it's a factor on the displaced volume instead.
+- Observed: at typical loads the displaced volume is < 0.1% of the air volume, so the toggle changes pressure very little, which matches real tires.
 
 ### Model B: Vertical stiffness
 - `F_tire = k_t · deflection` (N/mm). Simple, standard, and good for early kinematic-plus-load work.
@@ -256,6 +261,6 @@ Multiple objectives can be weighted. All objectives respect lock / range / free 
 ---
 
 ## Open Items
-- Default `k_v` for the volume-change toggle (calibrate).
+- Calibrate `k_v` and the patch model against measured tire data (the rigid-cylinder patch under-predicts deflection: ~2 mm at 900 N / 12 psi for a 20.5x7.0-13, where real tires deflect more because the tread flattens).
 - Default shoulder radius as a fraction of section width.
 - Carcass stiffness term for Model A.

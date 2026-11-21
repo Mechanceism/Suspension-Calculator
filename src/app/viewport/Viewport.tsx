@@ -45,7 +45,7 @@ function CameraRig({ model }: { model: Model }) {
   const request = useApp((s) => s.cameraRequest);
   const focus = useApp((s) => s.focus);
   const follow = useApp((s) => s.followFocus);
-  const radius = useApp((s) => s.geom.scalars.wheelRadius.value);
+  const radius = useApp((s) => s.geom.scalars.tireDiameter.value / 2);
   const target = focusSphere(model, focus, radius);
   const targetRef = useRef(target);
   targetRef.current = target;

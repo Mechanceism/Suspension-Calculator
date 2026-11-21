@@ -38,7 +38,7 @@ export function Hardpoints() {
       </table>
       <table className="hp-table scalars">
         <tbody>
-          {SCALAR_KEYS.map((k) => (
+          {SCALAR_KEYS.filter((k) => k === 'staticCamber' || k === 'staticToe').map((k) => (
             <tr key={k}>
               <td className="mono">{SCALAR_META[k].name}</td>
               <td>

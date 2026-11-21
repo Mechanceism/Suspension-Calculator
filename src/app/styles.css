@@ -114,6 +114,18 @@ select, input[type='number'] {
 .motion-bar .small input { width: 64px; }
 input[type='range'] { accent-color: var(--accent); width: 100%; }
 
+.text-input {
+  flex: 1; min-width: 0; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px;
+}
+.text-input:focus { outline: none; border-color: var(--accent); }
+.text-input.invalid { border-color: var(--bad); background: #3a2326; }
+.hint.error { color: var(--bad); }
+.check-row { display: flex; align-items: center; gap: 7px; margin: 8px 0 4px; cursor: pointer; }
+.subhead {
+  font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted);
+  margin: 14px 0 6px; display: flex; align-items: center; justify-content: space-between; font-weight: 600;
+}
+
 /* Readout */
 .readout { width: 100%; border-collapse: collapse; }
 .readout td { padding: 2.5px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.04); }

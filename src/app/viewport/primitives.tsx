@@ -1,5 +1,5 @@
 /** Small reusable 3D pieces. Scene units are mm; axes map 1:1 (X outboard, Y up, Z forward). */
-import { useLayoutEffect, useMemo, useRef } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { Line, Html } from '@react-three/drei';
 import type { Vec3 } from '../../core/math/vec3';
@@ -89,6 +89,31 @@ export function Wheel({ center, axis, radius, width, color, ghost = false }: {
       <Line points={mid} color={color} lineWidth={ghost ? 1 : 1.5} transparent opacity={ghost ? 0.35 : 0.9} dashed={!ghost} dashSize={25} gapSize={15} />
       {!ghost && <Line points={outer} color={color} lineWidth={2} />}
       {!ghost && <Line points={inner} color={color} lineWidth={2} />}
+    </group>
+  );
+}
+
+/** Filled contact patch (triangle fan from the centroid) with its outline, lifted slightly off the ground. */
+export function PatchMesh({ outline, centroid, color }: { outline: Vec3[]; centroid: Vec3; color: string }) {
+  const lift = 0.6;
+  const geometry = useMemo(() => {
+    const pos: number[] = [];
+    for (let i = 0; i + 1 < outline.length; i++) {
+      const a = outline[i]!;
+      const b = outline[i + 1]!;
+      pos.push(centroid.x, centroid.y + lift, centroid.z, a.x, a.y + lift, a.z, b.x, b.y + lift, b.z);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    return g;
+  }, [outline, centroid]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  return (
+    <group>
+      <mesh geometry={geometry}>
+        <meshBasicMaterial color={color} transparent opacity={0.55} side={THREE.DoubleSide} depthWrite={false} />
+      </mesh>
+      <Line points={outline.map((q) => [q.x, q.y + lift, q.z] as V3)} color={color} lineWidth={2} />
     </group>
   );
 }

@@ -33,8 +33,21 @@ export function Readout({ model }: { model: Model }) {
     ['Anti angle (contact)', fmt(deg(c.antiAngleContact), 2), '°'],
     ['Half track', fmt(c.halfTrack, 1), 'mm'],
     ['Wheel center Y', fmt(c.wheelCenter.y, 1), 'mm'],
-    ['Ground Y', fmt(c.groundY, 1), 'mm', 'ride height = −ground Y'],
+    ['Ground Y', fmt(cur.loaded ? cur.loaded.groundY : c.groundY, 1), 'mm', 'ride height = −ground Y'],
   ];
+  const l = cur.loaded;
+  const tireRows: [string, string, string, string?][] = l ? [
+    ['Tire load', fmt(l.force.force, 0), 'N'],
+    ['Deflection', fmt(l.deflection, 2), 'mm', 'ground rise vs. rigid tire'],
+    ['Patch area', fmt(l.patch.area / 100, 1), 'cm²'],
+    ['Patch length', fmt(l.patch.length, 1), 'mm'],
+    ['Patch width', fmt(l.patch.sMax - l.patch.sMin, 1), 'mm', 'along the axle'],
+    ['Inclination', fmt(deg(l.patch.inclination), 3), '°', 'wheel vs. ground normal'],
+    ['Pressure (gauge)', fmt(l.force.pressureGauge, 2), 'kPa', 'operating'],
+    ['Air volume change', fmt(l.force.volumeChangeRatio !== undefined ? l.force.volumeChangeRatio * 100 : undefined, 3), '%'],
+    ['Effective scrub', fmt(l.effectiveScrubRadius, 1), 'mm', 'to patch centroid'],
+    ['Effective trail', fmt(l.effectiveTrail, 1), 'mm', 'to patch centroid'],
+  ] : [];
   return (
     <section className="panel">
       <h2>
@@ -54,6 +67,25 @@ export function Readout({ model }: { model: Model }) {
           ))}
         </tbody>
       </table>
+      {l && (
+        <>
+          <h3 className="subhead">
+            Tire & contact patch
+            {l.bottomedOut && <span className="status status-not-converged">Bottomed out</span>}
+          </h3>
+          <table className="readout">
+            <tbody>
+              {tireRows.map(([name, value, unit, hint]) => (
+                <tr key={name} title={hint}>
+                  <td>{name}</td>
+                  <td className="num">{value}</td>
+                  <td className="unit">{unit}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
     </section>
   );
 }

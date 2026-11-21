@@ -17,7 +17,8 @@ npm run dev        # then open http://localhost:5173
 - **Browser** (left): show/hide parts and construction geometry, focus the camera on a part (◎), and toggle motion trails, ghost positions at the travel limits, and camera follow.
 - **Viewport**: drag to orbit, right-drag to pan, scroll to zoom. Buttons lock to Front / Rear / Outboard / Inboard / Top / Bottom / Iso and switch orthographic ↔ perspective.
 - **Motion bar** (bottom): travel and rack sliders (double-click to reset), Play to sweep droop ↔ bump, travel range, and whether travel is measured at the wheel center or contact patch.
-- **Characteristics / Through travel** (right): live values at the current position and curves across the travel range.
+- **Tire** (left): enter a tire size (`225/45R17`, `31x10.50R15`, `20.5x7.0-13`) or dimensions, pick a model (rigid, stiffness, or air spring with pressure, altitude, temperature and the volume-change toggle) and a vertical load. The loaded contact patch is drawn on the ground.
+- **Characteristics / Through travel** (right): live values at the current position (including the loaded patch: area, deflection, pressure, effective scrub and trail) and curves across the travel range.
 
 URL options for sharing a specific view: `?preset=A&view=front&travel=30&rack=10&labels=1&projection=perspective`.
 

@@ -11,6 +11,7 @@ const COMPONENTS: { key: VisKey; label: string; color: string; focus?: FocusKey 
 ];
 
 const CONSTRUCTION: { key: VisKey; label: string; color: string }[] = [
+  { key: 'patch', label: 'Contact patch (loaded)', color: COLORS.patch },
   { key: 'steeringAxis', label: 'Steering axis', color: COLORS.steering },
   { key: 'icConstruction', label: 'Front-view IC lines', color: COLORS.ic },
   { key: 'rollCenter', label: 'Roll center', color: COLORS.rc },

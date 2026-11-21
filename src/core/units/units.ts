@@ -6,25 +6,46 @@
  * `1ft 2in`, `-12.5`. The original text is kept for display; only the base value is used in math.
  */
 
-export type Quantity = 'length' | 'angle';
+export type Quantity = 'length' | 'angle' | 'pressure' | 'force' | 'rate' | 'altitude' | 'ratio' | 'temperature';
 
-/** Factors to base units: length → mm, angle → degrees. */
+/**
+ * Factors to base units: length → mm, angle → deg, pressure → kPa, force → N, rate → N/mm,
+ * altitude → m, ratio → plain number. Temperature (→ °C) has offsets and is handled separately.
+ */
 export const UNITS: Record<Quantity, Record<string, number>> = {
   length: { mm: 1, cm: 10, m: 1000, in: 25.4, '"': 25.4, ft: 304.8, "'": 304.8 },
   angle: { deg: 1, '°': 1, rad: 180 / Math.PI },
+  pressure: { kPa: 1, psi: 6.894757, bar: 100, Pa: 0.001, MPa: 1000 },
+  force: { N: 1, kN: 1000, lbf: 4.4482216, kgf: 9.80665 },
+  rate: { 'N/mm': 1, 'kN/m': 1, 'lbf/in': 0.17512684 },
+  altitude: { m: 1, km: 1000, ft: 0.3048 },
+  ratio: { x: 1, '%': 0.01 },
+  temperature: { C: 1 },
 };
 
-export const DEFAULT_UNIT: Record<Quantity, string> = { length: 'mm', angle: 'deg' };
+export const DEFAULT_UNIT: Record<Quantity, string> = {
+  length: 'mm', angle: 'deg', pressure: 'kPa', force: 'N', rate: 'N/mm', altitude: 'm', ratio: 'x', temperature: 'C',
+};
 
 export type ParseResult = { ok: true; value: number } | { ok: false; error: string };
 
-const TERM = /([+-]?)\s*(\d+(?:\.\d*)?|\.\d+)(?:e([+-]?\d+))?\s*([a-zA-Z°"']*)/y;
+const TERM = /([+-]?)\s*(\d+(?:\.\d*)?|\.\d+)(?:e([+-]?\d+))?\s*([a-zA-Z°"'/%]*)/y;
+const TEMPERATURE = /^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*(°?[CFK])?\s*$/i;
+
+function parseTemperature(src: string): ParseResult {
+  const m = TEMPERATURE.exec(src);
+  if (!m) return { ok: false, error: 'Use a temperature like 20, 68F or 293K' };
+  const v = Number(m[1]);
+  const u = (m[2] ?? 'C').replace('°', '').toUpperCase();
+  return { ok: true, value: u === 'F' ? ((v - 32) * 5) / 9 : u === 'K' ? v - 273.15 : v };
+}
 
 /** Parse text like `5in + 3mm` into base units for `quantity`. */
 export function parseValue(text: string, quantity: Quantity, defaultUnit = DEFAULT_UNIT[quantity]): ParseResult {
   const units = UNITS[quantity];
   const src = text.trim();
   if (!src) return { ok: false, error: 'Empty value' };
+  if (quantity === 'temperature') return parseTemperature(src);
   if (!(defaultUnit in units)) return { ok: false, error: `Unknown default unit "${defaultUnit}"` };
   let pos = 0;
   let total = 0;

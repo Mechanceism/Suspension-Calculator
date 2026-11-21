@@ -31,7 +31,7 @@ Calculating and visualizing come first. **Later:** export to modeling software (
 | Phase | Goal | Status |
 |---|---|---|
 | 0 | Fundamentals and characteristic hierarchy (leaders vs. followers) | ✅ Done |
-| 1 | **Math core**: single corner, double wishbone (SLA), full motion through travel. Spec: [docs/MATH.md](docs/MATH.md) | ✅ Kinematics (L0–L2) done; tire layers (L3–L4) next |
+| 1 | **Math core**: single corner, double wishbone (SLA), full motion through travel. Spec: [docs/MATH.md](docs/MATH.md) | ✅ Kinematics (L0–L2) and tire (L3–L4) done; load-driven corner (L5) next |
 | 2 | **Visualizer**: 3D view of the core components, driven by the math core | ✅ First version (`npm run dev`) |
 | 3 | **More variables**: add the remaining characteristics to both the math and the UI | |
 | 4 | **Constraints and optimizer**: lock / range / free per variable; solve for free values once the visualizer and math agree | |

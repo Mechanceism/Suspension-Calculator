@@ -57,3 +57,16 @@ describe('track path', () => {
     expect(end.heading).toBeCloseTo(Math.PI / 2, 9);
   });
 });
+
+describe('full lock from a measured wheel angle', () => {
+  it('finds the rack travel that gives the measured angle; inside turns more than outside (Ackermann)', async () => {
+    const { rackForWheelAngle, wheelSteerAngle, DoubleWishbone } = await import('../src/core');
+    const corner = new DoubleWishbone(geom);
+    const span = rackForWheelAngle(corner, (60 * Math.PI) / 180, 'span')!;
+    expect(((span.inside + span.outside) * 180) / Math.PI).toBeCloseTo(60, 3);
+    const inside = rackForWheelAngle(corner, (35 * Math.PI) / 180, 'inside')!;
+    expect((inside.inside * 180) / Math.PI).toBeCloseTo(35, 3);
+    expect(Math.abs(wheelSteerAngle(corner, inside.rack)) + Math.abs(wheelSteerAngle(corner, -inside.rack))).toBeGreaterThan(0);
+    expect(rackForWheelAngle(corner, 3, 'inside')).toBeNull(); // 172°: out of reach
+  });
+});

@@ -25,6 +25,7 @@
  *  12  tire model from a .tir file (its coefficients), when one is loaded
  *  13  rear tires: same as the front, simple, or their own .tir model
  *  14  setup wizard status (which values are the user's and which are estimates)
+ *  15  wheel offset (ET: the hub point is the mounting face) and rim width per corner design
  */
 import pkg from '../../package.json';
 import { parseValue, type Quantity } from '../core/units/units';
@@ -44,7 +45,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 14;
+export const FORMAT_VERSION = 15;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -277,6 +278,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   12: (f) => ({ ...f, formatVersion: 13 }),
   // 13 → 14: no setup wizard status yet.
   13: (f) => ({ ...f, formatVersion: 14 }),
+  // 14 → 15: wheel offset 0 (the hub point is the tire's centerline) and the measuring rim.
+  14: (f) => ({ ...f, formatVersion: 15 }),
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */
@@ -528,7 +531,11 @@ function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: str
   const sc = isObj(c.scalars) ? c.scalars : {};
   const scalars = Object.fromEntries(SCALAR_KEYS.map((k) => {
     const name = cornerParam(id, SCALAR_META[k].name);
-    return [k, readField(sc[name], SCALAR_META[k].quantity, def.geom.scalars[k], name, w)];
+    // Wheel offset and rim width came with format 15; a blank rim width = the tire's measuring rim.
+    const raw = sc[name];
+    if (k === 'rimWidth' && (raw === undefined || (isObj(raw) && (raw.text === '' || raw.value === null)))) return [k, { text: '', value: NaN }];
+    if (k === 'wheelOffset' && raw === undefined) return [k, def.geom.scalars.wheelOffset];
+    return [k, readField(raw, SCALAR_META[k].quantity, def.geom.scalars[k], name, w)];
   })) as CornerDesign['geom']['scalars'];
   const damperRaw = isObj(c.damper) ? c.damper : {};
   const tireRaw = isObj(c.tire) ? c.tire : {};

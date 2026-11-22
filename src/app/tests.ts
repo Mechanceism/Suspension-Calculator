@@ -161,6 +161,38 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
       ],
     }),
   },
+  {
+    label: 'Oval: banked turns (short NASCAR-style track)',
+    make: () => {
+      // A half-mile-style oval: two 180° left turns banked 24° (R 75 m), straights banked 5°, counter-clockwise.
+      const turn = (name: string) => newSegment({ name, path: 'left', radius: f(75, 'distance'), bank: f(24, 'angle'), distance: f(Math.PI * 75, 'distance'), speedStart: f(75 * MPH, 'speed'), speedEnd: f(75 * MPH, 'speed') });
+      const straight = (name: string) => newSegment({ name, bank: f(5, 'angle'), distance: f(150, 'distance'), speedStart: f(75 * MPH, 'speed'), speedEnd: f(85 * MPH, 'speed') });
+      const brake = (name: string) => newSegment({ name, bank: f(5, 'angle'), distance: f(60, 'distance'), speedStart: f(85 * MPH, 'speed'), speedEnd: f(75 * MPH, 'speed') });
+      return {
+        name: 'Oval: banked turns', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, ride: true,
+        segments: [straight('Front straight'), brake('Brake into turn 1'), turn('Turns 1–2 (24° banking)'), straight('Back straight'), brake('Brake into turn 3'), turn('Turns 3–4 (24° banking)')],
+      };
+    },
+  },
+  {
+    label: 'Balanced: equal left / right turns, braking, a small hill',
+    make: () => {
+      // Loads every corner about evenly: two left and two right 90° turns of the same radius and speed,
+      // each braked into and accelerated out of, plus a 6 % incline (accelerating) and decline (braking).
+      const turn = (name: string, path: 'left' | 'right') => newSegment({ name, path, radius: f(30, 'distance'), distance: f((Math.PI / 2) * 30, 'distance'), speedStart: f(30 * MPH, 'speed'), speedEnd: f(30 * MPH, 'speed') });
+      const seg = (name: string, d: number, v0: number, v1: number, grade = 0) => newSegment({ name, distance: f(d, 'distance'), speedStart: f(v0 * MPH, 'speed'), speedEnd: f(v1 * MPH, 'speed'), grade: f(grade, 'percent') });
+      return {
+        name: 'Balanced', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, ride: true,
+        segments: [
+          seg('Launch 0–50', 80, 0, 50), seg('Brake 50–30', 25, 50, 30), turn('Left turn 1', 'left'),
+          seg('Accelerate 30–45', 50, 30, 45), seg('Brake 45–30', 20, 45, 30), turn('Right turn 1', 'right'),
+          seg('Uphill 6 %, accelerate 30–40', 60, 30, 40, 6), seg('Downhill 6 %, brake 40–30', 60, 40, 30, -6),
+          turn('Left turn 2', 'left'), seg('Accelerate 30–45', 50, 30, 45), seg('Brake 45–30', 20, 45, 30), turn('Right turn 2', 'right'),
+          seg('Exit 30–50', 60, 30, 50),
+        ],
+      };
+    },
+  },
   { label: 'Empty test', make: () => ({ name: 'New test', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, ride: true, segments: [newSegment()] }) },
 ];
 

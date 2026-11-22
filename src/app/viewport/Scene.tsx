@@ -8,7 +8,7 @@ import type { CornerPoints, CornerState } from '../../core/suspension/doubleWish
 import type { Characteristics } from '../../core/suspension/characteristics';
 import type { LoadedCorner } from '../../core/suspension/loaded';
 import { anyAxisLocked } from '../locks';
-import { useApp, POINT_NAMES, forCorner, selectedPoints, rootOf, type AnchorId, type ComponentId, type PointKey } from '../store';
+import { useApp, mountedTireWidth, POINT_NAMES, forCorner, selectedPoints, rootOf, type AnchorId, type ComponentId, type PointKey } from '../store';
 import type { Model, Sample, Current } from '../useModel';
 import { STATE_KEY, anchorPosition } from '../anchors';
 import { Joint, Seg, Polyline, Tri, Wheel, Label, PatchMesh, Coilover, HitLink } from './primitives';
@@ -322,7 +322,7 @@ export function Scene({ model }: { model: Model }) {
   const trails = useApp((s) => s.trails);
   const ghosts = useApp((s) => s.ghosts);
   const rackLimit = useApp((s) => s.steer.rackLimit.value);
-  const width = useApp((s) => s.geom.scalars.tireWidth.value);
+  const width = useApp((s) => mountedTireWidth(s.geom.scalars));
   const radius = useApp((s) => s.geom.scalars.tireDiameter.value / 2);
   const shoulder = useApp((s) => s.geom.scalars.shoulderRadius.value);
   const simpleTire = useApp((s) => s.simpleTire);

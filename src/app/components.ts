@@ -48,6 +48,6 @@ export function ownersOf(point: PointKey, defs: Record<ComponentId, ComponentDef
 export const POINT_LABELS: Record<PointKey, string> = {
   ucaFwd: 'UCA front pivot', ucaAft: 'UCA rear pivot', ucaOut: 'Upper ball joint',
   lcaFwd: 'LCA front pivot', lcaAft: 'LCA rear pivot', lcaOut: 'Lower ball joint',
-  trInner: 'Tie rod inner (rack)', trOuter: 'Tie rod outer', wheelCenter: 'Wheel center',
+  trInner: 'Tie rod inner (rack)', trOuter: 'Tie rod outer', wheelCenter: 'Hub center (wheel mounting face)',
   dmpChassis: 'Coilover chassis mount', dmpArm: 'Coilover arm mount',
 };

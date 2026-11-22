@@ -45,7 +45,7 @@ export const forCorner = (corner: string, flName: string) => flName.replace(/^FL
 /** Hook-free helper for components: the active corner's parameter name. */
 export const activeParam = (flName: string) => forCorner(useApp.getState().activeCorner, flName);
 
-export const SCALAR_KEYS = ['staticCamber', 'staticToe', 'tireDiameter', 'tireWidth', 'rimDiameter', 'shoulderRadius'] as const;
+export const SCALAR_KEYS = ['staticCamber', 'staticToe', 'tireDiameter', 'tireWidth', 'rimDiameter', 'shoulderRadius', 'wheelOffset', 'rimWidth'] as const;
 export type ScalarKey = (typeof SCALAR_KEYS)[number];
 export const SCALAR_META: Record<ScalarKey, { name: string; quantity: Quantity; label: string }> = {
   staticCamber: { name: 'FL_Whl_Camber', quantity: 'angle', label: 'Static camber' },
@@ -54,7 +54,22 @@ export const SCALAR_META: Record<ScalarKey, { name: string; quantity: Quantity; 
   tireWidth: { name: 'FL_Tire_Wid', quantity: 'length', label: 'Section width' },
   rimDiameter: { name: 'FL_Rim_Dia', quantity: 'length', label: 'Rim diameter' },
   shoulderRadius: { name: 'FL_Tire_Shldr', quantity: 'length', label: 'Shoulder radius' },
+  wheelOffset: { name: 'FL_Whl_Offset', quantity: 'length', label: 'Wheel offset (ET)' },
+  rimWidth: { name: 'FL_Rim_Wid', quantity: 'length', label: 'Rim width (blank = the tire\'s measuring rim)' },
 };
+
+/** Measuring rim the tire's section width refers to, mm (≈ 0.8 × section width, to the nearest ½"). */
+export const measuringRim = (sectionWidth: number) => Math.round((0.8 * sectionWidth) / 12.7) * 12.7;
+
+/**
+ * Tire section width on the rim it is mounted on, mm: about 5 mm wider per ½" (12.7 mm) of rim width over
+ * the measuring rim (and narrower under it). A blank rim width = the measuring rim.
+ */
+export function mountedTireWidth(s: Record<ScalarKey, Field>): number {
+  const w = s.tireWidth.value;
+  const rim = s.rimWidth.value;
+  return Number.isFinite(rim) && rim > 0 ? Math.max(0.5 * w, w + 0.4 * (rim - measuringRim(w))) : w;
+}
 
 /** Tire load / force-model inputs (docs/MATH.md § L4). */
 export const TIRE_KEYS = ['rate', 'pressure', 'setAltitude', 'setTemperature', 'opAltitude', 'opTemperature', 'volumeFactor'] as const;
@@ -172,6 +187,8 @@ export function editableFromLayout(id: string): EditableGeometry {
       tireWidth: field(g.wheel.width ?? 200),
       rimDiameter: { text: '13in', value: 13 * 25.4 },
       shoulderRadius: field(25),
+      wheelOffset: field(0),
+      rimWidth: { text: '', value: NaN },
     },
   };
 }
@@ -179,15 +196,19 @@ export function editableFromLayout(id: string): EditableGeometry {
 export function toGeometry(e: EditableGeometry): DoubleWishboneGeometry {
   const p = (k: PointKey) => vec3(e.points[k][0].value, e.points[k][1].value, e.points[k][2].value);
   const s = e.scalars;
+  const spinAxis = spinAxisFromCamberToe((s.staticCamber.value * Math.PI) / 180, (s.staticToe.value * Math.PI) / 180);
+  // The stored point is the hub's mounting face; the tire's centerline sits the wheel offset (ET) inboard of it.
+  const et = Number.isFinite(s.wheelOffset.value) ? s.wheelOffset.value : 0;
+  const hub = p('wheelCenter');
   return {
     uca: { fwd: p('ucaFwd'), aft: p('ucaAft'), out: p('ucaOut') },
     lca: { fwd: p('lcaFwd'), aft: p('lcaAft'), out: p('lcaOut') },
     tieRod: { inner: p('trInner'), outer: p('trOuter') },
     wheel: {
-      center: p('wheelCenter'),
-      spinAxis: spinAxisFromCamberToe((s.staticCamber.value * Math.PI) / 180, (s.staticToe.value * Math.PI) / 180),
+      center: vec3(hub.x - et * spinAxis.x, hub.y - et * spinAxis.y, hub.z - et * spinAxis.z),
+      spinAxis,
       radius: s.tireDiameter.value / 2,
-      width: s.tireWidth.value,
+      width: mountedTireWidth(s),
     },
     damper: { chassis: p('dmpChassis'), arm: e.damperArm, armPoint: p('dmpArm') },
   };
@@ -197,7 +218,7 @@ export function toProfile(e: EditableGeometry): TireProfile {
   const s = e.scalars;
   return {
     radius: s.tireDiameter.value / 2,
-    width: s.tireWidth.value,
+    width: mountedTireWidth(s),
     shoulderRadius: s.shoulderRadius.value,
     rimRadius: s.rimDiameter.value / 2,
   };
@@ -534,11 +555,11 @@ export interface OptimizerSetup {
 
 /** Whole-vehicle optimizer setup. */
 /** Setup wizard steps, easy to hard. */
-export const SETUP_STEPS = ['type', 'tires', 'size', 'weight', 'unsprung', 'points', 'springs', 'dampers', 'steering', 'inertia'] as const;
+export const SETUP_STEPS = ['type', 'tires', 'size', 'weight', 'unsprung', 'points', 'springs', 'dampers', 'steering', 'grip', 'inertia'] as const;
 export type SetupStep = (typeof SETUP_STEPS)[number];
 export const SETUP_LABELS: Record<SetupStep, string> = {
   type: 'Suspension type', tires: 'Wheels and tires', size: 'Track and wheelbase', weight: 'Weight and CG', unsprung: 'Unsprung weight',
-  points: 'Suspension points', springs: 'Springs', dampers: 'Dampers and anti-roll bars', steering: 'Steering and tire grip', inertia: 'Body inertia',
+  points: 'Suspension points', springs: 'Springs', dampers: 'Dampers and anti-roll bars', steering: 'Steering', grip: 'Tire grip', inertia: 'Body inertia',
 };
 
 /** Which axle a tire setting is for. */
@@ -721,7 +742,7 @@ export function vehicleStaticLoads(
     const g = corners[rootOf(id, links)].geom;
     const radius = g.scalars.tireDiameter.value / 2;
     const camber = (g.scalars.staticCamber.value * Math.PI) / 180;
-    return [id, g.points.wheelCenter[0].value - radius * Math.sin(camber)];
+    return [id, toGeometry(g).wheel.center.x - radius * Math.sin(camber)];
   })) as Record<CornerId, number>;
   const v = vehicle;
   return staticCornerLoads(v.mass.value, vec3(v.cgX.value, v.cgY.value, v.cgZ.value), v.wheelbase.value, contactX);

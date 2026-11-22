@@ -637,3 +637,20 @@ input[type='range']:disabled { opacity: 0.4; }
 .estimate-note { border-left: 3px solid var(--warn); padding-left: 8px; }
 tr.clickable { cursor: pointer; }
 tr.clickable:hover { background: var(--panel-2); }
+
+/* Wizard diagrams */
+.wizard-diagram { display: block; width: 100%; max-width: 380px; height: auto; margin: 6px 0; }
+.wizard-diagram.small { max-width: 240px; }
+.wizard-figs { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.wizard-figs p { flex: 1 1 200px; }
+.dg-tire { fill: #2c313b; stroke: #9097a3; stroke-width: 1.2; }
+.dg-body { fill: none; stroke: #5b6472; stroke-width: 1.2; stroke-dasharray: 3 3; }
+.dg-center { stroke: #5b6472; stroke-width: 1; stroke-dasharray: 2 3; }
+.dg-hub { stroke: #ffd166; stroke-width: 3; }
+.dg-on line { stroke: var(--accent); stroke-width: 1.6; }
+.dg-on text { fill: var(--accent); font-size: 9px; }
+.dg-off line { stroke: #5b6472; stroke-width: 1; }
+.dg-off text { fill: #6b7380; font-size: 9px; }
+.wizard-diagram marker path { fill: currentColor; }
+.dg-on marker path, .wizard-diagram defs path { fill: #9097a3; }
+.dg-note { fill: #9097a3; font-size: 9px; }

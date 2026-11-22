@@ -7,9 +7,9 @@
  * is one steady state for the whole-car solve. (Order along the chain doesn't change steady states;
  * transients come with the time-based Phase B.)
  *
- * Grade and bank tilt gravity in the road frame: the tires must also supply m·g·sin(grade) along the road
- * (uphill needs drive) and m·(a_y − g·sin(bank)) across it (a bank toward the inside of the turn helps),
- * and only m·g·cos(grade)·cos(bank) presses the car onto the road.
+ * Grade and bank tilt gravity in the road frame (roadEffective): the tires must also supply m·g·sin(grade)
+ * along the road (uphill needs drive), across it m·(a_y·cos(bank) − g·sin(bank)) (a bank toward the inside
+ * of the turn helps), and turning on a bank also presses the car into the road.
  */
 import type { CornerId } from '../vehicle/vehicle';
 import type { CheckProfile } from './checks';
@@ -91,11 +91,20 @@ export function segmentLatG(s: SegmentSpec, v: number): number {
   return s.radius > 0 ? (sign * v * v) / (G * s.radius) : 0;
 }
 
-/** Fold grade and bank into what the solver needs. */
+/**
+ * Fold grade and bank into what the solver needs: the car's acceleration and gravity resolved in the road
+ * plane (in g). With bank θ (+ = left side lower) and grade φ (+ = uphill):
+ *   lateral (across the road)  = a_y·cos θ − sin θ·cos φ
+ *   along the road             = a_x·cos φ + sin φ
+ *   normal (pressing the car on the road) = cos θ·cos φ + a_y·sin θ − a_x·sin φ
+ * so turning on a bank toward the inside both needs less side grip and pushes the car into the road.
+ */
 export function roadEffective(ay: number, ax: number, grade: number, bank: number) {
-  const lateralG = ay - Math.sin(bank);
-  const along = ax + Math.sin(grade);
-  return { lateralG, accelG: Math.max(0, along), brakingG: Math.max(0, -along), gravityScale: Math.cos(grade) * Math.cos(bank) };
+  const ct = Math.cos(bank), st = Math.sin(bank), cp = Math.cos(grade), sp = Math.sin(grade);
+  const lateralG = ay * ct - st * cp;
+  const along = ax * cp + sp;
+  const normal = Math.max(0.05, ct * cp + ay * st - ax * sp);
+  return { lateralG, accelG: Math.max(0, along), brakingG: Math.max(0, -along), gravityScale: normal };
 }
 
 /** Steady states of one segment (speeds scaled by `speedScale`, e.g. for a speed-limit search). */

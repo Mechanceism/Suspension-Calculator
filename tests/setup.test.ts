@@ -53,3 +53,32 @@ describe('setup wizard in the app', () => {
   });
 });
 
+
+describe('road and wheel geometry', () => {
+  it('a banked turn at its balance speed needs no side grip and presses the car into the road by 1 / cos θ', async () => {
+    const { roadEffective } = await import('../src/core');
+    const th = (24 * Math.PI) / 180;
+    const e = roadEffective(Math.tan(th), 0, 0, th);
+    expect(e.lateralG).toBeCloseTo(0, 12);
+    expect(e.gravityScale).toBeCloseTo(1 / Math.cos(th), 12);
+    // Flat road: unchanged; uphill at constant speed: drive m·g·sin φ, load cos φ.
+    expect(roadEffective(0.8, 0, 0, 0)).toMatchObject({ lateralG: 0.8, gravityScale: 1 });
+    const up = roadEffective(0, 0, Math.atan(0.1), 0);
+    expect(up.accelG).toBeCloseTo(Math.sin(Math.atan(0.1)), 12);
+    expect(up.gravityScale).toBeCloseTo(Math.cos(Math.atan(0.1)), 12);
+  });
+
+  it('wheel offset puts the tire centerline ET inboard of the hub face; rim width spreads the tire', async () => {
+    const { toGeometry, mountedTireWidth, measuringRim } = await import('../src/app/store');
+    const d = defaultDesign();
+    const g0 = toGeometry(d.geom);
+    const g = toGeometry({ ...d.geom, scalars: { ...d.geom.scalars, wheelOffset: { text: '35', value: 35 } } });
+    const a = g0.wheel.spinAxis;
+    expect(g.wheel.center.x).toBeCloseTo(g0.wheel.center.x - 35 * a.x, 9);
+    expect(g.wheel.center.y).toBeCloseTo(g0.wheel.center.y - 35 * a.y, 9);
+    const s = d.geom.scalars;
+    expect(mountedTireWidth(s)).toBe(s.tireWidth.value); // blank rim width = the measuring rim
+    const wider = mountedTireWidth({ ...s, rimWidth: { text: '', value: measuringRim(s.tireWidth.value) + 12.7 } });
+    expect(wider - s.tireWidth.value).toBeCloseTo(0.4 * 12.7, 9);
+  });
+});

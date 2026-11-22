@@ -117,3 +117,41 @@ function compute(
     limit, over: !reached || Math.abs(rack) > limit + 1e-6, none: false,
   };
 }
+
+/** Road-wheel heading change of a corner at a rack travel (ride height), rad: + = front of the wheel toward the corner's outboard side. NaN if it can't be solved. */
+export function wheelSteerAngle(corner: DoubleWishbone, rack: number): number {
+  try {
+    const st = corner.solve({ travel: 0, rack });
+    return st.solve.status === 'converged' ? headingAngle(st.spinAxis) - headingAngle(corner.design().spinAxis) : NaN;
+  } catch { return NaN; }
+}
+
+export interface FullLock {
+  /** Rack travel each way, mm. */
+  rack: number;
+  /** Road-wheel angles at full lock, rad: the wheel on the inside of the turn and on the outside. */
+  inside: number;
+  outside: number;
+}
+
+/**
+ * Rack travel each way from a measured road-wheel angle of one front wheel:
+ *   'span'   = the angle from full lock one way to full lock the other (inside + outside angle)
+ *   'inside' = from straight ahead to full lock, the wheel on the inside of the turn
+ * using the corner's own steering kinematics (bisection on the rack travel). null if it can't reach it.
+ */
+export function rackForWheelAngle(corner: DoubleWishbone, angle: number, mode: 'span' | 'inside'): FullLock | null {
+  const s = Math.sign(wheelSteerAngle(corner, 1)) || 1; // rack direction that turns this wheel outboard (it is then on the inside)
+  const at = (L: number) => {
+    const inside = Math.abs(wheelSteerAngle(corner, s * L)), outside = Math.abs(wheelSteerAngle(corner, -s * L));
+    return { inside, outside, value: mode === 'span' ? inside + outside : inside };
+  };
+  let hi = 5;
+  while (hi < 300 && Number.isFinite(at(hi).value) && at(hi).value < angle) hi *= 1.5;
+  if (!Number.isFinite(at(hi).value) || at(hi).value < angle) return null;
+  let lo = 0;
+  for (let k = 0; k < 50; k++) { const m = (lo + hi) / 2; const v = at(m).value; if (Number.isFinite(v) && v < angle) lo = m; else hi = m; }
+  const L = (lo + hi) / 2;
+  const r = at(L);
+  return { rack: L, inside: r.inside, outside: r.outside };
+}

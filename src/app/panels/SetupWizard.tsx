@@ -12,8 +12,9 @@ import { tireRate } from '../../core/tire/model';
 import { DoubleWishbone } from '../../core/suspension/doubleWishbone';
 import { springLength, dampingForRatio } from '../../core/suspension/spring';
 import { cgFromScales, springFromWeight, unsprungFromParts, estimateInertia, G, type CornerKg, type UnsprungParts } from '../../core/setup/measure';
+import { rackForWheelAngle } from '../../core/tests/steer';
 import {
-  useApp, mergedCorners, rootOf, toGeometry, toProfile, toForceModel, vehicleStaticLoads, SETUP_STEPS, SETUP_LABELS,
+  useApp, mergedCorners, rootOf, toGeometry, toProfile, toForceModel, vehicleStaticLoads, mountedTireWidth, measuringRim, SETUP_STEPS, SETUP_LABELS,
   type SetupStep, type CornerDesign, type TireAxle, type Field,
 } from '../store';
 import { importTireFile } from '../tireActions';
@@ -47,6 +48,9 @@ const designOf = (axle: 'front' | 'rear') => {
   const s = useApp.getState();
   return mergedCorners(s)[rootOf(axle === 'front' ? 'FL' : 'RL', s.links)];
 };
+
+/** Half track of a design: the tire's centerline (wheel offset applied), mm. */
+const halfTrackOf = (d: CornerDesign) => Math.abs(toGeometry(d.geom).wheel.center.x);
 
 /** Spring travel per wheel travel of a design at ride height (1 when it can't be found). */
 function motionRatio(d: CornerDesign): number {
@@ -95,17 +99,26 @@ const TiresStep: StepView = ({ apply }) => {
   const [same, setSame] = useState((front.tireSizeText || '') === (rear.tireSizeText || ''));
   const [pF, setPF] = useState(front.tire.pressure.value);
   const [pR, setPR] = useState(rear.tire.pressure.value);
+  const rimOf = (d: CornerDesign) => (Number.isFinite(d.geom.scalars.rimWidth.value) ? d.geom.scalars.rimWidth.value : measuringRim(d.geom.scalars.tireWidth.value));
+  const [rimF, setRimF] = useState(rimOf(front));
+  const [rimR, setRimR] = useState(rimOf(rear));
+  const [etF, setEtF] = useState(front.geom.scalars.wheelOffset.value || 0);
+  const [etR, setEtR] = useState(rear.geom.scalars.wheelOffset.value || 0);
   const okF = !!parseTireSize(sizeF), okR = same || !!parseTireSize(sizeR);
   const go = () => apply(() => {
     const s = useApp.getState();
-    const set = (axle: TireAxle, text: string, p: number) => {
+    const set = (axle: TireAxle, text: string, p: number, rim: number, et: number) => {
       const size = parseTireSize(text)!;
       s.applyTireDims(axle, { outerDiameter: size.outerDiameter, width: size.sectionWidth, rimDiameter: size.rimDiameter });
-      useApp.getState().updateDesigns(axle, (d) => ({ ...d, tireSizeText: text, tire: { ...d.tire, pressure: f(p) } }));
+      useApp.getState().updateDesigns(axle, (d) => ({
+        ...d, tireSizeText: text, tire: { ...d.tire, pressure: f(p) },
+        geom: { ...d.geom, scalars: { ...d.geom.scalars, rimWidth: f(rim), wheelOffset: f(et) } },
+      }));
     };
-    if (same) set('both', sizeF, pF);
-    else { set('front', sizeF, pF); set('rear', sizeR, pR); }
+    if (same) set('both', sizeF, pF, rimF, etF);
+    else { set('front', sizeF, pF, rimF, etF); set('rear', sizeR, pR, rimR, etR); }
   });
+  const widthOn = (text: string, rim: number, d: CornerDesign = front) => { const z = parseTireSize(text); return mountedTireWidth({ ...d.geom.scalars, tireWidth: f(z ? z.sectionWidth : d.geom.scalars.tireWidth.value), rimWidth: f(rim) }); };
   return (
     <>
       <p>The size printed on the tire sidewall (225/45R17, 31x10.50R15, 20.5x7.0-13…) and the pressure you run.</p>
@@ -115,8 +128,19 @@ const TiresStep: StepView = ({ apply }) => {
           {!same && <Row label="Rear tire size"><input className={`value-input wide-text${sizeR && !okR ? ' invalid' : ''}`} value={sizeR} onChange={(e) => setSizeR(e.target.value)} /></Row>}
           <Row label={same ? 'Pressure' : 'Front pressure'}><Num value={pF} unit="kPa" q="pressure" onChange={setPF} /></Row>
           {!same && <Row label="Rear pressure"><Num value={pR} unit="kPa" q="pressure" onChange={setPR} /></Row>}
+          <Row label={same ? 'Rim width' : 'Front rim width'} hint="The wheel's width (e.g. 7&quot; for a 7x13 wheel). A rim wider than the tire's measuring rim spreads the tire about 5 mm per ½&quot;."><Num value={rimF} unit="mm" q="length" onChange={setRimF} /></Row>
+          {!same && <Row label="Rear rim width"><Num value={rimR} unit="mm" q="length" onChange={setRimR} /></Row>}
+          <Row label={same ? 'Wheel offset (ET)' : 'Front wheel offset (ET)'} hint="Stamped on the wheel (ET35 = 35 mm). From the rim's centerline to the hub mounting face; + = the face is outboard of the centerline (the tire sits inboard)."><Num value={etF} unit="mm" q="length" onChange={setEtF} /></Row>
+          {!same && <Row label="Rear wheel offset (ET)"><Num value={etR} unit="mm" q="length" onChange={setEtR} /></Row>}
         </tbody>
       </table>
+      <div className="wizard-figs">
+        <OffsetDiagram />
+        <p className="small-text muted">
+          Tire width on this rim: {fmt(widthOn(sizeF, rimF), 0)} mm{!same ? ` front, ${fmt(widthOn(sizeR, rimR, rear), 0)} mm rear` : ''} (section width is quoted on the tire&apos;s measuring rim).
+          The suspension&apos;s wheel-center point is the <b>hub mounting face</b>: the tire&apos;s centerline sits the offset inboard of it.
+        </p>
+      </div>
       <label className="check-row"><input type="checkbox" checked={same} onChange={(e) => setSame(e.target.checked)} /> Same tires front and rear</label>
       {!okF && sizeF && <p className="hint warn-text">Unrecognized size (try 225/45R17, 31x10.50R15 or 20.5x7.0-13).</p>}
       <div className="jm-row"><button className="wide-btn primary" disabled={!okF || !okR} onClick={go}>Apply and next</button></div>
@@ -127,12 +151,12 @@ const TiresStep: StepView = ({ apply }) => {
 const SizeStep: StepView = ({ apply }) => {
   const s = useApp.getState();
   const front = designOf('front'), rear = designOf('rear');
-  const halfF = Math.abs(front.geom.points.wheelCenter[0].value), halfR = Math.abs(rear.geom.points.wheelCenter[0].value);
+  const halfF = halfTrackOf(front), halfR = halfTrackOf(rear);
   const [wb, setWb] = useState(s.vehicle.wheelbase.value);
   const [mode, setMode] = useState<'track' | 'width'>('track');
   const [tF, setTF] = useState(2 * halfF);
   const [tR, setTR] = useState(2 * halfR);
-  const tireW = (d: CornerDesign) => d.geom.scalars.tireWidth.value;
+  const tireW = (d: CornerDesign) => mountedTireWidth(d.geom.scalars);
   const trackOf = (v: number, d: CornerDesign) => (mode === 'width' ? v - tireW(d) : v);
   const linked = s.links.rearFromFront;
   const go = () => apply(() => {
@@ -157,6 +181,7 @@ const SizeStep: StepView = ({ apply }) => {
         <button className={`chip${mode === 'track' ? ' on' : ''}`} onClick={() => setMode('track')}>I measured the track</button>
         <button className={`chip${mode === 'width' ? ' on' : ''}`} onClick={() => setMode('width')}>I measured the overall width</button>
       </div>
+      <TrackDiagram mode={mode} />
       <table className="opt-table">
         <tbody>
           <Row label="Wheelbase"><Num value={wb} unit="mm" q="length" onChange={setWb} /></Row>
@@ -176,8 +201,8 @@ const WeightStep: StepView = ({ apply }) => {
   const s = useApp.getState();
   const v = s.vehicle;
   const L = v.wheelbase.value;
-  const tF = 2 * Math.abs(designOf('front').geom.points.wheelCenter[0].value);
-  const tR = 2 * Math.abs(designOf('rear').geom.points.wheelCenter[0].value);
+  const tF = 2 * halfTrackOf(designOf('front'));
+  const tR = 2 * halfTrackOf(designOf('rear'));
   const [mass, setMass] = useState(v.mass.value);
   const [frontPct, setFrontPct] = useState(100 * (1 + v.cgZ.value / L));
   const [leftPct, setLeftPct] = useState(50 + (100 * v.cgX.value) / ((tF + tR) / 2));
@@ -408,31 +433,127 @@ const DampersStep: StepView = ({ apply }) => {
 };
 
 const SteeringStep: StepView = ({ apply }) => {
-  const steer = useApp((s) => s.steer);
-  const tireFile = useApp((s) => s.tireFile);
-  const [c, setC] = useState(steer.cFactor.value);
-  const [lim, setLim] = useState(steer.rackLimit.value);
-  const input = useRef<HTMLInputElement>(null);
-  const go = () => apply(() => { const st = useApp.getState(); st.setSteerField('cFactor', String(c)); st.setSteerField('rackLimit', String(lim)); });
+  const steer = useApp((st) => st.steer);
+  const wheelbase = useApp((st) => st.vehicle.wheelbase.value);
+  const [turnsMode, setTurnsMode] = useState<'lockToLock' | 'centerToLock'>('lockToLock');
+  const [turns, setTurns] = useState(Number(((2 * steer.rackLimit.value) / Math.max(steer.cFactor.value, 1e-9)).toFixed(2)));
+  const [angleMode, setAngleMode] = useState<'span' | 'inside'>('span');
+  const [angle, setAngle] = useState(50);
+  const corner = useMemo(() => { try { return new DoubleWishbone(toGeometry(designOf('front').geom)); } catch { return null; } }, []);
+  const lock = corner && angle > 0 ? rackForWheelAngle(corner, (angle * Math.PI) / 180, angleMode) : null;
+  const centerTurns = turnsMode === 'lockToLock' ? turns / 2 : turns;
+  const cFactor = lock && centerTurns > 0 ? lock.rack / centerTurns : NaN;
+  const deg = (r: number) => (r * 180) / Math.PI;
+  const mean = lock ? (lock.inside + lock.outside) / 2 : NaN;
+  const go = () => apply(() => {
+    if (!lock || !(cFactor > 0)) return;
+    const st = useApp.getState();
+    st.setSteerField('rackLimit', String(Number(lock.rack.toFixed(2))));
+    st.setSteerField('cFactor', String(Number(cFactor.toFixed(2))));
+  });
   return (
     <>
-      <p>Steering: how far the rack moves per turn of the steering wheel, and how far it can move each way.</p>
+      <p>Two easy measurements on the car: how many turns the steering wheel makes, and how far a front wheel turns.</p>
+      <div className="jm-row">
+        <button className={`chip${turnsMode === 'lockToLock' ? ' on' : ''}`} onClick={() => setTurnsMode('lockToLock')}>Turns lock to lock</button>
+        <button className={`chip${turnsMode === 'centerToLock' ? ' on' : ''}`} onClick={() => setTurnsMode('centerToLock')}>Turns center to lock</button>
+      </div>
+      <div className="jm-row">
+        <button className={`chip${angleMode === 'span' ? ' on' : ''}`} onClick={() => setAngleMode('span')}>Wheel angle full left to full right</button>
+        <button className={`chip${angleMode === 'inside' ? ' on' : ''}`} onClick={() => setAngleMode('inside')}>Wheel angle straight to full lock</button>
+      </div>
       <table className="opt-table">
         <tbody>
-          <Row label="Rack travel per steering-wheel turn" hint="Turn the wheel one full turn and measure the rack (or tie-rod end) movement"><Num value={c} unit="mm" q="length" onChange={setC} /></Row>
-          <Row label="Rack travel limit (each way)"><Num value={lim} unit="mm" q="length" onChange={setLim} /></Row>
+          <Row label={turnsMode === 'lockToLock' ? 'Steering-wheel turns, lock to lock' : 'Steering-wheel turns, center to lock'}><Num value={turns} unit="" q="ratio" onChange={setTurns} /></Row>
+          <Row label={angleMode === 'span' ? 'One front wheel, full left to full right' : 'One front wheel, straight to full lock (turning toward that side)'}
+            hint="Measure the wheel's angle (e.g. turn plates, or a straight edge on the tire and a protractor on the floor)">
+            <Num value={angle} unit="°" q="angle" onChange={setAngle} />
+          </Row>
         </tbody>
       </table>
-      <p>Tire grip: {tireFile ? <b>{tireFile.name}</b> : 'the generic model'}. A fitted model of your tire makes grip results real.</p>
-      <div className="jm-row">
-        <button className="chip" onClick={() => input.current?.click()}>Import .tir</button>
-        <button className="chip" onClick={() => { useWizard.setState({ open: false }); useApp.getState().set('vehicleTab', 'optimize'); switchWorkspace('vehicle'); }}>Fit from measured data (Vehicle → Optimize → Tire grip model)</button>
-        <input ref={input} type="file" accept=".tir,.TIR,.txt" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) void importTireFile(file, 'both'); e.target.value = ''; }} />
-      </div>
-      <div className="jm-row"><button className="wide-btn primary" onClick={go}>Apply and next</button></div>
+      {lock ? (
+        <p className="small-text">
+          Rack travel <b>±{fmt(lock.rack, 1)} mm</b> · <b>{fmt(cFactor, 1)} mm</b> per steering-wheel turn ·
+          full lock: inside wheel <b>{fmt(deg(lock.inside), 1)}°</b>, outside <b>{fmt(deg(lock.outside), 1)}°</b> (max steering angle) ·
+          overall ratio {fmt((centerTurns * 360) / deg(mean), 1)}:1 · tightest turn about {fmt(wheelbase / 1000 / Math.tan(mean), 1)} m radius
+        </p>
+      ) : <p className="hint warn-text">The steering geometry can&apos;t turn the wheel that far: check the angle (and the tie-rod points).</p>}
+      <p className="hint">The inside and outside wheels turn by different amounts (Ackermann); the rack travel comes from your steering geometry (tie-rod points).</p>
+      <div className="jm-row"><button className="wide-btn primary" disabled={!lock || !(cFactor > 0)} onClick={go}>Apply and next</button></div>
     </>
   );
 };
+
+const GripStep: StepView = ({ apply }) => {
+  const tireFile = useApp((s) => s.tireFile);
+  const tireFileRear = useApp((s) => s.tireFileRear);
+  const input = useRef<HTMLInputElement>(null);
+  const rear = tireFileRear === null ? 'the same as the front' : tireFileRear === 'simple' ? 'the generic model' : tireFileRear.name;
+  return (
+    <>
+      <p>How much grip the tires give: the hardest values to get, and the ones grip results depend on most.</p>
+      <p>Now: front {tireFile ? <b>{tireFile.name}</b> : 'the generic model'}, rear {rear}.</p>
+      <ul className="small-text">
+        <li><b>A .tir file</b> (a fitted Magic Formula model of your tire, from the tire maker, a sim or published data): Import .tir.</li>
+        <li><b>Your own measurements</b> (slip angle, load, forces…): fit a model in Vehicle → Optimize → Tire grip model → <i>Fit a tire model to measured data</i>.</li>
+        <li><b>Neither yet:</b> use an estimate (the generic model) and come back later.</li>
+      </ul>
+      <div className="jm-row">
+        <button className="chip" onClick={() => input.current?.click()}>Import .tir</button>
+        <button className="chip" onClick={() => { useWizard.setState({ open: false }); useApp.getState().set('vehicleTab', 'optimize'); switchWorkspace('vehicle'); }}>Fit from measured data</button>
+        <input ref={input} type="file" accept=".tir,.TIR,.txt" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) void importTireFile(file, 'both'); e.target.value = ''; }} />
+      </div>
+      <div className="jm-row"><button className="wide-btn primary" disabled={!tireFile} onClick={() => apply(() => {})} title={tireFile ? '' : 'Load a .tir file first, or use an estimate'}>My tire model is loaded: next</button></div>
+    </>
+  );
+};
+
+/** Top view: what the track, the overall width and the wheelbase are. */
+function TrackDiagram({ mode }: { mode: 'track' | 'width' }) {
+  const W = 300, H = 150;
+  const tire = (x: number, y: number) => <rect x={x - 9} y={y - 18} width={18} height={36} rx={4} className="dg-tire" />;
+  const xs = [95, 205], ys = [38, 112];
+  const arrow = (x1: number, y1: number, x2: number, y2: number, on: boolean, label: string, lx: number, ly: number) => (
+    <g className={on ? 'dg-on' : 'dg-off'}>
+      <line x1={x1} y1={y1} x2={x2} y2={y2} markerStart="url(#dg-a)" markerEnd="url(#dg-a)" />
+      <text x={lx} y={ly} textAnchor="middle">{label}</text>
+    </g>
+  );
+  return (
+    <svg className="wizard-diagram" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Track, overall width and wheelbase">
+      <defs><marker id="dg-a" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" /></marker></defs>
+      <rect x={100} y={30} width={100} height={90} rx={12} className="dg-body" />
+      {xs.map((x) => ys.map((y) => <g key={`${x}${y}`}>{tire(x, y)}</g>))}
+      <line x1={xs[0]} y1={10} x2={xs[0]} y2={140} className="dg-center" />
+      <line x1={xs[1]} y1={10} x2={xs[1]} y2={140} className="dg-center" />
+      {arrow(xs[0], 16, xs[1], 16, mode === 'track', 'track: tire center to tire center', 150, 11)}
+      {arrow(xs[0] - 9, 140, xs[1] + 9, 140, mode === 'width', 'overall width: outside to outside', 150, 136)}
+      {arrow(250, ys[0], 250, ys[1], true, 'wheelbase', 278, 78)}
+      <line x1={xs[1] + 12} y1={ys[0]} x2={256} y2={ys[0]} className="dg-center" />
+      <line x1={xs[1] + 12} y1={ys[1]} x2={256} y2={ys[1]} className="dg-center" />
+      <text x={20} y={78} className="dg-note">front ↑</text>
+    </svg>
+  );
+}
+
+/** Wheel cross-section: rim centerline, hub mounting face and the offset between them. */
+function OffsetDiagram() {
+  return (
+    <svg className="wizard-diagram small" viewBox="0 0 220 120" role="img" aria-label="Wheel offset">
+      <rect x={60} y={14} width={70} height={92} rx={10} className="dg-tire" />
+      <line x1={95} y1={6} x2={95} y2={114} className="dg-center" />
+      <line x1={118} y1={34} x2={118} y2={86} className="dg-hub" />
+      <g className="dg-on">
+        <line x1={95} y1={60} x2={118} y2={60} markerStart="url(#dg-b)" markerEnd="url(#dg-b)" />
+      </g>
+      <defs><marker id="dg-b" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" /></marker></defs>
+      <text x={95} y={118} textAnchor="middle" className="dg-note">rim centerline</text>
+      <text x={122} y={30} className="dg-note">hub face</text>
+      <text x={150} y={62} className="dg-note">ET (+)</text>
+      <text x={150} y={76} className="dg-note">outboard →</text>
+    </svg>
+  );
+}
 
 const InertiaStep: StepView = ({ apply }) => {
   const s = useApp.getState();
@@ -442,7 +563,7 @@ const InertiaStep: StepView = ({ apply }) => {
   const estimate = () => {
     const all = mergedCorners(s);
     const unsprung = (['FL', 'FR', 'RL', 'RR'] as const).reduce((a, id) => a + all[id].spring.unsprungMass.value, 0);
-    const track = Math.abs(designOf('front').geom.points.wheelCenter[0].value) + Math.abs(designOf('rear').geom.points.wheelCenter[0].value);
+    const track = halfTrackOf(designOf('front')) + halfTrackOf(designOf('rear'));
     const e = estimateInertia(v.mass.value - unsprung, track, v.wheelbase.value);
     setRoll(Number(e.roll.toFixed(1))); setPitch(Number(e.pitch.toFixed(1)));
   };
@@ -464,7 +585,7 @@ const InertiaStep: StepView = ({ apply }) => {
 
 const VIEWS: Record<SetupStep, StepView> = {
   type: TypeStep, tires: TiresStep, size: SizeStep, weight: WeightStep, unsprung: UnsprungStep,
-  points: PointsStep, springs: SpringsStep, dampers: DampersStep, steering: SteeringStep, inertia: InertiaStep,
+  points: PointsStep, springs: SpringsStep, dampers: DampersStep, steering: SteeringStep, grip: GripStep, inertia: InertiaStep,
 };
 
 /** Results based on estimates say so. */

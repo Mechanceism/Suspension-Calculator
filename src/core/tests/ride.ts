@@ -184,7 +184,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
   };
   const inputAt = (k: ReturnType<typeof kinAt>) => {
     const eff = roadEffective(k.ay, k.ax, k.grade, k.bank);
-    return { ...vehicleInputOf(p, asm, { lateralG: eff.lateralG, brakingG: eff.brakingG, accelG: eff.accelG, gravityScale: eff.gravityScale, groundOffset: k.ground }), corners };
+    return { ...vehicleInputOf(p, asm, { lateralG: eff.lateralG, brakingG: eff.brakingG, accelG: eff.accelG, gravityScale: eff.gravityScale, groundOffset: k.ground, speed: k.v }), corners };
   };
 
   // Start from the steady state at t = 0.

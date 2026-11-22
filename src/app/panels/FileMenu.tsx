@@ -5,6 +5,7 @@ import { useDirtyParts, newLayout, save, saveAs, openLayout, exportParts, import
 import { exportSettingsFile } from '../settingsFile';
 import { importTireFile } from '../tireActions';
 import { openWizard } from './SetupWizard';
+import { importAeroFile } from './AeroPanel';
 
 const when = (iso: string) => {
   const d = new Date(iso);
@@ -21,6 +22,7 @@ export function FileMenu() {
   const importInput = useRef<HTMLInputElement>(null);
   const settingsInput = useRef<HTMLInputElement>(null);
   const tireInput = useRef<HTMLInputElement>(null);
+  const aeroInput = useRef<HTMLInputElement>(null);
   const importPart = useRef<Part>('all');
   const pickImport = (part: Part) => { importPart.current = part; importInput.current?.click(); };
   const root = useRef<HTMLDivElement>(null);
@@ -77,6 +79,7 @@ export function FileMenu() {
           <button role="menuitem" onClick={run(() => pickImport('model'))} title="Replace the model, keep the current tests">Model only</button>
           <button role="menuitem" onClick={run(() => pickImport('tests'))} title="Replace the current tests with those from a tests or project file">Tests only</button>
           <button role="menuitem" onClick={run(() => tireInput.current?.click())} title="Use a fitted Magic Formula tire model (.tir file) for all four tires. Front and rear can differ: Optimize → Tire grip model">Tire (.tir)</button>
+          <button role="menuitem" onClick={run(() => aeroInput.current?.click())} title="Aerodynamic characteristics: constant coefficients or a ride-height map (JSON or CSV, e.g. from a CFD tool)">Aero data</button>
           <div className="menu-sep" />
           <div className="menu-head">Settings (units, view, pass-rule profiles)</div>
           <button role="menuitem" onClick={run(exportSettings)}>Export settings</button>
@@ -94,6 +97,10 @@ export function FileMenu() {
       <input
         ref={tireInput} type="file" accept=".tir,.TIR,.txt" hidden
         onChange={(e) => { const f = e.target.files?.[0]; if (f) usePendingImport.setState({ file: f, part: 'tire' }); e.target.value = ''; }}
+      />
+      <input
+        ref={aeroInput} type="file" accept=".json,.csv,.txt" hidden
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) usePendingImport.setState({ file: f, part: 'aero' }); e.target.value = ''; }}
       />
       <SaveAsDialog />
       <ImportPrompt />
@@ -133,9 +140,10 @@ function SaveAsDialog() {
   );
 }
 
-const REPLACES: Record<Part | 'settings' | 'tire', string> = {
+const REPLACES: Record<Part | 'settings' | 'tire' | 'aero', string> = {
   all: 'your current model and tests', model: 'your current model (the tests stay)', tests: 'your current tests', settings: 'your current settings (units, view options, pass-rule profiles)',
   tire: 'the tire grip model of all four tires (the rest of the model stays)',
+  aero: 'the aerodynamic characteristics (and turns aero on)',
 };
 
 /** Before an import replaces something: save first, save as, overwrite, or cancel. */
@@ -148,9 +156,10 @@ function ImportPrompt() {
     close();
     if (part === 'settings') void importSettings(file);
     else if (part === 'tire') void importTireFile(file, 'both');
+    else if (part === 'aero') void importAeroFile(file);
     else void importParts(file, part);
   };
-  const unsaved = part === 'settings' ? false : part === 'tire' ? parts.model : (part !== 'tests' && parts.model) || (part !== 'model' && parts.tests);
+  const unsaved = part === 'settings' ? false : part === 'tire' || part === 'aero' ? parts.model : (part !== 'tests' && parts.model) || (part !== 'model' && parts.tests);
   const saveFirst = () => {
     if (part === 'settings') { exportSettings(); go(); return; }
     const s = useApp.getState();

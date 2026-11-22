@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { Num, UnitLabel } from './UnitText';
 import { openWizard, EstimatedNote } from './SetupWizard';
+import { AeroPanel } from './AeroPanel';
 import { useConversion, toDisplay, fromDisplay } from '../units';
 import type { GripSummary, SlipState } from '../../core/vehicle/vehicle';
 import { LocksPanel } from './LocksPanel';
@@ -163,6 +164,9 @@ export function VehicleInputs({ model }: { model: VehicleModel | null }) {
         }))} />
         <p className="hint">Corner unsprung masses are set per corner (Spring &amp; load). The CG is the whole car at static ride height.</p>
       </Section>
+      <Section title="Aerodynamics" open={false} extra={<AeroBadge />}>
+        <AeroPanel />
+      </Section>
       <Section title="Static corner weights (from CG)">
         {loads && (
           <>
@@ -260,6 +264,16 @@ export function VehicleResults({ model }: { model: VehicleModel | null }) {
       </h2>
       <EstimatedNote />
       {r.grip && <GripSection grip={r.grip} />}
+      {r.aero && (
+        <Section title="Aero">
+          <FieldRows rows={[
+            { label: 'Drag', value: fmt(r.aero.drag, 0), unit: 'N', hint: 'On the body, rearward; the driven tires push against it' },
+            { label: 'Downforce, front axle', value: fmt(-r.aero.liftF, 0), unit: 'N', hint: '− = lift' },
+            { label: 'Downforce, rear axle', value: fmt(-r.aero.liftR, 0), unit: 'N' },
+            { label: 'Aero balance (front share)', value: Math.abs(r.aero.liftF + r.aero.liftR) > 1e-6 ? fmt((r.aero.liftF / (r.aero.liftF + r.aero.liftR)) * 100, 1) : '—', unit: '%' },
+          ]} />
+        </Section>
+      )}
       <Section title="Body">
         <FieldRows rows={[
           { label: 'Roll', value: fmt(deg(r.pose.roll), 3), unit: '°', hint: '+ = top leans toward −X (right)' },
@@ -393,9 +407,32 @@ export function VehicleMotionBar() {
         </label>
         <button className={playingSteer ? 'active' : ''} onClick={() => set('playingSteer', !playingSteer)}>{playingSteer ? '❚❚' : '▶'} Steer</button>
       </div>
+      <SpeedControl />
       <RoadControls />
     </div>
   );
+}
+
+/** Car speed (for aero): shown when aero is on. */
+function SpeedControl() {
+  const on = useApp((s) => s.aero.on);
+  const speed = useApp((s) => s.vehicleSpeed);
+  const set = useApp((s) => s.set);
+  const conv = useConversion('m/s');
+  if (!on) return null;
+  return (
+    <div className="motion-group">
+      <label className="slider" title="The car's speed: drag and downforce grow with speed²">
+        <span>Speed <b>{toDisplay(speed, conv).toFixed(0)}</b> {conv.unit} (aero)</span>
+        <input type="range" min={0} max={90} step={0.5} value={speed} onChange={(e) => { set('rideView', null); set('vehicleSpeed', Number(e.target.value)); }} onDoubleClick={() => set('vehicleSpeed', 0)} />
+      </label>
+    </div>
+  );
+}
+
+function AeroBadge() {
+  const aero = useApp((s) => s.aero);
+  return <span className="muted small-text">{!aero.on ? 'off' : aero.file ? aero.file.name : 'generic'}</span>;
 }
 
 /** Road under the car: grade, bank and a bump / pothole under each wheel (steady state). */

@@ -35,3 +35,4 @@ export * from './tests/road';
 export * from './tests/steer';
 export * from './tests/ride';
 export * from './tests/score';
+export * from './vehicle/aero';

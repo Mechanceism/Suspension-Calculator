@@ -13,6 +13,7 @@ import {
 import type { GripModel } from '../core/tire/grip';
 import type { MFCoeffs, TireGrip } from '../core/tire/magicFormula';
 import type { TirModel } from '../core/tire/tir';
+import { airDensity, type AeroModel } from '../core/vehicle/aero';
 import type { TireSample, TireFitResult } from '../core/tire/fit';
 import type { TireForceModel } from '../core/tire/model';
 import { CORNER_IDS, tirePressure, type AxleShared, type CornerId, type DamperSpec } from '../core/vehicle/vehicle';
@@ -56,6 +57,14 @@ export const setupOf = (s: AppState): OptimizerSetup => s.optimizer[rootOf(s.act
 export const RIGID_TIRE: TireForceModel = { kind: 'stiffness', rate: 1e5 };
 
 /** Magic Formula coefficients from their fields. */
+/** Aerodynamics for the solver (undefined when off): the imported model or the generic values, and the air density. */
+export function aeroOf(s: Pick<AppState, 'aero'>): { model: AeroModel; rho: number } | undefined {
+  const a = s.aero;
+  if (!a?.on) return undefined;
+  const model: AeroModel = a.file ?? { name: 'generic', CdA: a.CdA.value, ClAf: -a.downF.value, ClAr: -a.downR.value, rideHeightRef: 'absolute', dragHeight: a.dragHeight.value };
+  return { model, rho: airDensity(a.altitude.value, a.temperature.value) };
+}
+
 /** The tire grip model of an axle: the rear's own setting, or the front / both-axle model. */
 export function tireGripFor(s: Pick<AppState, 'tireGrip' | 'tireFile' | 'tireFileRear'>, axle: 'front' | 'rear'): TireGrip {
   if (axle === 'rear' && s.tireFileRear) return s.tireFileRear === 'simple' ? tireGripOf(s.tireGrip) : s.tireFileRear;
@@ -191,7 +200,7 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
     cases: { lateralG: Math.max(0, o.lateralG.value), brakingG: Math.max(0, o.brakingG.value), accelG: Math.max(0, o.accelG.value) },
     states: o.caseSource && (o.caseSource === 'all' || s.tests.some((x) => x.id === o.caseSource))
       ? statesForTests(s.tests, o.caseSource, { wheelbase: v.wheelbase.value, halfTrack: Math.abs(toGeometry(all[rootOf('FL', s.links)].geom).wheel.center.x) }) : undefined,
-    goals, variables, holds, grip: gripModelOf(s.grip), tireGrip: tireGripFor(s, 'front'), ...(s.tireFileRear ? { tireGripRear: tireGripFor(s, 'rear') } : {}), keepClose: Math.max(0, o.keepClose.value), starts: o.starts ?? 1,
+    goals, variables, holds, aero: aeroOf(s), grip: gripModelOf(s.grip), tireGrip: tireGripFor(s, 'front'), ...(s.tireFileRear ? { tireGripRear: tireGripFor(s, 'rear') } : {}), keepClose: Math.max(0, o.keepClose.value), starts: o.starts ?? 1,
   };
   const blockers: string[] = [];
   if (!goals.length) blockers.push('Turn on at least one goal.');

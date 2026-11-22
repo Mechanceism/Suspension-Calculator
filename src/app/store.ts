@@ -19,6 +19,7 @@ import { VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, type VehicleGoalKind } from '../
 import { DEFAULT_GRIP } from '../core/tire/grip';
 import { DEFAULT_MF, type MFCoeffs } from '../core/tire/magicFormula';
 import type { TirModel } from '../core/tire/tir';
+import type { AeroModel } from '../core/vehicle/aero';
 import type { DimMeasure } from '../core/suspension/dimensions';
 import type { TestDesign } from './tests';
 
@@ -294,6 +295,8 @@ export interface AppState extends DesignState {
   testView: { segment: number; sample: number } | null;
   /** The car posed from the ride over time (playback): body pose and travels, no equilibrium solve. */
   rideView: { pose: ChassisPose; travel: Record<CornerId, number> } | null;
+  /** Vehicle view: the car's speed, m/s (for aero). */
+  vehicleSpeed: number;
   updateTests(fn: (t: TestDesign[]) => TestDesign[]): void;
   roadBank: number;
   wheelBumps: Record<CornerId, number>;
@@ -358,6 +361,8 @@ export interface AppState extends DesignState {
   /** Change every design used on an axle ('both' = every design). One undo step. */
   updateDesigns(axle: TireAxle, fn: (d: CornerDesign) => CornerDesign): void;
   setSetupStatus(step: SetupStep, status: 'entered' | 'estimated' | null): void;
+  setAeroField(key: AeroKey, text: string): void;
+  setAero(patch: Partial<Pick<AeroSettings, 'on' | 'file'>>): void;
   /** Grip scale of a loaded file (λμ): side (LMUY) or braking / drive (LMUX). */
   setTireScale(key: 'LMUY' | 'LMUX', value: number, axle?: 'front' | 'rear'): void;
   /** Set the tire size (mm) of the designs used on an axle (both = every design). */
@@ -558,6 +563,27 @@ export interface OptimizerSetup {
 }
 
 /** Whole-vehicle optimizer setup. */
+export const AERO_KEYS = ['CdA', 'downF', 'downR', 'dragHeight', 'altitude', 'temperature'] as const;
+export type AeroKey = (typeof AERO_KEYS)[number];
+export const AERO_META: Record<AeroKey, { label: string; quantity: Quantity; unit: string; hint: string }> = {
+  CdA: { label: 'Drag area CdA', quantity: 'ratio', unit: 'm²', hint: 'Drag coefficient × frontal area. Road cars ≈ 0.6–0.8, open-wheel cars with wings ≈ 1–1.5.' },
+  downF: { label: 'Downforce area, front (−ClA)', quantity: 'ratio', unit: 'm²', hint: 'Downforce at the front axle per dynamic pressure (½ρV²). 0 = none; negative = lift.' },
+  downR: { label: 'Downforce area, rear (−ClA)', quantity: 'ratio', unit: 'm²', hint: 'Downforce at the rear axle per dynamic pressure.' },
+  dragHeight: { label: 'Drag acts at height', quantity: 'length', unit: 'mm', hint: 'Above the ground: drag up high moves load to the rear.' },
+  altitude: { label: 'Altitude', quantity: 'altitude', unit: 'm', hint: 'For the air density' },
+  temperature: { label: 'Air temperature', quantity: 'temperature', unit: '°C', hint: 'For the air density' },
+};
+export interface AeroSettings extends Record<AeroKey, Field> {
+  on: boolean;
+  /** Characteristics imported from a file (replace the generic values while set). */
+  file: AeroModel | null;
+}
+export const defaultAero = (): AeroSettings => ({
+  on: false, file: null,
+  CdA: field(0.8, 'ratio'), downF: field(0.3, 'ratio'), downR: field(0.4, 'ratio'), dragHeight: field(400),
+  altitude: field(0, 'altitude'), temperature: field(20, 'temperature'),
+});
+
 /** Setup wizard steps, easy to hard. */
 export const SETUP_STEPS = ['type', 'tires', 'size', 'weight', 'unsprung', 'points', 'springs', 'dampers', 'steering', 'grip', 'inertia'] as const;
 export type SetupStep = (typeof SETUP_STEPS)[number];
@@ -702,6 +728,8 @@ export interface DesignState {
   tireFile: TirModel | null;
   /** Rear tires: null = the same as the front, 'simple' = the simple coefficients, or their own file. */
   tireFileRear: TirModel | 'simple' | null;
+  /** Aerodynamics (off = negligible). Generic values, or characteristics imported from a file (e.g. CFD). */
+  aero: AeroSettings;
   /** Setup wizard: which steps hold the user's own values and which are estimates (results say so). */
   setupStatus: Partial<Record<SetupStep, 'entered' | 'estimated'>>;
   /** Held dimensions between two points (Measure → set, hold). Kept like CAD sketch dimensions. */
@@ -759,7 +787,7 @@ export const pickDesign = (s: DesignState): DesignState => ({
   droop: s.droop, bump: s.bump, driver: s.driver,
   corners: s.corners, links: s.links, settings: s.settings, activeCorner: s.activeCorner,
   vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode, shared: s.shared, locks: s.locks,
-  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, tireGrip: s.tireGrip, tireFile: s.tireFile, tireFileRear: s.tireFileRear, setupStatus: s.setupStatus, dimensions: s.dimensions, tests: s.tests,
+  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, tireGrip: s.tireGrip, tireFile: s.tireFile, tireFileRear: s.tireFileRear, setupStatus: s.setupStatus, aero: s.aero, dimensions: s.dimensions, tests: s.tests,
 });
 
 /** The default layout (File → New). */
@@ -841,6 +869,7 @@ export function defaultDesign(presetId = 'C'): DesignState {
     tireFile: null,
     tireFileRear: null,
     setupStatus: {},
+    aero: defaultAero(),
     dimensions: [],
     tests: [],
   };
@@ -1002,6 +1031,11 @@ export const useApp = create<AppState>((set, get) => ({
     }
     set({ corners, ...working, presetId: 'custom' });
   },
+  setAeroField: (key, text) => {
+    const a = get().aero;
+    set({ aero: { ...a, [key]: parseField(text, AERO_META[key].quantity, a[key]) } });
+  },
+  setAero: (patch) => set({ aero: { ...get().aero, ...patch } }),
   setSetupStatus: (step, status) => {
     const cur = { ...get().setupStatus };
     if (status) cur[step] = status; else delete cur[step];
@@ -1129,6 +1163,7 @@ export const useApp = create<AppState>((set, get) => ({
   activeTestId: null,
   testView: null,
   rideView: null,
+  vehicleSpeed: 0,
   updateTests: (fn) => set({ tests: fn(get().tests) }),
   roadBank: 0,
   wheelBumps: { FL: 0, FR: 0, RL: 0, RR: 0 },

@@ -20,6 +20,7 @@ import { tireForce, solveLoadedHeight, type TireForceModel } from '../tire/model
 import { springForce, type SpringSpec } from '../suspension/spring';
 import type { CornerTable } from './cornerTable';
 import { mfPeaks, mfSlipAngle, mfSlipRatio, type TireGrip } from '../tire/magicFormula';
+import { aeroForces, type AeroInput } from './aero';
 
 export type CornerId = 'FL' | 'FR' | 'RL' | 'RR';
 export const CORNER_IDS: CornerId[] = ['FL', 'FR', 'RL', 'RR'];
@@ -144,6 +145,8 @@ export interface VehicleInput {
    * result reports grip use, slip angles and slip ratios. Without it, lateral force follows tire load.
    */
   tireGrip?: TireGrip;
+  /** Aerodynamics at the car's speed (drag on the body, lift / downforce at each axle). Omit = none. */
+  aero?: AeroInput;
   /** Differential per axle for chassis-driven corners (default open). */
   diff?: { front?: DiffType; rear?: DiffType };
   /** Limited-slip torque bias ratio (default 2.5). */
@@ -267,6 +270,8 @@ export interface VehicleResult {
    * wheels. When asked for one without the other, it is left out of the solve and flagged here.
    */
   unmet: { accel: boolean; brake: boolean };
+  /** Aero forces at the solved pose, N (drag rearward; lift + up, − = downforce). */
+  aero?: { drag: number; liftF: number; liftR: number };
 }
 
 export function sprungProperties(input: VehicleInput) {
@@ -525,10 +530,16 @@ export function forceSetup(input: VehicleInput): ForceSetup {
   const W = input.totalMass * G * gs;
   const latTotal = input.totalMass * input.lateralG * G;
   const notes: string[] = [];
-  let brakingG = Math.max(0, input.brakingG ?? 0);
+  // The car's own acceleration (inertia) and what the tires must push: drag adds to the drive needed
+  // (or takes from the braking), at the design ride height.
+  const kinematicZ = (Math.max(0, input.accelG ?? 0) - Math.max(0, input.brakingG ?? 0)) * G;
+  const rh0 = { front: -input.groundY, rear: -input.groundY };
+  const drag = input.aero ? aeroForces(input.aero, rh0, rh0).drag : 0;
+  const tireNet = (input.accelG ?? 0) - (input.brakingG ?? 0) + drag / (input.totalMass * G);
+  let brakingG = Math.max(0, -tireNet);
   const powered = input.corners.filter((c) => (c.drive ?? 'none') !== 'none');
   const braked = input.corners.filter((c) => (c.brake ?? 'outboard') !== 'none');
-  let accelG = Math.max(0, input.accelG ?? 0);
+  let accelG = Math.max(0, tireNet);
   const unmet = { accel: false, brake: false };
   if (accelG > 1e-9 && powered.length === 0) {
     notes.push('No powered corners: the car cannot accelerate (mark corners as Powered).');
@@ -542,7 +553,8 @@ export function forceSetup(input: VehicleInput): ForceSetup {
   }
   const brakeTotal = input.totalMass * brakingG * G; // magnitude; acts rearward (−Z) on the tires
   const driveTotal = input.totalMass * accelG * G; // acts forward (+Z) on the powered tires
-  const aZ = (accelG - brakingG) * G;
+  // Inertia follows the car's acceleration (what the tires can't deliver is flagged as unmet).
+  const aZ = unmet.accel || unmet.brake ? (accelG - brakingG) * G - drag / input.totalMass : kinematicZ;
   // Drive shares: front/rear by the split (or all to the only powered axle), equal per powered
   // wheel within an axle (open differential).
   const driveShares: Record<CornerId, number> = { FL: 0, FR: 0, RL: 0, RR: 0 };
@@ -592,6 +604,14 @@ export function tireForcesFor(input: VehicleInput, fs: ForceSetup, loads: Record
   return Object.fromEntries(CORNER_IDS.map((id) => [id, { lateral: lat[id], brake: brakeF(id), drive: driveF(id), aZ: fs.aZ }])) as Record<CornerId, CornerLoads>;
 }
 
+/** Aero forces at a body pose (ride heights from the pose), or null without aero. */
+export function aeroAt(input: VehicleInput, pose: ChassisPose): { drag: number; liftF: number; liftR: number } | null {
+  if (!input.aero) return null;
+  const P = poseFns(pose);
+  const rh = { front: P.point(vec3(0, 0, 0)).y - input.groundY, rear: P.point(vec3(0, 0, -input.wheelbase)).y - input.groundY };
+  return aeroForces(input.aero, rh, { front: -input.groundY, rear: -input.groundY });
+}
+
 /**
  * External forces on the whole car as generalized forces of the body pose: net vertical force (N) and
  * roll / pitch moments about the origin (N·m). Zero in equilibrium; in the ride model they drive the
@@ -601,6 +621,15 @@ export function bodyResidual(input: VehicleInput, sp: { mass: number; cg: Vec3 }
   const P = poseFns(pose);
   let fy = 0, mRoll = 0, mPitch = 0;
   const add2 = ([a, b]: [number, number]) => { mRoll += a; mPitch += b; };
+  // Aero on the body: lift / downforce at each axle (ride heights of this pose), drag at its height.
+  const aero = aeroAt(input, pose);
+  if (aero) {
+    const f = P.point(vec3(0, 0, 0)), r = P.point(vec3(0, 0, -input.wheelbase));
+    fy += aero.liftF + aero.liftR;
+    add2(momentOf(f, vec3(0, aero.liftF, 0)));
+    add2(momentOf(r, vec3(0, aero.liftR, 0)));
+    add2(momentOf(vec3(0, input.groundY + input.aero!.model.dragHeight, P.point(sp.cg).z), vec3(0, 0, -aero.drag)));
+  }
   for (const c of input.corners) {
     const r = corners[c.id];
     fy += r.tireLoad;
@@ -729,6 +758,8 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
     sprungMass: sp.mass, sprungCg: sp.cg, notes, unmet,
   };
   if (input.tireGrip) out.grip = gripSummary(input, out, capacities(input, cur.corners, latSign), frontLatShare, latTotal);
+  const aero = aeroAt(input, pose);
+  if (aero) out.aero = aero;
   return out;
 }
 

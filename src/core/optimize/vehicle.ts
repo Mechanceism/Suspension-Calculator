@@ -10,6 +10,7 @@
  */
 import { vec3, Y_AXIS, type Vec3 } from '../math/vec3';
 import type { SteeringSpec } from '../tests/steer';
+import type { AeroModel } from '../vehicle/aero';
 import { DoubleWishbone, type DoubleWishboneGeometry } from '../suspension/doubleWishbone';
 import { characteristics, deg, type Characteristics } from '../suspension/characteristics';
 import { fitFreeLength } from '../suspension/spring';
@@ -95,6 +96,8 @@ export interface VehicleProblem {
   steering?: SteeringSpec;
   /** Ride model (Phase B): body inertias about the sprung CG (kg·m²) and tire damping (N·s/m). */
   ride?: RideSpec;
+  /** Aerodynamics (applied at each test state's speed). Omit = none. */
+  aero?: { model: AeroModel; rho: number };
   mass: number;
   /** CG: x (+ left), height above ground, z (from the front axle, + forward). */
   cg: { x: number; height: number; z: number };
@@ -234,7 +237,8 @@ export function caseList(p: VehicleProblem): CaseSpec[] {
 }
 
 /** The whole-car solver's input for a load case on an assembled car. */
-export const vehicleInputOf = (p: VehicleProblem, asm: AssembledVehicle, c: Omit<CaseSpec, 'name' | 'kind' | 'g'>): VehicleInput => ({
+export const vehicleInputOf = (p: VehicleProblem, asm: AssembledVehicle, c: Omit<CaseSpec, 'name' | 'kind' | 'g'> & { speed?: number }): VehicleInput => ({
+  ...(p.aero && (c.speed ?? c.state?.speed ?? 0) > 0 ? { aero: { model: p.aero.model, rho: p.aero.rho, speed: c.speed ?? c.state?.speed ?? 0 } } : {}),
   corners: asm.corners, totalMass: p.mass, cg: asm.cg, wheelbase: p.wheelbase, groundY: asm.groundY,
   lateralG: c.lateralG, brakingG: c.brakingG, brakeBias: p.brakeBias, accelG: c.accelG, driveSplit: p.driveSplit, shared: p.shared,
   gravityScale: c.gravityScale, groundOffset: c.groundOffset, tireGrip: p.tireGrip ?? DEFAULT_MF, diff: p.diff,

@@ -14,7 +14,7 @@ import { newTestId } from './tests';
 import { create } from 'zustand';
 
 /** An import waiting for the user's answer (it replaces something). */
-export const usePendingImport = create<{ file: File | null; part: Part | 'settings' | 'tire' }>(() => ({ file: null, part: 'all' }));
+export const usePendingImport = create<{ file: File | null; part: Part | 'settings' | 'tire' | 'aero' }>(() => ({ file: null, part: 'all' }));
 /** Run after the next successful save (Save as dialog → then import). */
 let afterSave: (() => void) | null = null;
 export const setAfterSave = (fn: (() => void) | null) => { afterSave = fn; };

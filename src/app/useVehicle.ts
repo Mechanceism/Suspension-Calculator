@@ -21,7 +21,7 @@ import {
 import type { SharedDesign } from './store';
 import { vec3, Y_AXIS, type Vec3 } from '../core/math/vec3';
 import { roadEffective } from '../core/tests/segments';
-import { tireGripFor } from './optimizer';
+import { tireGripFor, aeroOf } from './optimizer';
 
 const G = 9.80665;
 /** A "rigid" tire is modelled as a very stiff one so every corner has a defined tire force. */
@@ -97,6 +97,8 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
   const rideView = useApp((st) => (st.workspace === 'tests' ? st.rideView : null));
   const tireFile = useApp((st) => st.tireFile);
   const tireFileRear = useApp((st) => st.tireFileRear);
+  const aeroSettings = useApp((st) => st.aero);
+  const speed = useApp((st) => st.vehicleSpeed);
   // Grade and bank fold into what the tires must supply (see core/tests/segments.ts).
   const road = roadEffective(lateralGKin, longitudinalG, Math.atan(roadGrade / 100), (roadBank * Math.PI) / 180);
   const lateralG = road.lateralG;
@@ -194,6 +196,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         shared: { front: toAxle(s.shared.front), rear: toAxle(s.shared.rear) },
         gravityScale: road.gravityScale, groundOffset: wheelBumps, tireGrip: tireGripFor({ tireGrip: gripFields, tireFile, tireFileRear }, 'front'),
         diff: { front: s.settings.FL.diff, rear: s.settings.RL.diff },
+        ...(aeroOf({ aero: aeroSettings }) && speed > 0 ? { aero: { ...aeroOf({ aero: aeroSettings })!, speed } } : {}),
       };
       // Playback of the ride over time poses the car directly (body motion and travels from the simulation).
       const res = rideView ? vehicleAt(vin, rideView.pose, rideView.travel) : solveVehicle(vin, { guess: lastPose.current });
@@ -290,7 +293,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
     } catch (e) {
       return { ...empty, error: e instanceof Error ? e.message : String(e) };
     }
-  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, rack, lateralG, brakingG, accelG, road.gravityScale, wheelBumps, gripFields, rideView, tireFile, tireFileRear]);
+  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, rack, lateralG, brakingG, accelG, road.gravityScale, wheelBumps, gripFields, rideView, tireFile, tireFileRear, aeroSettings, speed]);
 
   return result;
 }

@@ -26,6 +26,7 @@
  *  13  rear tires: same as the front, simple, or their own .tir model
  *  14  setup wizard status (which values are the user's and which are estimates)
  *  15  wheel offset (ET: the hub point is the mounting face) and rim width per corner design
+ *  16  aerodynamics (on / off, generic values, an imported aero model)
  */
 import pkg from '../../package.json';
 import { parseValue, type Quantity } from '../core/units/units';
@@ -34,18 +35,19 @@ import { DIM_MEASURES } from '../core/suspension/dimensions';
 import { newSegment, newTestId, newFeature, OFF, defaultChecks, type TestDesign, type TestSegment } from './tests';
 import { CHECK_IDS, CHECK_META, type CheckProfile } from '../core/tests/checks';
 import type { TirModel } from '../core/tire/tir';
+import { parseAero, type AeroModel } from '../core/vehicle/aero';
 import {
   defaultDesign, mergedCorners, rootOf, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META, SPRING_KEYS, SPRING_META,
   DAMPER_KEYS, DAMPER_META, STEER_KEYS, STEER_META, TIRE_KEYS, TIRE_META, VEHICLE_KEYS, VEHICLE_META,
   DEFAULT_LINKS, DEFAULT_SETTINGS, SHARED_META, defaultShared, defaultOptimizerSetup, defaultVehicleOptimizerSetup, defaultGrip, GRIP_KEYS, GRIP_META,
-  defaultTireGrip, MF_KEYS, MF_META, RIDE_KEYS, DAMPER_TWO_STAGE_KEYS, SETUP_STEPS,
+  defaultTireGrip, MF_KEYS, MF_META, RIDE_KEYS, DAMPER_TWO_STAGE_KEYS, SETUP_STEPS, AERO_KEYS, AERO_META, defaultAero,
   type VehicleOptimizerSetup, type HeldDimension, newDimId,
   type OptimizerSetup,
   type DesignState, type CornerDesign, type Field, type CornerLinks, type CornerSettings, type SharedDesign, type Axle,
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 15;
+export const FORMAT_VERSION = 16;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -98,6 +100,8 @@ export interface ProjectFile {
   tireGrip?: Record<string, FieldJson>;
   /** Tire model loaded from a .tir file (format 12): its coefficients, by name. */
   tireFile?: { name: string; fittyp: number; version: '6.1' | '5.2'; fnomin: number; nompres: number; p: Record<string, number> } | null;
+  /** Aerodynamics (format 16). */
+  aero?: { on: boolean; fields: Record<string, FieldJson>; file: AeroModel | null };
   /** Setup wizard status per step (format 14). */
   setupStatus?: Record<string, 'entered' | 'estimated'>;
   /** Rear tires (format 13): null = same as the front, 'simple', or their own .tir model. */
@@ -178,6 +182,7 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
     tireFile: d.tireFile ? tirJson(d.tireFile) : null,
     tireFileRear: d.tireFileRear === 'simple' ? 'simple' : d.tireFileRear ? tirJson(d.tireFileRear) : null,
     setupStatus: { ...d.setupStatus },
+    aero: { on: d.aero.on, fields: mapFields(AERO_KEYS, d.aero), file: d.aero.file ? JSON.parse(JSON.stringify(d.aero.file)) as AeroModel : null },
     ...(include.tests ? { tests: JSON.parse(JSON.stringify(d.tests)) as unknown[] } : {}),
     dimensions: d.dimensions.map((x) => ({
       root: x.root, a: cornerParam(x.root, POINT_NAMES[x.a]), b: cornerParam(x.root, POINT_NAMES[x.b]),
@@ -280,6 +285,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   13: (f) => ({ ...f, formatVersion: 14 }),
   // 14 → 15: wheel offset 0 (the hub point is the tire's centerline) and the measuring rim.
   14: (f) => ({ ...f, formatVersion: 15 }),
+  // 15 → 16: no aero (negligible), as before.
+  15: (f) => ({ ...f, formatVersion: 16 }),
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */
@@ -652,6 +659,13 @@ export function importProject(data: unknown): ImportResult {
     tireGrip: isObj(f.tireGrip) ? readRecord(f.tireGrip, MF_KEYS, (k) => MF_META[k].quantity, defaultTireGrip(), 'tire grip', []) : defaultTireGrip(),
     tireFile: readTireFile(f.tireFile, warnings),
     tireFileRear: f.tireFileRear === 'simple' ? 'simple' : readTireFile(f.tireFileRear, warnings),
+    aero: (() => {
+      const a = isObj(f.aero) ? f.aero : {};
+      const fields = readRecord(a.fields, AERO_KEYS, (k) => AERO_META[k].quantity, defaultAero(), 'aero', isObj(f.aero) ? warnings : []);
+      // A saved aero file goes through the importer again (checks it).
+      const file = isObj(a.file) ? parseAero(JSON.stringify(a.file), typeof a.file.name === 'string' ? a.file.name : 'aero').model : null;
+      return { ...fields, on: a.on === true, file };
+    })(),
     setupStatus: Object.fromEntries(Object.entries(isObj(f.setupStatus) ? f.setupStatus : {})
       .filter(([k, v]) => (SETUP_STEPS as readonly string[]).includes(k) && (v === 'entered' || v === 'estimated'))) as DesignState['setupStatus'],
     dimensions: readDimensions(f.dimensions, warnings),

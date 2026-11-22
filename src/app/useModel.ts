@@ -12,11 +12,20 @@ import { DoubleWishbone, type CornerState } from '../core/suspension/doubleWishb
 import { rollCamber, ackermann } from '../core/suspension/derived';
 import { steeringWheelAngle, inputPerRev } from '../core/tests/steer';
 import type { SteeringMechanism } from '../core/suspension/steering';
-import { normalize as normV, sub as subV } from '../core/math/vec3';
+import { normalize as normV, sub as subV, add as addV } from '../core/math/vec3';
+import { mulVec } from '../core/math/mat3';
+import { centerLinkPose } from '../core/suspension/steering';
 
 /** How the corner's steering input moves the inner tie-rod joint. */
-const mechanismOf = (c: { rackAxis: import('../core/math/vec3').Vec3; geometry: import('../core/suspension/doubleWishbone').DoubleWishboneGeometry }): SteeringMechanism => {
+const mechanismOf = (c: { rackAxis: import('../core/math/vec3').Vec3; geometry: import('../core/suspension/doubleWishbone').DoubleWishboneGeometry }, input = 0): SteeringMechanism => {
   const s = c.geometry.steering;
+  if (s?.kind === 'centerLink') {
+    // The inner joint rides on the center link: its motion per radian of pitman angle (central difference at the input).
+    const at = (deg: number) => { const cl = centerLinkPose(s, deg); return cl ? addV(cl.A, mulVec(cl.R, subV(c.geometry.tieRod.inner, cl.A0))) : null; };
+    const a = at(input - 0.05), b = at(input + 0.05);
+    const k = 180 / Math.PI / 0.1;
+    return { kind: 'arm', pivot: s.pivot1, axis: normV(subV(s.pivot2, s.pivot1)), ...(a && b ? { rate: { x: (b.x - a.x) * k, y: (b.y - a.y) * k, z: (b.z - a.z) * k } } : {}) };
+  }
   return s?.kind === 'arm' ? { kind: 'arm', pivot: s.pivot1, axis: normV(subV(s.pivot2, s.pivot1)) } : { kind: 'rack', axis: c.rackAxis };
 };
 import { characteristics, deg, type Characteristics } from '../core/suspension/characteristics';
@@ -311,7 +320,7 @@ export function useModel(): Model {
     const forces = {
       vertical, lateral: steer.lateral.value, longitudinal: steer.longitudinal.value, pneumaticTrail: steer.pneumaticTrail.value,
     };
-    const mech = mechanismOf(corner);
+    const mech = mechanismOf(corner, rack);
     const cLocal = inputPerRev(rack, ratioSpec);
     const loads = steeringLoads(state, contact, forces, mech, cLocal);
     const axisGround = loaded?.steeringAxisAtGround ?? chars.steeringAxisAtGround;
@@ -380,7 +389,7 @@ export function useModel(): Model {
     const steerTrack = 2 * Math.abs(g0 ? g0.x : mid.points.contact.x);
     return states.map((st, i) => {
       const c = characteristics(st);
-      const l = steeringLoads(st, c.contactPoint, { vertical: curTireLoad, lateral: 0, longitudinal: 0, pneumaticTrail: 0 }, mechanismOf(corner), inputPerRev(racks[i]!, ratioSpec));
+      const l = steeringLoads(st, c.contactPoint, { vertical: curTireLoad, lateral: 0, longitudinal: 0, pneumaticTrail: 0 }, mechanismOf(corner, rack), inputPerRev(racks[i]!, ratioSpec));
       return {
         rack: racks[i]!, steeringWheelAngle: steeringWheelAngle(racks[i]!, ratioSpec),
         roadWheelAngle: headingAngle(st.spinAxis) - h0, camber: c.camber,

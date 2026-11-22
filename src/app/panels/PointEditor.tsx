@@ -140,7 +140,7 @@ const PREFERRED: Partial<Record<PointKey, PointKey[]>> = {
 };
 
 /** Joints this point is connected to (shares a part with), for "move along the line toward…". */
-function neighbors(id: PointKey, damperArm: ArmChoice, kind: SuspensionKind, layout: 'coilover' | 'rocker' = 'coilover', steerMech: 'rack' | 'arm' = 'rack'): PointKey[] {
+function neighbors(id: PointKey, damperArm: ArmChoice, kind: SuspensionKind, layout: 'coilover' | 'rocker' = 'coilover', steerMech: 'rack' | 'arm' | 'centerLink' = 'rack'): PointKey[] {
   const out = new Set<PointKey>(PREFERRED[id] ?? []);
   for (const d of Object.values(componentDefs(damperArm, kind, layout, 'lca', steerMech))) if (d.points.includes(id)) for (const p of d.points) if (p !== id) out.add(p);
   return [...out];

@@ -94,7 +94,7 @@ interface CoordSpec {
   /** Suspension type and spring layout of the design (its points; labels). */
   kind: SuspensionKind;
   layout: 'coilover' | 'rocker';
-  steer?: 'rack' | 'arm';
+  steer?: 'rack' | 'arm' | 'centerLink';
 }
 
 /** Point grid with X/Y/Z toggles (locked ones show 🔒). */

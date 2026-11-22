@@ -19,7 +19,7 @@ export interface ComponentDef {
  * Components per suspension type. A type without a component (MacPherson: no upper arm) keeps it with no
  * points (`absent`), so the records stay complete.
  */
-export function componentDefs(damperArm: ArmChoice, kind: SuspensionKind = 'doubleWishbone', layout: 'coilover' | 'rocker' = 'coilover', pushrodOn: ArmChoice = 'lca', steer: 'rack' | 'arm' = 'rack', steeredAxle = false): Record<ComponentId, ComponentDef & { absent?: boolean }> {
+export function componentDefs(damperArm: ArmChoice, kind: SuspensionKind = 'doubleWishbone', layout: 'coilover' | 'rocker' = 'coilover', pushrodOn: ArmChoice = 'lca', steer: 'rack' | 'arm' | 'centerLink' = 'rack', steeredAxle = false): Record<ComponentId, ComponentDef & { absent?: boolean }> {
   let defs = withSprings(damperArm, kind, layout, pushrodOn);
   if (isBeam(kind) && steeredAxle) {
     // A steered solid axle: knuckles on kingpins at the axle ends, a drag link from the steering, a cross tie rod.
@@ -30,6 +30,7 @@ export function componentDefs(damperArm: ArmChoice, kind: SuspensionKind = 'doub
       upright: { ...defs.upright, label: 'Axle housing and knuckle', points: [...defs.upright.points, 'lcaOut2', 'ucaOut2', 'trOuter'] },
     };
   }
+  if (steer === 'centerLink') return { ...defs, rack: { id: 'rack', label: 'Pitman arm, idler arm and center link', points: ['strPiv1', 'strPiv2', 'pitEnd', 'idlPiv1', 'idlPiv2', 'idlEnd', 'trInner'], parents: ['chassis'] } };
   if (steer !== 'arm') return defs;
   // Steering arm / plate: the "rack" part is the arm on its pivot axis.
   return { ...defs, rack: { id: 'rack', label: 'Steering arm / plate', points: ['strPiv1', 'strPiv2', 'trInner'], parents: ['chassis'] } };
@@ -176,6 +177,7 @@ export const POINT_LABELS: Record<PointKey, string> = {
   ucaOut2: 'Upper rear link, upright end', lcaOut2: 'Lower rear link, upright end',
   rkrPiv1: 'Rocker pivot (front)', rkrPiv2: 'Rocker pivot (rear)', prArm: 'Pushrod lower end', prRkr: 'Pushrod end on the rocker',
   strPiv1: 'Steering arm pivot axis (bottom)', strPiv2: 'Steering arm pivot axis (top)',
+  pitEnd: 'Pitman arm ball end (on the center link)', idlPiv1: 'Idler arm pivot axis (bottom)', idlPiv2: 'Idler arm pivot axis (top)', idlEnd: 'Idler arm ball end (on the center link)',
   phChs: 'Panhard rod, frame end', phAxle: 'Panhard rod, axle end',
 };
 

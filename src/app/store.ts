@@ -34,9 +34,15 @@ export interface Field {
 }
 
 /** Hardpoints of every suspension type (each type uses some of them: activePointKeys). */
-export const POINT_KEYS = ['ucaFwd', 'ucaAft', 'ucaOut', 'lcaFwd', 'lcaAft', 'lcaOut', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm', 'ucaOut2', 'lcaOut2', 'rkrPiv1', 'rkrPiv2', 'prArm', 'prRkr', 'strPiv1', 'strPiv2', 'phChs', 'phAxle'] as const;
-/** Steering mechanism: a rack (input = rack travel, mm) or a steering arm / plate on a pivot (input = its angle, °). */
-export type SteerMechanism = 'rack' | 'arm';
+export const POINT_KEYS = ['ucaFwd', 'ucaAft', 'ucaOut', 'lcaFwd', 'lcaAft', 'lcaOut', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm', 'ucaOut2', 'lcaOut2', 'rkrPiv1', 'rkrPiv2', 'prArm', 'prRkr', 'strPiv1', 'strPiv2', 'phChs', 'phAxle', 'pitEnd', 'idlPiv1', 'idlPiv2', 'idlEnd'] as const;
+/**
+ * Steering mechanism: a rack (input = rack travel, mm), a steering arm / plate on a pivot (input = its angle, °),
+ * or a pitman arm, idler arm and center link (input = the pitman's angle, °; the inner tie-rod joint is on the link).
+ */
+export type SteerMechanism = 'rack' | 'arm' | 'centerLink';
+/** The steering input is an angle (°), not rack travel (mm). */
+export const angleInput = (m: SteerMechanism | undefined) => m === 'arm' || m === 'centerLink';
+const CENTER_LINK_KEYS = ['pitEnd', 'idlPiv1', 'idlPiv2', 'idlEnd'] as const;
 /** Spring layout: a coilover between the frame and an arm / the knuckle, or a pushrod / pullrod and rocker. */
 export type SpringLayout = 'coilover' | 'rocker';
 const ROCKER_KEYS = ['rkrPiv1', 'rkrPiv2', 'prArm', 'prRkr'] as const;
@@ -51,6 +57,7 @@ export const POINT_NAMES: Record<PointKey, string> = {
   ucaOut2: 'FL_UCA_Out2', lcaOut2: 'FL_LCA_Out2',
   rkrPiv1: 'FL_Rkr_Piv1', rkrPiv2: 'FL_Rkr_Piv2', prArm: 'FL_PR_Arm', prRkr: 'FL_PR_Rkr',
   strPiv1: 'FL_Str_Piv1', strPiv2: 'FL_Str_Piv2',
+  pitEnd: 'FL_Pitman_End', idlPiv1: 'FL_Idler_Piv1', idlPiv2: 'FL_Idler_Piv2', idlEnd: 'FL_Idler_End',
   phChs: 'FL_PH_Chs', phAxle: 'FL_PH_Axle',
 };
 
@@ -217,10 +224,11 @@ export function editableFromLayout(id: string): EditableGeometry {
       lcaOut2: fields(g.lca.out2 ?? g.lca.out),
       ...rockerDefaults(g.damper?.chassis ?? vec3(300, 380, 30), g.damper?.armPoint ?? vec3(480, 45, 30), g.rocker),
       ...steerArmDefaults(g),
+      ...centerLinkDefaults(g.tieRod.inner, g.steering?.kind === 'centerLink' ? g.steering : undefined),
       phChs: fields(g.panhard?.chassis ?? vec3(-(g.wheel.center.x - 250), g.wheel.center.y + 60, g.wheel.center.z - 80)),
       phAxle: fields(g.panhard?.axle ?? vec3(g.wheel.center.x - 200, g.wheel.center.y + 60, g.wheel.center.z - 80)),
     },
-    steerMechanism: g.steering?.kind === 'arm' ? 'arm' : 'rack',
+    steerMechanism: g.steering?.kind === 'arm' ? 'arm' : g.steering?.kind === 'centerLink' ? 'centerLink' : 'rack',
     springLayout: g.rocker ? 'rocker' : 'coilover',
     pushrodOn: g.rocker?.pushrodBody === 'uca' || g.rocker?.pushrodBody === 'upright' ? g.rocker.pushrodBody : 'lca',
     kind: g.kind ?? 'doubleWishbone',
@@ -255,6 +263,20 @@ export function steerArmDefaults(g: DoubleWishboneGeometry): Record<'strPiv1' | 
   return { strPiv1: fields(vec3(i.x, i.y - 60, i.z + 120)), strPiv2: fields(vec3(i.x, i.y + 90, i.z + 120)) };
 }
 
+/**
+ * Center-link steering points: given, or a parallelogram around the inner tie-rod joint: the pitman's ball end
+ * 60 mm inboard of it on the center link, the pitman 150 mm long pointing back from an upright pivot axis
+ * ahead; the idler arm the mirror image on the other side, so the link slides across the car as the pitman turns.
+ */
+export function centerLinkDefaults(i: Vec3, given?: { pivot1: Vec3; pivot2: Vec3; pitmanEnd: Vec3; idlerPivot1: Vec3; idlerPivot2: Vec3; idlerEnd: Vec3 }): Record<'strPiv1' | 'strPiv2' | 'pitEnd' | 'idlPiv1' | 'idlPiv2' | 'idlEnd', [Field, Field, Field]> | Record<'pitEnd' | 'idlPiv1' | 'idlPiv2' | 'idlEnd', [Field, Field, Field]> {
+  if (given) return { strPiv1: fields(given.pivot1), strPiv2: fields(given.pivot2), pitEnd: fields(given.pitmanEnd), idlPiv1: fields(given.idlerPivot1), idlPiv2: fields(given.idlerPivot2), idlEnd: fields(given.idlerEnd) };
+  const ax = i.x - 60;
+  return {
+    pitEnd: fields(vec3(ax, i.y, i.z)),
+    idlEnd: fields(vec3(-ax, i.y, i.z)), idlPiv1: fields(vec3(-ax, i.y - 60, i.z + 150)), idlPiv2: fields(vec3(-ax, i.y + 90, i.z + 150)),
+  };
+}
+
 /** Rocker layouts are for types with an arm or knuckle to push from. */
 export const rockerAllowed = (kind: SuspensionKind) => kind !== 'macpherson' && kind !== 'rigid' && !isBeam(kind);
 export const layoutOf = (e: Pick<EditableGeometry, 'kind' | 'springLayout'>): SpringLayout => (e.springLayout === 'rocker' && rockerAllowed(e.kind ?? 'doubleWishbone') ? 'rocker' : 'coilover');
@@ -275,6 +297,7 @@ export function toGeometry(e: EditableGeometry): DoubleWishboneGeometry {
     lca: { fwd: p('lcaFwd'), aft: p('lcaAft'), out: p('lcaOut'), ...(ml ? { out2: p('lcaOut2') } : {}) },
     tieRod: { inner: p('trInner'), outer: p('trOuter') },
     ...(e.steerMechanism === 'arm' ? { steering: { kind: 'arm' as const, pivot1: p('strPiv1'), pivot2: p('strPiv2') } } : {}),
+    ...(e.steerMechanism === 'centerLink' ? { steering: { kind: 'centerLink' as const, pivot1: p('strPiv1'), pivot2: p('strPiv2'), pitmanEnd: p('pitEnd'), idlerPivot1: p('idlPiv1'), idlerPivot2: p('idlPiv2'), idlerEnd: p('idlEnd') } } : {}),
     ...(kind === 'beam3' || kind === 'beamWatts' ? { panhard: { chassis: p('phChs'), axle: p('phAxle') } } : {}),
     ...(isBeam(kind) && e.steeredAxle ? { steeredAxle: true } : {}),
     ...(kind === 'custom' && e.custom ? { custom: e.custom } : {}),
@@ -348,7 +371,7 @@ export function activePointKeys(kind: SuspensionKind, layout: SpringLayout = 'co
   // A steered solid axle: its kingpins (UCA_Out2 top, LCA_Out2 bottom), knuckle arm and drag link.
   const base = isBeam(kind) && steeredAxle ? [...kindPointKeys(kind), 'ucaOut2', 'lcaOut2', 'trInner', 'trOuter'] as PointKey[] : kindPointKeys(kind);
   const withRocker = layout === 'rocker' && rockerAllowed(kind) ? [...base, ...ROCKER_KEYS] : base;
-  return steer === 'arm' ? [...withRocker, 'strPiv1', 'strPiv2'] : withRocker;
+  return steer === 'arm' ? [...withRocker, 'strPiv1', 'strPiv2'] : steer === 'centerLink' ? [...withRocker, 'strPiv1', 'strPiv2', ...CENTER_LINK_KEYS] : withRocker;
 }
 function kindPointKeys(kind: SuspensionKind): PointKey[] {
   if (kind === 'macpherson') return ['lcaFwd', 'lcaAft', 'lcaOut', 'dmpChassis', 'dmpArm', 'trInner', 'trOuter', 'wheelCenter'];
@@ -1662,15 +1685,26 @@ export const useApp = create<AppState>((set, get) => ({
     const s = get();
     const from = s.geom.steerMechanism ?? 'rack';
     if (from === m) return;
-    s.updateDesigns('both', (d) => ({ ...d, geom: { ...d.geom, steerMechanism: m } }));
+    s.updateDesigns('both', (d) => {
+      const geom = { ...d.geom, steerMechanism: m };
+      if (m !== 'centerLink') return { ...d, geom };
+      // A center link: lay one out around the inner tie-rod joint the first time (or when its points are far from it).
+      const v = (k: PointKey) => vec3(geom.points[k][0].value, geom.points[k][1].value, geom.points[k][2].value);
+      const i = v('trInner');
+      if (s.steerSaved.centerLink && Math.hypot(v('pitEnd').x - i.x, v('pitEnd').y - i.y, v('pitEnd').z - i.z) < 200) return { ...d, geom };
+      const lay = centerLinkDefaults(i) as Record<'pitEnd' | 'idlPiv1' | 'idlPiv2' | 'idlEnd', [Field, Field, Field]>;
+      const pe = vec3(lay.pitEnd[0].value, lay.pitEnd[1].value, lay.pitEnd[2].value);
+      return { ...d, geom: { ...geom, points: { ...geom.points, ...lay, strPiv1: fields(vec3(pe.x, pe.y - 60, pe.z + 150)), strPiv2: fields(vec3(pe.x, pe.y + 90, pe.z + 150)) } } };
+    });
     // The ratio and limit belong to the mechanism (mm vs degrees): keep the current ones with it and put
     // back the other mechanism's own (first time: typical values; arm 1 : 1 like ATV handlebars, ±40°).
     const f = (v: number) => ({ text: String(v), value: v });
     const keep = Object.fromEntries(MECH_STEER_KEYS.map((k) => [k, s.steer[k]])) as Record<MechSteerKey, Field>;
     const saved = s.steerSaved[m];
-    const back = saved ?? { cFactor: f(m === 'arm' ? 360 : 75), cFactorLock: f(0), rackLimit: f(m === 'arm' ? 40 : 30) };
+    const back = saved ?? { cFactor: f(m === 'arm' ? 360 : m === 'centerLink' ? 24 : 75), cFactorLock: f(0), rackLimit: f(m === 'rack' ? 30 : 40) };
     set({ steer: { ...get().steer, ...back }, steerSaved: { ...s.steerSaved, [from]: keep }, rack: 0 });
-    const what = `${back.cFactor.value} ${m === 'arm' ? '°' : 'mm'}/rev, ±${back.rackLimit.value} ${m === 'arm' ? '°' : 'mm'}`;
+    const what = `${back.cFactor.value} ${angleInput(m) ? '°' : 'mm'}/rev, ±${back.rackLimit.value} ${angleInput(m) ? '°' : 'mm'}`;
+    if (m === 'centerLink') { get().notify(`Pitman arm, idler arm and center link: the steering box turns the pitman arm (FL_Str_Piv1–2, its ball end FL_Pitman_End); the center link runs from it to the idler arm (FL_Idler_Piv1–2, FL_Idler_End) and carries the inner tie-rod joints. The input is the pitman's angle (°): ${saved ? 'your values are back' : 'typical values'} (${what}). Each corner sees the linkage mirrored, so left and right behave alike.`, 'info'); return; }
     get().notify(m === 'arm'
       ? `Steering arm / plate: the inner tie-rod joints swing about the arm's pivot axis (FL_Str_Piv1–2). The steering input is the arm angle (°): ${saved ? 'your arm values are back' : 'typical values'} (${what}). The rack's values are kept for switching back.`
       : `Rack: the steering input is rack travel (mm): ${saved ? 'your rack values are back' : 'typical values'} (${what}). The arm's values are kept for switching back.`, 'info');

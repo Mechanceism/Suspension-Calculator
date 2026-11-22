@@ -8,7 +8,7 @@ import { steeringWheelAngle, inputForWheelAngle } from '../../core/tests/steer';
 import { useConversion, toDisplay, fromDisplay } from '../units';
 import { Num } from './UnitText';
 import { useEffect, useRef } from 'react';
-import { ratioSpecOf, useApp } from '../store';
+import { angleInput, ratioSpecOf, useApp } from '../store';
 import type { Model } from '../useModel';
 
 function usePlayLoop(active: boolean, period: number, onPhase: (s: number) => void) {
@@ -36,7 +36,7 @@ export function MotionBar({ model }: { model: Model }) {
   const rackLimit = useApp((s) => s.steer.rackLimit.value);
   const cFactor = useApp((s) => s.steer.cFactor.value);
   const cFactorLock = useApp((s) => s.steer.cFactorLock.value);
-  const armMech = useApp((s) => s.geom.steerMechanism === 'arm');
+  const armMech = useApp((s) => angleInput(s.geom.steerMechanism));
   const playing = useApp((s) => s.playing);
   const playingSteer = useApp((s) => s.playingSteer);
   const mode = useApp((s) => s.mode);
@@ -102,7 +102,7 @@ export function MotionBar({ model }: { model: Model }) {
       </div>
       <div className="motion-group">
         <label className="slider">
-          <span>Steering wheel <b>{steeringWheelAngle(rack, ratio).toFixed(0)}</b>° · {armMech ? <>arm <b>{rack.toFixed(1)}°</b></> : <>rack <b><Num text={rack.toFixed(1)} unit="mm" withUnit /></b></>}{!steers && <em className="muted"> (this corner doesn't steer)</em>}</span>
+          <span>Steering wheel <b>{steeringWheelAngle(rack, ratio).toFixed(0)}</b>° · {armMech ? <>{useApp.getState().geom.steerMechanism === 'centerLink' ? 'pitman' : 'arm'} <b>{rack.toFixed(1)}°</b></> : <>rack <b><Num text={rack.toFixed(1)} unit="mm" withUnit /></b></>}{!steers && <em className="muted"> (this corner doesn't steer)</em>}</span>
           <input
             type="range" min={-swLimit} max={swLimit} step={1} value={steeringWheelAngle(rack, ratio)} disabled={!steers}
             onChange={(e) => { set('playingSteer', false); set('rack', inputForWheelAngle(Number(e.target.value), ratio)); }}

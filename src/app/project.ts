@@ -56,11 +56,11 @@ import {
   defaultTireGrip, MF_KEYS, MF_META, RIDE_KEYS, DAMPER_TWO_STAGE_KEYS, SETUP_STEPS, AERO_KEYS, AERO_META, defaultAero, BRAKE_KEYS, BRAKE_META, FADE_KEYS, FADE_META, defaultBrakes, TOW_KEYS, TOW_META, defaultTow,
   type VehicleOptimizerSetup, type HeldDimension, newDimId,
   type OptimizerSetup,
-  type DesignState, type CornerDesign, type Field, type CornerLinks, type CornerSettings, type SharedDesign, type Axle,
+  type DesignState, type CornerDesign, type Field, type CornerLinks, type CornerSettings, type SharedDesign, type Axle, centerLinkDefaults,
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 30;
+export const FORMAT_VERSION = 31;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -76,7 +76,7 @@ export interface CornerJson {
   damperArm: 'lca' | 'uca' | 'upright';
   springLayout?: 'coilover' | 'rocker';
   pushrodOn?: 'lca' | 'uca' | 'upright';
-  steerMechanism?: 'rack' | 'arm';
+  steerMechanism?: 'rack' | 'arm' | 'centerLink';
   /** Solid axle: steered (format 28). */
   steeredAxle?: boolean;
   /** Custom linkage (format 27; mm). */
@@ -351,6 +351,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   28: (f) => ({ ...f, formatVersion: 29 }),
   // 29 → 30: no measured steering ratio.
   29: (f) => ({ ...f, formatVersion: 30 }),
+  // 30 → 31: center-link steering points (filled in on read).
+  30: (f) => ({ ...f, formatVersion: 31 }),
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */
@@ -618,6 +620,13 @@ function withPivotDefaults(points: CornerDesign['geom']['points'], missing: bool
   return { ...points, strPiv1: f(x, y - 60, z + 120), strPiv2: f(x, y + 90, z + 120) };
 }
 
+/** Center-link points around the inner tie-rod joint (for files from before format 31). */
+function withLinkDefaults(points: CornerDesign['geom']['points'], missing: boolean): CornerDesign['geom']['points'] {
+  if (!missing) return points;
+  const i = { x: points.trInner[0].value, y: points.trInner[1].value, z: points.trInner[2].value };
+  return { ...points, ...(centerLinkDefaults(i) as Record<'pitEnd' | 'idlPiv1' | 'idlPiv2' | 'idlEnd', [Field, Field, Field]>) };
+}
+
 /** Rocker points built from the coilover (for files from before format 19). */
 function withRockerDefaults(points: CornerDesign['geom']['points']): CornerDesign['geom']['points'] {
   const v = (k: keyof typeof points) => ({ x: points[k][0].value, y: points[k][1].value, z: points[k][2].value });
@@ -632,7 +641,7 @@ function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: str
   const w = isObj(raw) ? warnings : [];
   const pts = isObj(c.points) ? c.points : {};
   const points = { ...def.geom.points };
-  let rockerMissing = false, pivotMissing = false;
+  let rockerMissing = false, pivotMissing = false, linkMissing = false;
   for (const k of POINT_KEYS) {
     const name = cornerParam(id, POINT_NAMES[k]);
     const p = pts[name];
@@ -645,6 +654,8 @@ function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: str
     if (!isObj(p) && (k === 'strPiv1' || k === 'strPiv2')) { pivotMissing = true; continue; }
     // Format 24 added the Panhard rod (solid axle, 3-link): older files take the default, quietly.
     if (!isObj(p) && (k === 'phChs' || k === 'phAxle')) continue;
+    // Format 31 added the center-link steering points: older files get them around the inner tie-rod joint, quietly.
+    if (!isObj(p) && (k === 'pitEnd' || k === 'idlPiv1' || k === 'idlPiv2' || k === 'idlEnd')) { linkMissing = true; continue; }
     if (!isObj(p)) w.push(`${name}: missing, using default`);
     points[k] = (['x', 'y', 'z'] as const).map((ax, i) =>
       readField(obj[ax], 'length', def.geom.points[k][i]!, `${name}.${ax}`, isObj(p) ? w : [])) as [Field, Field, Field];
@@ -663,8 +674,8 @@ function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: str
   const model = tireRaw.model === 'rigid' || tireRaw.model === 'stiffness' || tireRaw.model === 'gas' ? tireRaw.model : def.tireModel;
   return {
     geom: {
-      points: withPivotDefaults(rockerMissing ? withRockerDefaults(points) : points, pivotMissing), scalars,
-      steerMechanism: c.steerMechanism === 'arm' ? 'arm' : 'rack',
+      points: withLinkDefaults(withPivotDefaults(rockerMissing ? withRockerDefaults(points) : points, pivotMissing), linkMissing), scalars,
+      steerMechanism: c.steerMechanism === 'arm' || c.steerMechanism === 'centerLink' ? c.steerMechanism : 'rack',
       ...(c.steeredAxle === true ? { steeredAxle: true } : {}),
       springLayout: c.springLayout === 'rocker' ? 'rocker' : 'coilover',
       pushrodOn: c.pushrodOn === 'uca' || c.pushrodOn === 'upright' ? c.pushrodOn : 'lca',
@@ -762,7 +773,7 @@ export function importProject(data: unknown): ImportResult {
     // Format 30: a measured steering ratio (older files: none, quietly).
     ...(typeof f.steeringCurve === 'string' && f.steeringCurve.trim() ? { steerCurve: f.steeringCurve } : {}),
     steerSaved: Object.fromEntries(Object.entries(isObj(f.steeringSaved) ? f.steeringSaved : {})
-      .filter(([m, rec]) => (m === 'rack' || m === 'arm') && isObj(rec))
+      .filter(([m, rec]) => (m === 'rack' || m === 'arm' || m === 'centerLink') && isObj(rec))
       .map(([m, rec]) => [m, readRecord(rec, MECH_STEER_KEYS, (k) => STEER_META[k].quantity, def.steer, `steering (${m})`, warnings)])) as DesignState['steerSaved'],
     steer: (() => {
       const w: string[] = [];

@@ -13,7 +13,7 @@ import { DoubleWishbone, SUSPENSION_KINDS, SUSPENSION_LABELS, type SuspensionKin
 import { springLength, dampingForRatio } from '../../core/suspension/spring';
 import { cgFromScales, springFromWeight, unsprungFromParts, estimateInertia, G, type CornerKg, type UnsprungParts } from '../../core/setup/measure';
 import { rackForWheelAngle } from '../../core/tests/steer';
-import {
+import { angleInput,
   useApp, mergedCorners, rootOf, toGeometry, toProfile, toForceModel, vehicleStaticLoads, mountedTireWidth, measuringRim, SETUP_STEPS, SETUP_LABELS,
   type SetupStep, type CornerDesign, type TireAxle, type Field,
   convertGeometry,
@@ -511,7 +511,7 @@ const DampersStep: StepView = ({ apply }) => {
 };
 
 const SteeringStep: StepView = ({ apply }) => {
-  const armMech = useApp((st) => st.geom.steerMechanism === 'arm');
+  const armMech = useApp((st) => angleInput(st.geom.steerMechanism));
   const steer = useApp((st) => st.steer);
   const wheelbase = useApp((st) => st.vehicle.wheelbase.value);
   const [turnsMode, setTurnsMode] = useState<'lockToLock' | 'centerToLock'>('lockToLock');

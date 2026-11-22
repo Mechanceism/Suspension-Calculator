@@ -312,6 +312,10 @@ function Joints({ state, cur }: { state: CornerState; cur: Current }) {
       {p.panhardAxle && <PickJoint id="phAxle" p={p.panhardAxle} color={COLORS.lca} />}
       {vis.chassis && p.steerPivot1 && <PickJoint id="strPiv1" p={p.steerPivot1} color={COLORS.chassis} />}
       {vis.chassis && p.steerPivot2 && <PickJoint id="strPiv2" p={p.steerPivot2} color={COLORS.chassis} />}
+      {vis.chassis && p.pitmanEnd && <PickJoint id="pitEnd" p={p.pitmanEnd} color={COLORS.tieRod} />}
+      {vis.chassis && p.idlerPivot1 && <PickJoint id="idlPiv1" p={p.idlerPivot1} color={COLORS.chassis} />}
+      {vis.chassis && p.idlerPivot2 && <PickJoint id="idlPiv2" p={p.idlerPivot2} color={COLORS.chassis} />}
+      {vis.chassis && p.idlerEnd && <PickJoint id="idlEnd" p={p.idlerEnd} color={COLORS.tieRod} />}
       {vis.spring && p.damperChassis && <PickJoint id="dmpChassis" p={p.damperChassis} color={COLORS.chassis} />}
       {vis.spring && p.damperArm && <PickJoint id="dmpArm" p={p.damperArm} color={COLORS.spring} />}
       {vis.spring && p.rockerPivot1 && <PickJoint id="rkrPiv1" p={p.rockerPivot1} color={COLORS.chassis} />}
@@ -363,7 +367,18 @@ function Chassis({ state, rackLimit, rackAxis }: { state: CornerState; rackLimit
           />
         </>
       )}</Part>
-      {(!beam || !!p.crossTieRod) && state.kind !== 'custom' && <Part id="rack">{(e) => p.steerPivot1 && p.steerPivot2 ? (
+      {(!beam || !!p.crossTieRod) && state.kind !== 'custom' && <Part id="rack">{(e) => p.pitmanEnd && p.idlerEnd && p.idlerPivot1 && p.idlerPivot2 && p.steerPivot1 && p.steerPivot2 ? (
+        <>
+          {/* Center link: the pitman and idler arms on their pivot axes, the link between their ends, the inner joint on it. */}
+          <Seg a={p.steerPivot1} b={p.steerPivot2} color={e === 2 ? COLORS.select : COLORS.chassis} width={em(3, e)} />
+          <Seg a={p.idlerPivot1} b={p.idlerPivot2} color={e === 2 ? COLORS.select : COLORS.chassis} width={em(3, e)} />
+          <Seg a={closestPointOnLine(lineThrough(p.steerPivot1, p.steerPivot2), p.pitmanEnd)} b={p.pitmanEnd} color={e === 2 ? COLORS.select : COLORS.tieRod} width={em(3, e)} />
+          <Seg a={closestPointOnLine(lineThrough(p.idlerPivot1, p.idlerPivot2), p.idlerEnd)} b={p.idlerEnd} color={e === 2 ? COLORS.select : COLORS.tieRod} width={em(3, e)} />
+          <Seg a={p.pitmanEnd} b={p.idlerEnd} color={e === 2 ? COLORS.select : COLORS.tieRod} width={em(4, e)} />
+          <Seg a={p.pitmanEnd} b={p.trInner} color={e === 2 ? COLORS.select : COLORS.tieRod} width={em(3, e)} />
+          <HitLink a={p.pitmanEnd} b={p.idlerEnd} radius={14} />
+        </>
+      ) : p.steerPivot1 && p.steerPivot2 ? (
         <>
           {/* Steering arm / plate: its pivot axis and the arm out to the inner tie-rod joint. */}
           <Seg a={p.steerPivot1} b={p.steerPivot2} color={e === 2 ? COLORS.select : COLORS.chassis} width={em(3, e)} />

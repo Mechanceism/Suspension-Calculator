@@ -51,6 +51,7 @@ import {
 } from '../math/vec3';
 import { mulVec, transpose, fromAxisAngle } from '../math/mat3';
 import { TwistBeam, type TwistBeamGeometry } from './twistBeam';
+import { centerLinkPose, type CenterLinkGeometry } from './steering';
 import { buildCustom, customOrigin, customProblems, movingBodies, screwBetween, type CustomLinkage, type CustomJoint } from './customLinkage';
 import { SolidAxle, axleCharacteristics, mirroredLinks, type SolidAxleGeometry, type AxleState, type AxleCharacteristics } from './solidAxle';
 import {
@@ -109,7 +110,7 @@ export interface DoubleWishboneGeometry {
    * on the steering column, or a pitman / idler arm driving a center link (each inner joint then moves on
    * the arm's circle).
    */
-  readonly steering?: { readonly kind: 'rack' } | { readonly kind: 'arm'; readonly pivot1: Vec3; readonly pivot2: Vec3 };
+  readonly steering?: { readonly kind: 'rack' } | { readonly kind: 'arm'; readonly pivot1: Vec3; readonly pivot2: Vec3 } | ({ readonly kind: 'centerLink' } & CenterLinkGeometry);
   /**
    * Pushrod (or pullrod) and rocker: the rocker pivots on the frame axis pivot1 → pivot2; the pushrod
    * runs from `pushrodLower` (on `pushrodBody`) to `pushrodUpper` (on the rocker). The damper's armPoint
@@ -179,6 +180,11 @@ export interface CornerPoints {
   lcaOut2?: Vec3;
   /** MacPherson: strut top mount (chassis) and the strut's point on the upright. */
   strutTop?: Vec3;
+  /** Center-link steering: the pitman arm's end, the idler arm's pivot axis and end, now. */
+  pitmanEnd?: Vec3;
+  idlerPivot1?: Vec3;
+  idlerPivot2?: Vec3;
+  idlerEnd?: Vec3;
   /** Custom linkage: two points on the instant axis in travel, and each joint's points now (for drawing). */
   axisA?: Vec3;
   axisB?: Vec3;
@@ -268,6 +274,11 @@ export class DoubleWishbone {
     }
     const sa = geometry.steering;
     if (sa?.kind === 'arm' && dist(sa.pivot1, sa.pivot2) < 1e-6) throw new Error('Degenerate geometry: steering arm pivot axis points coincide');
+    if (sa?.kind === 'centerLink') {
+      if (dist(sa.pivot1, sa.pivot2) < 1e-6) throw new Error('Degenerate geometry: the pitman arm pivot axis points coincide');
+      if (dist(sa.idlerPivot1, sa.idlerPivot2) < 1e-6) throw new Error('Degenerate geometry: the idler arm pivot axis points coincide');
+      if (dist(sa.pitmanEnd, sa.idlerEnd) < 1e-6) throw new Error('Degenerate geometry: the center link ends coincide');
+    }
     const rk = geometry.rocker;
     if (rk) {
       if (this.kind === 'macpherson' || this.kind === 'rigid') throw new Error('A pushrod and rocker needs an arm or knuckle to push from (not a MacPherson strut or a rigid corner)');
@@ -369,6 +380,11 @@ export class DoubleWishbone {
       const R = fromAxisAngle(normalize(sub(st.pivot2, st.pivot1)), (full.rack * Math.PI) / 180);
       const o = sys.getBody('rack').origin;
       start.rack = { position: add(st.pivot1, mulVec(R, sub(o, st.pivot1))), rotation: R };
+    } else if (st?.kind === 'centerLink') {
+      // The pitman arm turns by the input (degrees); the center link (carrying the inner joint) follows it and the idler.
+      const cl = centerLinkPose(st, full.rack);
+      const o = sys.getBody('rack').origin;
+      start.rack = cl ? { position: add(cl.A, mulVec(cl.R, sub(o, cl.A0))), rotation: cl.R } : sys.designPoses().rack!;
     } else {
       start.rack = {
         position: add(sys.getBody('rack').origin, scale(this.rackAxis, full.rack)),
@@ -417,6 +433,14 @@ export class DoubleWishbone {
       points.damperArm = ctx.world(refs.damperArm);
     }
     if (g.steering?.kind === 'arm') { points.steerPivot1 = g.steering.pivot1; points.steerPivot2 = g.steering.pivot2; }
+    if (g.steering?.kind === 'centerLink') {
+      // The pitman and idler axes (fixed) and the center link's two ends now.
+      const st = g.steering, rk = result.poses.rack!;
+      const on = (x: Vec3) => add(rk.position, mulVec(rk.rotation, sub(x, sys.getBody('rack').origin)));
+      points.steerPivot1 = st.pivot1; points.steerPivot2 = st.pivot2;
+      points.pitmanEnd = on(st.pitmanEnd); points.idlerEnd = on(st.idlerEnd);
+      points.idlerPivot1 = st.idlerPivot1; points.idlerPivot2 = st.idlerPivot2;
+    }
     if (g.rocker && refs.pushrodLower && refs.pushrodUpper) {
       points.rockerPivot1 = g.rocker.pivot1;
       points.rockerPivot2 = g.rocker.pivot2;

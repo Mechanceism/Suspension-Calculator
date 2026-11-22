@@ -32,6 +32,8 @@ export type HardpointId =
   | 'rockerPivot1' | 'rockerPivot2' | 'pushrodLower' | 'pushrodUpper'
   /** Steering-arm mechanism: its pivot axis. */
   | 'steerPivot1' | 'steerPivot2'
+  /** Center-link steering: the pitman end, the idler pivot axis and end. */
+  | 'pitmanEnd' | 'idlerPivot1' | 'idlerPivot2' | 'idlerEnd'
   /** Custom linkage: a joint's point, `custom:<joint id>:p` or `:q`. */
   | `custom:${string}`;
 
@@ -122,8 +124,12 @@ export function getPoint(g: DoubleWishboneGeometry, id: HardpointId): Vec3 | und
     case 'ucaOut2': return g.uca.out2; case 'lcaOut2': return g.lca.out2;
     case 'rockerPivot1': return g.rocker?.pivot1; case 'rockerPivot2': return g.rocker?.pivot2;
     case 'pushrodLower': return g.rocker?.pushrodLower; case 'pushrodUpper': return g.rocker?.pushrodUpper;
-    case 'steerPivot1': return g.steering?.kind === 'arm' ? g.steering.pivot1 : undefined;
-    case 'steerPivot2': return g.steering?.kind === 'arm' ? g.steering.pivot2 : undefined;
+    case 'steerPivot1': return g.steering?.kind === 'arm' || g.steering?.kind === 'centerLink' ? g.steering.pivot1 : undefined;
+    case 'steerPivot2': return g.steering?.kind === 'arm' || g.steering?.kind === 'centerLink' ? g.steering.pivot2 : undefined;
+    case 'pitmanEnd': return g.steering?.kind === 'centerLink' ? g.steering.pitmanEnd : undefined;
+    case 'idlerPivot1': return g.steering?.kind === 'centerLink' ? g.steering.idlerPivot1 : undefined;
+    case 'idlerPivot2': return g.steering?.kind === 'centerLink' ? g.steering.idlerPivot2 : undefined;
+    case 'idlerEnd': return g.steering?.kind === 'centerLink' ? g.steering.idlerEnd : undefined;
   }
   if (id.startsWith('custom:')) {
     const [, jid, which] = id.split(':');
@@ -150,6 +156,7 @@ export function withVariables(g: DoubleWishboneGeometry, vars: Variable[], x: nu
     wheel: { ...g.wheel, center: P('wheelCenter') },
     damper: g.damper ? { ...g.damper, chassis: P('damperChassis'), armPoint: P('damperArm') } : undefined,
     ...(g.steering?.kind === 'arm' ? { steering: { kind: 'arm' as const, pivot1: P('steerPivot1'), pivot2: P('steerPivot2') } } : {}),
+    ...(g.steering?.kind === 'centerLink' ? { steering: { kind: 'centerLink' as const, pivot1: P('steerPivot1'), pivot2: P('steerPivot2'), pitmanEnd: P('pitmanEnd'), idlerPivot1: P('idlerPivot1'), idlerPivot2: P('idlerPivot2'), idlerEnd: P('idlerEnd') } } : {}),
     ...(g.rocker ? { rocker: { ...g.rocker, pivot1: P('rockerPivot1'), pivot2: P('rockerPivot2'), pushrodLower: P('pushrodLower'), pushrodUpper: P('pushrodUpper') } } : {}),
     ...(g.custom ? {
       custom: {

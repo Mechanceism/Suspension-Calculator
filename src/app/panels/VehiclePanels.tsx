@@ -10,7 +10,7 @@ import { LocksPanel } from './LocksPanel';
 import { VehicleOptimizePanel } from './OptimizePanel';
 import { CORNER_IDS, type CornerId } from '../../core/vehicle/vehicle';
 import { deg } from '../../core/suspension/characteristics';
-import { ratioSpecOf,
+import { angleInput, ratioSpecOf,
   useApp, VEHICLE_KEYS, VEHICLE_META, CORNER_NAMES, SHARED_META, rootOf,
   type CornerLinks, type DiffType, type Axle, type SharedDesign,
   BRAKE_KEYS, BRAKE_META, FADE_KEYS, FADE_META, TOW_KEYS, TOW_META,
@@ -386,7 +386,7 @@ export function VehicleMotionBar() {
   const rack = useApp((s) => s.rack);
   const cFactor = useApp((s) => s.steer.cFactor.value);
   const cFactorLock = useApp((s) => s.steer.cFactorLock.value);
-  const armMech = useApp((s) => s.geom.steerMechanism === 'arm');
+  const armMech = useApp((s) => angleInput(s.geom.steerMechanism));
   const rackLimit = useApp((s) => s.steer.rackLimit.value);
   const set = useApp((s) => s.set);
   const curveText = useApp((s) => s.steerCurve);
@@ -434,7 +434,7 @@ export function VehicleMotionBar() {
       </div>
       <div className="motion-group">
         <label className="slider">
-          <span>Steering wheel <b>{steeringWheelAngle(rack, ratio).toFixed(0)}</b>° · {armMech ? <>arm <b>{rack.toFixed(1)}°</b></> : <>rack <b><Num text={rack.toFixed(1)} unit="mm" withUnit /></b></>}</span>
+          <span>Steering wheel <b>{steeringWheelAngle(rack, ratio).toFixed(0)}</b>° · {armMech ? <>{useApp.getState().geom.steerMechanism === 'centerLink' ? 'pitman' : 'arm'} <b>{rack.toFixed(1)}°</b></> : <>rack <b><Num text={rack.toFixed(1)} unit="mm" withUnit /></b></>}</span>
           <input type="range" min={-swLimit} max={swLimit} step={1} value={steeringWheelAngle(rack, ratio)} onChange={(e) => setRack(inputForWheelAngle(Number(e.target.value), ratio))} onDoubleClick={() => setRack(0)} />
           <span className="quick">
             <button onClick={() => setRack(-rackLimit)}>◀ Lock</button>

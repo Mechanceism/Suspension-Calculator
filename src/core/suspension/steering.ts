@@ -10,7 +10,8 @@
  * The rack (pinion) force is the tie-rod force along the rack axis, and the steering-wheel torque is
  *   T_sw = F_rack · c / 2π                c = rack travel per steering-wheel revolution.
  */
-import { type Vec3, vec3, sub, dot, cross, normalize, length, scale, Y_AXIS, addScaled } from '../math/vec3';
+import { type Vec3, vec3, add, sub, dot, cross, normalize, length, scale, Y_AXIS, addScaled } from '../math/vec3';
+import { type Mat3, mulVec, fromAxisAngle, IDENTITY } from '../math/mat3';
 import type { CornerState, DoubleWishboneGeometry } from './doubleWishbone';
 
 /** Wheel heading in plan view (rad): + = front of the wheel toward +X (outboard). */
@@ -56,7 +57,8 @@ export interface SteeringLoads {
 }
 
 /** How the steering input moves the inner tie-rod joint (rack: mm along the rack; arm: degrees about a pivot axis). */
-export type SteeringMechanism = { kind: 'rack'; axis: Vec3 } | { kind: 'arm'; pivot: Vec3; axis: Vec3 };
+/** `rate`: how fast the inner tie-rod joint moves per radian of input (a center link), when it isn't simply turning about the pivot. */
+export type SteeringMechanism = { kind: 'rack'; axis: Vec3 } | { kind: 'arm'; pivot: Vec3; axis: Vec3; rate?: Vec3 };
 
 /** Lever of the tie rod about the steering axis: û · ((r_TR − q) × d), mm. */
 export function steeringArmLever(state: CornerState): number {
@@ -91,7 +93,8 @@ export function steeringLoads(state: CornerState, contact: Vec3, forces: TireFor
   if (mech.kind === 'arm') {
     // The tie rod pulls the arm's joint toward the knuckle (tension f along −d); torque about the pivot axis.
     // cFactor = arm degrees per steering-wheel turn, so T_wheel = T_arm · cFactor / 360.
-    const armTorque = dot(normalize(mech.axis), cross(sub(p.trInner, mech.pivot), scale(d, -tieRodForce))) / 1000;
+    // With a center link, by virtual work: the force on the joint times the joint's motion per radian of input.
+    const armTorque = (mech.rate ? dot(mech.rate, scale(d, -tieRodForce)) : dot(normalize(mech.axis), cross(sub(p.trInner, mech.pivot), scale(d, -tieRodForce)))) / 1000;
     return { axisTorque, tieRodForce, steeringArm: lever, rackForce: NaN, armTorque, steeringWheelTorque: (armTorque * cFactor) / 360 };
   }
   const rackForce = tieRodForce * dot(d, normalize(mech.axis));
@@ -115,4 +118,39 @@ export function parkingTorque(samples: { points: Vec3[]; weights: number[] }, ax
     moment += samples.weights[i]! * length(vec3(r.x, 0, r.z));
   });
   return (mu * vertical * moment) / area;
+}
+
+/** Center-link steering (pitman arm, idler arm, center link): the points, design positions. */
+export interface CenterLinkGeometry {
+  /** Pitman arm: its pivot axis on the frame (steering box output) and its ball end on the center link. */
+  pivot1: Vec3; pivot2: Vec3; pitmanEnd: Vec3;
+  /** Idler arm: its pivot axis on the frame and its ball end on the center link. */
+  idlerPivot1: Vec3; idlerPivot2: Vec3; idlerEnd: Vec3;
+}
+
+/**
+ * The center link's pose for a pitman angle (deg): the pitman end turns about its axis; the idler end stays
+ * on its circle at the link's length from it (Newton on the idler angle, from `guess`); the link moves
+ * rigidly with the least rotation taking its design direction to the new one. x' = A + R (x − A0).
+ */
+export function centerLinkPose(c: CenterLinkGeometry, angleDeg: number, guess = 0): { R: Mat3; A: Vec3; A0: Vec3; idlerAngle: number } | null {
+  const up = normalize(sub(c.pivot2, c.pivot1)), ui = normalize(sub(c.idlerPivot2, c.idlerPivot1));
+  const rot = (u: Vec3, o: Vec3, a: number, x: Vec3) => add(o, mulVec(fromAxisAngle(u, a), sub(x, o)));
+  const A = rot(up, c.pivot1, (angleDeg * Math.PI) / 180, c.pitmanEnd);
+  const L = length(sub(c.idlerEnd, c.pitmanEnd));
+  const f = (phi: number) => length(sub(rot(ui, c.idlerPivot1, phi, c.idlerEnd), A)) - L;
+  let phi = guess;
+  for (let i = 0; i < 30; i++) {
+    const v = f(phi);
+    if (Math.abs(v) < 1e-9) break;
+    const d = (f(phi + 1e-6) - f(phi - 1e-6)) / 2e-6;
+    if (Math.abs(d) < 1e-12) return null;
+    phi -= v / d;
+  }
+  if (Math.abs(f(phi)) > 1e-6) return null;
+  const Bn = rot(ui, c.idlerPivot1, phi, c.idlerEnd);
+  const d0 = normalize(sub(c.idlerEnd, c.pitmanEnd)), d1 = normalize(sub(Bn, A));
+  const axis = cross(d0, d1), s = length(axis), co = dot(d0, d1);
+  const R = s < 1e-12 ? IDENTITY : fromAxisAngle(scale(axis, 1 / s), Math.atan2(s, co));
+  return { R, A, A0: c.pitmanEnd, idlerAngle: phi };
 }

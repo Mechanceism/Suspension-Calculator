@@ -345,8 +345,8 @@ export function VehicleMotionBar() {
   usePlay(playingSteer, 5000, (s) => useApp.getState().set('rack', s * rackLimit));
   // Play: brake to 1.2 g, then (if any corner is powered) accelerate to 0.6 g.
   usePlay(playingLong, 5000, (s) => useApp.getState().set('longitudinalG', Number((s < 0 ? 1.2 * s : (anyPowered ? 0.6 : 0) * s).toFixed(3))));
-  const setL = (g: number) => { set('playingLongitudinal', false); set('longitudinalG', g); };
-  const setG = (g: number) => { set('playingLateral', false); set('lateralG', g); };
+  const setL = (g: number) => { set('rideView', null); set('playingLongitudinal', false); set('longitudinalG', g); };
+  const setG = (g: number) => { set('rideView', null); set('playingLateral', false); set('lateralG', g); };
   const setRack = (r: number) => { set('playingSteer', false); set('rack', r); };
   return (
     <div className="motion-bar">

@@ -175,7 +175,7 @@ function PickJoint({ id, p, color, r = 7 }: { id: AnchorId; p: Vec3; color: stri
         if (isDrag(e)) return;
         e.stopPropagation();
         const n = e.nativeEvent;
-        if (measureMode) addMeasureAnchor(id);
+        if (measureMode) addMeasureAnchor(id, p);
         else if (isPoint && (n.shiftKey || n.ctrlKey || n.metaKey)) useApp.getState().toggleSelectPoints([id as PointKey]);
         else if (isPoint) select({ kind: 'point', id: id as PointKey });
       }}

@@ -93,7 +93,8 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
   const roadBank = useApp((st) => st.roadBank);
   const wheelBumps = useApp((st) => st.wheelBumps);
   const gripFields = useApp((st) => st.tireGrip);
-  const rideView = useApp((st) => st.rideView);
+  // The test playback's pose (ride over time) belongs to the Tests workspace only: elsewhere the car is solved.
+  const rideView = useApp((st) => (st.workspace === 'tests' ? st.rideView : null));
   const tireFile = useApp((st) => st.tireFile);
   const tireFileRear = useApp((st) => st.tireFileRear);
   // Grade and bank fold into what the tires must supply (see core/tests/segments.ts).

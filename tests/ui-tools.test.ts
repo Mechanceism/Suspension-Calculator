@@ -115,3 +115,19 @@ describe('undo / redo', () => {
     expect(pickDesign(useApp.getState())).toBeTruthy();
   });
 });
+
+describe('measure picks', () => {
+  it('the second pick must be a different point (not the first one, nor another at the same place)', async () => {
+    const { useApp } = await import('../src/app/store');
+    useApp.getState().toggleMeasure();
+    if (!useApp.getState().measureMode) useApp.getState().toggleMeasure();
+    const at = { x: 10, y: 20, z: 30 };
+    useApp.getState().addMeasureAnchor('ucaOut', at);
+    useApp.getState().addMeasureAnchor('ucaOut', at);
+    expect(useApp.getState().measure).toEqual(['ucaOut']);
+    useApp.getState().addMeasureAnchor('lcaOut', { ...at });
+    expect(useApp.getState().measure).toEqual(['ucaOut']);
+    useApp.getState().addMeasureAnchor('lcaOut', { x: 10, y: -150, z: 30 });
+    expect(useApp.getState().measure).toEqual(['ucaOut', 'lcaOut']);
+  });
+});

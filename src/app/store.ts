@@ -146,6 +146,9 @@ export type Selection =
 /** Hardpoints covered by a selection (for moving / highlighting). */
 export const selectedPoints = (sel: Selection, partPoints: (id: ComponentId) => PointKey[]): PointKey[] =>
   !sel ? [] : sel.kind === 'point' ? [sel.id] : sel.kind === 'points' ? sel.ids : partPoints(sel.id);
+/** Where the first measure pick was (to refuse picking the same place again). */
+let firstMeasurePos: Vec3 | null = null;
+
 /** Anything the measure tool can snap to: a hardpoint or a derived point. */
 export type AnchorId = PointKey | 'contact' | 'patchCentroid' | 'axisGround' | 'rollCenter' | 'frontViewIC';
 
@@ -396,7 +399,8 @@ export interface AppState extends DesignState {
   toggleMeasure(): void;
   /** Open the measure tool with these points already picked. */
   startMeasure(ids: AnchorId[]): void;
-  addMeasureAnchor(a: AnchorId): void;
+  /** Add a point to the measurement (`at` = where it is, to refuse a second pick at the first one's place). */
+  addMeasureAnchor(a: AnchorId, at?: Vec3): void;
   setSpringField(key: SpringKey, text: string): void;
   setDamperArm(arm: ArmChoice): void;
   /** Set the free length so the static corner load sits at the design position (travel 0). */
@@ -1202,8 +1206,14 @@ export const useApp = create<AppState>((set, get) => ({
   toggleMeasure: () => set({ measureMode: !get().measureMode, measure: [] }),
   startMeasure: (ids) => set({ measureMode: true, measure: ids.slice(0, 2) }),
   lineMove: null,
-  addMeasureAnchor: (a) => {
+  addMeasureAnchor: (a, at) => {
     const m = get().measure;
+    if (m.length === 1) {
+      // A measurement needs two different points: the same point (or another one at the same place) again is refused.
+      const same = m[0] === a || (at && firstMeasurePos && Math.hypot(at.x - firstMeasurePos.x, at.y - firstMeasurePos.y, at.z - firstMeasurePos.z) < 0.01);
+      if (same) { get().notify('That is the point you picked first: pick a different one to measure to.', 'warn'); return; }
+    }
+    if (m.length !== 1) firstMeasurePos = at ?? null;
     set({ measure: m.length >= 2 ? [a] : [...m, a] });
   },
 

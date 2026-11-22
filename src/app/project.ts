@@ -28,6 +28,8 @@
  *  15  wheel offset (ET: the hub point is the mounting face) and rim width per corner design
  *  16  aerodynamics (on / off, generic values, an imported aero model)
  *  17  handling over time: yaw inertia (vehicle input), "steered by a driver" per test
+ *  18  suspension type per corner design (double wishbone, MacPherson, multilink) and the multilink's
+ *      rear-link upright ends (FL_UCA_Out2, FL_LCA_Out2)
  */
 import pkg from '../../package.json';
 import { parseValue, type Quantity } from '../core/units/units';
@@ -48,7 +50,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 17;
+export const FORMAT_VERSION = 18;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -58,7 +60,7 @@ type Json = Record<string, unknown>;
 export const cornerParam = (id: CornerId, flName: string) => flName.replace(/^FL_/, `${id}_`);
 
 export interface CornerJson {
-  type: 'doubleWishbone';
+  type: 'doubleWishbone' | 'macpherson' | 'multilink';
   points: Record<string, { x: FieldJson; y: FieldJson; z: FieldJson }>;
   scalars: Record<string, FieldJson>;
   damperArm: 'lca' | 'uca';
@@ -126,7 +128,7 @@ const mapFields = <K extends string>(keys: readonly K[], rec: Record<K, Field>) 
 
 function cornerToJson(id: CornerId, c: CornerDesign): CornerJson {
   return {
-    type: 'doubleWishbone',
+    type: c.geom.kind ?? 'doubleWishbone',
     points: Object.fromEntries(POINT_KEYS.map((k) => {
       const [x, y, z] = c.geom.points[k];
       return [cornerParam(id, POINT_NAMES[k]), { x: fj(x), y: fj(y), z: fj(z) }];
@@ -290,6 +292,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   15: (f) => ({ ...f, formatVersion: 16 }),
   // 16 → 17: default yaw inertia; tests steered by a driver.
   16: (f) => ({ ...f, formatVersion: 17 }),
+  // 17 → 18: every corner was a double wishbone; the multilink points start at the ball joints.
+  17: (f) => ({ ...f, formatVersion: 18 }),
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */
@@ -535,6 +539,8 @@ function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: str
     const name = cornerParam(id, POINT_NAMES[k]);
     const p = pts[name];
     const obj = isObj(p) ? p : {};
+    // Format 18 added the multilink's rear-link ends: older files start them at the joints quietly.
+    if (!isObj(p) && (k === 'ucaOut2' || k === 'lcaOut2')) { points[k] = points[k === 'ucaOut2' ? 'ucaOut' : 'lcaOut']; continue; }
     if (!isObj(p)) w.push(`${name}: missing, using default`);
     points[k] = (['x', 'y', 'z'] as const).map((ax, i) =>
       readField(obj[ax], 'length', def.geom.points[k][i]!, `${name}.${ax}`, isObj(p) ? w : [])) as [Field, Field, Field];
@@ -552,7 +558,7 @@ function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: str
   const tireRaw = isObj(c.tire) ? c.tire : {};
   const model = tireRaw.model === 'rigid' || tireRaw.model === 'stiffness' || tireRaw.model === 'gas' ? tireRaw.model : def.tireModel;
   return {
-    geom: { points, scalars, damperArm: c.damperArm === 'uca' ? 'uca' : 'lca' },
+    geom: { points, scalars, damperArm: c.damperArm === 'uca' ? 'uca' : 'lca', kind: c.type === 'macpherson' || c.type === 'multilink' ? c.type : 'doubleWishbone' },
     spring: readRecord(c.spring, SPRING_KEYS, (k) => SPRING_META[k].quantity, def.spring, `${id}.spring`, w),
     // Damping rates are new in format 8: older files take the defaults quietly.
     damper: (() => {

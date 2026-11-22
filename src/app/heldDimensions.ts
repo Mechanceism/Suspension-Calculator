@@ -12,6 +12,7 @@ import { useApp, rootOf, toGeometry, POINT_KEYS, type HeldDimension, type PointK
 import { STATE_KEY } from './anchors';
 import { pointAxisLocked } from './locks';
 import { componentDefs, POINT_LABELS } from './components';
+import type { SuspensionKind } from '../core/suspension/doubleWishbone';
 
 export const toSpec = (d: HeldDimension): DimensionSpec => ({
   a: STATE_KEY[d.a] as HardpointId, b: STATE_KEY[d.b] as HardpointId, measure: d.measure, value: d.value, travel: d.travel,
@@ -25,8 +26,8 @@ export const dimensionLabel = (d: Pick<HeldDimension, 'a' | 'b' | 'measure'>) =>
 export const holdLabel = (travel: number | null) => (travel === null ? 'permanent' : travel === 0 ? 'at ride height' : `at ${travel} mm travel`);
 
 /** Rigid parts (points that keep their distances through travel). The chassis never moves in the corner frame. */
-function rigidGroups(damperArm: 'lca' | 'uca'): { chassis: PointKey[]; moving: PointKey[][] } {
-  const d = componentDefs(damperArm);
+function rigidGroups(damperArm: 'lca' | 'uca', kind: SuspensionKind = 'doubleWishbone'): { chassis: PointKey[]; moving: PointKey[][] } {
+  const d = componentDefs(damperArm, kind);
   return {
     chassis: ['ucaFwd', 'ucaAft', 'lcaFwd', 'lcaAft', 'dmpChassis'],
     moving: [d.uca.points, d.lca.points, d.upright.points, d.tieRod.points],
@@ -37,8 +38,8 @@ function rigidGroups(damperArm: 'lca' | 'uca'): { chassis: PointKey[]; moving: P
  * Can this dimension be held permanently (true at every travel)? Any measure between two chassis
  * points; a distance between two points of the same moving part. Everything else changes with travel.
  */
-export function permanentAllowed(a: PointKey, b: PointKey, measure: DimMeasure, damperArm: 'lca' | 'uca'): { ok: boolean; why: string } {
-  const g = rigidGroups(damperArm);
+export function permanentAllowed(a: PointKey, b: PointKey, measure: DimMeasure, damperArm: 'lca' | 'uca', kind: SuspensionKind = 'doubleWishbone'): { ok: boolean; why: string } {
+  const g = rigidGroups(damperArm, kind);
   if (g.chassis.includes(a) && g.chassis.includes(b)) return { ok: true, why: 'Both points are on the chassis, which does not move' };
   const part = g.moving.find((p) => p.includes(a) && p.includes(b));
   if (part && measure === 'distance') return { ok: true, why: 'Both points are on the same rigid part, so their distance never changes' };
@@ -89,7 +90,7 @@ export function initHeldDimensions(): void {
     if (!dims.length) { baseline = s.geom; if (s.dimViolations.length) useApp.setState({ dimViolations: [] }); return; }
     const base = baseline ?? s.geom;
     const changed = (k: PointKey, axis: 0 | 1 | 2) => base.points[k][axis].value !== s.geom.points[k][axis].value;
-    const isFixed = (k: PointKey, axis: 0 | 1 | 2) => changed(k, axis) || pointAxisLocked(s.locks, root, k, axis, s.geom.damperArm);
+    const isFixed = (k: PointKey, axis: 0 | 1 | 2) => changed(k, axis) || pointAxisLocked(s.locks, root, k, axis, s.geom.damperArm, s.geom.kind);
     const r = resolveActive(s.geom, dims, isFixed);
     resolving = true;
     try {

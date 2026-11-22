@@ -5,8 +5,8 @@
 import { create } from 'zustand';
 import { parseValue, formatValue, type Quantity } from '../core/units/units';
 import { vec3, type Vec3 } from '../core/math/vec3';
-import { DoubleWishbone, spinAxisFromCamberToe, type DoubleWishboneGeometry, type TravelDriver } from '../core/suspension/doubleWishbone';
-import { SAMPLE_LAYOUTS, SAMPLE_SPRING } from '../examples/sampleLayouts';
+import { DoubleWishbone, spinAxisFromCamberToe, SUSPENSION_LABELS, virtualPivot, type DoubleWishboneGeometry, type TravelDriver, type SuspensionKind } from '../core/suspension/doubleWishbone';
+import { SAMPLE_LAYOUTS, SAMPLE_SPRING, PRESET_LAYOUTS } from '../examples/sampleLayouts';
 import { fitFreeLength } from '../core/suspension/spring';
 import { CORNER_IDS, staticCornerLoads, type CornerId, type BrakeMount, type ChassisPose } from '../core/vehicle/vehicle';
 import { setArmLength, setPivotInclination, setPivotPlanAngle, setArmFrontViewAngle, transferArmPoint } from '../core/suspension/armGeometry';
@@ -30,7 +30,8 @@ export interface Field {
   error?: string;
 }
 
-export const POINT_KEYS = ['ucaFwd', 'ucaAft', 'ucaOut', 'lcaFwd', 'lcaAft', 'lcaOut', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm'] as const;
+/** Hardpoints of every suspension type (each type uses some of them: activePointKeys). */
+export const POINT_KEYS = ['ucaFwd', 'ucaAft', 'ucaOut', 'lcaFwd', 'lcaAft', 'lcaOut', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm', 'ucaOut2', 'lcaOut2'] as const;
 export type PointKey = (typeof POINT_KEYS)[number];
 
 /** Parameter names follow GOALS.md § Parameter Naming. */
@@ -39,6 +40,7 @@ export const POINT_NAMES: Record<PointKey, string> = {
   lcaFwd: 'FL_LCA_Fwd', lcaAft: 'FL_LCA_Aft', lcaOut: 'FL_LCA_Out',
   trInner: 'FL_TR_In', trOuter: 'FL_TR_Out', wheelCenter: 'FL_Hub_Ctr',
   dmpChassis: 'FL_Dmp_Chs', dmpArm: 'FL_Dmp_Arm',
+  ucaOut2: 'FL_UCA_Out2', lcaOut2: 'FL_LCA_Out2',
 };
 
 /** Parameter name of a hardpoint or scalar for a corner (FL_UCA_Fwd → RR_UCA_Fwd). */
@@ -155,6 +157,8 @@ export type AnchorId = PointKey | 'contact' | 'patchCentroid' | 'axisGround' | '
 
 export interface EditableGeometry {
   points: Record<PointKey, [Field, Field, Field]>;
+  /** Suspension type (default double wishbone). */
+  kind: SuspensionKind;
   scalars: Record<ScalarKey, Field>;
   /** Which arm the coilover's lower mount is attached to. */
   damperArm: ArmChoice;
@@ -173,7 +177,7 @@ const field = (value: number, quantity: Quantity = 'length'): Field => ({ text: 
 const fields = (v: Vec3): [Field, Field, Field] => [field(v.x), field(v.y), field(v.z)];
 
 export function editableFromLayout(id: string): EditableGeometry {
-  const g = (SAMPLE_LAYOUTS.find((l) => l.id === id) ?? SAMPLE_LAYOUTS[0]!).geometry;
+  const g = (PRESET_LAYOUTS.find((l) => l.id === id) ?? SAMPLE_LAYOUTS[0]!).geometry;
   return {
     points: {
       ucaFwd: fields(g.uca.fwd), ucaAft: fields(g.uca.aft), ucaOut: fields(g.uca.out),
@@ -182,7 +186,10 @@ export function editableFromLayout(id: string): EditableGeometry {
       wheelCenter: fields(g.wheel.center),
       dmpChassis: fields(g.damper?.chassis ?? vec3(300, 380, 30)),
       dmpArm: fields(g.damper?.armPoint ?? vec3(480, 45, 30)),
+      ucaOut2: fields(g.uca.out2 ?? g.uca.out),
+      lcaOut2: fields(g.lca.out2 ?? g.lca.out),
     },
+    kind: g.kind ?? 'doubleWishbone',
     damperArm: g.damper?.arm === 'uca' ? 'uca' : 'lca',
     scalars: {
       staticCamber: field(0, 'angle'),
@@ -204,9 +211,12 @@ export function toGeometry(e: EditableGeometry): DoubleWishboneGeometry {
   // The stored point is the hub's mounting face; the tire's centerline sits the wheel offset (ET) inboard of it.
   const et = Number.isFinite(s.wheelOffset.value) ? s.wheelOffset.value : 0;
   const hub = p('wheelCenter');
+  const kind = e.kind ?? 'doubleWishbone';
+  const ml = kind === 'multilink';
   return {
-    uca: { fwd: p('ucaFwd'), aft: p('ucaAft'), out: p('ucaOut') },
-    lca: { fwd: p('lcaFwd'), aft: p('lcaAft'), out: p('lcaOut') },
+    kind,
+    uca: { fwd: p('ucaFwd'), aft: p('ucaAft'), out: p('ucaOut'), ...(ml ? { out2: p('ucaOut2') } : {}) },
+    lca: { fwd: p('lcaFwd'), aft: p('lcaAft'), out: p('lcaOut'), ...(ml ? { out2: p('lcaOut2') } : {}) },
     tieRod: { inner: p('trInner'), outer: p('trOuter') },
     wheel: {
       center: vec3(hub.x - et * spinAxis.x, hub.y - et * spinAxis.y, hub.z - et * spinAxis.z),
@@ -214,8 +224,63 @@ export function toGeometry(e: EditableGeometry): DoubleWishboneGeometry {
       radius: s.tireDiameter.value / 2,
       width: mountedTireWidth(s),
     },
-    damper: { chassis: p('dmpChassis'), arm: e.damperArm, armPoint: p('dmpArm') },
+    // MacPherson: the damper is the strut (its lower point is on the upright); multilink: on the upright.
+    damper: { chassis: p('dmpChassis'), arm: kind === 'doubleWishbone' ? e.damperArm : 'upright', armPoint: p('dmpArm') },
   };
+}
+
+/** Hardpoints a suspension type uses, in table order. */
+export function activePointKeys(kind: SuspensionKind): PointKey[] {
+  if (kind === 'macpherson') return ['lcaFwd', 'lcaAft', 'lcaOut', 'dmpChassis', 'dmpArm', 'trInner', 'trOuter', 'wheelCenter'];
+  if (kind === 'multilink') return ['ucaFwd', 'ucaOut', 'ucaAft', 'ucaOut2', 'lcaFwd', 'lcaOut', 'lcaAft', 'lcaOut2', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm'];
+  return ['ucaFwd', 'ucaAft', 'ucaOut', 'lcaFwd', 'lcaAft', 'lcaOut', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm'];
+}
+
+/**
+ * The same corner as another suspension type, keeping what carries over: the lower arm, tie rod, hub and
+ * tire always; a MacPherson strut is placed from the upright (lower point inboard of the tire, top mount
+ * above the upper ball joint); a multilink starts as the double wishbone with each link's upright end slid
+ * 35 mm inboard along the link (same virtual pivots: the same motion at ride height, close through travel); back to a double wishbone the links rejoin and a strut becomes a coilover on the lower arm.
+ */
+export function convertGeometry(e: EditableGeometry, kind: SuspensionKind): EditableGeometry {
+  const from = e.kind ?? 'doubleWishbone';
+  if (from === kind) return e;
+  const p = (k: PointKey) => vec3(e.points[k][0].value, e.points[k][1].value, e.points[k][2].value);
+  const pts = { ...e.points };
+  const put = (k: PointKey, v: Vec3) => { pts[k] = fields(v); };
+  const ubj = p('ucaOut'), lbj = p('lcaOut'), hub = p('wheelCenter');
+  if (kind === 'macpherson') {
+    const w = mountedTireWidth(e.scalars);
+    const lowerX = Math.min(ubj.x, hub.x - (Number.isFinite(w) ? w : 200) / 2 - 25);
+    put('dmpArm', vec3(lowerX, (lbj.y + ubj.y) / 2 + 60, (lbj.z + ubj.z) / 2));
+    put('dmpChassis', vec3(ubj.x - 60, ubj.y + 330, ubj.z - 20));
+  } else if (kind === 'multilink') {
+    // Each link's upright end slides 35 mm inboard along its own line: both links of a pair still pass
+    // through the old ball joint (their virtual pivot), so the motion starts out the same.
+    const along = (bj: Vec3, piv: Vec3) => {
+      const d = vec3(bj.x - piv.x, bj.y - piv.y, bj.z - piv.z);
+      const t = Math.min(0.4, 35 / Math.max(Math.hypot(d.x, d.y, d.z), 1e-9));
+      return vec3(bj.x - t * d.x, bj.y - t * d.y, bj.z - t * d.z);
+    };
+    const a = p('ucaOut'), b = p('lcaOut');
+    put('ucaOut', along(a, p('ucaFwd'))); put('ucaOut2', along(a, p('ucaAft')));
+    put('lcaOut', along(b, p('lcaFwd'))); put('lcaOut2', along(b, p('lcaAft')));
+    if (from === 'macpherson') { put('dmpArm', vec3(lbj.x - 70, lbj.y + 25, lbj.z)); put('dmpChassis', vec3(lbj.x - 250, lbj.y + 350, lbj.z)); }
+  } else {
+    if (from === 'multilink') {
+      // The links rejoin at their virtual pivot (where each pair passes closest).
+      put('ucaOut', virtualPivot(p('ucaFwd'), p('ucaOut'), p('ucaAft'), p('ucaOut2')));
+      put('lcaOut', virtualPivot(p('lcaFwd'), p('lcaOut'), p('lcaAft'), p('lcaOut2')));
+    }
+    if (from === 'macpherson' || from === 'multilink') {
+      // A coilover on the lower arm, 80 % of the way out, its top inboard and up.
+      const fwd = p('lcaFwd'), aft = p('lcaAft'), out = p('lcaOut');
+      const piv = vec3((fwd.x + aft.x) / 2, (fwd.y + aft.y) / 2, (fwd.z + aft.z) / 2);
+      const arm = vec3(piv.x + 0.8 * (out.x - piv.x), piv.y + 0.8 * (out.y - piv.y) + 5, piv.z + 0.8 * (out.z - piv.z) + 30);
+      put('dmpArm', arm); put('dmpChassis', vec3(arm.x - 180, arm.y + 335, arm.z));
+    }
+  }
+  return { ...e, kind, points: pts, damperArm: kind === 'doubleWishbone' ? e.damperArm : 'lca' };
 }
 
 export function toProfile(e: EditableGeometry): TireProfile {
@@ -408,6 +473,8 @@ export interface AppState extends DesignState {
   addMeasureAnchor(a: AnchorId, at?: Vec3): void;
   setSpringField(key: SpringKey, text: string): void;
   setDamperArm(arm: ArmChoice): void;
+  /** Change the active design's suspension type (convertGeometry). */
+  setSuspensionKind(kind: SuspensionKind): void;
   /** Set the free length so the static corner load sits at the design position (travel 0). */
   fitSpring(): void;
   setTireField(key: TireKey, text: string): void;
@@ -882,7 +949,7 @@ const params = typeof window !== 'undefined' ? new URLSearchParams(window.locati
 const num = (k: string, d: number) => (params.has(k) && Number.isFinite(Number(params.get(k))) ? Number(params.get(k)) : d);
 const VIEW_NAMES: ViewName[] = ['front', 'rear', 'outboard', 'inboard', 'top', 'bottom', 'iso'];
 const initialView = (VIEW_NAMES as string[]).includes(params.get('view') ?? '') ? (params.get('view') as ViewName) : 'iso';
-const initialPreset = SAMPLE_LAYOUTS.some((l) => l.id === params.get('preset')) ? params.get('preset')! : 'C';
+const initialPreset = PRESET_LAYOUTS.some((l) => l.id === params.get('preset')) ? params.get('preset')! : 'C';
 
 const initialDesign = defaultDesign(initialPreset);
 
@@ -1273,6 +1340,17 @@ export const useApp = create<AppState>((set, get) => ({
       points: { ...geom.points, dmpArm: fields(moved), dmpChassis: fields(chassisMount) },
     };
     set({ geom: next, presetId: 'custom', spring: fittedSpring(next, get().spring) });
+  },
+  setSuspensionKind: (kind) => {
+    const geom = get().geom;
+    if ((geom.kind ?? 'doubleWishbone') === kind) return;
+    const next = convertGeometry(geom, kind);
+    try { new DoubleWishbone(toGeometry(next)).design(); } catch (err) {
+      get().notify(`Can't switch to ${SUSPENSION_LABELS[kind]}: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      return;
+    }
+    set({ geom: next, presetId: 'custom', spring: fittedSpring(next, get().spring), selection: null });
+    get().notify(`${SUSPENSION_LABELS[kind]}: ${kind === 'macpherson' ? 'a strut was placed from the upright (top mount above the upper ball joint); adjust its points.' : kind === 'multilink' ? `each link now ends at its own point on the upright (moved 35 mm along the link: the same motion at ride height, nearly the same through travel); move them to shape the motion.${geom.kind === 'doubleWishbone' || !geom.kind ? ' The coilover now mounts on the upright (a multilink has no arm body), so check its motion ratio.' : ''}` : 'the links rejoin at one ball joint per arm.'}`, 'info');
   },
   fitSpring: () => {
     const s = get();

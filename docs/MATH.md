@@ -66,6 +66,19 @@ Upright pose = 6 DOF, minus 5 constraints = **1 DOF = suspension travel**. Rack 
 - **Steering jacking is not a separate formula.** Moving the rack rotates the upright about the UBJ–LBJ line (the steering axis), and the constraint solve produces the resulting height change of the tire directly. Rodrigues' rotation is used inside the solve. Finding the lowest tire point relative to the ground is a short formula once the wheel pose is known.
 - **Toggle detection:** report when any two connected links approach a straight line (transmission angle near 0° or 180°) within the travel range.
 
+### Other suspension types ✅ (`src/core/suspension/doubleWishbone.ts`, decided 2026-11-22)
+Every type is the same kind of relation system on the same point names; `kind` picks the relations.
+
+| Type | Moving bodies | Relations | Steering axis |
+|---|---|---|---|
+| Double wishbone | UCA, LCA, upright | two revolutes (5 + 5), two ball joints (3 + 3), tie rod 1, travel 1 = 18 | UBJ – LBJ |
+| MacPherson strut | LCA, upright (with the strut tube) | revolute 5, ball joint 3, **strut axis through the top mount** 2 (the top mount is a point on the chassis that must stay on the line through the strut's two upright-fixed points; the strut slides and turns on it), tie rod 1, travel 1 = 12 | LBJ – strut top mount |
+| Multilink (5 links) | upright | five rods with ball ends, each a fixed length between a chassis point and an upright point (upper front / rear, lower front / rear, tie rod or toe link) 5, travel 1 = 6 | virtual: through the points where each pair of links passes closest |
+
+- **MacPherson:** the strut is the spring / damper: `Dmp_Chs` = top mount, `Dmp_Arm` = a point on the strut axis fixed to the upright (the upper arm's points are unused). Motion ratio ≈ 1 (the strut shortens about as much as the wheel rises).
+- **Multilink:** the arm pivots become the links' chassis ends, `UCA_Out` / `LCA_Out` the front links' upright ends and `UCA_Out2` / `LCA_Out2` the rear links'. A double wishbone is the special case where each pair meets at one ball joint, and the solver reproduces it exactly. A coilover mounts on the upright (there is no arm body; an anti-roll-bar drop link "on the lower arm" goes on the upright too).
+- **Switching type** keeps the lower arm, tie rod, hub and tire. To MacPherson: the strut's lower point goes inboard of the tire, between the ball joints; the top mount goes 330 mm above the upper ball joint and 60 mm inboard. To multilink: each link's upright end slides 35 mm inboard along its own line, so each pair still passes through the old ball joint. That gives the same virtual pivots and instant axis, so the motion is the same at ride height and within a few hundredths of a degree through travel. Back to a double wishbone: the links rejoin at their virtual pivot; a strut becomes a coilover on the lower arm.
+
 ---
 
 ## L2: Characteristics
@@ -92,6 +105,7 @@ Definitions follow the normal SAE J670 / ISO 8855 terms. Signs use the GOALS.md 
 
 **Instant center / instant axis:**
 - Each A-arm defines a plane (its pivot axis + its ball joint). The two planes intersect in the **instant axis**.
+- **Other types** use two planes that the upright's motion is confined to in the same way. **MacPherson:** the lower-arm plane, and the plane through the strut top mount normal to the strut (the strut slides along itself there). **Multilink:** the planes through the two virtual steering pivots normal to their velocities. The velocities come from the upright's twist (ω, v) that keeps all five link lengths (d_i · (v + ω × q_i) = 0, five equations in six unknowns; the null vector by cofactors). Points on the steering axis aren't moved by steering, and for joined link ends these planes are exactly the arm planes. The full screw axis (with the tie rod's small turn about the steering axis) is also available.
 - **Front-view IC** = where the instant axis passes through the transverse vertical plane at the contact center. **FVSA** = distance from the IC to the contact center. Camber gain ≈ 1 / FVSA (rad per mm of travel).
 - **Side-view IC** = where the instant axis passes through the longitudinal vertical plane at the wheel center. **SVSA** is defined the same way.
 - **Roll center:** the line from the contact center to the front-view IC, intersected with the opposite corner's line. A single corner uses a **mirrored** opposite side until multi-corner support arrives.

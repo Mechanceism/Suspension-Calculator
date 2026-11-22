@@ -9,13 +9,14 @@ import { create } from 'zustand';
 import { parseValue, type Quantity } from '../../core/units/units';
 import { parseTireSize } from '../../core/tire/size';
 import { tireRate } from '../../core/tire/model';
-import { DoubleWishbone } from '../../core/suspension/doubleWishbone';
+import { DoubleWishbone, SUSPENSION_KINDS, SUSPENSION_LABELS, type SuspensionKind } from '../../core/suspension/doubleWishbone';
 import { springLength, dampingForRatio } from '../../core/suspension/spring';
 import { cgFromScales, springFromWeight, unsprungFromParts, estimateInertia, G, type CornerKg, type UnsprungParts } from '../../core/setup/measure';
 import { rackForWheelAngle } from '../../core/tests/steer';
 import {
   useApp, mergedCorners, rootOf, toGeometry, toProfile, toForceModel, vehicleStaticLoads, mountedTireWidth, measuringRim, SETUP_STEPS, SETUP_LABELS,
   type SetupStep, type CornerDesign, type TireAxle, type Field,
+  convertGeometry,
 } from '../store';
 import { importTireFile } from '../tireActions';
 import { switchWorkspace } from '../viewport/SafeHtml';
@@ -69,22 +70,36 @@ type StepView = (p: StepProps) => ReactNode;
 const TypeStep: StepView = ({ apply }) => {
   const links = useApp((s) => s.links);
   const setLink = useApp((s) => s.setLink);
+  useApp((s) => s.corners); useApp((s) => s.geom); // re-render when a type changes
+  const kindOf = (axle: 'front' | 'rear') => designOf(axle).geom.kind ?? 'doubleWishbone';
+  const setKind = (axle: 'front' | 'rear', kind: SuspensionKind) => {
+    try {
+      useApp.getState().updateDesigns(links.rearFromFront ? 'both' : axle, (d) => {
+        const geom = convertGeometry(d.geom, kind);
+        new DoubleWishbone(toGeometry(geom)).design();
+        return { ...d, geom };
+      });
+    } catch (err) { useApp.getState().notify(`Can't switch: ${err instanceof Error ? err.message : String(err)}`, 'error'); }
+  };
+  const sel = (axle: 'front' | 'rear') => (
+    <select value={kindOf(axle)} onChange={(e) => setKind(axle, e.target.value as SuspensionKind)} disabled={axle === 'rear' && links.rearFromFront}>
+      {SUSPENSION_KINDS.map((k) => <option key={k} value={k}>{SUSPENSION_LABELS[k]}</option>)}
+    </select>
+  );
   return (
     <>
-      <p>Each corner&apos;s suspension type. Double wishbone (short / long arm) is available now; MacPherson strut and multilink come later.</p>
+      <p>
+        Each axle&apos;s suspension type. Switching keeps the lower arm, tie rod, hub and tire and places the new parts from them
+        (a MacPherson strut from the upright up to a top mount; a multilink starts as the wishbones with each link ending at its own point, moving (nearly) the same until you change them);
+        you enter the real points on the points page.
+      </p>
       <table className="opt-table">
         <tbody>
-          {(['FL', 'FR', 'RL', 'RR'] as const).map((id) => (
-            <Row key={id} label={id}>
-              <select value="dw" disabled={false} onChange={() => {}}>
-                <option value="dw">Double wishbone</option>
-                <option value="mac" disabled>MacPherson strut (planned)</option>
-                <option value="ml" disabled>Multilink (planned)</option>
-              </select>
-            </Row>
-          ))}
+          <Row label="Front">{sel('front')}</Row>
+          <Row label="Rear" hint={links.rearFromFront ? 'The rear uses the same dimensions as the front (untick below for its own type)' : undefined}>{sel('rear')}</Row>
         </tbody>
       </table>
+      <p className="hint">Left and right of an axle share a type while they are mirror images; unlink them to give one corner its own (Hardpoints → Type).</p>
       <label className="check-row"><input type="checkbox" checked={links.frontPair && links.rearPair} onChange={(e) => { setLink('frontPair', e.target.checked); setLink('rearPair', e.target.checked); }} /> Left and right are mirror images</label>
       <label className="check-row"><input type="checkbox" checked={links.rearFromFront} onChange={(e) => setLink('rearFromFront', e.target.checked)} /> The rear uses the same dimensions as the front</label>
       <div className="jm-row"><button className="wide-btn primary" onClick={() => apply(() => {})}>That&apos;s my car: next</button></div>

@@ -149,3 +149,49 @@ describe('mixed suspension types on one car', () => {
     expect(r.findings.flat().filter((f) => f.check === 'noSolution')).toEqual([]);
   });
 });
+
+describe('switching a design\'s suspension type (app)', () => {
+  it('double wishbone → multilink keeps the motion; back again restores the ball joints; → MacPherson solves', async () => {
+    const { editableFromLayout, convertGeometry, toGeometry, activePointKeys } = await import('../src/app/store');
+    const dw = editableFromLayout('C');
+    const ch = (e: typeof dw, travel = 0) => characteristics(new DoubleWishbone(toGeometry(e)).solve({ travel }));
+    const ml = convertGeometry(dw, 'multilink');
+    expect(ml.kind).toBe('multilink');
+    // The same at ride height (same virtual pivots and instant axis); close through travel (separate link
+    // ends are a ball joint only instantaneously).
+    const a = ch(dw), b = ch(ml);
+    expect(Math.abs(ch(ml, 30).camber - ch(dw, 30).camber) * 180 / Math.PI).toBeLessThan(0.05);
+    expect(b.kpi).toBeCloseTo(a.kpi, 5);
+    expect(b.scrubRadius).toBeCloseTo(a.scrubRadius, 3);
+    expect(b.rollCenterHeight!).toBeCloseTo(a.rollCenterHeight!, 3);
+    const back = convertGeometry(ml, 'doubleWishbone');
+    for (const k of ['ucaOut', 'lcaOut'] as const) for (const i of [0, 1, 2]) expect(back.points[k][i]!.value).toBeCloseTo(dw.points[k][i]!.value, 6);
+    const mp = convertGeometry(dw, 'macpherson');
+    const s = new DoubleWishbone(toGeometry(mp)).sweep([-40, 0, 40], (t) => ({ travel: t }));
+    expect(s.every((x) => x.solve.status === 'converged')).toBe(true);
+    expect(activePointKeys('macpherson')).not.toContain('ucaOut');
+    expect(activePointKeys('multilink')).toContain('lcaOut2');
+    // The MacPherson strut clears the tire: its lower point is inboard of the tire's inner face.
+    const g = toGeometry(mp);
+    expect(g.damper!.armPoint.x).toBeLessThan(g.wheel.center.x - g.wheel.width! / 2);
+  });
+
+  it('project files keep the type and the multilink points; older files load as double wishbones', async () => {
+    const { defaultDesign, convertGeometry } = await import('../src/app/store');
+    const { serializeProject, importProject } = await import('../src/app/project');
+    const d = defaultDesign();
+    const ml = { ...d, geom: convertGeometry(d.geom, 'multilink') };
+    const back = importProject(JSON.parse(JSON.stringify(serializeProject(ml as never, 'ML'))));
+    expect(back.design.geom.kind).toBe('multilink');
+    expect(back.design.geom.points.ucaOut2[2].value).toBeCloseTo(ml.geom.points.ucaOut2[2].value, 6);
+    const old = JSON.parse(JSON.stringify(serializeProject(d as never, 'Old')));
+    old.formatVersion = 17;
+    for (const c of Object.values(old.corners) as { type: string; points: Record<string, unknown> }[]) {
+      c.type = 'doubleWishbone';
+      for (const k of Object.keys(c.points)) if (/Out2$/.test(k)) delete c.points[k];
+    }
+    const r = importProject(old);
+    expect(r.design.geom.kind).toBe('doubleWishbone');
+    expect(r.warnings.filter((w) => /Out2/.test(w))).toEqual([]);
+  });
+});

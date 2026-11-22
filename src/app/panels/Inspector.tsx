@@ -5,7 +5,16 @@
 import { useApp, POINT_NAMES, activeParam, SPRING_META, vehicleStaticLoads, mergedCorners, rootOf, type ComponentId, type PointKey } from '../store';
 import { lockKeys, pointAxisLocked } from '../locks';
 import { toGeometry } from '../store';
-import { componentDefs, family, ownersOf, POINT_LABELS } from '../components';
+import { componentDefs, family, ownersOf, pointLabel } from '../components';
+import { SUSPENSION_KINDS, SUSPENSION_LABELS, type SuspensionKind } from '../../core/suspension/doubleWishbone';
+
+/** Components of the active design's suspension type. */
+function useDefs() {
+  const arm = useApp((s) => s.geom.damperArm);
+  const kind = useApp((s) => s.geom.kind);
+  return componentDefs(arm, kind);
+}
+const labelOf = (k: PointKey) => pointLabel(k, useApp.getState().geom.kind);
 import { armMetrics } from '../../core/suspension/armGeometry';
 import { deg } from '../../core/suspension/characteristics';
 import { distance } from '../../core/math/vec3';
@@ -34,7 +43,7 @@ function Chip({ id, label }: { id: ComponentId; label: string }) {
 }
 
 function Family({ first, second }: { first: ComponentId[]; second: ComponentId[] }) {
-  const defs = componentDefs(useApp((s) => s.geom.damperArm));
+  const defs = useDefs();
   return (
     <div className="family">
       <div className="family-row"><span className="muted">Connected</span>{first.map((c) => <Chip key={c} id={c} label={defs[c].label} />)}</div>
@@ -59,12 +68,12 @@ function PointsTable({ points }: { points: PointKey[] }) {
           <tr key={k}>
             <td>
               <button className="link-btn" title={`${activeParam(POINT_NAMES[k])} — select the joint`} onClick={() => select({ kind: 'point', id: k })}>
-                {POINT_LABELS[k]}
+                {labelOf(k)}
               </button>
             </td>
             {([0, 1, 2] as const).map((i) => (
               <td key={i} data-lock-key={lockKeys.point(root, k, i)}>
-                <ValueInput field={geom.points[k][i]} unit="mm" onCommit={(t) => setPoint(k, i, t)} locked={pointAxisLocked(locks, root, k, i, geom.damperArm)} />
+                <ValueInput field={geom.points[k][i]} unit="mm" onCommit={(t) => setPoint(k, i, t)} locked={pointAxisLocked(locks, root, k, i, geom.damperArm, geom.kind)} />
               </td>
             ))}
             <td><LockButton keys={([0, 1, 2] as const).map((i) => lockKeys.point(root, k, i))} title="Lock / unlock X, Y and Z of this point" /></td>
@@ -108,7 +117,7 @@ function UprightSection({ model }: { model: Model }) {
   const p = model.current?.state.points;
   return (
     <FieldRows rows={[
-      { label: 'Ball-joint spacing', value: fmt(p ? distance(p.ucaOut, p.lcaOut) : NaN, 1), unit: 'mm' },
+      { label: 'Steering-axis point spacing', value: fmt(p ? distance(p.steerUpper, p.steerLower) : NaN, 1), unit: 'mm', hint: 'Ball joints; MacPherson: lower ball joint to strut top; multilink: the virtual pivots (where each pair of links passes closest)' },
       { label: 'KPI', value: fmt(c ? deg(c.kpi) : NaN, 2), unit: '°' },
       { label: 'Caster', value: fmt(c ? deg(c.caster) : NaN, 2), unit: '°' },
       { label: 'Scrub radius', value: fmt(c?.scrubRadius, 1), unit: 'mm' },
@@ -194,12 +203,12 @@ function SpringResults({ model }: { model: Model }) {
 }
 
 function ComponentInspector({ id, model }: { id: ComponentId; model: Model }) {
-  const damperArm = useApp((s) => s.geom.damperArm);
+  const kind = useApp((s) => s.geom.kind);
   const focusOn = useApp((s) => s.focusOn);
   const startMeasure = useApp((s) => s.startMeasure);
   const root = useApp((s) => rootOf(s.activeCorner, s.links));
 
-  const defs = componentDefs(damperArm);
+  const defs = useDefs();
   const def = defs[id];
   const fam = family(id, defs);
   return (
@@ -214,7 +223,7 @@ function ComponentInspector({ id, model }: { id: ComponentId; model: Model }) {
         <button className="icon-btn" title="Focus camera" onClick={() => focusOn(id)}>◎ Focus</button>
       </div>
       <Family {...fam} />
-      {(id === 'uca' || id === 'lca') && <Section title="Dimensions"><ArmSection arm={id} model={model} /></Section>}
+      {(id === 'uca' || id === 'lca') && (kind === 'doubleWishbone' || (kind === 'macpherson' && id === 'lca')) && <Section title="Dimensions"><ArmSection arm={id} model={model} /></Section>}
       {id === 'chassis' && <Section title="Corner load & travel"><ChassisSection /></Section>}
       {id === 'upright' && <Section title="Steering axis"><UprightSection model={model} /></Section>}
       {id === 'tieRod' && <Section title="Tie rod"><TieRodSection model={model} /></Section>}
@@ -250,7 +259,7 @@ function ComponentInspector({ id, model }: { id: ComponentId; model: Model }) {
 }
 
 function PointInspector({ id }: { id: PointKey }) {
-  const defs = componentDefs(useApp((s) => s.geom.damperArm));
+  const defs = useDefs();
   const root = useApp((s) => rootOf(s.activeCorner, s.links));
 
   const owners = ownersOf(id, defs);
@@ -260,7 +269,7 @@ function PointInspector({ id }: { id: PointKey }) {
       <div className="insp-head">
         <span className="swatch big" style={{ background: '#ffffff' }} />
         <div>
-          <b>{POINT_LABELS[id]}</b>
+          <b>{labelOf(id)}</b>
           <div className="mono muted">{activeParam(POINT_NAMES[id])}</div>
         </div>
         <LockButton keys={([0, 1, 2] as const).map((i) => lockKeys.point(root, id, i))} title="Lock / unlock X, Y and Z of this point" />
@@ -274,13 +283,29 @@ function PointInspector({ id }: { id: PointKey }) {
   );
 }
 
+/** Suspension type of the active corner (and the corners linked to it). */
+export function SuspensionTypeRow() {
+  const kind = useApp((s) => s.geom.kind ?? 'doubleWishbone');
+  const setKind = useApp((s) => s.setSuspensionKind);
+  const active = useApp((s) => s.activeCorner);
+  return (
+    <div className="row" title="Switching keeps the lower arm, tie rod, hub and tire and places the new parts from them (Undo restores).">
+      <span className="muted">{active} type</span>
+      <select value={kind} onChange={(e) => setKind(e.target.value as SuspensionKind)}>
+        {SUSPENSION_KINDS.map((k) => <option key={k} value={k}>{SUSPENSION_LABELS[k]}</option>)}
+      </select>
+    </div>
+  );
+}
+
 export function Inspector({ model }: { model: Model }) {
   const selection = useApp((s) => s.selection);
   const select = useApp((s) => s.select);
-  const defs = componentDefs(useApp((s) => s.geom.damperArm));
+  const defs = useDefs();
   if (!selection) {
     return (
       <div className="inspector empty">
+        <SuspensionTypeRow />
         <p><b>Click a part or a joint</b> in the viewport to edit it here.</p>
         <ul className="hint-list">
           <li>Parts show their dimensions, settings and connected parts.</li>
@@ -289,7 +314,7 @@ export function Inspector({ model }: { model: Model }) {
           <li><b>📏 Measure</b> (or <kbd>M</kbd>) measures between any two points. <kbd>Esc</kbd> closes.</li>
         </ul>
         <div className="family-row wrap">
-          {(Object.keys(defs) as ComponentId[]).map((c) => <Chip key={c} id={c} label={defs[c].label} />)}
+          {(Object.keys(defs) as ComponentId[]).filter((c) => !defs[c].absent).map((c) => <Chip key={c} id={c} label={defs[c].label} />)}
         </div>
         <button className="link-btn" onClick={() => select({ kind: 'component', id: 'chassis' })}>Corner load & travel →</button>
       </div>
@@ -313,7 +338,7 @@ function PointsInspector({ ids }: { ids: PointKey[] }) {
       <div className="family-row wrap">
         {ids.map((k) => (
           <span key={k} className="family-chip">
-            <button className="link-btn" onClick={() => select({ kind: 'point', id: k })} title={activeParam(POINT_NAMES[k])}>{POINT_LABELS[k]}</button>
+            <button className="link-btn" onClick={() => select({ kind: 'point', id: k })} title={activeParam(POINT_NAMES[k])}>{labelOf(k)}</button>
             <button className="icon-btn tiny" onClick={() => toggle([k])} title="Remove from selection">✕</button>
           </span>
         ))}

@@ -12,6 +12,7 @@ export function SpringFields({ keys = SPRING_KEYS }: { keys?: readonly SpringKey
   const spring = useApp((s) => s.spring);
   const setSpringField = useApp((s) => s.setSpringField);
   const damperArm = useApp((s) => s.geom.damperArm);
+  const kind = useApp((s) => s.geom.kind);
   const setDamperArm = useApp((s) => s.setDamperArm);
   const fitSpring = useApp((s) => s.fitSpring);
   const root = useApp((s) => rootOf(s.activeCorner, s.links));
@@ -20,16 +21,18 @@ export function SpringFields({ keys = SPRING_KEYS }: { keys?: readonly SpringKey
       <div className="row">
         <span className="muted">Layout</span>
         <select value="coilover" disabled title="Pushrod / rocker layouts are planned">
-          <option value="coilover">Coilover, arm → chassis</option>
+          <option value="coilover">{kind === 'macpherson' ? 'Strut (upright → top mount)' : kind === 'multilink' ? 'Coilover, upright → chassis' : 'Coilover, arm → chassis'}</option>
         </select>
       </div>
-      <div className="row">
-        <span className="muted">Lower mount on</span>
-        <select value={damperArm} onChange={(e) => setDamperArm(e.target.value as ArmChoice)}>
-          <option value="lca">Lower control arm</option>
-          <option value="uca">Upper control arm</option>
-        </select>
-      </div>
+      {kind === 'doubleWishbone' && (
+        <div className="row">
+          <span className="muted">Lower mount on</span>
+          <select value={damperArm} onChange={(e) => setDamperArm(e.target.value as ArmChoice)}>
+            <option value="lca">Lower control arm</option>
+            <option value="uca">Upper control arm</option>
+          </select>
+        </div>
+      )}
       <FieldRows rows={keys.map((k) => ({
         label: SPRING_META[k].label, field: spring[k], unit: SPRING_META[k].unit, onCommit: (t: string) => setSpringField(k, t),
         lockKey: lockKeys.field(root, 'spring', k),

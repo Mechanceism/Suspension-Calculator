@@ -94,7 +94,7 @@ export function MeasurePanel({ cur }: { cur: Current | null }) {
   const heldTravel: number | null = mode === 'permanent' ? null : useTravel ? t : 0;
   const findHeld = (m: DimMeasure) => (bothPoints ? dims.find((d) => d.root === root && d.measure === m
     && ((d.a === ia && d.b === ib) || (d.a === ib && d.b === ia))) : undefined);
-  const permanentFor = (m: DimMeasure) => (bothPoints ? permanentAllowed(ia as PointKey, ib as PointKey, m, geom.damperArm) : { ok: false, why: 'Needs two joints' });
+  const permanentFor = (m: DimMeasure) => (bothPoints ? permanentAllowed(ia as PointKey, ib as PointKey, m, geom.damperArm, geom.kind) : { ok: false, why: 'Needs two joints' });
 
   const close = () => toggleMeasure();
 
@@ -102,7 +102,7 @@ export function MeasurePanel({ cur }: { cur: Current | null }) {
   const setValue = (m: DimMeasure, v: number) => {
     if (!movingId || !isPoint(movingId) || !a || !b) return;
     const k = movingId;
-    const lockedAxis = ([0, 1, 2] as const).filter((ax) => pointAxisLocked(locks, root, k, ax, geom.damperArm));
+    const lockedAxis = ([0, 1, 2] as const).filter((ax) => pointAxisLocked(locks, root, k, ax, geom.damperArm, geom.kind));
     const others = dims.filter((d) => d.root === root);
     const sharesPoint = others.some((d) => d.a === k || d.b === k);
     if (!useTravel && !sharesPoint) {

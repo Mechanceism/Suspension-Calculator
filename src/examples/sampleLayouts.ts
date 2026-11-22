@@ -91,3 +91,10 @@ export const SAMPLE_MULTILINK: DoubleWishboneGeometry = {
   wheel: { center: WHEEL_CENTER, spinAxis: vec3(1, 0, 0), radius: WHEEL_RADIUS, width: 205 },
   damper: { chassis: vec3(300, 380, 30), arm: 'upright', armPoint: vec3(500, 60, 0) },
 };
+
+/** Every preset the app offers: the double wishbone samples, then one of each other type. */
+export const PRESET_LAYOUTS: Layout[] = [
+  ...SAMPLE_LAYOUTS,
+  { id: 'M', label: 'MacPherson strut', geometry: SAMPLE_MACPHERSON },
+  { id: 'L', label: 'Multilink (5 links)', geometry: SAMPLE_MULTILINK },
+];

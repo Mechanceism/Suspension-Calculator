@@ -7,9 +7,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { vec3, sub, length, normalize, type Vec3 } from '../../core/math/vec3';
 import { parseValue, UNITS } from '../../core/units/units';
 import { alongLine } from '../../core/math/dimension';
-import { useApp, rootOf, POINT_KEYS, type PointKey, type EditableGeometry } from '../store';
+import { useApp, rootOf, POINT_KEYS, activePointKeys, type PointKey, type EditableGeometry } from '../store';
 import { lockKeys, pointAxisLocked } from '../locks';
-import { componentDefs, POINT_LABELS } from '../components';
+import { componentDefs, pointLabel } from '../components';
+import type { SuspensionKind } from '../../core/suspension/doubleWishbone';
 import { useConversion, toDisplay, type Conversion } from '../units';
 import { ValueInput, LockButton } from './ValueInput';
 import { derivedField } from './FieldRows';
@@ -105,7 +106,8 @@ export function GroupMove({ ids }: { ids: PointKey[] }) {
   const locks = useApp((s) => s.locks);
   const root = useApp((s) => rootOf(s.activeCorner, s.links));
   const damperArm = useApp((s) => s.geom.damperArm);
-  const axisLocked = (i: number) => ids.some((k) => pointAxisLocked(locks, root, k, i as 0 | 1 | 2, damperArm));
+  const kind = useApp((s) => s.geom.kind);
+  const axisLocked = (i: number) => ids.some((k) => pointAxisLocked(locks, root, k, i as 0 | 1 | 2, damperArm, kind));
   const step = useApp((s) => s.nudgeStep);
   const conv = useConversion('mm');
   return (
@@ -135,9 +137,9 @@ const PREFERRED: Partial<Record<PointKey, PointKey[]>> = {
 };
 
 /** Joints this point is connected to (shares a part with), for "move along the line toward…". */
-function neighbors(id: PointKey, damperArm: 'lca' | 'uca'): PointKey[] {
+function neighbors(id: PointKey, damperArm: 'lca' | 'uca', kind: SuspensionKind): PointKey[] {
   const out = new Set<PointKey>(PREFERRED[id] ?? []);
-  for (const d of Object.values(componentDefs(damperArm))) if (d.points.includes(id)) for (const p of d.points) if (p !== id) out.add(p);
+  for (const d of Object.values(componentDefs(damperArm, kind))) if (d.points.includes(id)) for (const p of d.points) if (p !== id) out.add(p);
   return [...out];
 }
 
@@ -152,7 +154,7 @@ function AlongLine({ id }: { id: PointKey }) {
   const notify = useApp((s) => s.notify);
   const step = useApp((s) => s.nudgeStep);
   const conv = useConversion('mm');
-  const near = useMemo(() => neighbors(id, geom.damperArm), [id, geom.damperArm]);
+  const near = useMemo(() => neighbors(id, geom.damperArm, geom.kind), [id, geom.damperArm, geom.kind]);
   const toward = lineMove?.id === id ? lineMove.toward : near[0] ?? POINT_KEYS.find((k) => k !== id)!;
   // Keep the store in sync so the viewport shows the extra arrow for this line.
   useEffect(() => {
@@ -165,23 +167,23 @@ function AlongLine({ id }: { id: PointKey }) {
   const dist = length(sub(q, p));
   const dir = dist > 1e-9 ? normalize(sub(q, p)) : vec3(0, 0, 0);
   const changedAxes = ([0, 1, 2] as const).filter((a) => Math.abs([dir.x, dir.y, dir.z][a]!) > 1e-9);
-  const lockedAxes = changedAxes.filter((a) => pointAxisLocked(locks, root, id, a, geom.damperArm));
+  const lockedAxes = changedAxes.filter((a) => pointAxisLocked(locks, root, id, a, geom.damperArm, geom.kind));
   const blocked = lockedAxes.length > 0;
 
   const moveBy = (amount: number) => {
-    if (blocked) { notify(`${POINT_LABELS[id]} ${lockedAxes.map((a) => AXES[a]).join('/')} is locked.`, 'warn'); return; }
+    if (blocked) { notify(`${pointLabel(id, geom.kind)} ${lockedAxes.map((a) => AXES[a]).join('/')} is locked.`, 'warn'); return; }
     const n = alongLine(p, q, amount);
     if (!n) return;
     setPointsAxis(changedAxes.map((a) => ({ key: id, axis: a, value: Number([n.x, n.y, n.z][a]!.toFixed(4)) })));
   };
-  const options = [...near, ...POINT_KEYS.filter((k) => k !== id && !near.includes(k))];
+  const options = [...near, ...activePointKeys(geom.kind).filter((k) => k !== id && !near.includes(k))];
 
   return (
     <div className="along-line">
       <div className="jm-row">
         <span className="muted">Along the line toward</span>
         <select value={toward} onChange={(e) => set('lineMove', { id, toward: e.target.value as PointKey })}>
-          {options.map((k) => <option key={k} value={k}>{near.includes(k) ? '' : '· '}{POINT_LABELS[k]}</option>)}
+          {options.map((k) => <option key={k} value={k}>{near.includes(k) ? '' : '· '}{pointLabel(k, geom.kind)}</option>)}
         </select>
       </div>
       <table className="jm-table">
@@ -202,7 +204,7 @@ function AlongLine({ id }: { id: PointKey }) {
         </tbody>
       </table>
       <p className="hint">
-        Slides this joint on its current line to {POINT_LABELS[toward]} (+ = toward), keeping the direction: no need to work out X, Y and Z.
+        Slides this joint on its current line to {pointLabel(toward, geom.kind)} (+ = toward), keeping the direction: no need to work out X, Y and Z.
         Or drag the yellow arrow in the viewport.{blocked && ` Locked: ${lockedAxes.map((a) => AXES[a]).join(', ')}.`}
       </p>
     </div>
@@ -214,6 +216,7 @@ export function PointEditor({ id }: { id: PointKey }) {
   const locks = useApp((s) => s.locks);
   const root = useApp((s) => rootOf(s.activeCorner, s.links));
   const damperArm = useApp((s) => s.geom.damperArm);
+  const kind = useApp((s) => s.geom.kind);
   const setPoint = useApp((s) => s.setPoint);
   const movePoint = useApp((s) => s.movePoint);
   const startMeasure = useApp((s) => s.startMeasure);
@@ -224,7 +227,7 @@ export function PointEditor({ id }: { id: PointKey }) {
       <table className="jm-table">
         <tbody>
           {AXES.map((ax, i) => {
-            const locked = pointAxisLocked(locks, root, id, i as 0 | 1 | 2, damperArm);
+            const locked = pointAxisLocked(locks, root, id, i as 0 | 1 | 2, damperArm, kind);
             return (
               <tr key={ax} data-lock-key={lockKeys.point(root, id, i as 0 | 1 | 2)}>
                 <td className="muted">{ax}</td>

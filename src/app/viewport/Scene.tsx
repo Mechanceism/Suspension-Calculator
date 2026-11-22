@@ -14,6 +14,7 @@ import { STATE_KEY, anchorPosition } from '../anchors';
 import { Joint, Seg, Polyline, Tri, Wheel, Label, PatchMesh, Coilover, HitLink } from './primitives';
 import { MoveGizmo } from './JointGizmo';
 import { componentDefs } from '../components';
+import { linkageShape } from './linkageShape';
 import { MeasureOverlay } from './MeasureOverlay';
 import { DimensionsOverlay } from './DimensionsOverlay';
 
@@ -53,9 +54,9 @@ const jointUnderPointer = (e: ThreeEvent<MouseEvent | PointerEvent>) =>
     return false;
   });
 
-/** Upright spindle: from the wheel center to its foot on the ball-joint axis. */
+/** Upright spindle: from the wheel center to its foot on the steering axis. */
 function spindleFoot(p: CornerPoints): Vec3 {
-  return closestPointOnLine(lineThrough(p.lcaOut, p.ucaOut), p.wheelCenter);
+  return closestPointOnLine(lineThrough(p.steerLower, p.steerUpper), p.wheelCenter);
 }
 
 /** Pointer handlers that select a component (or are inert while measuring / for ghosts). */
@@ -71,7 +72,7 @@ function usePickComponent(id: ComponentId) {
         e.stopPropagation();
         // Shift / Ctrl / Cmd adds the part's points to a multi-selection.
         const n = e.nativeEvent;
-        if (n.shiftKey || n.ctrlKey || n.metaKey) useApp.getState().toggleSelectPoints(componentDefs(useApp.getState().geom.damperArm)[id].points);
+        if (n.shiftKey || n.ctrlKey || n.metaKey) { const g = useApp.getState().geom; useApp.getState().toggleSelectPoints(componentDefs(g.damperArm, g.kind)[id].points); }
         else select({ kind: 'component', id });
       },
       onPointerOver: (e: ThreeEvent<PointerEvent>) => { e.stopPropagation(); setHover(true); document.body.style.cursor = 'pointer'; },
@@ -93,13 +94,14 @@ const em = (base: number, e: number) => base + e * 1.5;
 function Linkage({ state, faint = false }: { state: CornerState; faint?: boolean }) {
   const vis = useApp((s) => s.visibility);
   const p = state.points;
+  const sh = linkageShape(p, state.kind);
   if (faint) {
     const o = 0.3;
     return (
       <group>
-        {vis.uca && <><Seg a={p.ucaFwd} b={p.ucaOut} color={COLORS.uca} width={1} opacity={o} /><Seg a={p.ucaAft} b={p.ucaOut} color={COLORS.uca} width={1} opacity={o} /></>}
-        {vis.lca && <><Seg a={p.lcaFwd} b={p.lcaOut} color={COLORS.lca} width={1} opacity={o} /><Seg a={p.lcaAft} b={p.lcaOut} color={COLORS.lca} width={1} opacity={o} /></>}
-        {vis.upright && <Polyline pts={[p.ucaOut, p.lcaOut, p.trOuter, p.ucaOut]} color={COLORS.upright} width={1} opacity={o} />}
+        {vis.uca && sh.uca.map(([a, b], i) => <Seg key={i} a={a} b={b} color={COLORS.uca} width={1} opacity={o} />)}
+        {vis.lca && sh.lca.map(([a, b], i) => <Seg key={i} a={a} b={b} color={COLORS.lca} width={1} opacity={o} />)}
+        {vis.upright && <Polyline pts={sh.upright} color={COLORS.upright} width={1} opacity={o} />}
         {vis.tieRod && <Seg a={p.trInner} b={p.trOuter} color={COLORS.tieRod} width={1} opacity={o} />}
         {vis.spring && p.damperChassis && p.damperArm && <Seg a={p.damperChassis} b={p.damperArm} color={COLORS.spring} width={1} opacity={o} />}
       </group>
@@ -107,29 +109,37 @@ function Linkage({ state, faint = false }: { state: CornerState; faint?: boolean
   }
   return (
     <group>
-      {vis.uca && (
+      {vis.uca && sh.uca.length > 0 && (
         <Part id="uca">{(e) => (
           <>
-            <Tri a={p.ucaFwd} b={p.ucaAft} c={p.ucaOut} color={e ? '#8fbaff' : COLORS.uca} opacity={0.25 + e * 0.1} />
-            <Seg a={p.ucaFwd} b={p.ucaOut} color={e === 2 ? COLORS.select : COLORS.uca} width={em(3, e)} />
-            <Seg a={p.ucaAft} b={p.ucaOut} color={e === 2 ? COLORS.select : COLORS.uca} width={em(3, e)} />
+            {sh.ucaTri && <Tri a={sh.ucaTri[0]} b={sh.ucaTri[1]} c={sh.ucaTri[2]} color={e ? '#8fbaff' : COLORS.uca} opacity={0.25 + e * 0.1} />}
+            {sh.uca.map(([a, b], i) => (
+              <group key={i}>
+                <Seg a={a} b={b} color={e === 2 ? COLORS.select : COLORS.uca} width={em(3, e)} />
+                {!sh.ucaTri && <HitLink a={a} b={b} radius={12} />}
+              </group>
+            ))}
           </>
         )}</Part>
       )}
       {vis.lca && (
         <Part id="lca">{(e) => (
           <>
-            <Tri a={p.lcaFwd} b={p.lcaAft} c={p.lcaOut} color={e ? '#7fe3d8' : COLORS.lca} opacity={0.25 + e * 0.1} />
-            <Seg a={p.lcaFwd} b={p.lcaOut} color={e === 2 ? COLORS.select : COLORS.lca} width={em(3, e)} />
-            <Seg a={p.lcaAft} b={p.lcaOut} color={e === 2 ? COLORS.select : COLORS.lca} width={em(3, e)} />
+            {sh.lcaTri && <Tri a={sh.lcaTri[0]} b={sh.lcaTri[1]} c={sh.lcaTri[2]} color={e ? '#7fe3d8' : COLORS.lca} opacity={0.25 + e * 0.1} />}
+            {sh.lca.map(([a, b], i) => (
+              <group key={i}>
+                <Seg a={a} b={b} color={e === 2 ? COLORS.select : COLORS.lca} width={em(3, e)} />
+                {!sh.lcaTri && <HitLink a={a} b={b} radius={12} />}
+              </group>
+            ))}
           </>
         )}</Part>
       )}
       {vis.upright && (
         <Part id="upright">{(e) => (
           <>
-            <Tri a={p.ucaOut} b={p.lcaOut} c={p.trOuter} color={COLORS.upright} opacity={0.35 + e * 0.1} />
-            <Polyline pts={[p.ucaOut, p.lcaOut, p.trOuter, p.ucaOut]} color={e === 2 ? COLORS.select : COLORS.upright} width={em(3, e)} />
+            <Tri a={sh.upright[0]!} b={sh.upright[1]!} c={sh.upright[2]!} color={COLORS.upright} opacity={0.35 + e * 0.1} />
+            <Polyline pts={sh.upright} color={e === 2 ? COLORS.select : COLORS.upright} width={em(3, e)} />
             <Seg a={spindleFoot(p)} b={p.wheelCenter} color={e === 2 ? COLORS.select : COLORS.upright} width={em(3, e)} />
             <HitLink a={spindleFoot(p)} b={p.wheelCenter} radius={12} />
           </>
@@ -164,7 +174,7 @@ function PickJoint({ id, p, color, r = 7 }: { id: AnchorId; p: Vec3; color: stri
   const measure = useApp((s) => s.measure);
   const [hover, setHover] = useState(false);
   const isPoint = id in STATE_KEY;
-  const locked = useApp((s) => isPoint && anyAxisLocked(s.locks, rootOf(s.activeCorner, s.links), id as PointKey, s.geom.damperArm));
+  const locked = useApp((s) => isPoint && anyAxisLocked(s.locks, rootOf(s.activeCorner, s.links), id as PointKey, s.geom.damperArm, s.geom.kind));
   const selected = (selection?.kind === 'point' && selection.id === id)
     || (selection?.kind === 'points' && selection.ids.includes(id as PointKey))
     || measure.includes(id);
@@ -193,9 +203,11 @@ function Joints({ state, cur }: { state: CornerState; cur: Current }) {
   const p = state.points;
   return (
     <group>
-      {vis.chassis && (['ucaFwd', 'ucaAft', 'lcaFwd', 'lcaAft'] as const).map((k) => <PickJoint key={k} id={k} p={p[k]} color={COLORS.chassis} />)}
-      {(vis.uca || vis.upright) && <PickJoint id="ucaOut" p={p.ucaOut} color={COLORS.uca} r={9} />}
+      {vis.chassis && (state.kind === 'macpherson' ? (['lcaFwd', 'lcaAft'] as const) : (['ucaFwd', 'ucaAft', 'lcaFwd', 'lcaAft'] as const)).map((k) => <PickJoint key={k} id={k} p={p[k]} color={COLORS.chassis} />)}
+      {(vis.uca || vis.upright) && state.kind !== 'macpherson' && <PickJoint id="ucaOut" p={p.ucaOut} color={COLORS.uca} r={9} />}
       {(vis.lca || vis.upright) && <PickJoint id="lcaOut" p={p.lcaOut} color={COLORS.lca} r={9} />}
+      {state.kind === 'multilink' && (vis.uca || vis.upright) && p.ucaOut2 && <PickJoint id="ucaOut2" p={p.ucaOut2} color={COLORS.uca} r={9} />}
+      {state.kind === 'multilink' && (vis.lca || vis.upright) && p.lcaOut2 && <PickJoint id="lcaOut2" p={p.lcaOut2} color={COLORS.lca} r={9} />}
       {vis.tieRod && <PickJoint id="trInner" p={p.trInner} color={COLORS.chassis} />}
       {vis.spring && p.damperChassis && <PickJoint id="dmpChassis" p={p.damperChassis} color={COLORS.chassis} />}
       {vis.spring && p.damperArm && <PickJoint id="dmpArm" p={p.damperArm} color={COLORS.spring} />}
@@ -218,7 +230,8 @@ function Chassis({ state, rackLimit, rackAxis }: { state: CornerState; rackLimit
     const d = normalize(sub(b, a));
     return [sub(a, scale(d, -e)), add(b, scale(d, -e))] as const;
   };
-  const [u1, u2] = ext(p.ucaFwd, p.ucaAft);
+  // Chassis rails along the arms' pivot lines (a MacPherson has no upper arm: its rail is at the top mount).
+  const [u1, u2] = state.kind === 'macpherson' && p.strutTop ? ext(add(p.strutTop, vec3(0, 0, 120)), sub(p.strutTop, vec3(0, 0, 120))) : ext(p.ucaFwd, p.ucaAft);
   const [l1, l2] = ext(p.lcaFwd, p.lcaAft);
   const r1 = add(rackCenter, scale(rackAxis, -rackLimit));
   const r2 = add(rackCenter, scale(rackAxis, rackLimit));
@@ -253,7 +266,7 @@ function Construction({ state, chars, loaded }: { state: CornerState; chars: Cha
   const ic = chars.frontViewIC;
   const icNear = ic && length(sub(ic, cp)) < 20000 ? ic : null;
   const rc = chars.rollCenterHeight !== null ? vec3(0, chars.groundY + chars.rollCenterHeight, cp.z) : null;
-  const axisTop = add(p.ucaOut, scale(sub(p.ucaOut, p.lcaOut), 0.35));
+  const axisTop = add(p.steerUpper, scale(sub(p.steerUpper, p.steerLower), 0.35));
   const axisGround = loaded ? loaded.steeringAxisAtGround : chars.steeringAxisAtGround;
   return (
     <group>
@@ -265,8 +278,8 @@ function Construction({ state, chars, loaded }: { state: CornerState; chars: Cha
       )}
       {vis.icConstruction && icNear && (
         <>
-          <Seg a={p.ucaOut} b={icNear} color={COLORS.ic} width={1} dashed opacity={0.8} />
-          <Seg a={p.lcaOut} b={icNear} color={COLORS.ic} width={1} dashed opacity={0.8} />
+          <Seg a={p.steerUpper} b={icNear} color={COLORS.ic} width={1} dashed opacity={0.8} />
+          <Seg a={p.steerLower} b={icNear} color={COLORS.ic} width={1} dashed opacity={0.8} />
           <Joint p={icNear} color={COLORS.ic} r={10} />
         </>
       )}
@@ -327,6 +340,7 @@ export function Scene({ model }: { model: Model }) {
   const shoulder = useApp((s) => s.geom.scalars.shoulderRadius.value);
   const simpleTire = useApp((s) => s.simpleTire);
   const damperArm = useApp((s) => s.geom.damperArm);
+  const kind = useApp((s) => s.geom.kind);
   const rimRadius = useApp((s) => s.geom.scalars.rimDiameter.value / 2);
   const selection = useApp((s) => s.selection);
   const measureMode = useApp((s) => s.measureMode);
@@ -371,7 +385,7 @@ export function Scene({ model }: { model: Model }) {
       {ghosts && <Ghosts sweep={model.sweep} radius={radius} />}
       {vis.labels && <Labels state={state} />}
       {!measureMode && selection && (
-        <MoveGizmo ids={selectedPoints(selection, (c) => componentDefs(damperArm)[c].points)} cur={cur} />
+        <MoveGizmo ids={selectedPoints(selection, (c) => componentDefs(damperArm, kind)[c].points)} cur={cur} />
       )}
       {measureMode && <MeasureOverlay cur={cur} />}
       {vis.dimensions && <DimensionsOverlay cur={cur} />}

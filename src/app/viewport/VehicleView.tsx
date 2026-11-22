@@ -3,6 +3,8 @@
  * contact patches, tire load / lateral force arrows, the CG and the roll axis. Double-click a corner
  * to edit it in the Corner view.
  */
+import { linkageShape } from './linkageShape';
+import type { CornerPoints } from '../../core/suspension/doubleWishbone';
 import { useDisplay } from '../units';
 import { useMemo, useRef, type RefObject } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
@@ -25,15 +27,11 @@ function CornerDrawing({ view, onOpen, active, wheelbase }: { view: VehicleCorne
   const vis = useApp((s) => s.visibility);
   const pl = placement(view.id, wheelbase);
   const raw = view.state.points;
-  const p = {
-    ucaFwd: pl.point(raw.ucaFwd), ucaAft: pl.point(raw.ucaAft), ucaOut: pl.point(raw.ucaOut),
-    lcaFwd: pl.point(raw.lcaFwd), lcaAft: pl.point(raw.lcaAft), lcaOut: pl.point(raw.lcaOut),
-    trInner: pl.point(raw.trInner), trOuter: pl.point(raw.trOuter), wheelCenter: pl.point(raw.wheelCenter),
-    damperChassis: raw.damperChassis ? pl.point(raw.damperChassis) : undefined,
-    damperArm: raw.damperArm ? pl.point(raw.damperArm) : undefined,
-  };
+  const m = (v: Vec3 | undefined) => (v ? pl.point(v) : undefined);
+  const p = Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, m(v as Vec3)])) as unknown as CornerPoints;
+  const sh = linkageShape(p, view.state.kind);
   const axis = pl.dir(view.state.spinAxis);
-  const foot = closestPointOnLine(lineThrough(p.lcaOut, p.ucaOut), p.wheelCenter);
+  const foot = closestPointOnLine(lineThrough(sh.axis[0], sh.axis[1]), p.wheelCenter);
   const w = active ? 3.5 : 2.5;
   return (
     <group
@@ -41,15 +39,15 @@ function CornerDrawing({ view, onOpen, active, wheelbase }: { view: VehicleCorne
       onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = 'pointer'; }}
       onPointerOut={() => { document.body.style.cursor = ''; }}
     >
-      {vis.uca && <Tri a={p.ucaFwd} b={p.ucaAft} c={p.ucaOut} color={COLORS.uca} opacity={0.22} />}
-      {vis.uca && <Polyline pts={[p.ucaFwd, p.ucaOut, p.ucaAft]} color={COLORS.uca} width={w} />}
-      {vis.lca && <Tri a={p.lcaFwd} b={p.lcaAft} c={p.lcaOut} color={COLORS.lca} opacity={0.22} />}
-      {vis.lca && <Polyline pts={[p.lcaFwd, p.lcaOut, p.lcaAft]} color={COLORS.lca} width={w} />}
-      {vis.upright && <Polyline pts={[p.ucaOut, p.lcaOut, p.trOuter, p.ucaOut]} color={COLORS.upright} width={w} />}
+      {vis.uca && sh.ucaTri && <Tri a={sh.ucaTri[0]} b={sh.ucaTri[1]} c={sh.ucaTri[2]} color={COLORS.uca} opacity={0.22} />}
+      {vis.uca && sh.uca.map(([a, b], i) => <Seg key={i} a={a} b={b} color={COLORS.uca} width={w} />)}
+      {vis.lca && sh.lcaTri && <Tri a={sh.lcaTri[0]} b={sh.lcaTri[1]} c={sh.lcaTri[2]} color={COLORS.lca} opacity={0.22} />}
+      {vis.lca && sh.lca.map(([a, b], i) => <Seg key={i} a={a} b={b} color={COLORS.lca} width={w} />)}
+      {vis.upright && <Polyline pts={sh.upright} color={COLORS.upright} width={w} />}
       {vis.upright && <Seg a={foot} b={p.wheelCenter} color={COLORS.upright} width={w} />}
       {vis.tieRod && <Seg a={p.trInner} b={p.trOuter} color={COLORS.tieRod} width={w} />}
       {vis.spring && p.damperChassis && p.damperArm && <Coilover a={p.damperChassis} b={p.damperArm} color={COLORS.spring} radius={22} coils={7} />}
-      {(vis.uca || vis.upright) && <Joint p={p.ucaOut} color={COLORS.uca} r={8} />}
+      {(vis.uca || vis.upright) && view.state.kind !== 'macpherson' && <Joint p={p.ucaOut} color={COLORS.uca} r={8} />}
       {(vis.lca || vis.upright) && <Joint p={p.lcaOut} color={COLORS.lca} r={8} />}
       {vis.wheel && <Wheel
         center={p.wheelCenter} axis={axis} radius={view.profile.radius} width={view.profile.width}

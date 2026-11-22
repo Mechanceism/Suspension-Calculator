@@ -523,6 +523,9 @@ export interface AppState extends DesignState {
   /** Point editor: move this joint along the line toward another one (also drives an extra drag arrow). */
   lineMove: { id: PointKey; toward: PointKey } | null;
   measure: AnchorId[];
+  /** Vehicle view measure: two picks like 'FL.wheelCenter', 'RR.contact', 'cg', 'rcF', 'rcR'. */
+  vehicleMeasure: string[];
+  addVehicleMeasure(a: string): void;
 
   /** Name of the open layout in the in-app library (null = untitled). */
   fileName: string | null;
@@ -1564,7 +1567,13 @@ export const useApp = create<AppState>((set, get) => ({
     const st = get().steer;
     set({ steer: { ...st, [key]: parseField(text, STEER_META[key].quantity, st[key]) } });
   },
-  toggleMeasure: () => set({ measureMode: !get().measureMode, measure: [] }),
+  toggleMeasure: () => set({ measureMode: !get().measureMode, measure: [], vehicleMeasure: [] }),
+  vehicleMeasure: [],
+  addVehicleMeasure: (a) => {
+    const m = get().vehicleMeasure;
+    if (m.length === 1 && m[0] === a) { get().notify('That is the point you picked first: pick a different one to measure to.', 'warn'); return; }
+    set({ vehicleMeasure: m.length >= 2 ? [a] : [...m, a] });
+  },
   startMeasure: (ids) => set({ measureMode: true, measure: ids.slice(0, 2) }),
   lineMove: null,
   addMeasureAnchor: (a, at) => {

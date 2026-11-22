@@ -4,7 +4,7 @@
  * Drag an arrow to move along that axis (the move snaps to the grid when enabled). The arrows keep a
  * constant size on screen, and updates are limited to one per frame so dragging stays smooth.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { Vec3 } from '../../core/math/vec3';
@@ -64,9 +64,15 @@ function AxisLabel({ text, color }: { text: string; color: string }) {
  * One drag arrow. Along a coordinate axis (`axis`) it moves that coordinate of every id; along a
  * `line` (any direction) it slides one joint along that direction, changing X, Y and Z together.
  */
-function Arrow({ axis, line, origin, ids, locked }: {
+function Arrow({ axis, line, origin, ids, locked, frame, sign = 1, onStart }: {
   axis?: 0 | 1 | 2; line?: { dir: THREE.Vector3; label: string }; origin: THREE.Vector3; ids: PointKey[]; locked: boolean;
+  /** Drawn inside this object (e.g. the posed chassis): pointer rays are taken into its frame. */
+  frame?: RefObject<THREE.Object3D | null>;
+  /** −1 when the drawn axis is the design's axis mirrored (a right-hand corner's X in the vehicle view). */
+  sign?: number;
+  onStart?: () => void;
 }) {
+  const localRay = (r: THREE.Ray) => (frame?.current ? r.clone().applyMatrix4(frame.current.matrixWorld.clone().invert()) : r);
   const label = line ? line.label : AXES[axis!].label;
   const dir = line ? line.dir : AXES[axis!].dir;
   const color = locked ? '#5b616d' : line ? '#ffd166' : AXES[axis!].color;
@@ -88,14 +94,15 @@ function Arrow({ axis, line, origin, ids, locked }: {
         .map((a) => ({ key: k, axis: a, value: Number((d.starts[a]! + v[a]! * delta).toFixed(6)) })));
       return;
     }
-    useApp.getState().setPointsAxis(ids.map((key, i) => ({ key, axis: axis!, value: Number((d.starts[i]! + delta).toFixed(6)) })));
+    useApp.getState().setPointsAxis(ids.map((key, i) => ({ key, axis: axis!, value: Number((d.starts[i]! + sign * delta).toFixed(6)) })));
   };
 
   const onDown = (e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation();
     if (locked) { useApp.getState().notify(`${label} is locked for this selection`); return; }
-    const t0 = axisParam(e.ray, origin, dir);
+    const t0 = axisParam(localRay(e.ray), origin, dir);
     if (t0 === null) return;
+    onStart?.();
     (e.target as unknown as Element).setPointerCapture(e.pointerId);
     const s = useApp.getState();
     const starts = line ? s.geom.points[ids[0]!].map((f) => f.value) : ids.map((k) => s.geom.points[k][axis!].value);
@@ -107,14 +114,14 @@ function Arrow({ axis, line, origin, ids, locked }: {
     const d = drag.current;
     if (!d) return;
     e.stopPropagation();
-    const t = axisParam(e.ray, d.origin, dir);
+    const t = axisParam(localRay(e.ray), d.origin, dir);
     if (t === null) return;
     const s = useApp.getState();
     let delta = t - d.t0;
     if (s.snapToGrid && s.gridSize > 0) {
       // One point: snap its coordinate to the grid. Several: snap the move, keeping their spacing.
       delta = ids.length === 1 && !line
-        ? Math.round((d.starts[0]! + delta) / s.gridSize) * s.gridSize - d.starts[0]!
+        ? sign * (Math.round((d.starts[0]! + sign * delta) / s.gridSize) * s.gridSize - d.starts[0]!)
         : Math.round(delta / s.gridSize) * s.gridSize;
     }
     d.pending = delta;
@@ -214,6 +221,45 @@ export function MoveGizmo({ ids, cur }: { ids: PointKey[]; cur: Current }) {
         <Arrow line={lineArrow} origin={origin} ids={ids}
           locked={([0, 1, 2] as const).some((a) => Math.abs([lineArrow.dir.x, lineArrow.dir.y, lineArrow.dir.z][a]!) > 1e-9 && pointAxisLocked(locks, root, ids[0]!, a, damperArm, kind, layout, steerMech))} />
       )}
+    </group>
+  );
+}
+
+/**
+ * The move gizmo in the Vehicle view: at a point of the active corner drawn in the vehicle frame (inside
+ * the posed chassis `frame`). A right-hand corner is the design mirrored, so its X arrow moves the design's
+ * X the other way. Corners sharing the design move with it (mirrored): `onStart` says so.
+ */
+export function VehicleMoveGizmo({ ids, at, frame, mirrored, onStart }: { ids: PointKey[]; at: Vec3; frame: RefObject<THREE.Object3D | null>; mirrored: boolean; onStart: () => void }) {
+  const group = useRef<THREE.Group>(null);
+  const origin = useMemo(() => new THREE.Vector3(at.x, at.y, at.z), [at.x, at.y, at.z]);
+  const locks = useApp((s) => s.locks);
+  const root = useApp((s) => rootOf(s.activeCorner, s.links));
+  const geom = useApp((s) => s.geom);
+  useFrame(({ camera, size }) => {
+    const g = group.current;
+    if (!g) return;
+    const wp = g.getWorldPosition(new THREE.Vector3());
+    let mmPerPx: number;
+    if ((camera as THREE.OrthographicCamera).isOrthographicCamera) {
+      const c = camera as THREE.OrthographicCamera;
+      mmPerPx = (c.top - c.bottom) / c.zoom / size.height;
+    } else {
+      const c = camera as THREE.PerspectiveCamera;
+      mmPerPx = (2 * c.position.distanceTo(wp) * Math.tan(THREE.MathUtils.degToRad(c.fov) / 2)) / size.height;
+    }
+    g.scale.setScalar(SCREEN_PX * mmPerPx);
+  });
+  return (
+    <group ref={group} position={[at.x, at.y, at.z]}>
+      <mesh>
+        <sphereGeometry args={[0.09, 16, 12]} />
+        <meshBasicMaterial color="#ffffff" depthTest={false} />
+      </mesh>
+      {([0, 1, 2] as const).map((a) => (
+        <Arrow key={a} axis={a} origin={origin} ids={ids} frame={frame} sign={a === 0 && mirrored ? -1 : 1} onStart={onStart}
+          locked={ids.some((k) => pointAxisLocked(locks, root, k, a, geom.damperArm, geom.kind, layoutOf(geom), geom.steerMechanism ?? 'rack'))} />
+      ))}
     </group>
   );
 }

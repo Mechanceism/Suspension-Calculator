@@ -13,8 +13,12 @@ import { switchWorkspace } from './SafeHtml';
 import * as THREE from 'three';
 import { vec3, add, sub, scale, normalize, type Vec3 } from '../../core/math/vec3';
 import { closestPointOnLine, lineThrough } from '../../core/math/geom';
-import { CORNER_IDS, placement, poseFns, type CornerId } from '../../core/vehicle/vehicle';
-import { useApp, FORCE_KEYS, FORCE_META, mergedCorners, rootOf, layoutOf, type ForceKey, type VisKey } from '../store';
+import { CORNER_IDS, placement, poseFns, isLeft, type CornerId } from '../../core/vehicle/vehicle';
+import { useApp, FORCE_KEYS, FORCE_META, mergedCorners, rootOf, layoutOf, activePointKeys, POINT_NAMES, type ForceKey, type VisKey, type PointKey } from '../store';
+import { useShallow } from 'zustand/react/shallow';
+import { STATE_KEY } from '../anchors';
+import { VehicleMoveGizmo } from './JointGizmo';
+import { SafeHtml as Html } from './SafeHtml';
 import { pointAxisLocked } from '../locks';
 import type { VehicleModel, VehicleCornerView, AckermannAxle } from '../useVehicle';
 import { CameraRig, DevProjectBridge, ViewButtons, useMiddleDoubleClick, type FocusTarget } from './Viewport';
@@ -179,6 +183,7 @@ function VehicleScene({ model, arrows }: { model: VehicleModel; arrows: ForceArr
   const rcR = model.rollCenters.rear;
   const open = (id: CornerId) => { setActiveCorner(id); switchWorkspace('corner'); };
   const frame = useRef<THREE.Group>(null);
+  const measureMode = useApp((s) => s.measureMode);
   return (
     <group>
       <ambientLight intensity={0.8} />
@@ -193,6 +198,7 @@ function VehicleScene({ model, arrows }: { model: VehicleModel; arrows: ForceArr
       <group ref={frame} position={[0, pose.heave, 0]} rotation={euler}>
         {vis.chassis && <Frame model={model} />}
         {vis.ackermann && <AckermannLines model={model} frame={frame} />}
+        <VehiclePoints model={model} frame={frame} />
         {CORNER_IDS.map((id) => {
           const v = model.corners[id];
           if (!v) return null;
@@ -206,6 +212,8 @@ function VehicleScene({ model, arrows }: { model: VehicleModel; arrows: ForceArr
       })}
       <ForceArrows arrows={arrows} />
       {vis.arb && <AntiRollBars model={model} />}
+      {measureMode && <VehicleMeasurePicks model={model} />}
+      <VehicleMeasure model={model} />
       {vis.cg && model.sprungCgWorld && <Joint p={model.sprungCgWorld} color="#ffffff" r={16} />}
       {vis.rollCenter && rcF && rcR && (
         <>
@@ -368,6 +376,135 @@ function AckermannLines({ model, frame }: { model: VehicleModel; frame: RefObjec
   );
 }
 
+/** Where a vehicle-view measure pick is, world (null when it can't be found now). */
+function vehicleAnchor(model: VehicleModel, id: string): Vec3 | null {
+  const r = model.result;
+  if (!r) return null;
+  const P = poseFns(r.pose);
+  if (id === 'cg') return model.sprungCgWorld;
+  if (id === 'rcF') return model.rollCenters.front ? vec3(model.rollCenters.front.x, model.rollCenters.front.y, 0) : null;
+  if (id === 'rcR') return model.rollCenters.rear ? vec3(model.rollCenters.rear.x, model.rollCenters.rear.y, -model.wheelbase) : null;
+  const [c, key] = id.split('.') as [CornerId, string];
+  if (!CORNER_IDS.includes(c)) return null;
+  if (key === 'contact') return r.corners[c].contact;
+  const v = model.corners[c];
+  const q = v?.state.points[STATE_KEY[key as PointKey]] as Vec3 | undefined;
+  return q ? P.point(placement(c, model.wheelbase).point(q)) : null;
+}
+
+const anchorName = (id: string) => {
+  if (id === 'cg') return 'CG (sprung)';
+  if (id === 'rcF') return 'Roll center, front';
+  if (id === 'rcR') return 'Roll center, rear';
+  const [c, key] = id.split('.');
+  return key === 'contact' ? `${c} contact` : (POINT_NAMES[key as PointKey] ?? key).replace(/^FL_/, `${c}_`);
+};
+
+/** The vehicle-view measurement: distance and ΔX/ΔY/ΔZ (vehicle axes) between two picks, live. */
+function VehicleMeasure({ model }: { model: VehicleModel }) {
+  const m = useApp((s) => s.vehicleMeasure);
+  const disp = useDisplay();
+  const [a, b] = m.map((id) => vehicleAnchor(model, id));
+  if (!a) return null;
+  if (!b) return <Joint p={a} color="#ffffff" r={13} />;
+  const d = sub(b, a);
+  const mid = add(a, scale(d, 0.5));
+  return (
+    <group>
+      <Seg a={a} b={b} color="#ffffff" width={2} />
+      <Joint p={a} color="#ffffff" r={10} />
+      <Joint p={b} color="#ffffff" r={10} />
+      <Html position={[mid.x, mid.y, mid.z]} style={{ pointerEvents: 'none' }}>
+        <div className="measure-label">
+          <b>{disp.format(Math.hypot(d.x, d.y, d.z), 'mm', 1)}</b>
+          <div>ΔX {disp.format(d.x, 'mm', 1)} · ΔY {disp.format(d.y, 'mm', 1)} · ΔZ {disp.format(d.z, 'mm', 1)}</div>
+          <div className="muted">{anchorName(m[0]!)} → {anchorName(m[1]!)}</div>
+        </div>
+      </Html>
+    </group>
+  );
+}
+
+/** A clickable point in the vehicle view: selects it for moving, or adds it to the measurement. */
+function VPick({ p, color, r, onPick }: { p: Vec3; color: string; r: number; onPick: () => void }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <mesh
+      position={[p.x, p.y, p.z]}
+      onClick={(e) => { e.stopPropagation(); onPick(); }}
+      onPointerOver={(e) => { e.stopPropagation(); setHover(true); document.body.style.cursor = 'pointer'; }}
+      onPointerOut={() => { setHover(false); document.body.style.cursor = ''; }}
+    >
+      <sphereGeometry args={[hover ? r * 1.4 : r, 14, 10]} />
+      <meshBasicMaterial color={hover ? '#ffffff' : color} depthTest={false} transparent opacity={0.9} />
+    </mesh>
+  );
+}
+
+/**
+ * Every corner's hardpoints, pickable (in the posed chassis frame): click to make that corner active and
+ * select the point; the gizmo then moves it. With 📏 Measure on, clicks pick measure points instead.
+ */
+function VehiclePoints({ model, frame }: { model: VehicleModel; frame: RefObject<THREE.Group | null> }) {
+  const measureMode = useApp((s) => s.measureMode);
+  const selection = useApp((s) => s.selection);
+  const active = useApp((s) => s.activeCorner);
+  const vis = useApp((s) => s.visibility);
+  const designs = useApp(useShallow((s) => ({ geom: s.geom, corners: s.corners, links: s.links, activeCorner: s.activeCorner })));
+  const all = mergedCorners(designs as never);
+  const L = model.wheelbase;
+  const pick = (id: CornerId, key: PointKey) => {
+    const s = useApp.getState();
+    if (s.measureMode) { s.addVehicleMeasure(`${id}.${key}`); return; }
+    if (s.activeCorner !== id) s.setActiveCorner(id);
+    useApp.getState().select({ kind: 'point', id: key });
+  };
+  const sel = !measureMode && selection?.kind === 'point' ? selection.id : null;
+  const v = model.corners[active];
+  const selAt = sel && v ? (v.state.points[STATE_KEY[sel]] as Vec3 | undefined) : undefined;
+  const mirrored = !isLeft(active);
+  return (
+    <group>
+      {CORNER_IDS.map((id) => {
+        const cv = model.corners[id];
+        if (!cv) return null;
+        const g = all[rootOf(id, designs.links)].geom;
+        const keys = activePointKeys(g.kind ?? 'doubleWishbone', layoutOf(g), g.steerMechanism ?? 'rack');
+        const pl = placement(id, L);
+        return keys.map((k) => {
+          const q = cv.state.points[STATE_KEY[k]] as Vec3 | undefined;
+          if (!q || (k === 'wheelCenter' && !vis.wheel)) return null;
+          return <VPick key={`${id}-${k}`} p={pl.point(q)} color={id === active ? '#ffd166' : '#8a93a3'} r={id === active ? 8 : 6} onPick={() => pick(id, k)} />;
+        });
+      })}
+      {sel && selAt && (
+        <VehicleMoveGizmo
+          ids={[sel]} at={placement(active, L).point(selAt)} frame={frame} mirrored={mirrored}
+          onStart={() => {
+            const s = useApp.getState();
+            const root = rootOf(active, s.links);
+            const shared = CORNER_IDS.filter((c) => c !== active && rootOf(c, s.links) === root);
+            if (shared.length) s.notify(`${shared.join(', ')} share${shared.length === 1 ? 's' : ''} ${active}'s dimensions and move${shared.length === 1 ? 's' : ''} with it (a left / right pair mirrored). Untick “same dimensions” (Corner view) to move ${active} on its own.`, 'info');
+          }}
+        />
+      )}
+    </group>
+  );
+}
+
+/** Measure picks that aren't hardpoints: the contact patches, CG and roll centers (world). */
+function VehicleMeasurePicks({ model }: { model: VehicleModel }) {
+  const add2 = useApp((s) => s.addVehicleMeasure);
+  const r = model.result;
+  if (!r) return null;
+  return (
+    <group>
+      {CORNER_IDS.map((id) => <VPick key={id} p={r.corners[id].contact} color={COLORS.patch} r={9} onPick={() => add2(`${id}.contact`)} />)}
+      {(['cg', 'rcF', 'rcR'] as const).map((id) => { const q = vehicleAnchor(model, id); return q ? <VPick key={id} p={q} color="#ffffff" r={10} onPick={() => add2(id)} /> : null; })}
+    </group>
+  );
+}
+
 interface OverlayLabel { key: string; text: string; pos: Vec3; className?: string }
 
 /** Screen-space labels for the vehicle view (positions follow the 3D points every frame). */
@@ -485,7 +622,8 @@ export function VehicleViewport({ model }: { model: VehicleModel | null }) {
   const forceText = (t: string) => t.replace(/(-?\d+(?:\.\d+)?) N\b/g, (_, n: string) => disp.format(Number(n), 'N', 0));
   return (
     <div className="viewport" onMouseDown={onMiddle}>
-      <Canvas key={projection} dpr={[1, 2]} style={{ position: 'absolute', inset: 0 }}>
+      <Canvas key={projection} dpr={[1, 2]} style={{ position: 'absolute', inset: 0 }}
+        onPointerMissed={(e) => { const s = useApp.getState(); if (e.type === 'click' && !s.measureMode) s.select(null); }}>
         <color attach="background" args={[bg]} />
         {projection === 'orthographic'
           ? <OrthographicCamera makeDefault position={[0, 300, 8000]} zoom={0.3} near={1} far={200000} />
@@ -498,9 +636,9 @@ export function VehicleViewport({ model }: { model: VehicleModel | null }) {
       <div className="label-layer" ref={layer}>
         {labels.map((l) => <div key={l.key} className={`load-label floating ${l.className ?? ''}`}>{forceText(l.text)}</div>)}
       </div>
-      <ViewButtons measure={false} />
+      <ViewButtons />
       <ForceToggles />
-      <div className="viewport-hint">Double-click a corner to edit it · arrows start where each force acts</div>
+      <div className="viewport-hint">Click a joint to move it (linked corners move mirrored) · 📏 Measure between any points · double-click a corner to edit it in the Corner view · arrows start where each force acts</div>
       {model?.error && <div className="viewport-error">{model.error}</div>}
     </div>
   );

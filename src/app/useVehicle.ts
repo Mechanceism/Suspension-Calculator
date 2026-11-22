@@ -21,7 +21,7 @@ import {
 import type { SharedDesign } from './store';
 import { vec3, Y_AXIS, type Vec3 } from '../core/math/vec3';
 import { roadEffective } from '../core/tests/segments';
-import { gripModelOf } from './optimizer';
+import { tireGripOf } from './optimizer';
 
 const G = 9.80665;
 /** A "rigid" tire is modelled as a very stiff one so every corner has a defined tire force. */
@@ -92,7 +92,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
   const roadGrade = useApp((st) => st.roadGrade);
   const roadBank = useApp((st) => st.roadBank);
   const wheelBumps = useApp((st) => st.wheelBumps);
-  const gripFields = useApp((st) => st.grip);
+  const gripFields = useApp((st) => st.tireGrip);
   // Grade and bank fold into what the tires must supply (see core/tests/segments.ts).
   const road = roadEffective(lateralGKin, longitudinalG, Math.atan(roadGrade / 100), (roadBank * Math.PI) / 180);
   const lateralG = road.lateralG;
@@ -189,7 +189,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
           corners, totalMass: v.mass.value, cg, wheelbase, groundY, lateralG, brakingG, brakeBias: bias,
           accelG, driveSplit: v.driveSplit.value / 100,
           shared: { front: toAxle(s.shared.front), rear: toAxle(s.shared.rear) },
-          gravityScale: road.gravityScale, groundOffset: wheelBumps, grip: gripModelOf(gripFields),
+          gravityScale: road.gravityScale, groundOffset: wheelBumps, tireGrip: tireGripOf(gripFields),
           diff: { front: s.settings.FL.diff, rear: s.settings.RL.diff },
         },
         { guess: lastPose.current },

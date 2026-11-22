@@ -435,7 +435,7 @@ function GripSection({ grip }: { grip: GripSummary }) {
   return (
     <Section title="Grip (tires)" extra={<span className={`status ${grip.passed ? 'status-converged' : 'status-not-converged'}`}>{grip.passed ? 'All gripping' : 'Over the limit'}</span>}>
       <table className="corner-table grip-table">
-        <thead><tr><th /><th title="Combined force ÷ what the tire can carry (100% = sliding)">Grip use</th><th>State</th><th>Capacity <UnitLabel unit="N" /></th></tr></thead>
+        <thead><tr><th /><th title="Combined force ÷ what the tire can carry (friction ellipse, 100% = sliding)">Grip use</th><th>State</th><th title="Slip angle the tire needs for its side force (— = past its peak)">Slip</th><th title="Lean toward the turn: + gains camber thrust">Lean</th><th title="Peak force in the direction the tire pushes">Peak <UnitLabel unit="N" /></th></tr></thead>
         <tbody>
           {CORNER_IDS.map((id) => {
             const c = grip.corners[id];
@@ -445,6 +445,8 @@ function GripSection({ grip }: { grip: GripSummary }) {
                 <td><b>{id}</b></td>
                 <td>{fmt(c.utilization * 100, 0)} %</td>
                 <td>{SLIP_TEXT[c.state]}</td>
+                <td>{Number.isFinite(c.slipAngle) ? `${fmt(Math.abs(c.slipAngle), 1)}°` : '—'}</td>
+                <td>{fmt(c.camberToTurn, 1)}°</td>
                 <td><Num text={fmt(c.capacity, 0)} unit="N" /></td>
               </tr>
             );
@@ -453,7 +455,7 @@ function GripSection({ grip }: { grip: GripSummary }) {
       </table>
       <p className="small-text">Axles (cornering): front {fmt(grip.axles.front * 100, 0)} % · rear {fmt(grip.axles.rear * 100, 0)} %</p>
       {grip.limits.map((l) => <p key={l.text} className="hint warn-text">{l.text}</p>)}
-      <p className="hint">Tire grip model is a placeholder (Optimize → Tire grip model) until real tire data is added.</p>
+      <p className="hint">Tire grip: Magic Formula with generic coefficients (edit in Optimize → Tire grip model). Lean = inclination toward the turn: leaning into it adds camber thrust.</p>
     </Section>
   );
 }

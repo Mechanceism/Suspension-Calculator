@@ -16,6 +16,7 @@ import { fitFreeLength } from '../suspension/spring';
 import type { TireProfile } from '../tire/geometry';
 import type { TireForceModel } from '../tire/model';
 import { patchGrip, DEFAULT_GRIP, type GripModel, type PatchGrip } from '../tire/grip';
+import { DEFAULT_MF, type MFCoeffs } from '../tire/magicFormula';
 import { CornerTable } from '../vehicle/cornerTable';
 import {
   CORNER_IDS, isFront, placement, poseFns, solveVehicle, staticCornerLoads, designGroundY,
@@ -41,7 +42,7 @@ export interface VehicleGoalMeta {
 }
 
 export const VEHICLE_GOAL_META: Record<VehicleGoalKind, VehicleGoalMeta> = {
-  grip: { short: 'Total grip', label: 'Total grip (largest)', unit: 'g', target: 0, tolerance: 0.01, maximize: true, uses: 'all', hint: 'Sum of the four tires\' friction capacity ÷ vehicle weight, averaged over the load cases. Uses the tire grip model: load sensitivity rewards even loads and even patch pressure.' },
+  grip: { short: 'Total grip', label: 'Total grip (largest)', unit: 'g', target: 0, tolerance: 0.01, maximize: true, uses: 'all', hint: 'Sum of the four tires\' peak force in the direction each must push ÷ vehicle weight, averaged over the load cases. Uses the tire grip model (Magic Formula): load sensitivity rewards even loads, and a wheel leaning into the turn gains camber thrust.' },
   contactArea: { short: 'Total area', label: 'Total contact area (largest)', unit: 'cm²', target: 0, tolerance: 0.01, maximize: true, uses: 'all', hint: 'Sum of the four patch areas, averaged over the load cases. With the air-spring tire model the area is set mostly by load ÷ pressure; the stiffness model responds to inclination much more.' },
   inclination: { short: 'Outside incl.', label: 'Outside-tire inclination (cornering)', unit: '°', target: -1, tolerance: 0.05, uses: 'lateral', hint: 'Inclination to the ground of the two outside (loaded) tires in the cornering case. + = top outboard.' },
   roll: { short: 'Roll gradient', label: 'Roll gradient (cornering)', unit: '°/g', target: 1, tolerance: 0.02, uses: 'lateral', hint: 'Body roll per g of lateral acceleration.' },
@@ -77,8 +78,6 @@ export interface VehicleProblem {
   settings: Record<CornerId, { brake: BrakeMount; drive: DriveMount; abs?: boolean }>;
   /** Differential per axle (chassis-driven axles). */
   diff?: { front?: DiffType; rear?: DiffType };
-  /** Sliding ÷ peak friction (default 0.8). */
-  slidingRatio?: number;
   /** Test states: when given, they replace the fixed load cases. */
   states?: RoadState[];
   /** Steered corners and the rack (tests: the rack travel a turn needs). */
@@ -100,7 +99,10 @@ export interface VehicleProblem {
   goals: VehicleGoal[];
   variables: VehicleVariable[];
   holds?: VehicleHold[];
+  /** Contact-patch pressure model (contact-area goal). */
   grip?: GripModel;
+  /** Tire grip model (Magic Formula): grip, slip and pass / fail. */
+  tireGrip?: MFCoeffs;
   keepClose?: number;
   maxIterations?: number;
   /** Corner-table samples per evaluation (fewer = faster). */
@@ -219,7 +221,7 @@ export function solveCase(p: VehicleProblem, asm: AssembledVehicle, c: CaseSpec,
   const result = solveVehicle({
     corners: asm.corners, totalMass: p.mass, cg: asm.cg, wheelbase: p.wheelbase, groundY: asm.groundY,
     lateralG: c.lateralG, brakingG: c.brakingG, brakeBias: p.brakeBias, accelG: c.accelG, driveSplit: p.driveSplit, shared: p.shared,
-    gravityScale: c.gravityScale, groundOffset: c.groundOffset, grip, slidingRatio: p.slidingRatio, diff: p.diff,
+    gravityScale: c.gravityScale, groundOffset: c.groundOffset, tireGrip: p.tireGrip ?? DEFAULT_MF, diff: p.diff,
   }, { guess });
   if (!result.converged) return null;
   const P = poseFns(result.pose);
@@ -295,7 +297,8 @@ export function vehicleGoalValue(kind: VehicleGoalKind, p: VehicleProblem, e: Ve
   const lat = latCase(e);
   const brk = brakeCase(e);
   switch (kind) {
-    case 'grip': return e.cases.length ? mean(e.cases.map((c) => CORNER_IDS.reduce((a, id) => a + c.grip[id].capacity, 0))) / (p.mass * G) : null;
+    // Peak force each tire can carry in the direction it must push (Magic Formula, camber thrust included).
+    case 'grip': return e.cases.length ? mean(e.cases.map((c) => CORNER_IDS.reduce((a, id) => a + (c.result.grip?.corners[id].capacity ?? 0), 0))) / (p.mass * G) : null;
     case 'contactArea': return e.cases.length ? mean(e.cases.map((c) => CORNER_IDS.reduce((a, id) => a + c.grip[id].area, 0))) / 100 : null;
     case 'inclination': return lat ? mean(outsideOf(lat).map((id) => deg(lat.result.corners[id].inclination))) : null;
     case 'roll': return lat ? Math.abs(deg(lat.result.pose.roll)) / Math.abs(latGOf(lat)) : null;

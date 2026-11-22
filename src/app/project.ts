@@ -18,6 +18,8 @@
  *   6  vehicle optimizer setup, tire grip model, roll load factor (corner optimizer)
  *   7  held dimensions (Measure → set, hold at a travel or permanently)
  *   8  damping rates, ABS and differential per corner, test definitions, road inputs
+ *   9  tire grip model = Magic Formula coefficients (the contact-patch model keeps its fields for the
+ *      contact-area goal); a format-8 friction coefficient μ ≠ 1 scales the peak μ's
  */
 import pkg from '../../package.json';
 import { parseValue, type Quantity } from '../core/units/units';
@@ -29,13 +31,14 @@ import {
   defaultDesign, mergedCorners, rootOf, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META, SPRING_KEYS, SPRING_META,
   DAMPER_KEYS, DAMPER_META, STEER_KEYS, STEER_META, TIRE_KEYS, TIRE_META, VEHICLE_KEYS, VEHICLE_META,
   DEFAULT_LINKS, DEFAULT_SETTINGS, SHARED_META, defaultShared, defaultOptimizerSetup, defaultVehicleOptimizerSetup, defaultGrip, GRIP_KEYS, GRIP_META,
+  defaultTireGrip, MF_KEYS, MF_META,
   type VehicleOptimizerSetup, type HeldDimension, newDimId,
   type OptimizerSetup,
   type DesignState, type CornerDesign, type Field, type CornerLinks, type CornerSettings, type SharedDesign, type Axle,
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 8;
+export const FORMAT_VERSION = 9;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -82,8 +85,10 @@ export interface ProjectFile {
     goals: Record<string, { on: boolean; target: FieldJson; weight: FieldJson }>;
     lateralG: FieldJson; brakingG: FieldJson; accelG: FieldJson; keepClose: FieldJson; caseSource?: string;
   };
-  /** Tire grip model. */
+  /** Contact-patch pressure model (contact-area goal). */
   grip: Record<string, FieldJson>;
+  /** Tire grip model: Magic Formula coefficients (format 9). */
+  tireGrip?: Record<string, FieldJson>;
   /** Tests (chains of segments). */
   tests?: unknown[];
   /** Held dimensions (points named per corner, e.g. FL_UCA_Fwd). */
@@ -154,6 +159,7 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
       ...(d.vehicleOptimizer.caseSource ? { caseSource: d.vehicleOptimizer.caseSource } : {}),
     },
     grip: mapFields(GRIP_KEYS, d.grip),
+    tireGrip: mapFields(MF_KEYS, d.tireGrip),
     ...(include.tests ? { tests: JSON.parse(JSON.stringify(d.tests)) as unknown[] } : {}),
     dimensions: d.dimensions.map((x) => ({
       root: x.root, a: cornerParam(x.root, POINT_NAMES[x.a]), b: cornerParam(x.root, POINT_NAMES[x.b]),
@@ -234,6 +240,16 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   6: (f) => ({ ...f, formatVersion: 7 }),
   // 7 → 8: damping rates, ABS (on) and open differentials per corner, tests (none). Defaults apply.
   7: (f) => ({ ...f, formatVersion: 8 }),
+  // 8 → 9: the Magic Formula becomes the tire grip model. A friction coefficient μ the user changed in the
+  // old contact-patch model scales the generic peak μ's, so grip stays about where it was.
+  8: (f) => {
+    const g = isObj(f.grip) ? f.grip : {};
+    const mu = isObj(g.muRef) && typeof g.muRef.value === 'number' ? g.muRef.value : 1;
+    if (isObj(f.tireGrip) || !(mu > 0) || Math.abs(mu - 1) < 1e-9) return { ...f, formatVersion: 9 };
+    const d = defaultTireGrip();
+    const scaled = (k: 'pDy1' | 'pDx1') => { const v = Number((d[k].value * mu).toFixed(4)); return { text: String(v), value: v }; };
+    return { ...f, formatVersion: 9, tireGrip: { pDy1: scaled('pDy1'), pDx1: scaled('pDx1') } };
+  },
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */
@@ -570,6 +586,8 @@ export function importProject(data: unknown): ImportResult {
     optimizer: readOptimizer(f.optimizer, warnings),
     vehicleOptimizer: readVehicleOptimizer(f.vehicleOptimizer, warnings),
     grip: isObj(f.grip) ? readRecord(f.grip, GRIP_KEYS, (k) => GRIP_META[k].quantity, defaultGrip(), 'grip', warnings) : defaultGrip(),
+    // Missing coefficients take the generic defaults quietly (a migrated file carries only the ones it changed).
+    tireGrip: isObj(f.tireGrip) ? readRecord(f.tireGrip, MF_KEYS, (k) => MF_META[k].quantity, defaultTireGrip(), 'tire grip', []) : defaultTireGrip(),
     dimensions: readDimensions(f.dimensions, warnings),
     tests: readTests(f.tests, warnings),
   };

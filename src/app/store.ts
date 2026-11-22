@@ -17,6 +17,7 @@ import { parseTireSize } from '../core/tire/size';
 import { GOAL_KINDS, GOAL_META, type GoalKind } from '../core/optimize/corner';
 import { VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, type VehicleGoalKind } from '../core/optimize/vehicle';
 import { DEFAULT_GRIP } from '../core/tire/grip';
+import { DEFAULT_MF, type MFCoeffs } from '../core/tire/magicFormula';
 import type { DimMeasure } from '../core/suspension/dimensions';
 import type { TestDesign } from './tests';
 
@@ -312,6 +313,8 @@ export interface AppState extends DesignState {
   undoOptimized(): void;
   updateVehicleOptimizer(fn: (o: VehicleOptimizerSetup) => VehicleOptimizerSetup): void;
   setGripField(key: GripKey, text: string): void;
+  setTireGripField(key: MFKey, text: string): void;
+  resetTireGrip(): void;
   /** Write vehicle-optimized coordinates into each corner design (Undo keeps the previous geometry). */
   applyVehicleOptimized(updates: { root: CornerId; key: PointKey; axis: 0 | 1 | 2; value: number }[]): void;
   undoVehicleOptimized(): void;
@@ -531,6 +534,41 @@ export const GRIP_META: Record<GripKey, { label: string; quantity: Quantity; uni
 export const defaultGrip = (): Record<GripKey, Field> =>
   Object.fromEntries(GRIP_KEYS.map((k) => [k, field(DEFAULT_GRIP[k], GRIP_META[k].quantity)])) as Record<GripKey, Field>;
 
+/**
+ * Tire grip model (Magic Formula) coefficients, docs/MATH.md § Tire grip. Basic ones are shown first;
+ * the defaults are GENERIC, not fitted to a real tire.
+ */
+export const MF_KEYS = [
+  'fz0', 'p0', 'pDy1', 'pDy2', 'pDy3', 'pVy3', 'pCy1', 'pKy1', 'pDx1', 'pCx1',
+  'pEy1', 'pEy2', 'pKy2', 'pKy3', 'ppy1', 'ppy3', 'pDx2', 'pDx3', 'pEx1', 'pKx1', 'ppx3',
+] as const satisfies readonly (keyof MFCoeffs)[];
+export type MFKey = (typeof MF_KEYS)[number];
+export const MF_META: Record<MFKey, { label: string; quantity: Quantity; unit: string; hint: string; basic?: boolean }> = {
+  fz0: { label: 'Nominal load Fz0', quantity: 'force', unit: 'N', basic: true, hint: 'Load the coefficients refer to (about the static load of one corner).' },
+  p0: { label: 'Nominal pressure p0', quantity: 'pressure', unit: 'kPa', basic: true, hint: 'Inflation pressure the coefficients refer to. The set pressure of the air-spring tire model is compared with it.' },
+  pDy1: { label: 'Peak lateral μ at Fz0', quantity: 'ratio', unit: '', basic: true, hint: 'pDy1: peak side force ÷ load at the nominal load, wheel level.' },
+  pDy2: { label: 'Lateral μ change with load', quantity: 'ratio', unit: '', basic: true, hint: 'pDy2: change in peak μ per +100 % load (negative = load sensitivity: a more loaded tire grips less per newton).' },
+  pDy3: { label: 'Peak loss with camber', quantity: 'ratio', unit: '/rad²', basic: true, hint: 'pDy3: peak μ × (1 − pDy3·γ²). With camber thrust this sets the best lean (≈ pVy3 ÷ (2·pDy1·pDy3) rad).' },
+  pVy3: { label: 'Camber thrust', quantity: 'ratio', unit: '×Fz/rad', basic: true, hint: 'pVy3: extra side force per radian of lean toward the turn, × load. Leaning away costs the same.' },
+  pCy1: { label: 'Lateral shape C', quantity: 'ratio', unit: '', basic: true, hint: 'pCy1: sets how much grip is left once sliding: sliding ÷ peak = sin(C·π/2) (1.3 → 89 %).' },
+  pKy1: { label: 'Cornering stiffness', quantity: 'ratio', unit: '×Fz0/rad', basic: true, hint: 'pKy1: side force per radian of slip angle at small slip (peak of the stiffness vs load curve), × Fz0.' },
+  pDx1: { label: 'Peak longitudinal μ at Fz0', quantity: 'ratio', unit: '', basic: true, hint: 'pDx1: peak braking / drive force ÷ load at the nominal load.' },
+  pCx1: { label: 'Longitudinal shape C', quantity: 'ratio', unit: '', basic: true, hint: 'pCx1: locked / spinning share of peak = sin(C·π/2) (1.5 → 71 %).' },
+  pEy1: { label: 'Lateral curvature E', quantity: 'ratio', unit: '', hint: 'pEy1 (≤ 1): shape near the peak; lower = rounder peak.' },
+  pEy2: { label: 'Curvature change with load', quantity: 'ratio', unit: '', hint: 'pEy2: E change per +100 % load.' },
+  pKy2: { label: 'Load at max cornering stiffness', quantity: 'ratio', unit: '×Fz0', hint: 'pKy2: load (× Fz0) where cornering stiffness stops growing with load.' },
+  pKy3: { label: 'Cornering stiffness loss with camber', quantity: 'ratio', unit: '/rad', hint: 'pKy3: stiffness × (1 − pKy3·|γ|).' },
+  ppy1: { label: 'Cornering stiffness change with pressure', quantity: 'ratio', unit: '', hint: 'ppy1: stiffness × (1 + ppy1·dp), dp = (p − p0) / p0.' },
+  ppy3: { label: 'Lateral μ change with pressure', quantity: 'ratio', unit: '', hint: 'ppy3: peak μ × (1 + ppy3·dp). Negative = more pressure, less grip.' },
+  pDx2: { label: 'Longitudinal μ change with load', quantity: 'ratio', unit: '', hint: 'pDx2: change in peak μ per +100 % load.' },
+  pDx3: { label: 'Longitudinal peak loss with camber', quantity: 'ratio', unit: '/rad²', hint: 'pDx3: peak × (1 − pDx3·γ²).' },
+  pEx1: { label: 'Longitudinal curvature E', quantity: 'ratio', unit: '', hint: 'pEx1 (≤ 1).' },
+  pKx1: { label: 'Slip stiffness', quantity: 'ratio', unit: '×Fz', hint: 'pKx1: braking / drive force per unit slip ratio at small slip, × load.' },
+  ppx3: { label: 'Longitudinal μ change with pressure', quantity: 'ratio', unit: '', hint: 'ppx3: peak μ × (1 + ppx3·dp).' },
+};
+export const defaultTireGrip = (): Record<MFKey, Field> =>
+  Object.fromEntries(MF_KEYS.map((k) => [k, field(DEFAULT_MF[k], MF_META[k].quantity)])) as Record<MFKey, Field>;
+
 export const OPT_DEFAULT_RANGE = 25;
 
 let dimCounter = 0;
@@ -580,6 +618,8 @@ export interface DesignState {
   vehicleOptimizer: VehicleOptimizerSetup;
   /** Tire grip model. */
   grip: Record<GripKey, Field>;
+  /** Tire grip model (Magic Formula coefficients). */
+  tireGrip: Record<MFKey, Field>;
   /** Held dimensions between two points (Measure → set, hold). Kept like CAD sketch dimensions. */
   dimensions: HeldDimension[];
   /** Tests (chains of segments) for the Tests workspace. */
@@ -635,7 +675,7 @@ export const pickDesign = (s: DesignState): DesignState => ({
   droop: s.droop, bump: s.bump, driver: s.driver,
   corners: s.corners, links: s.links, settings: s.settings, activeCorner: s.activeCorner,
   vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode, shared: s.shared, locks: s.locks,
-  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, dimensions: s.dimensions, tests: s.tests,
+  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, tireGrip: s.tireGrip, dimensions: s.dimensions, tests: s.tests,
 });
 
 /** The default layout (File → New). */
@@ -704,6 +744,7 @@ export function defaultDesign(presetId = 'C'): DesignState {
     optimizer: {},
     vehicleOptimizer: defaultVehicleOptimizerSetup(),
     grip: defaultGrip(),
+    tireGrip: defaultTireGrip(),
     dimensions: [],
     tests: [],
   };
@@ -837,6 +878,11 @@ export const useApp = create<AppState>((set, get) => ({
     const g = get().grip;
     set({ grip: { ...g, [key]: parseField(text, GRIP_META[key].quantity, g[key]) } });
   },
+  setTireGripField: (key, text) => {
+    const g = get().tireGrip;
+    set({ tireGrip: { ...g, [key]: parseField(text, MF_META[key].quantity, g[key]) } });
+  },
+  resetTireGrip: () => set({ tireGrip: defaultTireGrip() }),
   vehOptUndo: null,
   dimViolations: [],
   holdDimension: (d) => {

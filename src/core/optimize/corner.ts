@@ -11,6 +11,7 @@
  */
 import { vec3, addScaled, dot, Y_AXIS, type Vec3 } from '../math/vec3';
 import { patchGrip, DEFAULT_GRIP, type GripModel, type PatchGrip } from '../tire/grip';
+import { mfPeaks, DEFAULT_MF, type MFCoeffs } from '../tire/magicFormula';
 import { solveLoadedHeight, type TireForceModel } from '../tire/model';
 import type { TireProfile } from '../tire/geometry';
 import { DoubleWishbone, type CornerState, type DoubleWishboneGeometry } from '../suspension/doubleWishbone';
@@ -55,7 +56,7 @@ export const GOAL_META: Record<GoalKind, GoalMeta> = {
   trail: { short: 'Trail', label: 'Mechanical trail (static)', unit: 'mm', target: 15, tolerance: 1, hint: '+ = axis meets the ground ahead of the contact point.' },
   antiAngle: { short: 'Anti angle', label: 'Side-view anti angle (static)', unit: '°', target: 3, tolerance: 0.1, hint: 'Angle of the contact patch → side-view IC line (anti-dive / anti-lift with outboard brakes).' },
   contactArea: { short: 'Contact area', label: 'Contact area (largest)', unit: 'cm²', target: 0, tolerance: 0.01, maximize: true, hint: 'Patch area, averaged over the static case and the outside wheel in roll (at the roll angle and roll load below). Needs a tire model.' },
-  grip: { short: 'Grip', label: 'Grip: friction capacity (largest)', unit: 'N', target: 0, tolerance: 0.01, maximize: true, hint: 'Friction the patch can carry, from its pressure distribution and load-sensitive rubber (tire grip model). Averaged over the static case and the outside wheel in roll.' },
+  grip: { short: 'Grip', label: 'Grip: peak lateral force (largest)', unit: 'N', target: 0, tolerance: 0.01, maximize: true, hint: 'Peak lateral force of the tire (Magic Formula tire grip model: load, inclination, pressure). Averaged over the static case and the outside wheel in roll, where leaning its top into the turn adds camber thrust.' },
   motionRatio: { short: 'Motion ratio', label: 'Motion ratio (static)', unit: '', target: 0.7, tolerance: 0.005, hint: 'Damper travel per wheel travel at design height.' },
 };
 export const GOAL_KINDS = Object.keys(GOAL_META) as GoalKind[];
@@ -87,7 +88,7 @@ export interface CornerProblem {
   /** Weight of the "prefer small changes" term (per 10 mm moved). */
   keepClose?: number;
   /** Tire, static corner load and grip model, for the contact-area and grip goals. */
-  tire?: { profile: TireProfile; model: TireForceModel; staticLoad: number; rollLoadFactor: number; grip?: GripModel };
+  tire?: { profile: TireProfile; model: TireForceModel; staticLoad: number; rollLoadFactor: number; grip?: GripModel; tireGrip?: MFCoeffs; pressure?: number };
   maxIterations?: number;
 }
 
@@ -136,8 +137,11 @@ export interface CornerSamples {
   roll: { travel: number; chars: Characteristics; angle: number } | null;
   /** Motion ratio at design height (null without a damper). */
   motionRatio: number | null;
-  /** Patch grip: static (travel 0, static load) and outside wheel in roll (roll load). */
-  grip: { static: PatchGrip; roll: PatchGrip | null } | null;
+  /**
+   * Patch (contact area) and peak lateral force (Magic Formula, N): static (travel 0, static load) and the
+   * outside wheel in roll (roll load, pushing inboard: leaning its top inboard gains camber thrust).
+   */
+  grip: { static: PatchGrip; roll: PatchGrip | null; staticPeak: number; rollPeak: number | null } | null;
 }
 
 /**
@@ -202,8 +206,16 @@ export function sampleCorner(geometry: DoubleWishboneGeometry, p: Omit<CornerPro
     const st = cornerGrip(states[i0]!, Y_AXIS, t.profile, t.model, t.staticLoad, gm);
     // Outside wheel in roll: the ground tilts by phi relative to the body (top of the wheel leans out).
     const phi = roll?.angle ?? 0;
-    const rl = rollState ? cornerGrip(rollState, vec3(-Math.sin(phi), Math.cos(phi), 0), t.profile, t.model, t.staticLoad * t.rollLoadFactor, gm) : null;
-    grip = { static: st, roll: rl };
+    const rn = vec3(-Math.sin(phi), Math.cos(phi), 0);
+    const rl = rollState ? cornerGrip(rollState, rn, t.profile, t.model, t.staticLoad * t.rollLoadFactor, gm) : null;
+    // Inclination to the ground, + = top outboard.
+    const incl = (st0: CornerState, n: Vec3) => -Math.asin(Math.max(-1, Math.min(1, dot(st0.spinAxis, n))));
+    const mf = t.tireGrip ?? DEFAULT_MF;
+    const g0 = incl(states[i0]!, Y_AXIS);
+    // Straight ahead: either lean direction (camber only lowers the peak).
+    const staticPeak = (mfPeaks(mf, { fz: t.staticLoad, gamma: g0, pressure: t.pressure }).y + mfPeaks(mf, { fz: t.staticLoad, gamma: -g0, pressure: t.pressure }).y) / 2;
+    const rollPeak = rollState ? mfPeaks(mf, { fz: t.staticLoad * t.rollLoadFactor, gamma: -incl(rollState, rn), pressure: t.pressure }).y : null;
+    grip = { static: st, roll: rl, staticPeak, rollPeak };
   }
 
   let motionRatio: number | null = null;
@@ -262,7 +274,7 @@ export function goalValue(kind: GoalKind, s: CornerSamples, target = GOAL_META[k
     }
     case 'grip': {
       if (!s.grip) return null;
-      const v = [s.grip.static.capacity, ...(s.grip.roll ? [s.grip.roll.capacity] : [])];
+      const v = [s.grip.staticPeak, ...(s.grip.rollPeak !== null ? [s.grip.rollPeak] : [])];
       return v.reduce((a, b) => a + b, 0) / v.length;
     }
   }

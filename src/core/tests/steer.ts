@@ -8,7 +8,9 @@
  * by solving the corner with the rack moved (the left corner's rack moves +r, the mirrored right corner's
  * −r, the same convention as the Vehicle view). The rack travel is found by a secant search on that
  * curve; a turn that needs more than the rack limit can't be driven (Steering lock check).
- * Slip angles (the car needs a little more or less at speed: under / oversteer) come with Phase C.
+ * At speed the tires run at slip angles, so the steering needs the slip difference on top (bicycle model):
+ *   δ = atan(wheelbase ÷ R) + (α_front − α_rear)        more front slip = understeer = more steering
+ * The slip angles come from the tire grip model at the solved state (`extra`).
  */
 import type { DoubleWishbone } from '../suspension/doubleWishbone';
 import { headingAngle } from '../suspension/steering';
@@ -29,8 +31,10 @@ export interface SteerNeed {
   rack: number;
   /** Rack travel used (clamped to the limit), mm. */
   rackUsed: number;
-  /** Mean road-wheel angle the turn needs, deg (+ = left). */
+  /** Mean road-wheel angle the turn needs, deg (+ = left), slip included. */
   wheelAngle: number;
+  /** Part of it from the tires' slip angles (front − rear), deg (+ = understeer). */
+  slip: number;
   /** Mean road-wheel angle at full lock in the turn's direction, deg (magnitude). */
   maxAngle: number;
   /** Steering-wheel angle for the needed rack travel, deg. */
@@ -51,26 +55,27 @@ const cache = new WeakMap<object, Map<string, SteerNeed | null>>();
  */
 export function steerForTurn(
   built: Map<CornerId, DoubleWishbone>, roots: Record<CornerId, CornerId>, steering: SteeringSpec,
-  wheelbase: number, path: PathKind, radius: number,
+  wheelbase: number, path: PathKind, radius: number, extra = 0,
 ): SteerNeed | null {
   if (path === 'straight') return null;
-  const key = `${path}|${radius}|${wheelbase}|${steering.rackLimit}|${steering.cFactor}|${CORNER_IDS.map((id) => (steering.steered[id] ? 1 : 0)).join('')}`;
+  const ex = Number.isFinite(extra) ? Math.round(extra / 1e-5) * 1e-5 : 0;
+  const key = `${path}|${radius}|${ex}|${wheelbase}|${steering.rackLimit}|${steering.cFactor}|${CORNER_IDS.map((id) => (steering.steered[id] ? 1 : 0)).join('')}`;
   let m = cache.get(built);
   if (!m) { m = new Map(); cache.set(built, m); }
   if (m.has(key)) return m.get(key)!;
-  const out = compute(built, roots, steering, wheelbase, path, radius);
+  const out = compute(built, roots, steering, wheelbase, path, radius, ex);
   m.set(key, out);
   return out;
 }
 
 function compute(
   built: Map<CornerId, DoubleWishbone>, roots: Record<CornerId, CornerId>, steering: SteeringSpec,
-  wheelbase: number, path: PathKind, radius: number,
+  wheelbase: number, path: PathKind, radius: number, extra: number,
 ): SteerNeed {
   const limit = Math.abs(steering.rackLimit);
   const sign = path === 'left' ? 1 : -1;
-  const delta = Math.atan(wheelbase / 1000 / Math.max(radius, 0.01));
-  const none: SteerNeed = { rack: NaN, rackUsed: 0, wheelAngle: sign * delta * DEG, maxAngle: 0, steeringWheel: NaN, limit, over: true, none: true };
+  const delta = Math.max(0, Math.atan(wheelbase / 1000 / Math.max(radius, 0.01)) + extra);
+  const none: SteerNeed = { rack: NaN, rackUsed: 0, wheelAngle: sign * delta * DEG, slip: extra * DEG, maxAngle: 0, steeringWheel: NaN, limit, over: true, none: true };
   const front = CORNER_IDS.filter((id) => isFront(id) && steering.steered[id]);
   const rear = CORNER_IDS.filter((id) => !isFront(id) && steering.steered[id]);
   const ids = front.length ? front : rear;
@@ -107,7 +112,7 @@ function compute(
   const atLimit = yaw(dir * limit);
   const rackUsed = Math.max(-limit, Math.min(limit, rack));
   return {
-    rack, rackUsed, wheelAngle: sign * delta * DEG, maxAngle: Number.isFinite(atLimit) ? Math.abs(atLimit) * DEG : 0,
+    rack, rackUsed, wheelAngle: sign * delta * DEG, slip: extra * DEG, maxAngle: Number.isFinite(atLimit) ? Math.abs(atLimit) * DEG : 0,
     steeringWheel: steering.cFactor > 0 ? (rack / steering.cFactor) * 360 : NaN,
     limit, over: !reached || Math.abs(rack) > limit + 1e-6, none: false,
   };

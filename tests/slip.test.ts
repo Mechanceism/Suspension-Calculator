@@ -148,7 +148,7 @@ describe('pass / warning / fail', () => {
   });
 
   it('ABS active is a warning by default (the test still passes); a strict profile fails it', () => {
-    const stop: SegmentSpec = { distance: 15, v0: 35 * MPH, v1: 0, path: 'straight', radius: 0, grade: 0, bank: 0 };
+    const stop: SegmentSpec = { distance: 12.5, v0: 35 * MPH, v1: 0, path: 'straight', radius: 0, grade: 0, bank: 0 };
     const run = runTest(base(), { FL: geom }, [{ ...stop, checks: { ...PROFILES.default.checks, absActive: { severity: 'warn', threshold: 100 } } }], { onFail: 'report' });
     const abs = run.segments[0]!.findings.filter((f) => f.check === 'absActive');
     expect(abs.length).toBeGreaterThan(0);

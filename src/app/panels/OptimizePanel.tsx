@@ -32,6 +32,7 @@ import {
 import { ValueInput } from './ValueInput';
 import { Section, FieldRows, fmt } from './FieldRows';
 import { useDisplay } from '../units';
+import { TireGripFields } from './TireGripPanel';
 
 const AXES = ['X', 'Y', 'Z'] as const;
 
@@ -194,18 +195,7 @@ function FreeCoordinates({ spec, ranges, entries, header, update }: {
 
 /** Tire grip model inputs (shared by both optimizers). */
 export function GripModelFields() {
-  const grip = useApp((s) => s.grip);
-  const setGripField = useApp((s) => s.setGripField);
-  return (
-    <>
-      <FieldRows rows={GRIP_KEYS.map((k) => ({ label: GRIP_META[k].label, field: grip[k], unit: GRIP_META[k].unit, hint: GRIP_META[k].hint, onCommit: (t: string) => setGripField(k, t) }))} />
-      <p className="hint">
-        Placeholder until you have tire data. The patch pressure is part even (air) and part following the tire's deflection
-        (carcass); rubber friction drops as pressure rises, so a larger, more even patch grips more. With the air-spring tire
-        the area is set mostly by load ÷ pressure, so geometry changes it little; the stiffness tire reacts much more to inclination.
-      </p>
-    </>
-  );
+  return <TireGripFields />;
 }
 
 type Report = {

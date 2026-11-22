@@ -43,7 +43,7 @@ export const CHECK_META: Record<CheckId, CheckMeta> = {
   wheelLift: { label: 'Wheel lift', hint: 'A tire unloads to (almost) nothing.' },
   rollover: { label: 'Rollover', hint: 'Cornering g beyond the rigid rollover threshold (half track ÷ CG height).', fixed: true },
   noSolution: { label: 'No solution', hint: "The car can't settle in this state.", fixed: true },
-  steerLimit: { label: 'Steering lock', hint: 'The turn is tighter than the steering allows: its road-wheel angle (atan(wheelbase ÷ radius)) needs more rack travel than the rack limit, or no wheel steers.' },
+  steerLimit: { label: 'Steering lock', hint: 'The turn is tighter than the steering allows: its road-wheel angle (atan(wheelbase ÷ radius), plus the front − rear tire slip angle at speed) needs more rack travel than the rack limit, or no wheel steers.' },
   beyondGrip: { label: 'Beyond the tires', hint: 'The state asks for more total force than all four tires can give: no suspension can pass it. Lower the speed, enlarge the radius, or improve the tires.', fixed: true },
 };
 export const CHECK_IDS = Object.keys(CHECK_META) as CheckId[];
@@ -117,7 +117,7 @@ export function classifyState(f: StateFacts, profile: CheckProfile): Finding[] {
   const st = f.steer;
   if (st?.none) add('steerLimit', "No steered wheels (or the rack doesn't turn them): the car can't follow the turn");
   else if (st?.over) {
-    add('steerLimit', `Too tight for the steering: needs ${Math.abs(st.wheelAngle).toFixed(1)}° at the road wheels`
+    add('steerLimit', `Too tight for the steering: needs ${Math.abs(st.wheelAngle).toFixed(1)}° at the road wheels${Math.abs(st.slip) > 0.05 ? ` (${st.slip > 0 ? '+' : '−'}${Math.abs(st.slip).toFixed(1)}° of it for the tires' slip)` : ''}`
       + `${Number.isFinite(st.rack) ? ` (rack ${Math.abs(st.rack).toFixed(1)} mm, limit ±${st.limit.toFixed(0)} mm)` : ''}; full lock gives ${st.maxAngle.toFixed(1)}°`);
   }
   if (!r || !r.converged) { add('noSolution', "The car can't settle in this state"); return out; }

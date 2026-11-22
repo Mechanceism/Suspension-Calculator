@@ -345,7 +345,7 @@ Set dimension (Measure tool) moves one point; the other is fixed. With d = B −
 - **Track map** (`trackPath`): the test drawn from its segments alone: straights, and arcs x = x₀ + (sin θ − sin θ₀)/κ, y = y₀ − (cos θ − cos θ₀)/κ with θ = θ₀ + κs, κ = ±1/R.
 - **Optimizer:** one test or all enabled tests (weighted by priority × segment weight) can be the vehicle optimizer's load cases. *Test passes*: each state's pass rules become one-sided residuals (≈ 1 per 1 % over a grip rule; bump stop, bottoming and wheel lift as fixed penalties), × 1 for Fail rules, × 0.3 for Warnings, × √weight; failures geometry can't change (no drive / brakes, beyond the tires, steering lock, rollover) are left out. *Test reserve* (improve): √weight · (worst grip use of the state) / 0.05 per state, so the worst states count most. Packaging: a free point may not move into the tire's tread band (10 mm clearance) or within 20 mm of the ground.
 - **Loop** (Tests workspace), for one test or all enabled tests: test → optimize (25 iterations) → apply → re-test, until everything passes. When two rounds improve < 1 % (or nothing moves), the free ranges are widened about their centers ×2, ×3, ×4, ×5, ×10, ×20, … up to the user's maximum (always containing the current value), and stored ranges grow to include points moved outside them (+5 mm); it stops when stuck at the maximum widening (or after 40 rounds). Score = 100 · (fixable Fail findings) + 10 · Σ grip use over 100 % (+ average grip use when improving); with several tests, the priority-weighted mean (weight n + 1 − rank).
-- **What geometry can change** with the placeholder tires: in a steady turn both axles reach their limit together and the total is set by μ·W, so geometry only shifts load transfer (a 31 mph, 20 m turn: 94.8 % → 94.7 % grip use). Geometry matters for travel, bump stops, wheel lift and inclination, and will matter more with camber thrust in the official tire model.
+- **What geometry can change:** in a steady turn both axles reach their limit together and the total is set by μ·W, so with the old placeholder tires geometry only shifted load transfer (a 31 mph, 20 m turn: 94.8 % → 94.7 % grip use). With the Magic Formula the inclination counts too: leaning into the turn adds camber thrust, leaning out costs grip, so camber gain and roll now change the grip.
 - Tested: rack travel grows with tighter turns and flips sign left / right, too tight a turn and no steered wheels fail Steering lock, a 90° arc ends R across and R ahead, every built-in test settles in every state, CG front/rear split, equal grip use within an axle, uphill drive force = m·g·sin θ, bump loading, understeer at 1.6 g, ABS limit vs lock-up, open vs locked diff in a powered turn, segment kinematics, a failing turn's speed limit and the lifted re-run passing.
 
 ## L7: Optimizer — corner, first version ✅ (`src/core/optimize/`)
@@ -371,8 +371,24 @@ The small-change term matters when the goals don't pin the answer down (six free
 
 **Bump steer by tie-rod placement.** The preset frees the classic knobs: inner tie-rod X (tie-rod length, along the rack) and Y, and outer tie-rod Y (heights), ±25 mm, unless locked. Outer X/Z are left fixed by default because they also change the steering arm (ratio, Ackermann); free them if you want.
 
-### Contact area and grip ✅ (`src/core/tire/grip.ts`)
-The main optimizer goal: the largest contact area, then the highest friction at the patch, for the best grip. Both are goals per tire (corner optimizer) and for all four tires together (vehicle optimizer).
+### Tire grip: Magic Formula ✅ (`src/core/tire/magicFormula.ts`)
+The official tire grip model (decided 2026-11-22): Pacejka's Magic Formula, a compact subset of MF 5.2 / 6.1.
+
+    F(s) = D·sin(C·atan(B·s − E·(B·s − atan(B·s)))) + S_V
+
+- **Lateral** (s = slip angle α): dfz = (Fz − Fz0)/Fz0, dp = (p − p0)/p0, D = (pDy1 + pDy2·dfz)(1 + ppy3·dp)(1 − pDy3·γ²)·Fz, cornering stiffness K = pKy1·Fz0·sin(2·atan(Fz/(pKy2·Fz0)))·(1 − pKy3·|γ|)(1 + ppy1·dp), C = pCy1, B = K/(C·D), E = pEy1 + pEy2·dfz (≤ 1), camber thrust S_V = pVy3·γ·Fz.
+- **Longitudinal** (s = slip ratio κ): D = (pDx1 + pDx2·dfz)(1 + ppx3·dp)(1 − pDx3·γ²)·Fz, K = pKx1·Fz, C = pCx1, E = pEx1.
+- **γ** is the inclination to the road, signed toward the force: a wheel whose top leans into the turn gets camber thrust on top of its peak; leaning out loses it. The best lean ≈ pVy3 ÷ (2·pDy1·pDy3).
+- **Peak** (C ≥ 1) = D + S_V; far past it the force falls to D·sin(C·π/2): the **sliding share** (C = 1.3 → 89 %, 1.5 → 71 %). Slip at the peak: solve C·atan(X(s)) = π/2.
+- **Combined slip:** friction ellipse (Fx/Dx)² + (Fy/Dy)² ≤ u², u = grip use. Within an axle the cornering force is shared so both tires reach the same u. A tire past its peak slides at the sliding share of its peak along its force direction; ABS holds the peak.
+- **Slip the tire needs:** the pure-slip force equivalent on the ellipse (Fy / √(1 − (Fx/Dx)²)) inverted on the rising part of the curve (NaN past the peak). Steering in a turn = atan(L/R) + (mean front α − mean rear α).
+- **Pressure** comes from the air-spring tire model's set pressure (the stiffness tire uses p0).
+- **Defaults are generic** (a plausible tire, not fitted): Fz0 1000 N, p0 83 kPa, pCy1 1.3, pDy1 1.0, pDy2 −0.1, pDy3 12, pEy1 −0.5, pKy1 22, pKy2 1.7, pKy3 0.5, pVy3 1.0, ppy3 −0.1, pCx1 1.5, pDx1 1.05, pDx2 −0.1, pDx3 5, pKx1 20, ppx3 −0.1: peak side μ 1.0 at 8.3° slip, best lean 2.4° into the turn (+2.1 %). Files from format 8 with a friction coefficient μ ≠ 1 scale pDy1 and pDx1 by it.
+- **Used for:** grip use, slip states and pass / fail (whole car and tests), the corner optimizer's *grip* goal (peak lateral force, static and outside wheel in roll) and the vehicle optimizer's *total grip* (peak force along each tire's force direction).
+- Tested: peak = pDy1·Fz0, odd in α when level, sliding share = sin(C·π/2), small-slip slope = K, load sensitivity, best lean and losing grip leaning out, inversion round trip and NaN past the peak, pressure, left / right mirror in the car, lean toward the turn from the solved inclination, steering = atan(L/R) + slip difference, file round trip and format-8 μ migration.
+
+### Contact area and patch pressure ✅ (`src/core/tire/grip.ts`)
+The contact-area goal: the largest contact area per tire (corner optimizer) and for all four tires together (vehicle optimizer). Until format 9 this model also gave the grip (load-sensitive rubber friction over the patch); grip now comes from the Magic Formula, and this model keeps the area and the pressure spread.
 
 **Pressure over the patch.** The patch is sampled with the slice method (L3). The air carries load evenly; the carcass and belt carry load where the tire is pushed in most. A share β of the load follows the local deflection δ (how far the undeformed tire would sink below the ground at that point):
 

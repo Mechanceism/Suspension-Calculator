@@ -655,9 +655,10 @@ export function TestResults() {
                 {sel.state.gravityScale < 0.9999 ? ' · on a grade / bank' : ''}{Object.keys(sel.state.groundOffset).length ? ' · bumps' : ''}
               </p>
               {segRes.steer && (
-                <p className={`small-text${segRes.steer.over ? ' warn-text' : ''}`} title="Low-speed (Ackermann) steering for the radius: atan(wheelbase ÷ radius). Slip angles come with the handling model (Phase C).">
+                <p className={`small-text${segRes.steer.over ? ' warn-text' : ''}`} title="Steering for the radius: atan(wheelbase ÷ radius) plus the front − rear tire slip angle (more front slip = understeer = more steering). Steady state: yaw and transients come with the handling model (Phase C).">
                   {segRes.steer.none ? 'Steering: no steered wheels.' : <>
                     Steering: road wheels {fmt(Math.abs(segRes.steer.wheelAngle), 1)}° {segRes.steer.wheelAngle > 0 ? 'left' : 'right'}
+                    {Math.abs(segRes.steer.slip) > 0.05 ? ` (${segRes.steer.slip > 0 ? '+' : '−'}${fmt(Math.abs(segRes.steer.slip), 1)}° for the tires' slip: ${segRes.steer.slip > 0 ? 'understeer' : 'oversteer'})` : ''}
                     {' '}· rack {fmt(Math.abs(segRes.steer.rack), 1)} of ±{fmt(segRes.steer.limit, 0)} mm
                     {Number.isFinite(segRes.steer.steeringWheel) ? ` · steering wheel ${fmt(Math.abs(segRes.steer.steeringWheel), 0)}°` : ''}
                     {segRes.steer.over ? ` · full lock gives only ${fmt(segRes.steer.maxAngle, 1)}°` : ''}
@@ -666,7 +667,7 @@ export function TestResults() {
               )}
               {sel.grip ? (
                 <table className="corner-table grip-table">
-                  <thead><tr><th /><th>Load</th><th>Grip use</th><th>State</th><th>Travel</th></tr></thead>
+                  <thead><tr><th /><th>Load</th><th>Grip use</th><th title="Slip angle the tire needs (— = past its peak)">Slip</th><th>State</th><th>Travel</th></tr></thead>
                   <tbody>
                     {CORNER_IDS.map((id: CornerId) => {
                       const g = sel.grip!.corners[id];
@@ -676,6 +677,7 @@ export function TestResults() {
                           <td><b>{id}</b></td>
                           <td>{disp.format(c.tireLoad, 'N', 0)}</td>
                           <td>{fmt(g.utilization * 100, 0)} %</td>
+                          <td>{Number.isFinite(g.slipAngle) ? `${fmt(Math.abs(g.slipAngle), 1)}°` : '—'}</td>
                           <td>{STATE_TEXT[g.state]}{c.status !== 'ok' ? ` · ${c.status}` : ''}{c.onBumpStop ? ' · bump stop' : ''}</td>
                           <td>{disp.format(c.travel, 'mm', 1)}</td>
                         </tr>
@@ -697,7 +699,7 @@ export function TestResults() {
       )}
       <OptimizeSection test={test} onOpenOptimizer={() => openOptimizer(test)} />
       <p className="hint">
-        Grip uses the placeholder tire grip model (not the official one yet). Steady states: what the car does after a tire slides
+        Grip uses the Magic Formula tire model with generic coefficients (Vehicle → Optimize → Tire grip model). Steady states: what the car does after a tire slides
         (runs wide, spins) needs the handling model (Phase C).
       </p>
     </section>

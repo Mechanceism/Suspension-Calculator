@@ -19,8 +19,7 @@ import { localPatch, type TireProfile } from '../tire/geometry';
 import { tireForce, solveLoadedHeight, type TireForceModel } from '../tire/model';
 import { springForce, type SpringSpec } from '../suspension/spring';
 import type { CornerTable } from './cornerTable';
-import { patchGrip, type GripModel } from '../tire/grip';
-import { Y_AXIS } from '../math/vec3';
+import { mfPeaks, mfSlipAngle, mfSlipRatio, type MFCoeffs } from '../tire/magicFormula';
 
 export type CornerId = 'FL' | 'FR' | 'RL' | 'RR';
 export const CORNER_IDS: CornerId[] = ['FL', 'FR', 'RL', 'RR'];
@@ -110,13 +109,11 @@ export interface VehicleInput {
   /** Ground height change under each wheel, mm (+ = bump, − = pothole). */
   groundOffset?: Partial<Record<CornerId, number>>;
   /**
-   * Tire grip model. When given: lateral force within each axle is shared so both tires use the same
-   * fraction of their grip (combined with braking / drive force), and the result reports grip use and
-   * slip. Without it, lateral force within an axle follows tire load.
+   * Tire grip model (Magic Formula). When given: lateral force within each axle is shared so both tires
+   * use the same fraction of their grip (friction ellipse with their braking / drive force), and the
+   * result reports grip use, slip angles and slip ratios. Without it, lateral force follows tire load.
    */
-  grip?: GripModel;
-  /** Sliding friction ÷ peak friction (default 0.8). */
-  slidingRatio?: number;
+  tireGrip?: MFCoeffs;
   /** Differential per axle for chassis-driven corners (default open). */
   diff?: { front?: DiffType; rear?: DiffType };
   /** Limited-slip torque bias ratio (default 2.5). */
@@ -126,10 +123,18 @@ export interface VehicleInput {
 export type SlipState = 'grip' | 'sliding' | 'abs-limit' | 'locked' | 'wheelspin';
 
 export interface CornerGrip {
-  /** Peak friction force the patch can carry, N. */
+  /** Peak force the tire can carry in the direction of its force (friction ellipse), N. */
   capacity: number;
-  /** √(Fx² + Fy²) ÷ capacity (> 1 = more than the tire can do). */
+  /** Peak lateral force toward the turn (camber thrust included) and peak longitudinal force, N. */
+  capY: number;
+  capX: number;
+  /** √((Fx/capX)² + (Fy/capY)²) (> 1 = more than the tire can do). */
   utilization: number;
+  /** Slip angle (deg, sign of the lateral force) and slip ratio the tire needs; NaN past its peak. */
+  slipAngle: number;
+  slipRatio: number;
+  /** Inclination toward the turn, deg (+ = top leaning into the turn: camber thrust helps). */
+  camberToTurn: number;
   state: SlipState;
   /** Force the tire actually delivers when over its limit (sliding: sliding friction; ABS: peak), N. */
   deliverable: number;
@@ -427,11 +432,13 @@ function brakeShares(input: VehicleInput, loads: Record<CornerId, number>): Reco
 
 /**
  * Share an axle's lateral force F between its tires so both use the same fraction u of their grip
- * (friction circle with their longitudinal forces Fx). Returns the lateral forces and u.
+ * (friction ellipse with their longitudinal forces Fx; `capX` defaults to `cap`, a circle).
+ * Returns the lateral forces and u.
  */
-export function shareLateral(F: number, fx: number[], cap: number[]): { fy: number[]; u: number } {
+export function shareLateral(F: number, fx: number[], cap: number[], capX: number[] = cap): { fy: number[]; u: number } {
   const need = Math.abs(F);
-  const lat = (u: number) => cap.map((c, i) => Math.sqrt(Math.max(0, (u * c) ** 2 - fx[i]! ** 2)));
+  // Friction ellipse: (Fx/capX)² + (Fy/capY)² = u².
+  const lat = (u: number) => cap.map((c, i) => c * Math.sqrt(Math.max(0, u * u - (fx[i]! / Math.max(capX[i]!, 1e-9)) ** 2)));
   const total = (u: number) => lat(u).reduce((a, b) => a + b, 0);
   if (cap.every((c) => !(c > 0))) return { fy: cap.map(() => F / cap.length), u: Infinity };
   let lo = 0, hi = 1;
@@ -497,7 +504,8 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
   // Cornering force: front/rear shares come from the CG position (yaw balance), not from the tires.
   const L = input.wheelbase;
   const frontLatShare = L > 0 ? Math.min(1, Math.max(0, (L + input.cg.z) / L)) : 0.5;
-  let caps: Record<CornerId, number> | null = null;
+  let caps: Record<CornerId, TireCaps> | null = null;
+  const latSign = Math.sign(latTotal);
   const byId = Object.fromEntries(input.corners.map((c) => [c.id, c])) as Partial<Record<CornerId, VehicleCorner>>;
   const axleOf = (id: CornerId) => (isFront(id) ? input.shared?.front : input.shared?.rear) ?? NO_SHARED;
   const isCoupled = (a: AxleShared) => a.antiRollBar.kind !== 'none' || a.heaveSpring.kind !== 'none';
@@ -523,7 +531,7 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
     for (const [l, r, share] of [['FL', 'FR', frontLatShare], ['RL', 'RR', 1 - frontLatShare]] as const) {
       const F = latTotal * share;
       if (caps) {
-        const sh = shareLateral(F, [brakeF(l) + driveF(l), brakeF(r) + driveF(r)], [caps[l], caps[r]]);
+        const sh = shareLateral(F, [brakeF(l) + driveF(l), brakeF(r) + driveF(r)], [caps[l].y, caps[r].y], [caps[l].x, caps[r].x]);
         lat[l] = sh.fy[0]!; lat[r] = sh.fy[1]!;
       } else {
         const t = Math.max(0, loads[l]) + Math.max(0, loads[r]);
@@ -576,9 +584,9 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
     const nextLoads = Object.fromEntries(CORNER_IDS.map((id) => [id, cur.corners[id]?.tireLoad ?? 0])) as Record<CornerId, number>;
     let loadsMoved = CORNER_IDS.some((id) => Math.abs(nextLoads[id] - loads[id]) > 1e-4 * W);
     loads = nextLoads;
-    if (input.grip) {
-      const next = capacities(input, cur.corners);
-      if (!caps || CORNER_IDS.some((id) => Math.abs(next[id] - caps![id]) > 1e-4 * W)) loadsMoved = true;
+    if (input.tireGrip) {
+      const next = capacities(input, cur.corners, latSign);
+      if (!caps || CORNER_IDS.some((id) => Math.abs(next[id].y - caps![id].y) > 1e-4 * W || Math.abs(next[id].x - caps![id].x) > 1e-4 * W)) loadsMoved = true;
       caps = next;
     }
     if (loadsMoved) cur = evaluate(pose);
@@ -612,41 +620,88 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
     pose, corners: cur.corners, converged: norm(cur.res) < 1e-5, iterations: it, residual: cur.res,
     sprungMass: sp.mass, sprungCg: sp.cg, notes, unmet,
   };
-  if (input.grip) out.grip = gripSummary(input, out, capacities(input, cur.corners), frontLatShare, latTotal);
+  if (input.tireGrip) out.grip = gripSummary(input, out, capacities(input, cur.corners, latSign), frontLatShare, latTotal);
   return out;
 }
 
-/** Peak friction force of each tire at its solved load and patch. */
-function capacities(input: VehicleInput, corners: Record<CornerId, CornerResult>): Record<CornerId, number> {
-  const out = { FL: 0, FR: 0, RL: 0, RR: 0 } as Record<CornerId, number>;
+/** Inflation pressure of a tire model, kPa (the air-spring model's set pressure; none for the stiffness model). */
+export const tirePressure = (m: TireForceModel): number | undefined => (m.kind === 'gas' ? m.conditions.setPressure : undefined);
+
+/** A tire's peaks at its solved load, inclination and pressure (Magic Formula). */
+interface TireCaps {
+  /** Peak lateral force toward the turn, peak longitudinal force, N. */
+  y: number;
+  x: number;
+  slideY: number;
+  slideX: number;
+  /** Load, inclination toward the turn (rad) and pressure used. */
+  fz: number;
+  gamma: number;
+  pressure?: number;
+}
+
+/**
+ * Peak forces of each tire. Its inclination counts toward the turn (latSign: +1 left, −1 right): a wheel
+ * whose top leans into the turn gets camber thrust on top of its peak. Straight ahead (latSign 0) the
+ * camber only lowers the peak, so both lean directions are averaged.
+ */
+function capacities(input: VehicleInput, corners: Record<CornerId, CornerResult>, latSign: number): Record<CornerId, TireCaps> {
+  const m = input.tireGrip!;
+  const out = {} as Record<CornerId, TireCaps>;
+  for (const id of CORNER_IDS) out[id] = { y: 0, x: 0, slideY: 1, slideX: 1, fz: 0, gamma: 0 };
   for (const c of input.corners) {
     const r = corners[c.id];
     if (!r) continue;
-    out[c.id] = patchGrip(r.wheelCenter, r.axisWorld, { point: vec3(0, r.groundY, 0), normal: Y_AXIS }, c.tire.profile, Math.max(r.tireLoad, 0), input.grip!, 20, 8).capacity;
+    const fz = Math.max(r.tireLoad, 0);
+    const pressure = tirePressure(c.tire.model);
+    // inclination: + = top toward the outboard side; the outboard side is +X for left corners.
+    const toward = r.inclination * (isLeft(c.id) ? 1 : -1) * latSign;
+    if (latSign !== 0) {
+      const pk = mfPeaks(m, { fz, gamma: toward, pressure });
+      out[c.id] = { y: pk.y, x: pk.x, slideY: pk.slideY, slideX: pk.slideX, fz, gamma: toward, pressure };
+    } else {
+      const a = mfPeaks(m, { fz, gamma: r.inclination, pressure });
+      const b = mfPeaks(m, { fz, gamma: -r.inclination, pressure });
+      out[c.id] = { y: (a.y + b.y) / 2, x: a.x, slideY: (a.slideY + b.slideY) / 2, slideX: a.slideX, fz, gamma: 0, pressure };
+    }
   }
   return out;
 }
 
 /** Grip use, slip states and what limits the car (see docs/MATH.md § Grip and slip). */
-function gripSummary(input: VehicleInput, r: VehicleResult, cap: Record<CornerId, number>, frontShare: number, latTotal: number): GripSummary {
-  const slide = input.slidingRatio ?? 0.8;
+function gripSummary(input: VehicleInput, r: VehicleResult, cap: Record<CornerId, TireCaps>, frontShare: number, latTotal: number): GripSummary {
+  const m = input.tireGrip!;
+  const latSign = Math.sign(latTotal);
   const byId = Object.fromEntries(input.corners.map((c) => [c.id, c])) as Partial<Record<CornerId, VehicleCorner>>;
   const corners = {} as Record<CornerId, CornerGrip>;
   for (const id of CORNER_IDS) {
     const c = r.corners[id];
-    const C = Math.max(cap[id], 1e-9);
+    const k = cap[id];
+    const Cy = Math.max(k.y, 1e-9), Cx = Math.max(k.x, 1e-9);
     const fx = c.longitudinalForce, fy = c.lateralForce;
     const need = Math.hypot(fx, fy);
-    const u = need / C;
+    const u = Math.hypot(fx / Cx, fy / Cy);
+    // Peak force along the force's direction, and the sliding share there.
+    const Cdir = need > 1e-9 && u > 0 ? need / u : Cy;
+    const slide = need > 1e-9 ? (Math.abs(fx) * k.slideX + Math.abs(fy) * k.slideY) / (Math.abs(fx) + Math.abs(fy)) : k.slideY;
     let state: SlipState = 'grip';
-    if (c.brakeForce < 0 && Math.abs(fx) > C) state = byId[id]?.abs === false ? 'locked' : 'abs-limit';
-    else if (c.driveForce > 0 && Math.abs(fx) > C) state = 'wheelspin';
+    if (c.brakeForce < 0 && Math.abs(fx) > Cx) state = byId[id]?.abs === false ? 'locked' : 'abs-limit';
+    else if (c.driveForce > 0 && Math.abs(fx) > Cx) state = 'wheelspin';
     else if (u > 1) state = 'sliding';
-    const deliverable = state === 'grip' ? need : state === 'abs-limit' ? C : slide * C;
-    corners[id] = { capacity: cap[id], utilization: u, state, deliverable, shortfall: Math.max(0, need - deliverable) };
+    const deliverable = state === 'grip' ? need : state === 'abs-limit' ? Cdir : slide * Cdir;
+    // Slip the tire needs: the pure-slip force equivalent on the ellipse, inverted on its curve.
+    const inp = { fz: k.fz, gamma: k.gamma, pressure: k.pressure };
+    const ex = Math.min(0.9999, (fx / Cx) ** 2), ey = Math.min(0.9999, (fy / Cy) ** 2);
+    const dirY = latSign || Math.sign(fy) || 1;
+    const alpha = Math.abs(fy) < 1e-6 ? 0 : dirY * mfSlipAngle(m, (dirY * fy) / Math.sqrt(1 - ex), inp);
+    const kappa = Math.abs(fx) < 1e-6 ? 0 : mfSlipRatio(m, fx / Math.sqrt(1 - ey), inp);
+    corners[id] = {
+      capacity: Cdir, capY: k.y, capX: k.x, utilization: u, state, deliverable, shortfall: Math.max(0, need - deliverable),
+      slipAngle: (alpha * 180) / Math.PI, slipRatio: kappa, camberToTurn: (k.gamma * 180) / Math.PI,
+    };
   }
   const axleU = (l: CornerId, rr: CornerId, share: number) =>
-    shareLateral(latTotal * share, [r.corners[l].longitudinalForce, r.corners[rr].longitudinalForce], [cap[l], cap[rr]]).u;
+    shareLateral(latTotal * share, [r.corners[l].longitudinalForce, r.corners[rr].longitudinalForce], [cap[l].y, cap[rr].y], [cap[l].x, cap[rr].x]).u;
   const axles = { front: Math.abs(latTotal) > 1e-6 ? axleU('FL', 'FR', frontShare) : 0, rear: Math.abs(latTotal) > 1e-6 ? axleU('RL', 'RR', 1 - frontShare) : 0 };
   const limits: GripSummary['limits'] = [];
   const over = (ids: CornerId[], states: SlipState[]) => ids.filter((id) => states.includes(corners[id].state));

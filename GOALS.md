@@ -72,8 +72,12 @@ Calculating and visualizing come first. **Later:** export to modeling software (
 - **Profiles** set all severities at once (Street strict, Track, Drift, Off-road, plus user-saved custom profiles); chosen per test with per-segment overrides. The optimizer treats Fail checks as hard requirements, Warning checks as soft penalties, and ignores Pass checks.
 - **Settings export / import:** a settings file with all user preferences (units, view options, custom failure profiles and defaults), separate from model and tests.
 
+### Next: official tire model, then Phase B (decided 2026-11-22)
+1. ✅ **Official tire model = Magic Formula (Pacejka).** Lateral and longitudinal force vs. slip angle / slip ratio with load sensitivity, camber (thrust and its effect on peak grip), tire pressure and the peak → sliding drop. No tire data yet: start from a **generic coefficient set** (clearly labeled generic, every coefficient editable); importing `.tir` files or fitting test data comes later. The contact-patch pressure model stays for the contact-area goal; grip, slip and pass / fail use the Magic Formula. It also gives each tire's slip angle, which Phase C builds on.
+2. **Phase B = full-car ride over time, 7 degrees of freedom:** body heave, pitch and roll plus each wheel bouncing on its tire, using the real nonlinear suspension geometry, the bump / rebound damper rates, tire vertical stiffness and the road surface fed in at the car's speed. Playback becomes real dynamics (body motion, wheel hop, tire-load changes, bump-stop hits, wheel lift over time) checked by the pass rules. Steady accelerations still come from the segments; handling (yaw, path following) is Phase C.
+
 ### Future goals (noted 2026-11-22)
-- **Official tire grip model.** The contact-patch grip model (pressure distribution + load-sensitive friction) is a **placeholder** with default parameters; the official model (fitted to tire data, with camber thrust and a peak → sliding friction curve) has **not been implemented yet**. Grip, contact-area and slip / pass-fail results depend on it.
+- **Tire data for the grip model.** The Magic Formula is in (see above) with generic coefficients. Still to come: importing `.tir` coefficient files, fitting coefficients to measured data (e.g. TTC), and different tires front / rear.
 - **Aero.** Assumed negligible for now. When added: drag acts on the **body** as a braking force (not through the tires), and lift / downforce acts on the body at a center of pressure, so it can lift, lower, pitch or twist (roll / yaw moment) the body, and with that change tire loads and grip. Inputs: CdA, ClA (front/rear or center of pressure), air density; speed comes from the test segments.
 
 Note: the tool simulates whatever linkage the user builds, including ones whose camber motion is far from ideal. Motion quality is judged from the motion itself (IC, characteristic curves, toggle positions), not from a linkage classification; "optimal" is defined by the user's chosen objectives.
@@ -144,7 +148,7 @@ All options are available for manual adjustment and placement. The lock/range co
 - **Model toggles:** e.g. "Apply tire volume change" so the user can see how much a modeling assumption affects the results.
 
 ### Optimizer Objectives
-Maximum contact area is a proxy, not the same as maximum grip. Objectives are selectable and can be weighted: target inclination under load (default), maximum contact area, or maximum friction force from a tire model. **Note:** the tire grip model used today is a placeholder; the official model has not been implemented yet. See [docs/MATH.md](docs/MATH.md#l7-optimizer-objectives-and-requirements).
+Maximum contact area is a proxy, not the same as maximum grip. Objectives are selectable and can be weighted: target inclination under load (default), maximum contact area, or maximum friction force from a tire model. The tire grip model is the Magic Formula (generic coefficients until fitted to tire data). See [docs/MATH.md](docs/MATH.md#l7-optimizer-objectives-and-requirements).
 
 ---
 

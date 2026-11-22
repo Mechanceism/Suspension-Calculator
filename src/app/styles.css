@@ -595,3 +595,14 @@ input[type='range']:disabled { opacity: 0.4; }
 .test-list li { flex-wrap: wrap; row-gap: 2px; }
 .test-list .seg-text { flex: 1 1 calc(100% - 70px); }
 .test-list .seg-tools { flex-basis: 100%; justify-content: flex-end; }
+
+/* Tire grip model editor */
+.tire-plots { display: flex; flex-wrap: wrap; gap: 6px; }
+.tire-plots > div { flex: 1 1 220px; min-width: 0; }
+.tire-plot { display: block; width: 100%; height: auto; background: var(--viewport-bg); border: 1px solid var(--border); border-radius: 4px; }
+.tire-plot .grid-line { stroke: #2c313b; stroke-width: 1; }
+.tire-plot .axis-text { fill: #9097a3; font-size: 8px; }
+.tire-legend span { margin-right: 10px; white-space: nowrap; }
+.tire-legend i { display: inline-block; width: 12px; height: 2px; vertical-align: middle; margin-right: 4px; }
+.tire-legend i.dash { background: repeating-linear-gradient(90deg, #ffd166 0 3px, transparent 3px 5px); }
+.tire-advanced summary { cursor: pointer; color: var(--muted); margin: 6px 0 4px; }

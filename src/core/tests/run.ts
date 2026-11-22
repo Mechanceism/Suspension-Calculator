@@ -22,6 +22,8 @@ export interface StateResult {
   severity: Severity;
   /** No Fail finding. */
   passed: boolean;
+  /** Steering the state needs (turns only), slip angles included. */
+  steer?: SteerNeed | null;
 }
 
 export interface SegmentResult {
@@ -62,9 +64,18 @@ export interface TestRun {
 /** Segment physics plus the checks that decide its pass / fail. */
 export type TestSegmentSpec = SegmentSpec & { checks?: CheckProfile; weight?: number };
 
-/** Steering a segment's turn needs (null on a straight or without steering data). */
-export const steerNeedOf = (p: VehicleProblem, asm: AssembledVehicle, seg: Pick<SegmentSpec, 'path' | 'radius'>): SteerNeed | null =>
-  (p.steering ? steerForTurn(asm.built, p.roots, p.steering, p.wheelbase, seg.path, seg.radius) : null);
+/** Front − rear mean slip angle (rad, + = understeer) of a solved state; 0 without grip data. */
+export function slipDifference(r: VehicleResult | null | undefined): number {
+  const g = r?.grip;
+  if (!g) return 0;
+  const mean = (ids: CornerId[]) => ids.reduce((a, id) => a + Math.abs(g.corners[id].slipAngle), 0) / ids.length;
+  const d = (mean(['FL', 'FR']) - mean(['RL', 'RR'])) * (Math.PI / 180);
+  return Number.isFinite(d) ? d : 0;
+}
+
+/** Steering a segment's turn needs at a solved state (null on a straight or without steering data). */
+export const steerNeedOf = (p: VehicleProblem, asm: AssembledVehicle, seg: Pick<SegmentSpec, 'path' | 'radius'>, result?: VehicleResult | null): SteerNeed | null =>
+  (p.steering ? steerForTurn(asm.built, p.roots, p.steering, p.wheelbase, seg.path, seg.radius, slipDifference(result)) : null);
 
 export function stateFacts(p: VehicleProblem, asm: AssembledVehicle, st: RoadState, result: VehicleResult | null, steer?: SteerNeed | null) {
   const track = Math.abs(asm.chars.FL.contactPoint.x) + Math.abs(asm.chars.RL.contactPoint.x); // average track
@@ -89,7 +100,7 @@ function availableG(p: VehicleProblem, asm: AssembledVehicle): number {
   return v;
 }
 
-function evalState(p: VehicleProblem, asm: AssembledVehicle, st: RoadState, checks: CheckProfile, guess?: ChassisPose, steer?: SteerNeed | null): StateResult {
+function evalState(p: VehicleProblem, asm: AssembledVehicle, st: RoadState, checks: CheckProfile, guess?: ChassisPose, seg?: Pick<SegmentSpec, 'path' | 'radius'>): StateResult {
   const spec = {
     name: st.name, kind: 'state' as const, g: Math.hypot(st.ay, st.ax), lateralG: st.lateralG, brakingG: st.brakingG, accelG: st.accelG,
     gravityScale: st.gravityScale, groundOffset: st.groundOffset, state: st,
@@ -101,15 +112,17 @@ function evalState(p: VehicleProblem, asm: AssembledVehicle, st: RoadState, chec
     const cold = solveCase(p, asm, spec);
     if (cold && (cold.result.converged || !e)) e = cold;
   }
+  const steer = seg ? steerNeedOf(p, asm, seg, e?.result) : null;
+  if (steer) st.rack = steer.rackUsed;
   const findings = classifyState(stateFacts(p, asm, st, e?.result ?? null, steer), checks);
   const severity = worstSeverity(findings);
-  if (!e) return { state: st, converged: false, pose: null, corners: null, grip: null, findings, severity, passed: false };
+  if (!e) return { state: st, converged: false, pose: null, corners: null, grip: null, findings, severity, passed: false, steer };
   const r = e.result;
   const corners = Object.fromEntries(CORNER_IDS.map((id) => {
     const c = r.corners[id];
     return [id, { tireLoad: c.tireLoad, lateralForce: c.lateralForce, longitudinalForce: c.longitudinalForce, travel: c.travel, status: c.status, inclination: c.inclination, onBumpStop: c.onBumpStop }];
   })) as StateResult['corners'];
-  return { state: st, converged: true, pose: r.pose, corners, grip: r.grip ?? null, findings, severity, passed: severity !== 'fail' };
+  return { state: st, converged: true, pose: r.pose, corners, grip: r.grip ?? null, findings, severity, passed: severity !== 'fail', steer };
 }
 
 const dedupe = (fs: Finding[]): Finding[] => {
@@ -121,8 +134,7 @@ const dedupe = (fs: Finding[]): Finding[] => {
 
 /** Fastest speed scale (0–1) at which every sample of the segment has no Fail. */
 function speedLimitOf(p: VehicleProblem, asm: AssembledVehicle, seg: TestSegmentSpec, index: number, checks: CheckProfile): number {
-  const steer = steerNeedOf(p, asm, seg);
-  const passes = (k: number) => segmentStates(seg, index, k, dimsOf(p, asm)).every((st) => evalState(p, asm, st, checks, undefined, steer).passed);
+  const passes = (k: number) => segmentStates(seg, index, k, dimsOf(p, asm)).every((st) => evalState(p, asm, st, checks, undefined, seg).passed);
   if (!passes(0.02)) return 0;
   let lo = 0.02, hi = 1;
   for (let i = 0; i < 12; i++) {
@@ -142,10 +154,8 @@ export function runTest(
   let guess: ChassisPose | undefined;
   segments.forEach((seg, i) => {
     const checks = seg.checks ?? PROFILES.default.checks;
-    const steer = steerNeedOf(p, asm, seg);
     const rs = segmentStates(seg, i, 1, dimsOf(p, asm)).map((st) => {
-      if (steer) st.rack = steer.rackUsed;
-      const r = evalState(p, asm, st, checks, guess, steer);
+      const r = evalState(p, asm, st, checks, guess, seg);
       if (r.pose) guess = r.pose;
       return r;
     });
@@ -155,11 +165,13 @@ export function runTest(
     const res: SegmentResult = {
       index: i, severity, passed: severity !== 'fail', findings,
       maxUtilization: Math.max(...rs.map((r) => r.grip?.maxUtilization ?? Infinity)),
-      impossible: findings.some((f) => f.check === 'beyondGrip'), steer,
+      impossible: findings.some((f) => f.check === 'beyondGrip'),
+      // The sample needing the most steering.
+      steer: rs.reduce<SteerNeed | null>((a, x) => (x.steer && (!a || Math.abs(x.steer.wheelAngle) > Math.abs(a.wheelAngle)) ? x.steer : a), null),
     };
     if (!res.passed && (opts.onFail === 'lift' || opts.speedLimits)) {
       res.speedLimit = speedLimitOf(p, asm, seg, i, checks);
-      if (opts.onFail === 'lift' && res.speedLimit > 0) res.lifted = segmentStates(seg, i, res.speedLimit, dimsOf(p, asm)).map((st) => evalState(p, asm, st, checks, undefined, steer));
+      if (opts.onFail === 'lift' && res.speedLimit > 0) res.lifted = segmentStates(seg, i, res.speedLimit, dimsOf(p, asm)).map((st) => evalState(p, asm, st, checks, undefined, seg));
     }
     segs.push(res);
   });
@@ -217,7 +229,6 @@ export function playbackFrames(
     if (!(T > 0)) return;
     const a = (sg.v1 - sg.v0) / T; // m/s², constant over the segment
     const checks = sg.checks ?? PROFILES.default.checks;
-    const steer = steerNeedOf(p, asm, sg);
     let lastS = 0;
     for (let tt = 0; tt < T - 1e-9; tt += dt) {
       const sAlong = sg.v0 * tt + 0.5 * a * tt * tt;
@@ -235,12 +246,12 @@ export function playbackFrames(
       const wh = sg.road ? wheelHeights(sg.road, sAlong, dims.wheelbase / 1000, dims.halfTrack / 1000) : { FL: 0, FR: 0, RL: 0, RR: 0 };
       const ground: Partial<Record<CornerId, number>> = {};
       for (const id of CORNER_IDS) { const h = (sg.bumps?.[id] ?? 0) + wh[id]; if (Math.abs(h) > 1e-6) ground[id] = h; }
-      const st: RoadState = { name: `${i + 1}@${sAlong.toFixed(1)}m`, segment: i, speed: v, ay, ax, at: sAlong, ...roadEffective(ay, ax, sg.grade, sg.bank), groundOffset: ground, grade: sg.grade, bank: sg.bank, rack: steer?.rackUsed ?? 0 };
-      const r = evalState(p, asm, st, checks, guess, steer);
+      const st: RoadState = { name: `${i + 1}@${sAlong.toFixed(1)}m`, segment: i, speed: v, ay, ax, at: sAlong, ...roadEffective(ay, ax, sg.grade, sg.bank), groundOffset: ground, grade: sg.grade, bank: sg.bank };
+      const r = evalState(p, asm, st, checks, guess, sg);
       if (r.pose) guess = r.pose;
       frames.push({
         t: t0 + tt, segment: i, s: sAlong, speed: v, ay, ax, grade: sg.grade, bank: sg.bank, groundOffset: ground,
-        pos: { x, y, z }, heading, rack: steer?.rackUsed ?? 0, severity: r.severity,
+        pos: { x, y, z }, heading, rack: r.steer?.rackUsed ?? 0, severity: r.severity,
         utilization: Object.fromEntries(CORNER_IDS.map((id) => [id, r.grip?.corners[id].utilization ?? NaN])) as Record<CornerId, number>,
         findings: r.findings.filter((f) => f.severity !== 'pass').map((f) => f.text),
       });

@@ -20,6 +20,7 @@ export * from './vehicle/vehicle';
 export * from './optimize/leastSquares';
 export * from './optimize/corner';
 export * from './tire/grip';
+export * from './tire/magicFormula';
 export * from './optimize/vehicle';
 export * from './math/dimension';
 export * from './suspension/dimensions';

@@ -13,7 +13,7 @@
  */
 import { type Vec3, vec3, add, sub, scale, cross, normalize, length, distance as dist, Y_AXIS } from '../math/vec3';
 import type { Mat3 } from '../math/mat3';
-import { ConstraintSystem, PoseContext, type Poses, type SolveResult, type PointRef, fixedDistance, coordinate } from '../solver/system';
+import { ConstraintSystem, PoseContext, type Poses, type SolveResult, type PointRef, fixedDistance, coordinate, revolute } from '../solver/system';
 
 /** Rigid-tire contact point: lowest point of the wheel's circle (kept here to avoid an import cycle). */
 function contactPoint(center: Vec3, spinAxisUnit: Vec3, radius: number): Vec3 {
@@ -36,14 +36,26 @@ export interface SolidAxleGeometry {
   readonly links: readonly AxleLink[];
   /** Coilovers / spring seats: frame end and axle end per side (left; the right mirrors unless given). */
   readonly springs?: { readonly left: { chassis: Vec3; axle: Vec3 }; readonly right?: { chassis: Vec3; axle: Vec3 } };
+  /**
+   * Watt's linkage (locates the axle sideways, like a Panhard rod, but its pivot moves straight up and down):
+   * a bar on a pivot on the axle (turning about the car's length), its top end linked to the frame on one
+   * side and its bottom end to the frame on the other.
+   */
+  readonly watts?: { readonly pivot: Vec3; readonly top: { chassis: Vec3; bar: Vec3 }; readonly bottom: { chassis: Vec3; bar: Vec3 } };
+  /**
+   * Steered axle: each wheel on a knuckle turning on a kingpin at the axle's end (left given, right
+   * mirrored); a cross tie rod joins the knuckles' arms (left arm point and its mirror), and a drag link
+   * runs from the steering (its frame end moves with the rack along X) to the left arm.
+   */
+  readonly steering?: { readonly kingpinLower: Vec3; readonly kingpinUpper: Vec3; readonly arm: Vec3; readonly dragLink: Vec3 };
 }
 
-export interface AxleInputs { left?: number; right?: number }
+export interface AxleInputs { left?: number; right?: number; /** Steered axle: rack travel, mm. */ rack?: number }
 
 export interface AxleWheel { center: Vec3; spinAxis: Vec3; contact: Vec3 }
 
 export interface AxleState {
-  inputs: { left: number; right: number };
+  inputs: { left: number; right: number; rack?: number };
   solve: SolveResult;
   poses: Poses;
   left: AxleWheel;
@@ -54,6 +66,8 @@ export interface AxleState {
   springLength?: { left: number; right: number };
   /** The bodies carrying each wheel in `poses` (a solid axle: 'axle' for both). */
   bodies?: { left: string; right: string };
+  /** Steered axle: the kingpins (lower, upper), the knuckles' arm points and the drag link's frame end, now. */
+  steer?: { kingpin: { left: [Vec3, Vec3]; right: [Vec3, Vec3] }; arm: { left: Vec3; right: Vec3 }; drag: Vec3 };
   /** Twist beam: its heave and twist angles (rad) and where the shear center is now. */
   twist?: { heave: number; twist: number; shearCenter: Vec3 };
 }
@@ -78,6 +92,17 @@ export class SolidAxle {
     this.spinL = normalize(g.wheel.spinAxis);
     this.spinR = mirror(this.spinL);
     if (g.links.length < 1) throw new Error('A solid axle needs links to locate it');
+    const w = g.watts;
+    if (w) {
+      if (dist(w.top.bar, w.bottom.bar) < 1e-6) throw new Error("Degenerate geometry: the Watt's bar ends coincide");
+      if (dist(w.top.chassis, w.top.bar) < 1e-6 || dist(w.bottom.chassis, w.bottom.bar) < 1e-6) throw new Error("Degenerate geometry: a Watt's link's ends coincide");
+    }
+    const st = g.steering;
+    if (st) {
+      if (dist(st.kingpinLower, st.kingpinUpper) < 1e-6) throw new Error('Degenerate geometry: the kingpin points coincide');
+      if (Math.abs(st.arm.x) < 1e-6) throw new Error('Degenerate geometry: the steering arm point is on the centerline (the cross tie rod has no length)');
+      if (dist(st.dragLink, st.arm) < 1e-6) throw new Error('Degenerate geometry: the drag link ends coincide');
+    }
     for (const l of g.links) if (dist(l.chassis, l.axle) < 1e-6) throw new Error(`Degenerate geometry: ${l.name} link ends coincide`);
     if (Math.abs(g.wheel.center.x) < 1e-6) throw new Error('Degenerate geometry: the wheel center is on the centerline');
   }
@@ -92,7 +117,7 @@ export class SolidAxle {
   design(): AxleState { return this.solve({}); }
 
   solve(inputs: AxleInputs, initial?: Poses): AxleState {
-    const qL = inputs.left ?? 0, qR = inputs.right ?? 0;
+    const qL = inputs.left ?? 0, qR = inputs.right ?? 0, rack = inputs.rack ?? 0;
     const g = this.geometry;
     const sys = new ConstraintSystem();
     sys.addBody('chassis', vec3(0, 0, 0), { fixed: true });
@@ -100,22 +125,57 @@ export class SolidAxle {
     sys.addBody('axle', origin, { size: Math.max(Math.abs(g.wheel.center.x), 1) });
     const refs = g.links.map((l) => ({ l, a: sys.attach('axle', l.axle) as PointRef }));
     for (const { l, a } of refs) sys.add(fixedDistance(`${l.name} link`, sys.attach('chassis', l.chassis), a, dist(l.chassis, l.axle)));
-    const wl = sys.attach('axle', g.wheel.center), wr = sys.attach('axle', this.rightCenter);
+    // Watt's linkage: the bar on its pivot (turning about the car's length), a link from each end.
+    const w = g.watts;
+    if (w) {
+      sys.addBody('watts', w.pivot, { size: Math.max(dist(w.top.bar, w.bottom.bar) / 2, 1) });
+      sys.add(revolute(sys, "Watt's pivot", 'axle', 'watts', w.pivot, add(w.pivot, vec3(0, 0, 100))));
+      sys.add(fixedDistance("Watt's top link", sys.attach('chassis', w.top.chassis), sys.attach('watts', w.top.bar), dist(w.top.chassis, w.top.bar)));
+      sys.add(fixedDistance("Watt's bottom link", sys.attach('chassis', w.bottom.chassis), sys.attach('watts', w.bottom.bar), dist(w.bottom.chassis, w.bottom.bar)));
+    }
+    // Steered axle: knuckles on the kingpins, the cross tie rod and the drag link (moved by the rack).
+    const st = g.steering;
+    const wheelBody = st ? { left: 'knL', right: 'knR' } : { left: 'axle', right: 'axle' };
+    const dragAt = st ? add(st.dragLink, vec3(rack, 0, 0)) : null;
+    if (st) {
+      const kl = [st.kingpinLower, st.kingpinUpper] as const, kr = [mirror(st.kingpinLower), mirror(st.kingpinUpper)] as const;
+      sys.addBody('knL', mid(kl[0], kl[1]), { size: Math.max(dist(mid(kl[0], kl[1]), g.wheel.center), 1) });
+      sys.addBody('knR', mid(kr[0], kr[1]), { size: Math.max(dist(mid(kl[0], kl[1]), g.wheel.center), 1) });
+      sys.add(revolute(sys, 'left kingpin', 'axle', 'knL', kl[0], kl[1]));
+      sys.add(revolute(sys, 'right kingpin', 'axle', 'knR', kr[0], kr[1]));
+      sys.add(fixedDistance('cross tie rod', sys.attach('knL', st.arm), sys.attach('knR', mirror(st.arm)), 2 * Math.abs(st.arm.x)));
+      sys.add(fixedDistance('drag link', sys.attach('chassis', dragAt!), sys.attach('knL', st.arm), dist(st.dragLink, st.arm)));
+    }
+    const wl = sys.attach(wheelBody.left, g.wheel.center), wr = sys.attach(wheelBody.right, this.rightCenter);
     sys.add(coordinate('left travel', wl, Y_AXIS, g.wheel.center.y + qL));
     sys.add(coordinate('right travel', wr, Y_AXIS, this.rightCenter.y + qR));
     const sp = this.springMounts();
     const spL = sp ? sys.attach('axle', sp.left.axle) : null, spR = sp ? sys.attach('axle', sp.right.axle) : null;
     const result = sys.solve({ ...sys.designPoses(), ...(initial ?? {}), chassis: sys.designPoses().chassis! });
     const ctx = new PoseContext(result.poses);
-    const wheel = (c: PointRef, spin: Vec3): AxleWheel => {
+    const wheel = (c: PointRef, spin: Vec3, body: string): AxleWheel => {
       const center = ctx.world(c);
-      const spinAxis = normalize(ctx.direction('axle', spin));
+      const spinAxis = normalize(ctx.direction(body, spin));
       return { center, spinAxis, contact: contactPoint(center, spinAxis, g.wheel.radius) };
     };
+    const extra: { name: string; chassis: Vec3; axle: Vec3 }[] = [];
+    if (w) {
+      const top = ctx.world(sys.attach('watts', w.top.bar)), bottom = ctx.world(sys.attach('watts', w.bottom.bar));
+      extra.push({ name: "Watt's top link", chassis: w.top.chassis, axle: top }, { name: "Watt's bottom link", chassis: w.bottom.chassis, axle: bottom }, { name: "Watt's bar", chassis: top, axle: bottom });
+    }
+    let steer: AxleState['steer'];
+    if (st) {
+      const on = (b: string, p: Vec3) => ctx.world(sys.attach(b, p));
+      steer = {
+        kingpin: { left: [on('axle', st.kingpinLower), on('axle', st.kingpinUpper)], right: [on('axle', mirror(st.kingpinLower)), on('axle', mirror(st.kingpinUpper))] },
+        arm: { left: on('knL', st.arm), right: on('knR', mirror(st.arm)) }, drag: dragAt!,
+      };
+    }
     return {
-      inputs: { left: qL, right: qR }, solve: result, poses: result.poses,
-      left: wheel(wl, this.spinL), right: wheel(wr, this.spinR),
-      links: refs.map(({ l, a }) => ({ name: l.name, chassis: l.chassis, axle: ctx.world(a) })),
+      inputs: { left: qL, right: qR, ...(rack ? { rack } : {}) }, solve: result, poses: result.poses,
+      ...(st ? { bodies: wheelBody, steer } : {}),
+      left: wheel(wl, this.spinL, wheelBody.left), right: wheel(wr, this.spinR, wheelBody.right),
+      links: [...refs.map(({ l, a }) => ({ name: l.name, chassis: l.chassis, axle: ctx.world(a) })), ...extra],
       ...(sp && spL && spR ? { springLength: { left: length(sub(ctx.world(spL), sp.left.chassis)), right: length(sub(ctx.world(spR), sp.right.chassis)) } } : {}),
     };
   }
@@ -168,8 +228,8 @@ export function axleCharacteristics(axle: SolidAxle, s: AxleState, h = 1): AxleC
   };
   const groundY = (s.left.contact.y + s.right.contact.y) / 2;
   // Roll: left up h, right down h.
-  const rp = axle.solve({ left: s.inputs.left + h, right: s.inputs.right - h }, s.poses);
-  const rm = axle.solve({ left: s.inputs.left - h, right: s.inputs.right + h }, s.poses);
+  const rp = axle.solve({ left: s.inputs.left + h, right: s.inputs.right - h , rack: s.inputs.rack ?? 0 }, s.poses);
+  const rm = axle.solve({ left: s.inputs.left - h, right: s.inputs.right + h , rack: s.inputs.rack ?? 0 }, s.poses);
   const rr = rotBetween(rm, rp);
   // Roll center: the point in the axle's transverse plane with no velocity in front view. From the two
   // poses: the axle rotates by Δφ in front view and its center moves by Δc; the instant center p solves
@@ -184,8 +244,8 @@ export function axleCharacteristics(axle: SolidAxle, s: AxleState, h = 1): AxleC
     rcY = c.y + dc.x / dphi;
   }
   // Heave: both up h.
-  const hp = axle.solve({ left: s.inputs.left + h, right: s.inputs.right + h }, s.poses);
-  const hm = axle.solve({ left: s.inputs.left - h, right: s.inputs.right - h }, s.poses);
+  const hp = axle.solve({ left: s.inputs.left + h, right: s.inputs.right + h , rack: s.inputs.rack ?? 0 }, s.poses);
+  const hm = axle.solve({ left: s.inputs.left - h, right: s.inputs.right - h , rack: s.inputs.rack ?? 0 }, s.poses);
   const hr = rotBetween(hm, hp);
   const hc0 = mid(hm.left.center, hm.right.center), hc1 = mid(hp.left.center, hp.right.center);
   const hdc = sub(hc1, hc0);

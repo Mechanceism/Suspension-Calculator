@@ -79,15 +79,16 @@ export function linkageShape(p: CornerPoints, kind: SuspensionKind): LinkageShap
       upright: [p.wheelCenter, right], axis: [p.contact, p.steerUpper],
     };
   }
-  if (kind === 'beam4' || kind === 'beam3') {
-    // The whole axle: links on both sides (the right ones mirrored), the axle tube, the Panhard rod.
+  if (kind === 'beam4' || kind === 'beam3' || kind === 'beamWatts') {
+    // The whole axle: links on both sides (the right ones mirrored), the axle tube, the Panhard rod or Watt's linkage.
     const m = (v: Vec3): Vec3 => ({ x: -v.x, y: v.y, z: v.z });
     const right = p.axleRight ?? m(p.wheelCenter);
     const lower: [Vec3, Vec3][] = [[p.lcaFwd, p.lcaOut], [m(p.lcaFwd), mirrorOnAxle(p, p.lcaOut, right)]];
     const upper: [Vec3, Vec3][] = kind === 'beam4' ? [[p.ucaFwd, p.ucaOut], [m(p.ucaFwd), mirrorOnAxle(p, p.ucaOut, right)]] : [[p.ucaFwd, p.ucaOut]];
     return {
-      ucaTri: null, lcaTri: null, uca: upper, lca: [...lower, ...(p.panhardChassis && p.panhardAxle ? [[p.panhardChassis, p.panhardAxle] as [Vec3, Vec3]] : [])],
-      upright: [p.wheelCenter, right], axis: [p.contact, p.steerUpper],
+      ucaTri: null, lcaTri: null, uca: upper,
+      lca: [...lower, ...(kind === 'beam3' && p.panhardChassis && p.panhardAxle ? [[p.panhardChassis, p.panhardAxle] as [Vec3, Vec3]] : []), ...(p.wattsLinks ?? [])],
+      upright: [p.wheelCenter, right], axis: p.crossTieRod ? [p.steerLower, p.steerUpper] : [p.contact, p.steerUpper],
     };
   }
   if (kind === 'singleArm') {

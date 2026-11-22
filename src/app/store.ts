@@ -183,6 +183,8 @@ export interface EditableGeometry {
   scalars: Record<ScalarKey, Field>;
   /** Which arm the coilover's lower mount is attached to. */
   damperArm: ArmChoice;
+  /** Solid axle: steered (kingpins UCA_Out2 / LCA_Out2 on the axle, knuckle arm TR_Out, drag link from TR_In). */
+  steeredAxle?: boolean;
   /** Custom linkage: its bodies and joints (mm; kept when switching to another type and back). */
   custom?: CustomLinkage;
 }
@@ -221,6 +223,7 @@ export function editableFromLayout(id: string): EditableGeometry {
     springLayout: g.rocker ? 'rocker' : 'coilover',
     pushrodOn: g.rocker?.pushrodBody === 'uca' || g.rocker?.pushrodBody === 'upright' ? g.rocker.pushrodBody : 'lca',
     kind: g.kind ?? 'doubleWishbone',
+    ...(g.steeredAxle ? { steeredAxle: true } : {}),
     damperArm: g.damper?.arm === 'uca' || g.damper?.arm === 'upright' ? g.damper.arm : 'lca',
     scalars: {
       staticCamber: field(0, 'angle'),
@@ -263,14 +266,16 @@ export function toGeometry(e: EditableGeometry): DoubleWishboneGeometry {
   const et = Number.isFinite(s.wheelOffset.value) ? s.wheelOffset.value : 0;
   const hub = p('wheelCenter');
   const kind = e.kind ?? 'doubleWishbone';
-  const ml = kind === 'multilink';
+  // Second upright points: the multilink's rear links, or a steered solid axle's kingpin (top / bottom).
+  const ml = kind === 'multilink' || (isBeam(kind) && !!e.steeredAxle);
   return {
     kind,
     uca: { fwd: p('ucaFwd'), aft: p('ucaAft'), out: p('ucaOut'), ...(ml ? { out2: p('ucaOut2') } : {}) },
     lca: { fwd: p('lcaFwd'), aft: p('lcaAft'), out: p('lcaOut'), ...(ml ? { out2: p('lcaOut2') } : {}) },
     tieRod: { inner: p('trInner'), outer: p('trOuter') },
     ...(e.steerMechanism === 'arm' ? { steering: { kind: 'arm' as const, pivot1: p('strPiv1'), pivot2: p('strPiv2') } } : {}),
-    ...(kind === 'beam3' ? { panhard: { chassis: p('phChs'), axle: p('phAxle') } } : {}),
+    ...(kind === 'beam3' || kind === 'beamWatts' ? { panhard: { chassis: p('phChs'), axle: p('phAxle') } } : {}),
+    ...(isBeam(kind) && e.steeredAxle ? { steeredAxle: true } : {}),
     ...(kind === 'custom' && e.custom ? { custom: e.custom } : {}),
     wheel: {
       center: vec3(hub.x - et * spinAxis.x, hub.y - et * spinAxis.y, hub.z - et * spinAxis.z),
@@ -312,8 +317,26 @@ export function flipRackSide(e: EditableGeometry): EditableGeometry {
 }
 
 /** Hardpoints a suspension type (and spring layout) uses, in table order. */
-export function activePointKeys(kind: SuspensionKind, layout: SpringLayout = 'coilover', steer: SteerMechanism = 'rack'): PointKey[] {
-  const base = kindPointKeys(kind);
+/**
+ * Default points for a steered solid axle around the hub: the kingpin 125 mm inboard with ~7° of KPI and
+ * 4° of caster; the knuckle arm 150 mm behind it, angled in toward the rear axle's center (Ackermann);
+ * the drag link's steering end near the centerline at the arm's height.
+ */
+export function steeredAxlePoints(e: EditableGeometry, wheelbase: number): Partial<EditableGeometry['points']> {
+  const v = (k: PointKey) => vec3(e.points[k][0].value, e.points[k][1].value, e.points[k][2].value);
+  const c = v('wheelCenter');
+  const kx = c.x - 125, lo = vec3(kx + 15, c.y - 120, c.z + 8), up = vec3(kx - 15, c.y + 120, c.z - 8);
+  const armZ = c.z - 150, armX = kx - (kx * 150) / Math.max(wheelbase, 500);
+  return {
+    lcaOut2: fields(lo), ucaOut2: fields(up),
+    trOuter: fields(vec3(armX, c.y - 20, armZ)),
+    trInner: fields(vec3(60, c.y + 10, armZ)),
+  };
+}
+
+export function activePointKeys(kind: SuspensionKind, layout: SpringLayout = 'coilover', steer: SteerMechanism = 'rack', steeredAxle = false): PointKey[] {
+  // A steered solid axle: its kingpins (UCA_Out2 top, LCA_Out2 bottom), knuckle arm and drag link.
+  const base = isBeam(kind) && steeredAxle ? [...kindPointKeys(kind), 'ucaOut2', 'lcaOut2', 'trInner', 'trOuter'] as PointKey[] : kindPointKeys(kind);
   const withRocker = layout === 'rocker' && rockerAllowed(kind) ? [...base, ...ROCKER_KEYS] : base;
   return steer === 'arm' ? [...withRocker, 'strPiv1', 'strPiv2'] : withRocker;
 }
@@ -324,7 +347,7 @@ function kindPointKeys(kind: SuspensionKind): PointKey[] {
   if (kind === 'beamLeaf') return ['lcaFwd', 'lcaOut', 'lcaAft', 'wheelCenter'];
   if (kind === 'custom') return ['wheelCenter', 'dmpChassis', 'dmpArm'];
   if (kind === 'twistBeam') return ['lcaFwd', 'lcaAft', 'lcaOut', 'wheelCenter', 'dmpChassis', 'dmpArm'];
-  if (kind === 'beam3') return ['lcaFwd', 'lcaOut', 'ucaFwd', 'ucaOut', 'phChs', 'phAxle', 'wheelCenter', 'dmpChassis', 'dmpArm'];
+  if (kind === 'beam3' || kind === 'beamWatts') return ['lcaFwd', 'lcaOut', 'ucaFwd', 'ucaOut', 'phChs', 'phAxle', 'wheelCenter', 'dmpChassis', 'dmpArm'];
   if (kind === 'singleArm') return ['lcaFwd', 'lcaAft', 'lcaOut', 'ucaOut', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm'];
   if (kind === 'multilink') return ['ucaFwd', 'ucaOut', 'ucaAft', 'ucaOut2', 'lcaFwd', 'lcaOut', 'lcaAft', 'lcaOut2', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm'];
   return ['ucaFwd', 'ucaAft', 'ucaOut', 'lcaFwd', 'lcaAft', 'lcaOut', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm'];
@@ -375,7 +398,10 @@ export function convertGeometry(e: EditableGeometry, kind: SuspensionKind): Edit
     put('lcaOut', vec3(c.x - 150, c.y - 120, c.z)); put('lcaFwd', vec3(c.x - 150, c.y - 100, c.z + 550));
     if (kind === 'beam4') { put('ucaOut', vec3(c.x - 350, c.y + 120, c.z + 20)); put('ucaFwd', vec3(120, c.y + 150, c.z + 420)); }
     else { put('ucaOut', vec3(0, c.y + 130, c.z)); put('ucaFwd', vec3(0, c.y + 170, c.z + 400)); }
-    put('phAxle', vec3(c.x - 200, c.y + 60, c.z - 80)); put('phChs', vec3(-(c.x - 250), c.y + 60, c.z - 80));
+    if (kind === 'beamWatts') {
+      // Watt's linkage: the bar's pivot on the axle's center behind it, the top link to the frame on the left.
+      put('phAxle', vec3(0, c.y + 40, c.z - 120)); put('phChs', vec3(c.x - 250, c.y + 130, c.z - 120));
+    } else { put('phAxle', vec3(c.x - 200, c.y + 60, c.z - 80)); put('phChs', vec3(-(c.x - 250), c.y + 60, c.z - 80)); }
     put('dmpArm', vec3(c.x - 200, c.y + 30, c.z - 30)); put('dmpChassis', vec3(c.x - 200, c.y + 30 + coilLen, c.z - 30));
     put('ucaAft', p('ucaFwd')); put('lcaAft', p('lcaFwd'));
     return { ...e, kind, points: pts, springLayout: 'coilover', damperArm: 'upright' };
@@ -639,6 +665,8 @@ export interface AppState extends DesignState {
   setPushrodOn(on: ArmChoice): void;
   /** Set a point of any corner's design (the active one or another), mm in that corner's own frame. */
   setCornerPoint(id: CornerId, key: PointKey, v: Vec3): void;
+  /** Solid axle: steered or not (turning it on places kingpins, a knuckle arm and a drag link from the hub). */
+  setSteeredAxle(on: boolean): void;
   /** Custom linkage: replace its bodies and joints (one undo step). */
   setCustom(c: CustomLinkage): void;
   /** Change the active design's suspension type (convertGeometry). */
@@ -1666,6 +1694,19 @@ export const useApp = create<AppState>((set, get) => ({
       : 'Coilover: from the pushrod\'s lower end up to where the rocker pivot was.', 'info');
   },
   setCustom: (c) => set({ geom: { ...get().geom, custom: c }, presetId: 'custom' }),
+  setSteeredAxle: (on) => {
+    const s = get();
+    const geom = s.geom;
+    if (!isBeam(geom.kind) || !!geom.steeredAxle === on) return;
+    let next: EditableGeometry = { ...geom, steeredAxle: on };
+    if (on) next = { ...next, points: { ...geom.points, ...steeredAxlePoints(geom, s.vehicle.wheelbase.value) } };
+    try { new DoubleWishbone(toGeometry(next)).design(); } catch (err) {
+      get().notify(`Can't steer this axle: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      return;
+    }
+    set({ geom: next, presetId: 'custom' });
+    if (on) get().notify('Steered axle: each wheel turns on a kingpin at the axle end (UCA_Out2 top, LCA_Out2 bottom). A cross tie rod joins the knuckle arms (TR_Out and its mirror), set behind the kingpins pointing at the rear axle (Ackermann), and a drag link runs from the steering (TR_In, moved by the rack) to the left arm. Its angle against the axle\'s links sets the bump steer.', 'info');
+  },
   setCornerPoint: (id, key, v) => {
     const s = get();
     const root = rootOf(id, s.links);
@@ -1697,10 +1738,11 @@ export const useApp = create<AppState>((set, get) => ({
       return;
     }
     set({ geom: next, presetId: 'custom', spring: fittedSpring(next, get().spring), selection: null });
-    // A solid axle spans the axle: its left and right corners share the design.
+    // A solid axle spans the axle: its left and right corners share the design. A steered corner gets a steered axle.
     if (isBeam(kind)) {
       const front = get().activeCorner === 'FL' || get().activeCorner === 'FR';
       get().setLink(front ? 'frontPair' : 'rearPair', true);
+      if (get().settings[get().activeCorner].steered && !get().geom.steeredAxle) get().setSteeredAxle(true);
     }
     // A twist beam's beam twists like an anti-roll bar: start from a typical stiffness if the axle has none.
     if (kind === 'twistBeam') {
@@ -1708,7 +1750,7 @@ export const useApp = create<AppState>((set, get) => ({
       const sh = get().shared[axle];
       if (sh.antiRollBar === 'none') { get().setShared(axle, { antiRollBar: 'wheelRate' }); get().setSharedField(axle, 'arbRate', '15'); }
     }
-    get().notify(`${SUSPENSION_LABELS[kind]}: ${kind === 'custom' ? 'edit its bodies and joints in the Linkage editor (Inspector, with nothing selected). It starts from the current arms as hinged bodies with ball joints to the knuckle and the tie rod as a rod from the rack, so it moves the same; add bodies, hinges, ball joints and rods to build anything with one free motion.' : kind === 'twistBeam' ? 'each hub is fixed to its trailing arm, which swings about the line from its bushing to the beam\'s shear center (on the centerline); the beam\'s twist stiffness is this axle\'s anti-roll bar (Shared components; started at 15 N/mm at the wheel if there was none). Moving the shear center back adds roll camber and roll steer.' : kind === 'beamLeaf' ? 'a solid axle on leaf springs (left and right now share this design): set the front eye, the spring seat on the axle and the rear shackle; the spring rate is the leaf rate at the seat. Roll center ≈ the seat height.' : isBeam(kind) ? `one axle carries both wheels (left and right now share this design). Lower links run forward from the axle, ${kind === 'beam4' ? 'the upper links angle in to locate it sideways' : 'one upper link in the middle and a Panhard rod locate it'}; coilovers sit on the axle. Move the link ends to shape it. A beam axle here doesn't steer.` : kind === 'singleArm' ? 'the knuckle now rides on the lower arm, turning on a kingpin from the lower to the upper ball joint\'s position (both on the arm); the arm swings on its frame pivots. Move the pivots along the car for a swing arm, across it for a trailing arm.' : kind === 'rigid' ? 'the wheel turns on a fixed kingpin through the ball joints\' positions; no spring or travel (only the tire gives).' : kind === 'macpherson' ? 'a strut was placed from the upright (top mount above the upper ball joint); adjust its points.' : kind === 'multilink' ? `each link now ends at its own point on the upright (moved 35 mm along the link: the same motion at ride height, nearly the same through travel); move them to shape the motion.${geom.kind === 'doubleWishbone' || !geom.kind ? ' The coilover now mounts on the upright (a multilink has no arm body), so check its motion ratio.' : ''}` : 'the links rejoin at one ball joint per arm.'}`, 'info');
+    get().notify(`${SUSPENSION_LABELS[kind]}: ${kind === 'custom' ? 'edit its bodies and joints in the Linkage editor (Inspector, with nothing selected). It starts from the current arms as hinged bodies with ball joints to the knuckle and the tie rod as a rod from the rack, so it moves the same; add bodies, hinges, ball joints and rods to build anything with one free motion.' : kind === 'twistBeam' ? 'each hub is fixed to its trailing arm, which swings about the line from its bushing to the beam\'s shear center (on the centerline); the beam\'s twist stiffness is this axle\'s anti-roll bar (Shared components; started at 15 N/mm at the wheel if there was none). Moving the shear center back adds roll camber and roll steer.' : kind === 'beamLeaf' ? 'a solid axle on leaf springs (left and right now share this design): set the front eye, the spring seat on the axle and the rear shackle; the spring rate is the leaf rate at the seat. Roll center ≈ the seat height.' : isBeam(kind) ? `one axle carries both wheels (left and right now share this design). Lower links run forward from the axle, ${kind === 'beam4' ? 'the upper links angle in to locate it sideways' : kind === 'beamWatts' ? 'one upper link in the middle and a Watt\'s linkage locate it (its pivot on the axle moves straight up and down: no sideways shift)' : 'one upper link in the middle and a Panhard rod locate it'}; coilovers sit on the axle. Move the link ends to shape it. Steered (Inspector → Steered axle): knuckles on kingpins at the axle ends.` : kind === 'singleArm' ? 'the knuckle now rides on the lower arm, turning on a kingpin from the lower to the upper ball joint\'s position (both on the arm); the arm swings on its frame pivots. Move the pivots along the car for a swing arm, across it for a trailing arm.' : kind === 'rigid' ? 'the wheel turns on a fixed kingpin through the ball joints\' positions; no spring or travel (only the tire gives).' : kind === 'macpherson' ? 'a strut was placed from the upright (top mount above the upper ball joint); adjust its points.' : kind === 'multilink' ? `each link now ends at its own point on the upright (moved 35 mm along the link: the same motion at ride height, nearly the same through travel); move them to shape the motion.${geom.kind === 'doubleWishbone' || !geom.kind ? ' The coilover now mounts on the upright (a multilink has no arm body), so check its motion ratio.' : ''}` : 'the links rejoin at one ball joint per arm.'}`, 'info');
   },
   fitSpring: () => {
     const s = get();

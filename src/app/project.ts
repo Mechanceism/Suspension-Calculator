@@ -60,7 +60,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 27;
+export const FORMAT_VERSION = 28;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -77,6 +77,8 @@ export interface CornerJson {
   springLayout?: 'coilover' | 'rocker';
   pushrodOn?: 'lca' | 'uca' | 'upright';
   steerMechanism?: 'rack' | 'arm';
+  /** Solid axle: steered (format 28). */
+  steeredAxle?: boolean;
   /** Custom linkage (format 27; mm). */
   custom?: unknown;
   spring: Record<string, FieldJson>;
@@ -155,6 +157,7 @@ function cornerToJson(id: CornerId, c: CornerDesign): CornerJson {
     scalars: Object.fromEntries(SCALAR_KEYS.map((k) => [cornerParam(id, SCALAR_META[k].name), fj(c.geom.scalars[k])])),
     damperArm: c.geom.damperArm,
     springLayout: layoutOf(c.geom), pushrodOn: c.geom.pushrodOn ?? 'lca', steerMechanism: c.geom.steerMechanism ?? 'rack',
+    ...(c.geom.steeredAxle ? { steeredAxle: true } : {}),
     ...(c.geom.custom ? { custom: JSON.parse(JSON.stringify(c.geom.custom)) as unknown } : {}),
     spring: mapFields(SPRING_KEYS, c.spring),
     damper: { fields: mapFields(DAMPER_KEYS, c.damper), bumpStop: c.bumpStop, mode: c.damperMode },
@@ -336,6 +339,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   25: (f) => ({ ...f, formatVersion: 26, ...(isObj(f.tow) && isObj(f.tow.fields) ? { tow: { ...f.tow, fields: { ...f.tow.fields, trailerYawRadius: { text: '1350', value: 1350 } } } } : {}) }),
   // 26 → 27: no custom linkages (nothing to change).
   26: (f) => ({ ...f, formatVersion: 27 }),
+  // 27 → 28: no steered solid axles, no Watt's linkage (nothing to change).
+  27: (f) => ({ ...f, formatVersion: 28 }),
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */
@@ -650,6 +655,7 @@ function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: str
     geom: {
       points: withPivotDefaults(rockerMissing ? withRockerDefaults(points) : points, pivotMissing), scalars,
       steerMechanism: c.steerMechanism === 'arm' ? 'arm' : 'rack',
+      ...(c.steeredAxle === true ? { steeredAxle: true } : {}),
       springLayout: c.springLayout === 'rocker' ? 'rocker' : 'coilover',
       pushrodOn: c.pushrodOn === 'uca' || c.pushrodOn === 'upright' ? c.pushrodOn : 'lca',
       damperArm: c.damperArm === 'uca' || c.damperArm === 'upright' ? c.damperArm : 'lca', kind: (SUSPENSION_KINDS as string[]).includes(c.type as string) ? c.type as SuspensionKind : 'doubleWishbone',

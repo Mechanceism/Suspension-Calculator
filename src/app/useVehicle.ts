@@ -182,10 +182,11 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         let freeLength = d.spring.freeLength.value;
         const coupled = b.corner.solidAxle ?? b.corner.twistBeam;
         if (coupled) {
-          const akey = `axle|${range[0]}|${range[1]}`;
+          const axRack = b.corner.geometry.steeredAxle && s.settings[id].steered ? rack : 0;
+          const akey = `axle|${range[0]}|${range[1]}|${axRack}`;
           let at = axleCache.current.get(b.corner)?.get(akey);
           if (!at) {
-            at = new AxleTable(coupled, range, 17);
+            at = new AxleTable(coupled, range, 17, axRack);
             axleCache.current.set(b.corner, new Map([[akey, at]]));
           }
           const side = isLeft(id) ? 'L' : 'R';

@@ -130,7 +130,7 @@ function Linkage({ state, faint = false }: { state: CornerState; faint?: boolean
         {vis.uca && sh.uca.map(([a, b], i) => <Seg key={i} a={a} b={b} color={COLORS.uca} width={1} opacity={o} />)}
         {vis.lca && sh.lca.map(([a, b], i) => <Seg key={i} a={a} b={b} color={COLORS.lca} width={1} opacity={o} />)}
         {vis.upright && <Polyline pts={sh.upright} color={COLORS.upright} width={1} opacity={o} />}
-        {vis.tieRod && !isBeam(state.kind) && state.kind !== 'twistBeam' && !custom && <Seg a={p.trInner} b={p.trOuter} color={COLORS.tieRod} width={1} opacity={o} />}
+        {vis.tieRod && (!isBeam(state.kind) || !!p.crossTieRod) && state.kind !== 'twistBeam' && !custom && <Seg a={p.trInner} b={p.trOuter} color={COLORS.tieRod} width={1} opacity={o} />}
         {vis.spring && p.damperChassis && p.damperArm && <Seg a={p.damperChassis} b={p.damperArm} color={COLORS.spring} width={1} opacity={o} />}
       </group>
     );
@@ -174,11 +174,12 @@ function Linkage({ state, faint = false }: { state: CornerState; faint?: boolean
           </>
         )}</Part>
       )}
-      {vis.tieRod && !isBeam(state.kind) && state.kind !== 'twistBeam' && !custom && (
+      {vis.tieRod && (!isBeam(state.kind) || !!p.crossTieRod) && state.kind !== 'twistBeam' && !custom && (
         <Part id="tieRod">{(e) => (
           <>
             <Seg a={p.trInner} b={p.trOuter} color={e === 2 ? COLORS.select : COLORS.tieRod} width={em(3, e)} />
             <HitLink a={p.trInner} b={p.trOuter} radius={12} />
+            {p.crossTieRod && <Seg a={p.crossTieRod[0]} b={p.crossTieRod[1]} color={e === 2 ? COLORS.select : COLORS.tieRod} width={em(3, e)} />}
           </>
         )}</Part>
       )}
@@ -249,7 +250,9 @@ function Joints({ state, cur }: { state: CornerState; cur: Current }) {
       {(vis.lca || vis.upright) && state.kind !== 'custom' && <PickJoint id="lcaOut" p={p.lcaOut} color={COLORS.lca} r={9} />}
       {state.kind === 'multilink' && (vis.uca || vis.upright) && p.ucaOut2 && <PickJoint id="ucaOut2" p={p.ucaOut2} color={COLORS.uca} r={9} />}
       {state.kind === 'multilink' && (vis.lca || vis.upright) && p.lcaOut2 && <PickJoint id="lcaOut2" p={p.lcaOut2} color={COLORS.lca} r={9} />}
-      {vis.tieRod && !isBeam(state.kind) && state.kind !== 'twistBeam' && state.kind !== 'custom' && <PickJoint id="trInner" p={p.trInner} color={COLORS.chassis} />}
+      {p.crossTieRod && vis.upright && <PickJoint id="ucaOut2" p={p.steerUpper} color={COLORS.upright} r={9} />}
+      {p.crossTieRod && vis.upright && <PickJoint id="lcaOut2" p={p.steerLower} color={COLORS.upright} r={9} />}
+      {vis.tieRod && (!isBeam(state.kind) || !!p.crossTieRod) && state.kind !== 'twistBeam' && state.kind !== 'custom' && <PickJoint id="trInner" p={p.trInner} color={COLORS.chassis} />}
       {p.panhardChassis && <PickJoint id="phChs" p={p.panhardChassis} color={COLORS.chassis} />}
       {p.panhardAxle && <PickJoint id="phAxle" p={p.panhardAxle} color={COLORS.lca} />}
       {vis.chassis && p.steerPivot1 && <PickJoint id="strPiv1" p={p.steerPivot1} color={COLORS.chassis} />}
@@ -260,7 +263,7 @@ function Joints({ state, cur }: { state: CornerState; cur: Current }) {
       {vis.spring && p.rockerPivot2 && <PickJoint id="rkrPiv2" p={p.rockerPivot2} color={COLORS.chassis} />}
       {vis.spring && p.pushrodLower && <PickJoint id="prArm" p={p.pushrodLower} color={COLORS.tieRod} />}
       {vis.spring && p.pushrodUpper && <PickJoint id="prRkr" p={p.pushrodUpper} color={COLORS.spring} />}
-      {(vis.tieRod || vis.upright) && !isBeam(state.kind) && state.kind !== 'twistBeam' && state.kind !== 'custom' && <PickJoint id="trOuter" p={p.trOuter} color={COLORS.tieRod} />}
+      {(vis.tieRod || vis.upright) && (!isBeam(state.kind) || !!p.crossTieRod) && state.kind !== 'twistBeam' && state.kind !== 'custom' && <PickJoint id="trOuter" p={p.trOuter} color={COLORS.tieRod} />}
       {vis.wheel && <PickJoint id="wheelCenter" p={p.wheelCenter} color={COLORS.upright} r={6} />}
       {vis.wheel && <PickJoint id="contact" p={p.contact} color={COLORS.wheel} r={6} />}
       {/* Derived points are pickable for measuring. */}
@@ -305,7 +308,7 @@ function Chassis({ state, rackLimit, rackAxis }: { state: CornerState; rackLimit
           />
         </>
       )}</Part>
-      {!beam && state.kind !== 'custom' && <Part id="rack">{(e) => p.steerPivot1 && p.steerPivot2 ? (
+      {(!beam || !!p.crossTieRod) && state.kind !== 'custom' && <Part id="rack">{(e) => p.steerPivot1 && p.steerPivot2 ? (
         <>
           {/* Steering arm / plate: its pivot axis and the arm out to the inner tie-rod joint. */}
           <Seg a={p.steerPivot1} b={p.steerPivot2} color={e === 2 ? COLORS.select : COLORS.chassis} width={em(3, e)} />

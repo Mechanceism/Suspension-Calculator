@@ -333,7 +333,7 @@ export function useModel(): Model {
     };
     };
     // A beam axle doesn't steer here: no steering readout.
-    const steering = corner.solidAxle || corner.twistBeam ? null : interacting && lastSlow.current.steering ? lastSlow.current.steering : computeSteering();
+    const steering = (corner.solidAxle && !corner.geometry.steeredAxle) || corner.twistBeam ? null : interacting && lastSlow.current.steering ? lastSlow.current.steering : computeSteering();
     if (!interacting) {
       lastSlow.current = { wheelRate: springInfo?.wheelRate ?? NaN, tireRate: springInfo?.tireRate ?? Infinity, steering };
     }
@@ -364,7 +364,7 @@ export function useModel(): Model {
   const curTireLoad = Math.round(current?.tireLoad ?? spring.cornerLoad.value);
   const steerSweep = useMemo<SteerSample[]>(() => {
     const corner = built.corner;
-    if (!corner || !current || corner.solidAxle || corner.twistBeam) return [];
+    if (!corner || !current || (corner.solidAxle && !corner.geometry.steeredAxle) || corner.twistBeam) return [];
     if (interacting) return lastSteerSweep.current;
     const armAngle = armKey / 1e5;
     const n = 25;

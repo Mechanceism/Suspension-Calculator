@@ -4,7 +4,7 @@
  * one other component.
  */
 import type { ComponentId, PointKey, ArmChoice } from './store';
-import type { SuspensionKind } from '../core/suspension/doubleWishbone';
+import { isBeam, type SuspensionKind } from '../core/suspension/doubleWishbone';
 
 export interface ComponentDef {
   id: ComponentId;
@@ -19,8 +19,17 @@ export interface ComponentDef {
  * Components per suspension type. A type without a component (MacPherson: no upper arm) keeps it with no
  * points (`absent`), so the records stay complete.
  */
-export function componentDefs(damperArm: ArmChoice, kind: SuspensionKind = 'doubleWishbone', layout: 'coilover' | 'rocker' = 'coilover', pushrodOn: ArmChoice = 'lca', steer: 'rack' | 'arm' = 'rack'): Record<ComponentId, ComponentDef & { absent?: boolean }> {
-  const defs = withSprings(damperArm, kind, layout, pushrodOn);
+export function componentDefs(damperArm: ArmChoice, kind: SuspensionKind = 'doubleWishbone', layout: 'coilover' | 'rocker' = 'coilover', pushrodOn: ArmChoice = 'lca', steer: 'rack' | 'arm' = 'rack', steeredAxle = false): Record<ComponentId, ComponentDef & { absent?: boolean }> {
+  let defs = withSprings(damperArm, kind, layout, pushrodOn);
+  if (isBeam(kind) && steeredAxle) {
+    // A steered solid axle: knuckles on kingpins at the axle ends, a drag link from the steering, a cross tie rod.
+    defs = {
+      ...defs,
+      rack: { id: 'rack', label: 'Steering (drag link end)', points: ['trInner'], parents: ['chassis'] },
+      tieRod: { id: 'tieRod', label: 'Drag link (and cross tie rod)', points: ['trInner', 'trOuter'], parents: ['rack'] },
+      upright: { ...defs.upright, label: 'Axle housing and knuckle', points: [...defs.upright.points, 'lcaOut2', 'ucaOut2', 'trOuter'] },
+    };
+  }
   if (steer !== 'arm') return defs;
   // Steering arm / plate: the "rack" part is the arm on its pivot axis.
   return { ...defs, rack: { id: 'rack', label: 'Steering arm / plate', points: ['strPiv1', 'strPiv2', 'trInner'], parents: ['chassis'] } };
@@ -68,12 +77,12 @@ function kindDefs(damperArm: ArmChoice, kind: SuspensionKind): Record<ComponentI
         : { id: 'spring', label: 'Leaf rate at the seat (spring / damper)', points: [], parents: ['lca'], absent: true },
     };
   }
-  if (kind === 'beam4' || kind === 'beam3') {
-    const ph = kind === 'beam3';
+  if (kind === 'beam4' || kind === 'beam3' || kind === 'beamWatts') {
+    const ph = kind !== 'beam4', watts = kind === 'beamWatts';
     return {
       chassis: { id: 'chassis', label: 'Chassis / frame', points: ['lcaFwd', 'ucaFwd', 'dmpChassis', ...(ph ? ['phChs' as const] : [])], parents: [] },
       uca: { id: 'uca', label: ph ? 'Upper center link' : 'Upper links', points: ['ucaFwd', 'ucaOut'], parents: ['chassis'] },
-      lca: { id: 'lca', label: ph ? 'Lower links and Panhard rod' : 'Lower links', points: ['lcaFwd', 'lcaOut', ...(ph ? ['phChs' as const, 'phAxle' as const] : [])], parents: ['chassis'] },
+      lca: { id: 'lca', label: watts ? "Lower links and Watt's linkage" : ph ? 'Lower links and Panhard rod' : 'Lower links', points: ['lcaFwd', 'lcaOut', ...(ph ? ['phChs' as const, 'phAxle' as const] : [])], parents: ['chassis'] },
       rack: { id: 'rack', label: 'Steering (none)', points: [], parents: ['chassis'], absent: true },
       tieRod: { id: 'tieRod', label: 'Tie rod (none)', points: [], parents: ['rack'], absent: true },
       upright: { id: 'upright', label: 'Axle housing', points: ['lcaOut', 'ucaOut', 'wheelCenter', 'dmpArm', ...(ph ? ['phAxle' as const] : [])], parents: ['uca', 'lca'] },
@@ -170,13 +179,20 @@ export const POINT_LABELS: Record<PointKey, string> = {
   phChs: 'Panhard rod, frame end', phAxle: 'Panhard rod, axle end',
 };
 
+/** A steered solid axle's points (any solid axle type). */
+const STEERED_AXLE_LABELS: Partial<Record<PointKey, string>> = {
+  ucaOut2: 'Kingpin top (steered axle)', lcaOut2: 'Kingpin bottom (steered axle)',
+  trOuter: 'Knuckle arm (drag link and cross tie rod)', trInner: 'Drag link, steering end',
+};
+
 const KIND_LABELS: Partial<Record<SuspensionKind, Partial<Record<PointKey, string>>>> = {
   macpherson: { dmpChassis: 'Strut top mount', dmpArm: 'Strut lower point (on the upright)' },
   rigid: { ucaOut: 'Kingpin top', lcaOut: 'Kingpin bottom' },
   twistBeam: { lcaFwd: 'Arm bushing (frame)', lcaAft: 'Beam shear center (centerline)', lcaOut: 'Arm at the axle', dmpArm: 'Coilover arm mount' },
-  beamLeaf: { lcaFwd: 'Leaf front eye (frame)', lcaOut: 'Leaf spring seat (on the axle)', lcaAft: 'Leaf rear shackle (frame)' },
-  beam4: { lcaFwd: 'Lower link, frame end', lcaOut: 'Lower link, axle end', ucaFwd: 'Upper link, frame end', ucaOut: 'Upper link, axle end', dmpArm: 'Coilover axle mount' },
-  beam3: { lcaFwd: 'Lower link, frame end', lcaOut: 'Lower link, axle end', ucaFwd: 'Upper center link, frame end', ucaOut: 'Upper center link, axle end', dmpArm: 'Coilover axle mount' },
+  beamLeaf: { ...STEERED_AXLE_LABELS, lcaFwd: 'Leaf front eye (frame)', lcaOut: 'Leaf spring seat (on the axle)', lcaAft: 'Leaf rear shackle (frame)' },
+  beam4: { ...STEERED_AXLE_LABELS, lcaFwd: 'Lower link, frame end', lcaOut: 'Lower link, axle end', ucaFwd: 'Upper link, frame end', ucaOut: 'Upper link, axle end', dmpArm: 'Coilover axle mount' },
+  beamWatts: { lcaFwd: 'Lower link, frame end', lcaOut: 'Lower link, axle end', ucaFwd: 'Upper center link, frame end', ucaOut: 'Upper center link, axle end', dmpArm: 'Coilover axle mount', phChs: "Watt's top link, frame end (the bottom link mirrors it)", phAxle: "Watt's bar pivot (on the axle)", ...STEERED_AXLE_LABELS },
+  beam3: { ...STEERED_AXLE_LABELS, lcaFwd: 'Lower link, frame end', lcaOut: 'Lower link, axle end', ucaFwd: 'Upper center link, frame end', ucaOut: 'Upper center link, axle end', dmpArm: 'Coilover axle mount' },
   singleArm: { lcaFwd: 'Arm front pivot (frame)', lcaAft: 'Arm rear pivot (frame)', lcaOut: 'Kingpin bottom (on the arm)', ucaOut: 'Kingpin top (on the arm)', dmpArm: 'Coilover lower mount' },
   multilink: {
     ucaFwd: 'Upper front link, chassis', ucaOut: 'Upper front link, upright end', ucaAft: 'Upper rear link, chassis',

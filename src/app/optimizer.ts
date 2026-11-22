@@ -149,7 +149,7 @@ export function buildProblem(s: AppState): BuiltProblem<CornerProblem> {
   for (const [key, r] of Object.entries(o.ranges)) {
     const v = parseVarKey(key);
     if (!v) continue;
-    if (pointAxisLocked(s.locks, root, v.k, v.axis, s.geom.damperArm, s.geom.kind, layoutOf(s.geom), s.geom.steerMechanism)) { skippedLocked.push(key); continue; }
+    if (pointAxisLocked(s.locks, root, v.k, v.axis, s.geom.damperArm, s.geom.kind, layoutOf(s.geom), s.geom.steerMechanism, s.geom.steeredAxle)) { skippedLocked.push(key); continue; }
     variables.push({ point: STATE_KEY[v.k] as HardpointId, axis: v.axis, lo: r.lo.value, hi: r.hi.value });
   }
   const goals = GOAL_KINDS.filter((k) => o.goals[k].on).map((k) => ({ kind: k, target: o.goals[k].target.value, weight: o.goals[k].weight.value }));
@@ -212,7 +212,7 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
   for (const [key, r] of Object.entries(o.ranges)) {
     const v = parseVehVarKey(key);
     if (!v) continue;
-    if (!roots.includes(v.root) || pointAxisLocked(s.locks, v.root, v.k, v.axis, all[v.root].geom.damperArm, all[v.root].geom.kind, layoutOf(all[v.root].geom), all[v.root].geom.steerMechanism)) { skippedLocked.push(key); continue; }
+    if (!roots.includes(v.root) || pointAxisLocked(s.locks, v.root, v.k, v.axis, all[v.root].geom.damperArm, all[v.root].geom.kind, layoutOf(all[v.root].geom), all[v.root].geom.steerMechanism, all[v.root].geom.steeredAxle)) { skippedLocked.push(key); continue; }
     variables.push({ root: v.root, point: STATE_KEY[v.k] as HardpointId, axis: v.axis, lo: r.lo.value, hi: r.hi.value });
   }
   const holds: VehicleHold[] = roots.flatMap((root) => holdsFor(s, root).map((h) => ({ ...h, root })));

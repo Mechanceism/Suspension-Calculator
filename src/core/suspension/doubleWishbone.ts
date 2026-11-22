@@ -59,16 +59,16 @@ import {
 } from '../solver/system';
 
 /** Suspension type of a corner. */
-export type SuspensionKind = 'doubleWishbone' | 'macpherson' | 'multilink' | 'singleArm' | 'twistBeam' | 'beam4' | 'beam3' | 'beamLeaf' | 'rigid' | 'custom';
-export const SUSPENSION_KINDS: SuspensionKind[] = ['doubleWishbone', 'macpherson', 'multilink', 'singleArm', 'twistBeam', 'beam4', 'beam3', 'beamLeaf', 'rigid', 'custom'];
+export type SuspensionKind = 'doubleWishbone' | 'macpherson' | 'multilink' | 'singleArm' | 'twistBeam' | 'beam4' | 'beam3' | 'beamWatts' | 'beamLeaf' | 'rigid' | 'custom';
+export const SUSPENSION_KINDS: SuspensionKind[] = ['doubleWishbone', 'macpherson', 'multilink', 'singleArm', 'twistBeam', 'beam4', 'beam3', 'beamWatts', 'beamLeaf', 'rigid', 'custom'];
 /** Solid (beam) axle types: one design spans the whole axle (both wheels). */
-export const isBeam = (k: SuspensionKind | undefined) => k === 'beam4' || k === 'beam3' || k === 'beamLeaf';
+export const isBeam = (k: SuspensionKind | undefined) => k === 'beam4' || k === 'beam3' || k === 'beamWatts' || k === 'beamLeaf';
 export const SUSPENSION_LABELS: Record<SuspensionKind, string> = {
   doubleWishbone: 'Double wishbone (SLA)', macpherson: 'MacPherson strut', multilink: 'Multilink (5 links)',
   singleArm: 'Single arm (swing / trailing arm, knuckle on the arm)',
   custom: 'Custom linkage (your own bodies and joints)',
   twistBeam: 'Twist beam (trailing arms on a twisting beam)',
-  beam4: 'Solid axle, 4-link', beam3: 'Solid axle, 3-link + Panhard rod', beamLeaf: 'Solid axle on leaf springs', rigid: 'No suspension (rigid, e.g. a kart)',
+  beam4: 'Solid axle, 4-link', beam3: 'Solid axle, 3-link + Panhard rod', beamWatts: "Solid axle, 3-link + Watt's linkage", beamLeaf: 'Solid axle on leaf springs', rigid: 'No suspension (rigid, e.g. a kart)',
 };
 
 export interface ArmPoints {
@@ -117,6 +117,11 @@ export interface DoubleWishboneGeometry {
    */
   /** Solid axle, 3-link: the Panhard rod (frame end — usually on the other side — and axle end). */
   readonly panhard?: { readonly chassis: Vec3; readonly axle: Vec3 };
+  /**
+   * Solid axle: steered (kingpins on the axle ends: UCA_Out2 top, LCA_Out2 bottom; the knuckle arm TR_Out
+   * joined across by a cross tie rod; a drag link from TR_In, moved by the rack).
+   */
+  readonly steeredAxle?: boolean;
   /** Custom linkage: its bodies and joints (the knuckle is the upright). */
   readonly custom?: CustomLinkage;
   readonly rocker?: {
@@ -187,6 +192,9 @@ export interface CornerPoints {
   /** Solid axle: the Panhard rod's ends now, and the right wheel's center (the axle's other end). */
   panhardChassis?: Vec3;
   panhardAxle?: Vec3;
+  /** Solid axle: Watt's linkage (top link, bottom link, bar), and a steered axle's cross tie rod (left → right arm). */
+  wattsLinks?: [Vec3, Vec3][];
+  crossTieRod?: [Vec3, Vec3];
   axleRight?: Vec3;
   /** Leaf springs: the front eye and rear shackle (frame), for drawing. */
   leafEye?: Vec3;
@@ -459,7 +467,7 @@ export class DoubleWishbone {
    */
   private solveBeam(full: Required<CornerInputs>, initial?: Poses): CornerState {
     const ax = this.solidAxle!;
-    const st = ax.solve({ left: full.travel, right: full.travel }, initial);
+    const st = ax.solve({ left: full.travel, right: full.travel, rack: full.rack }, initial);
     const g = this.geometry;
     const find = (name: string) => st.links.find((l) => l.name === name);
     const lower = find('lower (left)'), upper = find('upper (left)') ?? find('upper (center)');
@@ -474,6 +482,14 @@ export class DoubleWishbone {
       ...(pan ? { panhardChassis: pan.chassis, panhardAxle: pan.axle } : {}),
       axleRight: st.right.center,
     };
+    const watts = st.links.filter((l) => l.name.startsWith("Watt's"));
+    if (watts.length) points.wattsLinks = watts.map((l) => [l.chassis, l.axle] as [Vec3, Vec3]);
+    if (st.steer) {
+      // Steered axle: the left kingpin is the steering axis; the drag link and cross tie rod.
+      points.steerLower = st.steer.kingpin.left[0]; points.steerUpper = st.steer.kingpin.left[1];
+      points.trInner = st.steer.drag; points.trOuter = st.steer.arm.left;
+      points.crossTieRod = [st.steer.arm.left, st.steer.arm.right];
+    }
     const springs = ax.geometry.springs;
     if (springs && st.springLength) {
       // The left spring's axle end: where the axle carries it now.
@@ -666,15 +682,38 @@ export function solidAxleOf(g: DoubleWishboneGeometry): SolidAxleGeometry {
   const kind = kindOf(g);
   if (kind === 'beamLeaf') return leafAxleOf(g);
   const lower = mirroredLinks([{ name: 'lower', chassis: g.lca.fwd, axle: g.lca.out }]);
+  const center = { name: 'upper (center)', chassis: g.uca.fwd, axle: g.uca.out };
   const links = kind === 'beam3'
-    ? [...lower, { name: 'upper (center)', chassis: g.uca.fwd, axle: g.uca.out }, ...(g.panhard ? [{ name: 'Panhard rod', chassis: g.panhard.chassis, axle: g.panhard.axle }] : [])]
+    ? [...lower, center, ...(g.panhard ? [{ name: 'Panhard rod', chassis: g.panhard.chassis, axle: g.panhard.axle }] : [])]
+    : kind === 'beamWatts' ? [...lower, center]
     : [...lower, ...mirroredLinks([{ name: 'upper', chassis: g.uca.fwd, axle: g.uca.out }])];
   return {
     kind: 'solidAxle',
     wheel: { center: g.wheel.center, spinAxis: g.wheel.spinAxis, radius: g.wheel.radius, ...(g.wheel.width ? { width: g.wheel.width } : {}) },
     links,
     ...(g.damper ? { springs: { left: { chassis: g.damper.chassis, axle: g.damper.armPoint } } } : {}),
+    ...(kind === 'beamWatts' && g.panhard ? { watts: wattsOf(g.panhard.axle, g.panhard.chassis) } : {}),
+    ...(g.steeredAxle ? { steering: steeringOf(g) } : {}),
   };
+}
+
+/**
+ * A symmetric Watt's linkage from two points: the bar's pivot on the axle (PH_Axle) and the top link's frame
+ * end (PH_Chs). The bar stands upright, its ends as far above and below the pivot as the top link's frame end
+ * is above it; the bottom link mirrors the top one (to the frame on the other side).
+ */
+export function wattsOf(pivot: Vec3, topChassis: Vec3): NonNullable<SolidAxleGeometry['watts']> {
+  const h = topChassis.y - pivot.y;
+  return {
+    pivot,
+    top: { chassis: topChassis, bar: vec3(pivot.x, pivot.y + h, pivot.z) },
+    bottom: { chassis: vec3(2 * pivot.x - topChassis.x, pivot.y - h, topChassis.z), bar: vec3(pivot.x, pivot.y - h, pivot.z) },
+  };
+}
+
+/** A steered solid axle's kingpin (LCA_Out2 bottom, UCA_Out2 top), knuckle arm (TR_Out) and drag link frame end (TR_In). */
+function steeringOf(g: DoubleWishboneGeometry): NonNullable<SolidAxleGeometry['steering']> {
+  return { kingpinLower: g.lca.out2 ?? g.lca.out, kingpinUpper: g.uca.out2 ?? g.uca.out, arm: g.tieRod.outer, dragLink: g.tieRod.inner };
 }
 
 /**

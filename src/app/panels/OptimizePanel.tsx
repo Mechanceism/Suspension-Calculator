@@ -359,7 +359,7 @@ function CornerPresets() {
   const preset = (points: [PointKey, 0 | 1 | 2][], on: GoalKind[]) => update((o) => {
     const ranges: OptimizerSetup['ranges'] = {};
     for (const [k, a] of points) {
-      if (pointAxisLocked(locks, root, k, a, geom.damperArm, geom.kind, layoutOf(geom), geom.steerMechanism)) continue;
+      if (pointAxisLocked(locks, root, k, a, geom.damperArm, geom.kind, layoutOf(geom), geom.steerMechanism, geom.steeredAxle)) continue;
       const v = geom.points[k][a].value;
       ranges[varKey(k, a)] = { lo: numField(v - OPT_DEFAULT_RANGE), hi: numField(v + OPT_DEFAULT_RANGE) };
     }
@@ -416,7 +416,7 @@ export function OptimizePanel() {
   const spec: CoordSpec = {
     key: varKey,
     value: (k, a) => geom.points[k][a].value,
-    locked: (k, a) => pointAxisLocked(locks, root, k, a, geom.damperArm, geom.kind, layoutOf(geom), geom.steerMechanism),
+    locked: (k, a) => pointAxisLocked(locks, root, k, a, geom.damperArm, geom.kind, layoutOf(geom), geom.steerMechanism, geom.steeredAxle),
     kind: geom.kind, layout: layoutOf(geom), steer: geom.steerMechanism,
   };
   const entries: RangeEntry[] = Object.keys(setup.ranges).map((key) => ({ key, v: parseVarKey(key) })).filter((e) => e.v)
@@ -494,7 +494,7 @@ function VehiclePresets() {
     for (const { root } of designRoots(s)) {
       const g = all[root].geom;
       for (const [k, a] of points) {
-        if (pointAxisLocked(s.locks, root, k, a, g.damperArm, g.kind, layoutOf(g), g.steerMechanism)) continue;
+        if (pointAxisLocked(s.locks, root, k, a, g.damperArm, g.kind, layoutOf(g), g.steerMechanism, g.steeredAxle)) continue;
         const v = g.points[k][a].value;
         ranges[vehVarKey(root, k, a)] = { lo: numField(v - OPT_DEFAULT_RANGE), hi: numField(v + OPT_DEFAULT_RANGE) };
       }
@@ -561,7 +561,7 @@ export function VehicleOptimizePanel() {
   const spec: CoordSpec = {
     key: (k, a) => vehVarKey(picked, k, a),
     value: (k, a) => g.points[k][a].value,
-    locked: (k, a) => pointAxisLocked(locks, picked, k, a, g.damperArm, g.kind, layoutOf(g), g.steerMechanism),
+    locked: (k, a) => pointAxisLocked(locks, picked, k, a, g.damperArm, g.kind, layoutOf(g), g.steerMechanism, g.steeredAxle),
     kind: g.kind, layout: layoutOf(g), steer: g.steerMechanism,
   };
   const entries: RangeEntry[] = Object.keys(o.ranges).map((key) => ({ key, v: parseVehVarKey(key) })).filter((e) => e.v)
@@ -572,7 +572,7 @@ export function VehicleOptimizePanel() {
       return {
         key, k: v!.k, axis: v!.axis, label: `${v!.root} ${POINT_LABELS[v!.k]} ${AXES[v!.axis]}`,
         now: d.geom.points[v!.k][v!.axis].value,
-        locked: !live || pointAxisLocked(locks, v!.root, v!.k, v!.axis, d.geom.damperArm, d.geom.kind, layoutOf(d.geom), d.geom.steerMechanism),
+        locked: !live || pointAxisLocked(locks, v!.root, v!.k, v!.axis, d.geom.damperArm, d.geom.kind, layoutOf(d.geom), d.geom.steerMechanism, d.geom.steeredAxle),
         lo: o.ranges[key]!.lo, hi: o.ranges[key]!.hi,
       };
     });

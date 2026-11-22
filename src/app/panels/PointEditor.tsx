@@ -109,7 +109,8 @@ export function GroupMove({ ids }: { ids: PointKey[] }) {
   const kind = useApp((s) => s.geom.kind);
   const layout = useApp((s) => layoutOf(s.geom));
   const steerMech = useApp((s) => s.geom.steerMechanism ?? 'rack');
-  const axisLocked = (i: number) => ids.some((k) => pointAxisLocked(locks, root, k, i as 0 | 1 | 2, damperArm, kind, layout, steerMech));
+  const steeredAxle = useApp((s) => !!s.geom.steeredAxle);
+  const axisLocked = (i: number) => ids.some((k) => pointAxisLocked(locks, root, k, i as 0 | 1 | 2, damperArm, kind, layout, steerMech, steeredAxle));
   const step = useApp((s) => s.nudgeStep);
   const conv = useConversion('mm');
   return (
@@ -169,7 +170,7 @@ function AlongLine({ id }: { id: PointKey }) {
   const dist = length(sub(q, p));
   const dir = dist > 1e-9 ? normalize(sub(q, p)) : vec3(0, 0, 0);
   const changedAxes = ([0, 1, 2] as const).filter((a) => Math.abs([dir.x, dir.y, dir.z][a]!) > 1e-9);
-  const lockedAxes = changedAxes.filter((a) => pointAxisLocked(locks, root, id, a, geom.damperArm, geom.kind, layoutOf(geom), geom.steerMechanism));
+  const lockedAxes = changedAxes.filter((a) => pointAxisLocked(locks, root, id, a, geom.damperArm, geom.kind, layoutOf(geom), geom.steerMechanism, geom.steeredAxle));
   const blocked = lockedAxes.length > 0;
 
   const moveBy = (amount: number) => {
@@ -178,7 +179,7 @@ function AlongLine({ id }: { id: PointKey }) {
     if (!n) return;
     setPointsAxis(changedAxes.map((a) => ({ key: id, axis: a, value: Number([n.x, n.y, n.z][a]!.toFixed(4)) })));
   };
-  const options = [...near, ...activePointKeys(geom.kind, layoutOf(geom), geom.steerMechanism).filter((k) => k !== id && !near.includes(k))];
+  const options = [...near, ...activePointKeys(geom.kind, layoutOf(geom), geom.steerMechanism, geom.steeredAxle).filter((k) => k !== id && !near.includes(k))];
 
   return (
     <div className="along-line">
@@ -221,6 +222,7 @@ export function PointEditor({ id }: { id: PointKey }) {
   const kind = useApp((s) => s.geom.kind);
   const layout = useApp((s) => layoutOf(s.geom));
   const steerMech = useApp((s) => s.geom.steerMechanism ?? 'rack');
+  const steeredAxle = useApp((s) => !!s.geom.steeredAxle);
   const setPoint = useApp((s) => s.setPoint);
   const movePoint = useApp((s) => s.movePoint);
   const startMeasure = useApp((s) => s.startMeasure);
@@ -231,7 +233,7 @@ export function PointEditor({ id }: { id: PointKey }) {
       <table className="jm-table">
         <tbody>
           {AXES.map((ax, i) => {
-            const locked = pointAxisLocked(locks, root, id, i as 0 | 1 | 2, damperArm, kind, layout, steerMech);
+            const locked = pointAxisLocked(locks, root, id, i as 0 | 1 | 2, damperArm, kind, layout, steerMech, steeredAxle);
             return (
               <tr key={ax} data-lock-key={lockKeys.point(root, id, i as 0 | 1 | 2)}>
                 <td className="muted">{ax}</td>

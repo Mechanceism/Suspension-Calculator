@@ -34,6 +34,8 @@ function CornerDrawing({ view, onOpen, active, wheelbase }: { view: VehicleCorne
   const raw = view.state.points;
   const m = (v: Vec3 | undefined) => (v ? pl.point(v) : undefined);
   const p = Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, m(v as Vec3)])) as unknown as CornerPoints;
+  if (raw.crossTieRod) p.crossTieRod = [pl.point(raw.crossTieRod[0]), pl.point(raw.crossTieRod[1])];
+  if (raw.wattsLinks) p.wattsLinks = raw.wattsLinks.map(([x, y]) => [pl.point(x), pl.point(y)] as [Vec3, Vec3]);
   const sh = linkageShape(p, view.state.kind);
   const axis = pl.dir(view.state.spinAxis);
   const foot = closestPointOnLine(lineThrough(sh.axis[0], sh.axis[1]), p.wheelCenter);
@@ -51,7 +53,8 @@ function CornerDrawing({ view, onOpen, active, wheelbase }: { view: VehicleCorne
       {vis.upright && <Polyline pts={sh.upright} color={COLORS.upright} width={w} />}
       {vis.upright && <Seg a={foot} b={p.wheelCenter} color={COLORS.upright} width={w} />}
       {view.state.kind === 'custom' && raw.customJoints && <CustomDrawing p={{ ...p, customJoints: raw.customJoints.map((j) => ({ ...j, pts: j.pts.map((q) => pl.point(q)) })) }} width={w} />}
-      {vis.tieRod && !['beam4', 'beam3', 'beamLeaf', 'twistBeam', 'custom'].includes(view.state.kind) && <Seg a={p.trInner} b={p.trOuter} color={COLORS.tieRod} width={w} />}
+      {vis.tieRod && (!['beam4', 'beam3', 'beamWatts', 'beamLeaf', 'twistBeam', 'custom'].includes(view.state.kind) || !!p.crossTieRod) && <Seg a={p.trInner} b={p.trOuter} color={COLORS.tieRod} width={w} />}
+      {vis.tieRod && p.crossTieRod && isLeft(view.id) && <Seg a={p.crossTieRod[0]} b={p.crossTieRod[1]} color={COLORS.tieRod} width={w} />}
       {vis.spring && p.damperChassis && p.damperArm && <Coilover a={p.damperChassis} b={p.damperArm} color={COLORS.spring} radius={22} coils={7} />}
       {vis.spring && p.rockerPivot1 && p.rockerPivot2 && p.pushrodUpper && p.pushrodLower && p.damperArm && (
         <>
@@ -316,7 +319,7 @@ function AckermannLines({ model, frame }: { model: VehicleModel; frame: RefObjec
       if (!ids.includes(l.id)) continue;
       const root = rootOf(l.id, s.links);
       const g = all[root].geom;
-      if (([0, 2] as const).some((ax) => pointAxisLocked(s.locks, root, 'trOuter', ax, g.damperArm, g.kind, layoutOf(g), g.steerMechanism))) {
+      if (([0, 2] as const).some((ax) => pointAxisLocked(s.locks, root, 'trOuter', ax, g.damperArm, g.kind, layoutOf(g), g.steerMechanism, g.steeredAxle))) {
         s.notify(`${l.id}'s outer tie-rod joint is locked (X or Z): unlock it to move it here.`, 'warn');
         return false;
       }
@@ -509,7 +512,7 @@ function VehiclePoints({ model, frame }: { model: VehicleModel; frame: RefObject
         const cv = model.corners[id];
         if (!cv) return null;
         const g = all[rootOf(id, designs.links)].geom;
-        const keys = activePointKeys(g.kind ?? 'doubleWishbone', layoutOf(g), g.steerMechanism ?? 'rack');
+        const keys = activePointKeys(g.kind ?? 'doubleWishbone', layoutOf(g), g.steerMechanism ?? 'rack', g.steeredAxle);
         const pl = placement(id, L);
         return keys.map((k) => {
           const q = cv.state.points[STATE_KEY[k]] as Vec3 | undefined;

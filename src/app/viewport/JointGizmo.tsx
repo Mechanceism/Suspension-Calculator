@@ -182,6 +182,7 @@ export function MoveGizmo({ ids, cur }: { ids: PointKey[]; cur: Current }) {
   const kind = useApp((s) => s.geom.kind);
   const layout = useApp((s) => layoutOf(s.geom));
   const steerMech = useApp((s) => s.geom.steerMechanism ?? 'rack');
+  const steeredAxle = useApp((s) => !!s.geom.steeredAxle);
   // Point editor's "along the line toward…": an extra (yellow) arrow along that line.
   const lineMove = useApp((s) => s.lineMove);
   const geom = useApp((s) => s.geom);
@@ -221,10 +222,10 @@ export function MoveGizmo({ ids, cur }: { ids: PointKey[]; cur: Current }) {
         {ids.length > 1 ? <boxGeometry args={[0.16, 0.16, 0.16]} /> : <sphereGeometry args={[0.09, 16, 12]} />}
         <meshBasicMaterial color="#ffffff" depthTest={false} />
       </mesh>
-      {([0, 1, 2] as const).map((a) => <Arrow key={a} axis={a} origin={origin} ids={ids} locked={ids.some((k) => pointAxisLocked(locks, root, k, a, damperArm, kind, layout, steerMech))} />)}
+      {([0, 1, 2] as const).map((a) => <Arrow key={a} axis={a} origin={origin} ids={ids} locked={ids.some((k) => pointAxisLocked(locks, root, k, a, damperArm, kind, layout, steerMech, steeredAxle))} />)}
       {lineArrow && (
         <Arrow line={lineArrow} origin={origin} ids={ids}
-          locked={([0, 1, 2] as const).some((a) => Math.abs([lineArrow.dir.x, lineArrow.dir.y, lineArrow.dir.z][a]!) > 1e-9 && pointAxisLocked(locks, root, ids[0]!, a, damperArm, kind, layout, steerMech))} />
+          locked={([0, 1, 2] as const).some((a) => Math.abs([lineArrow.dir.x, lineArrow.dir.y, lineArrow.dir.z][a]!) > 1e-9 && pointAxisLocked(locks, root, ids[0]!, a, damperArm, kind, layout, steerMech, steeredAxle))} />
       )}
     </group>
   );
@@ -263,7 +264,7 @@ export function VehicleMoveGizmo({ ids, at, frame, mirrored, onStart }: { ids: P
       </mesh>
       {([0, 1, 2] as const).map((a) => (
         <Arrow key={a} axis={a} origin={origin} ids={ids} frame={frame} sign={a === 0 && mirrored ? -1 : 1} onStart={onStart}
-          locked={ids.some((k) => pointAxisLocked(locks, root, k, a, geom.damperArm, geom.kind, layoutOf(geom), geom.steerMechanism ?? 'rack'))} />
+          locked={ids.some((k) => pointAxisLocked(locks, root, k, a, geom.damperArm, geom.kind, layoutOf(geom), geom.steerMechanism ?? 'rack', geom.steeredAxle))} />
       ))}
     </group>
   );

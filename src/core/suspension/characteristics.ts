@@ -87,7 +87,7 @@ export function characteristics(state: CornerState): Characteristics {
   let ucaPlane: Plane | null = null;
   let instantAxis: Line | null = null;
   let axisTrace: Vec3 | null = null;
-  if (state.axle) return beamCharacteristics(state, camber, toe);
+  if (state.axle) return beamCharacteristics(state, camber, toe, state.axle.state.steer ? { caster, kpi, steeringAxis, g, k } : null);
   if (state.kind === 'rigid') { /* no suspension motion: no instant axis */ } else if (state.kind === 'custom') {
     // Custom linkage: from the knuckle's motion in travel, as for the multilink: planes through two points
     // on the steering axis normal to their velocities (leaves out the bump-steer part); else its screw axis.
@@ -174,7 +174,7 @@ export function characteristics(state: CornerState): Characteristics {
 }
 
 /** A solid axle's left wheel as a corner: the axle's roll center and side-view IC; no steering axis. */
-function beamCharacteristics(state: CornerState, camber: number, toe: number): Characteristics {
+function beamCharacteristics(state: CornerState, camber: number, toe: number, steer: { caster: number; kpi: number; steeringAxis: Line; g: Vec3 | null; k: Vec3 | null } | null): Characteristics {
   const p = state.points, a = state.axle!.chars, wc = p.wheelCenter, cp = p.contact;
   const groundY = cp.y;
   const sv = a.sideViewIC;
@@ -190,6 +190,15 @@ function beamCharacteristics(state: CornerState, camber: number, toe: number): C
     sideViewIC, svsa: sideViewIC ? cp.z - sideViewIC.z : Infinity,
     rollCenterHeight: a.rollCenterHeight, antiAngleContact: angle(cp), antiAngleWheelCenter: angle(wc),
   };
+  if (steer) {
+    // Steered axle: the kingpin is the steering axis.
+    const { g, k } = steer;
+    Object.assign(out, {
+      caster: steer.caster, kpi: steer.kpi, steeringAxis: steer.steeringAxis, steeringAxisAtGround: g,
+      scrubRadius: g ? cp.x - g.x : NaN, mechanicalTrail: g ? g.z - cp.z : NaN,
+      kingpinOffsetAtWheelCenter: k ? wc.x - k.x : NaN, casterOffsetAtWheelCenter: k ? k.z - wc.z : NaN,
+    });
+  }
   if (p.damperChassis && p.damperArm) out.damperLength = length(sub(p.damperArm, p.damperChassis));
   return out;
 }

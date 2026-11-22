@@ -29,7 +29,7 @@ export class AxleTable {
   private readonly n: number;
   private readonly data: Float64Array;
 
-  constructor(axle: TwoTravelAxle, range: [number, number], n = 17) {
+  constructor(axle: TwoTravelAxle, range: [number, number], n = 17, rack = 0) {
     this.n = n;
     this.lo = range[0];
     this.hi = range[1];
@@ -37,12 +37,12 @@ export class AxleTable {
     const qs = Array.from({ length: n }, (_, i) => range[0] + this.step * i);
     // Solve the grid, warm-starting from the neighbour.
     const states: AxleState[][] = [];
-    let rowStart = axle.design().poses;
+    let rowStart = axle.solve({ rack }).poses;
     for (let i = 0; i < n; i++) {
       const row: AxleState[] = [];
       let prev = rowStart;
       for (let j = 0; j < n; j++) {
-        const s = axle.solve({ left: qs[i]!, right: qs[j]! }, prev);
+        const s = axle.solve({ left: qs[i]!, right: qs[j]!, rack }, prev);
         if (s.solve.status !== 'converged' && s.solve.status !== 'singular') throw new Error(`The axle can't reach travel ${qs[i]!.toFixed(0)} / ${qs[j]!.toFixed(0)} mm`);
         row.push(s);
         prev = s.poses;

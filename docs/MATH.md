@@ -74,9 +74,11 @@ Every type is the same kind of relation system on the same point names; `kind` p
 | Double wishbone | UCA, LCA, upright | two revolutes (5 + 5), two ball joints (3 + 3), tie rod 1, travel 1 = 18 | UBJ – LBJ |
 | MacPherson strut | LCA, upright (with the strut tube) | revolute 5, ball joint 3, **strut axis through the top mount** 2 (the top mount is a point on the chassis that must stay on the line through the strut's two upright-fixed points; the strut slides and turns on it), tie rod 1, travel 1 = 12 | LBJ – strut top mount |
 | Multilink (5 links) | upright | five rods with ball ends, each a fixed length between a chassis point and an upright point (upper front / rear, lower front / rear, tie rod or toe link) 5, travel 1 = 6 | virtual: through the points where each pair of links passes closest |
+| No suspension (rigid, e.g. a kart) | upright (on a carrier that only takes the travel input as a vertical shift) | kingpin revolute 5 (`UCA_Out` top, `LCA_Out` bottom), tie rod 1 = 6 | the kingpin |
 
 - **MacPherson:** the strut is the spring / damper: `Dmp_Chs` = top mount, `Dmp_Arm` = a point on the strut axis fixed to the upright (the upper arm's points are unused). Motion ratio ≈ 1 (the strut shortens about as much as the wheel rises).
 - **Multilink:** the arm pivots become the links' chassis ends, `UCA_Out` / `LCA_Out` the front links' upright ends and `UCA_Out2` / `LCA_Out2` the rear links'. A double wishbone is the special case where each pair meets at one ball joint, and the solver reproduces it exactly. A coilover mounts on the upright (there is no arm body; an anti-roll-bar drop link "on the lower arm" goes on the upright too).
+- **No suspension:** no spring or damper. The vehicle solve holds the corner's travel at 0 and the ride model drops its travel degree of freedom, so only the tire is compliant. Body roll then comes from the tires alone: 0.09° at 0.8 g on the default car made rigid, with roll stiffness ≈ 3 500 N·m/° per axle. In the Corner view, travel lifts the whole corner with no camber or toe change, and there is no roll center.
 - **Switching type** keeps the lower arm, tie rod, hub and tire. To MacPherson: the strut's lower point goes inboard of the tire, between the ball joints; the top mount goes 330 mm above the upper ball joint and 60 mm inboard. To multilink: each link's upright end slides 35 mm inboard along its own line, so each pair still passes through the old ball joint. That gives the same virtual pivots and instant axis, so the motion is the same at ride height and within a few hundredths of a degree through travel. Back to a double wishbone: the links rejoin at their virtual pivot; a strut becomes a coilover on the lower arm.
 
 ---
@@ -218,6 +220,7 @@ The tire model is **swappable**. All models share the L3 geometry.
 **Ambient pressure:** an input, derived from **altitude** (standard atmosphere) or entered directly.
 - `P_amb = 101 325 · (1 − 2.25577×10⁻⁵ · h)^5.25588` Pa, with h in m.
 - Separate "set" and "operating" conditions (pressure set at one altitude and temperature, driven at another).
+- **Set pressure = cold, no load** (V₁ is the unloaded air volume). A reading taken with the car on its wheels is a little higher (less air volume), so the setup wizard converts it with `unloadedSetPressure`. A fixed point finds the no-load pressure that, loaded to the corner's static load at the set conditions, reads the measured value. Tested: loading the result again reads the measured pressure to 0.001 kPa.
 
 **Air volume V₁:** an **annulus** between the rim diameter and the tire outer diameter (not a full cylinder), reduced by the shoulder profile.
 
@@ -264,6 +267,9 @@ Moment of the tire force about the **steering axis** (not about the axis's groun
 - **Tie rod / rack / steering wheel:** for an SLA with the spring on an arm, the ball-joint forces act on the steering axis, so only the tie rod resists rotation about it: `f = −T / (û · ((r_TR − q) × d))` (d = outer → inner, f = tension). Rack force = `f · (d · rack axis)`. Steering-wheel torque = `F_rack · c / 2π`. Values are for this corner; the other front corner adds its share.
 - **Parking (standstill) scrub torque** (page 1 of the hand math, generalized): the patch twists about the steering axis's ground point against friction μ with the load spread evenly: `T = μ · (F_z / A) · ∫ |r| dA`, integrated over the actual patch shape; converted to rack force and steering-wheel torque the same way.
 - **Verified:** hand-checkable vertical-axis case (braking × scrub, lateral × pneumatic trail, 120 mm steering arm), KPI self-centering sign, parking torque → μ·F·d far from the axis.
+- **Rack ahead of / behind the axle** (`flipRackSide`). The steering arm is reflected through the steering axis in top view: K = the steering axis at the outer tie-rod joint's height, TR_out' = 2K − TR_out in X and Z. The arm stays on the same line, so the classic Ackermann line is unchanged. The tie rod keeps its length and direction (the inner joint moves with the outer one), and the rack now moves the other way for the same turn. Bump steer changes sign (e.g. +0.008 → −0.008 °/mm), and Ackermann % keeps its sign. Flipping twice returns the original.
+- **Rack length** = the distance between the inner ball joints, 2 · |TR_In X| for mirrored corners. It can be typed (moves TR_In X) and locked with that coordinate; the tie-rod length follows.
+- **Classic Ackermann lines** (Vehicle view, View → *Ackermann lines*). In top view, a line runs from each front steering axis (at the outer tie-rod joint's height) through that joint. Near straight ahead, 100 % Ackermann puts their crossing on the rear axle's centerline (the rear diff on a rear-drive car, but the rule is about the axle line). The readout gives the crossing's distance ahead of (+) or behind (−) the rear axle, or *parallel*. The sample car crosses 3.3 m behind the rear axle, matching its 15 % Ackermann at full lock. The rule only holds near straight ahead; Ackermann % shows what the linkage really does at larger angles.
 
 ## L5: Quasi-Static Corner ✅
 Two operating modes:
@@ -271,7 +277,11 @@ Two operating modes:
 2. **Loaded (settle on spring):** the user sets the corner load; the solver finds the travel where the spring carries it, then the tire carries the load on the ground.
 
 **Spring layouts**
-- **Option 1 (implemented): coilover** from a chassis mount to a mount on the LCA or UCA (`FL_Dmp_Chs`, `FL_Dmp_Arm`).
+- **Option 1 (implemented): coilover** from a chassis mount to a mount on the LCA, the UCA or the knuckle (`FL_Dmp_Chs`, `FL_Dmp_Arm`). A knuckle mount moves about as much as the wheel (motion ratio ≈ 0.9–1); an arm mount moves less.
+- **Placement as numbers** (`src/core/suspension/coilover.ts`):
+  - Installed length (mount to mount) and the angles from vertical: front view (+ = top inboard) and side view (+ = top rearward). Editing any of these moves only the top / chassis mount; the lower mount stays.
+  - The lower mount's position along its arm, from 0 (on the pivot axis, measured from its closest point to the ball joint) to 100 % (at the ball joint). Editing it moves the whole coilover along the arm, keeping its length and angles.
+  - Locked coordinates are respected. Example: 29° → 10° and 80 % → 60 % on sample C keeps 387.7 mm, and the motion ratio drops from 0.68 to 0.58.
 - **Option 2 (planned): pushrod / pullrod + rocker.** The spring code only needs the two spring mount points, so a rocker body (revolute to the chassis, pushrod as a fixed-length link to an arm or the upright) supplies them without changing the equilibrium math.
 
 **Relations (virtual work, chassis fixed, 1 DOF = travel q)**
@@ -460,7 +470,12 @@ With *Handling* on (per test, default on with the ride), a driver steers the car
 | KPI, caster, anti angle (static) | value − target | 0.1° |
 | Scrub radius, mechanical trail (static) | value − target | 1 mm |
 | Motion ratio (static) | −ΔL_damper/Δy_contact at ±1 mm − target | 0.005 |
+| Caster change in heave | caster(t) − caster(0) − slope·t at every sample (°/100 mm) | 0.05° |
+| Track change (scrub) in heave | half track(t) − half track(0) − slope·t at every sample (mm/100 mm) | 0.5 mm |
+| Ackermann | Ackermann % with the mirrored corner at the bump-steer check rack travel (or 20 mm), the vehicle wheelbase and the steering-axis track − target | 2 % |
 | Prefer small changes | √w·Δx/10 mm per variable (default w = 0.01) | — |
+
+Tested: moving the tie-rod joints' X reaches an Ackermann target of 60 % within 5 %; moving the upper pivots' heights reaches a caster gain of 2°/100 mm; a front anti-roll bar raises the front roll-stiffness share by more than 10 points.
 
 The small-change term matters when the goals don't pin the answer down (six free tie-rod coordinates for one toe curve): it picks the nearest design that meets the goals.
 
@@ -525,6 +540,7 @@ Same solver; every evaluation rebuilds the corners from the candidate hardpoints
 | Outside-tire inclination | inclination to the ground of the two loaded tires in cornering (residual per tire) | 0.05° |
 | Roll gradient | body roll ÷ lateral g | 0.02°/g |
 | LLTD front | front share of lateral load transfer | 0.5 % |
+| Roll stiffness front share | front share of the spring-path transfer (total − F_y · h_RC / track per axle, roll centers from each design) | 0.5 % |
 | Brake pitch | nose-down pitch in the braking case | 0.02° |
 | Anti-dive / anti-squat | classic geometric % at static height (brake / drive mount, bias / split) | 1 % |
 | Bump steer (every design) | as in the corner optimizer, for every design | 0.01° |

@@ -455,7 +455,7 @@ export class DoubleWishbone {
     points.customJoints = c.joints.map((j) => {
       const on = (b: string, p: Vec3) => ctx.world(sys.attach(b, p));
       const mover = fixed(j.b) ? j.a : j.b;
-      const pts = j.kind === 'rod' ? [on(j.a, j.p), on(j.b, j.q!)] : j.kind === 'hinge' ? [on(mover, j.p), on(mover, j.q!)] : [on(mover, j.p)];
+      const pts = j.kind === 'rod' ? [on(j.a, j.p), on(j.b, j.q!)] : j.kind !== 'ball' ? [on(mover, j.p), on(mover, j.q!)] : [on(mover, j.p)];
       return { id: j.id, kind: j.kind, name: j.name, a: j.a, b: j.b, pts };
     });
   }

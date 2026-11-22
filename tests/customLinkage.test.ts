@@ -130,3 +130,42 @@ describe('custom linkage in the app', () => {
     expect(r.warnings).toEqual([]);
   });
 });
+
+describe('custom linkage: sliding joints and optimizer points', () => {
+  it('a MacPherson built from a lower arm, a top-mount body on a ball joint and a slider moves like the built-in one', async () => {
+    const { SAMPLE_MACPHERSON: M } = await import('../src/examples/sampleLayouts');
+    const top = M.damper!.chassis, lower = M.damper!.armPoint;
+    const c: CustomLinkage = {
+      bodies: [{ id: 'lca', name: 'Lower arm' }, { id: 'mount', name: 'Strut top mount' }],
+      joints: [
+        { id: 'h', kind: 'hinge', name: 'Arm pivot', a: 'chassis', b: 'lca', p: M.lca.fwd, q: M.lca.aft },
+        { id: 'bj', kind: 'ball', name: 'Lower ball joint', a: 'lca', b: 'upright', p: M.lca.out },
+        { id: 'tm', kind: 'ball', name: 'Top mount', a: 'chassis', b: 'mount', p: top },
+        { id: 'st', kind: 'slider', name: 'Strut', a: 'mount', b: 'upright', p: lower, q: top },
+        { id: 'tr', kind: 'rod', name: 'Tie rod', a: 'rack', b: 'upright', p: M.tieRod.inner, q: M.tieRod.outer },
+      ],
+      damperBody: 'upright',
+    };
+    expect(customProblems(c)).toEqual([]);
+    const a = new DoubleWishbone(M).sweep(travels, (t) => ({ travel: t }));
+    const b = new DoubleWishbone(custom({ ...M, damper: { ...M.damper!, arm: 'upright' } }, c)).sweep(travels, (t) => ({ travel: t }));
+    a.forEach((s, i) => {
+      expect(b[i]!.solve.status).toBe('converged');
+      expect(characteristics(b[i]!).camber).toBeCloseTo(characteristics(s).camber, 7);
+      expect(characteristics(b[i]!).toe).toBeCloseTo(characteristics(s).toe, 7);
+    });
+    // Slide and turn (4) in place of the slider leaves the mount free to spin: one motion too many.
+    expect(customFreedom({ ...c, joints: c.joints.map((j) => (j.kind === 'slider' ? { ...j, kind: 'cylinder' as const } : j)) })).toBe(2);
+  });
+
+  it('the optimizer can move a joint point', async () => {
+    const { withVariables, getPoint } = await import('../src/core/optimize/corner');
+    const g = custom(C, customFromWishbone(C));
+    expect(getPoint(g, 'custom:j3:p')).toEqual(C.uca.out);
+    const moved = withVariables(g, [{ point: 'custom:j3:p', axis: 1, lo: 0, hi: 1000 }], [C.uca.out.y + 10]);
+    expect(moved.custom!.joints.find((j) => j.id === 'j3')!.p.y).toBeCloseTo(C.uca.out.y + 10, 9);
+    expect(new DoubleWishbone(moved).design().solve.status).toBe('converged');
+    const { parseCustomVarKey, customVarKey } = await import('../src/app/optimizer');
+    expect(parseCustomVarKey(customVarKey('j3', 'q', 2))).toEqual({ joint: 'j3', which: 'q', axis: 2 });
+  });
+});

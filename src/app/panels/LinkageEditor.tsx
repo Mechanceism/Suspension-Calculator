@@ -9,11 +9,13 @@ import { parseValue } from '../../core/units/units';
 import { customFreedom, customProblems, JOINT_EQUATIONS, type CustomJoint, type CustomJointKind, type CustomLinkage } from '../../core/suspension/customLinkage';
 import type { Vec3 } from '../../core/math/vec3';
 
-const KIND_LABEL: Record<CustomJointKind, string> = { ball: 'Ball joint', hinge: 'Hinge / bushing', rod: 'Rod (two ball ends)' };
+const KIND_LABEL: Record<CustomJointKind, string> = { ball: 'Ball joint', hinge: 'Hinge / bushing', rod: 'Rod (two ball ends)', cylinder: 'Slide and turn (cylindrical)', slider: 'Slide only (prismatic)' };
 const KIND_HINT: Record<CustomJointKind, string> = {
   ball: 'The two bodies share a point and turn freely about it (3 constraints)',
   hinge: 'The two bodies turn about a common axis through two points, like a pivot bushing (5 constraints)',
   rod: 'A fixed-length link with ball joints at its ends, from the first body to the second (1 constraint)',
+  cylinder: 'The two bodies slide along and turn about a common axis through two points, like a strut tube in its body or a sliding pillar (4 constraints)',
+  slider: 'The two bodies only slide along a common axis through two points, without turning (5 constraints)',
 };
 
 const fieldOf = (v: number) => ({ text: String(Number(v.toFixed(3))), value: v });
@@ -59,6 +61,7 @@ export function LinkageEditor() {
     const id = newId('j', c.joints.map((j) => j.id));
     const j: CustomJoint = kind === 'ball' ? { id, kind, name: `Ball joint ${id}`, a: 'chassis', b: 'upright', p }
       : kind === 'hinge' ? { id, kind, name: `Hinge ${id}`, a: 'chassis', b: 'upright', p, q }
+      : kind === 'cylinder' || kind === 'slider' ? { id, kind, name: `${kind === 'slider' ? 'Slider' : 'Sliding pillar'} ${id}`, a: 'chassis', b: 'upright', p: { x: h.x - 120, y: h.y - 150, z: h.z }, q: { x: h.x - 140, y: h.y + 150, z: h.z } }
       : { id, kind, name: `Rod ${id}`, a: 'chassis', b: 'upright', p, q: { x: h.x - 50, y: h.y, z: h.z } };
     put({ joints: [...c.joints, j] });
   };
@@ -102,8 +105,8 @@ export function LinkageEditor() {
           <table className="hp-table">
             <thead><tr><th /><th>X</th><th>Y</th><th>Z</th></tr></thead>
             <tbody>
-              <PointRow label={j.kind === 'ball' ? 'Joint' : j.kind === 'hinge' ? 'Axis point 1' : `End on ${nameOf(j.a)}`} v={j.p} onChange={(p) => putJoint(j.id, { p })} />
-              {j.kind !== 'ball' && j.q && <PointRow label={j.kind === 'hinge' ? 'Axis point 2' : `End on ${nameOf(j.b)}`} v={j.q} onChange={(q) => putJoint(j.id, { q })} />}
+              <PointRow label={j.kind === 'ball' ? 'Joint' : j.kind === 'rod' ? `End on ${nameOf(j.a)}` : 'Axis point 1'} v={j.p} onChange={(p) => putJoint(j.id, { p })} />
+              {j.kind !== 'ball' && j.q && <PointRow label={j.kind === 'rod' ? `End on ${nameOf(j.b)}` : 'Axis point 2'} v={j.q} onChange={(q) => putJoint(j.id, { q })} />}
             </tbody>
           </table>
         </div>
@@ -112,6 +115,8 @@ export function LinkageEditor() {
         <button className="chip" onClick={() => addJoint('ball')} title={KIND_HINT.ball}>+ Ball joint</button>
         <button className="chip" onClick={() => addJoint('hinge')} title={KIND_HINT.hinge}>+ Hinge</button>
         <button className="chip" onClick={() => addJoint('rod')} title={KIND_HINT.rod}>+ Rod</button>
+        <button className="chip" onClick={() => addJoint('cylinder')} title={KIND_HINT.cylinder}>+ Slide &amp; turn</button>
+        <button className="chip" onClick={() => addJoint('slider')} title={KIND_HINT.slider}>+ Slider</button>
       </div>
       <h4>Coilover</h4>
       <div className="row small-text">
@@ -122,6 +127,7 @@ export function LinkageEditor() {
         <span className="muted">(its points: Coilover in the parts below)</span>
       </div>
       <p className="hint small-text">
+        Click a joint's point in the view to move it with the X / Y / Z arrows. The Optimize tab can move them too (Free coordinates → Linkage points).
         Steering: a rod (or joint) to the Steering rack steers the knuckle; without one the corner doesn&apos;t steer. The instant axis,
         roll center and steering axis (KPI, caster) come from how the knuckle actually moves.
       </p>

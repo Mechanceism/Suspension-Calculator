@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Grid } from '@react-three/drei';
 import type { ThreeEvent } from '@react-three/fiber';
 import type * as THREE from 'three';
@@ -12,7 +12,7 @@ import { layoutOf, useApp, mountedTireWidth, POINT_NAMES, forCorner, selectedPoi
 import type { Model, Sample, Current } from '../useModel';
 import { STATE_KEY, anchorPosition } from '../anchors';
 import { Joint, Seg, Polyline, Tri, Wheel, Label, PatchMesh, Coilover, HitLink } from './primitives';
-import { MoveGizmo } from './JointGizmo';
+import { MoveGizmo, AxisGizmo } from './JointGizmo';
 import { componentDefs } from '../components';
 import { linkageShape, customShape } from './linkageShape';
 import { MeasureOverlay } from './MeasureOverlay';
@@ -117,6 +117,60 @@ export function CustomDrawing({ p, width = 3, opacity = 1 }: { p: CornerState['p
   );
 }
 
+/**
+ * A custom linkage's joint points, pickable: click one for X / Y / Z arrows that move it (its design
+ * position, by how far it is dragged). Measure mode leaves them alone.
+ */
+function CustomPicks({ state }: { state: CornerState }) {
+  const pick = useApp((s) => s.customPick);
+  const custom = useApp((s) => s.geom.custom);
+  const measureMode = useApp((s) => s.measureMode);
+  const start = useRef<{ joint: string; which: 'p' | 'q'; v: Vec3 } | null>(null);
+  const noFrame = useRef<THREE.Object3D | null>(null);
+  const js = state.points.customJoints;
+  if (!js || !custom || measureMode) return null;
+  const at = (j: (typeof js)[number], which: 'p' | 'q') => (which === 'q' ? j.pts[1] : j.pts[0]);
+  const picked = pick ? js.find((j) => j.id === pick.joint) : undefined;
+  const pickedAt = picked && pick ? at(picked, pick.which) : undefined;
+  const begin = () => {
+    const c = useApp.getState().geom.custom;
+    const j = c?.joints.find((x) => x.id === pick?.joint);
+    if (!j || !pick) return false;
+    const v = pick.which === 'q' ? j.q : j.p;
+    if (!v) return false;
+    start.current = { joint: j.id, which: pick.which, v };
+    return true;
+  };
+  const move = (axis: 'x' | 'y' | 'z') => (d: number) => {
+    const s = useApp.getState(), c = s.geom.custom, st = start.current;
+    if (!c || !st) return;
+    const v = { ...st.v, [axis]: Number((st.v[axis] + d).toFixed(4)) };
+    s.setCustom({ ...c, joints: c.joints.map((j) => (j.id === st.joint ? { ...j, [st.which]: v } : j)) });
+  };
+  return (
+    <group>
+      {js.flatMap((j) => (['p', 'q'] as const).filter((w) => at(j, w)).map((w) => {
+        const q = at(j, w)!;
+        const on = pick?.joint === j.id && pick.which === w;
+        return (
+          <mesh key={`${j.id}-${w}`} position={[q.x, q.y, q.z]} userData={{ joint: true }}
+            onClick={(e) => { e.stopPropagation(); useApp.getState().select(null); useApp.setState({ customPick: on ? null : { joint: j.id, which: w } }); }}
+            onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = 'pointer'; }}
+            onPointerOut={() => { document.body.style.cursor = ''; }}>
+            <sphereGeometry args={[on ? 11 : 8, 14, 10]} />
+            <meshBasicMaterial color={on ? '#ffffff' : '#ffd166'} depthTest={false} transparent opacity={0.85} />
+          </mesh>
+        );
+      }))}
+      {pickedAt && (
+        <AxisGizmo at={pickedAt} frame={noFrame} axes={[
+          { onStart: begin, onDelta: move('x') }, { onStart: begin, onDelta: move('y') }, { onStart: begin, onDelta: move('z') },
+        ]} />
+      )}
+    </group>
+  );
+}
+
 function Linkage({ state, faint = false }: { state: CornerState; faint?: boolean }) {
   const vis = useApp((s) => s.visibility);
   const p = state.points;
@@ -138,6 +192,7 @@ function Linkage({ state, faint = false }: { state: CornerState; faint?: boolean
   return (
     <group>
       {custom && <CustomDrawing p={p} />}
+      {custom && <CustomPicks state={state} />}
       {vis.uca && sh.uca.length > 0 && (
         <Part id="uca">{(e) => (
           <>

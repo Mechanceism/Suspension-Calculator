@@ -27,7 +27,7 @@ import { POINT_LABELS, pointLabel } from '../components';
 import type { SuspensionKind } from '../../core/suspension/doubleWishbone';
 import { pointAxisLocked } from '../locks';
 import {
-  buildProblem, buildVehicleProblem, runOptimizer, runVehicleOptimizer, varKey, parseVarKey, vehVarKey, parseVehVarKey,
+  buildProblem, buildVehicleProblem, runOptimizer, runVehicleOptimizer, varKey, parseVarKey, vehVarKey, parseVehVarKey, customVarKey, parseCustomVarKey, customOfVariable,
   pointKeyOf, designRoots, type RunHandle, type RunResult,
 } from '../optimizer';
 import { ValueInput } from './ValueInput';
@@ -128,7 +128,7 @@ function CoordPicker({ spec, ranges, onToggle }: { spec: CoordSpec; ranges: Reco
   );
 }
 
-interface RangeEntry { key: string; k: PointKey; axis: 0 | 1 | 2; label: string; now: number; locked: boolean; lo: Field; hi: Field }
+interface RangeEntry { key: string; k?: PointKey; axis: 0 | 1 | 2; label: string; now: number; locked: boolean; lo: Field; hi: Field }
 
 /** The chosen free coordinates with their ranges. */
 function RangeTable({ entries, onRange, onRemove }: {
@@ -147,7 +147,7 @@ function RangeTable({ entries, onRange, onRemove }: {
           return (
             <tr key={e.key} className={e.locked ? 'off' : ''}>
               <td className="nowrap">
-                <button className="link-btn" onClick={() => highlight(e.k)}>{e.label}</button>
+                {e.k ? <button className="link-btn" onClick={() => highlight(e.k!)}>{e.label}</button> : <span>{e.label}</span>}
                 {e.locked && <span title="Locked: skipped"> 🔒</span>}
               </td>
               <td className={`mono nowrap${outside ? ' warn-text' : ''}`} title={outside ? 'Outside its range: the optimizer starts from the nearest limit' : undefined}>{disp.text(fmt(e.now, 1), 'mm').text}</td>
@@ -424,7 +424,18 @@ export function OptimizePanel() {
     .map(({ key, v }) => ({
       key, k: v!.k, axis: v!.axis, label: `${POINT_LABELS[v!.k]} ${AXES[v!.axis]}`,
       now: spec.value(v!.k, v!.axis), locked: spec.locked(v!.k, v!.axis), lo: setup.ranges[key]!.lo, hi: setup.ranges[key]!.hi,
-    }));
+    } as RangeEntry));
+  // Custom linkage joint points.
+  const customPoint = (joint: string, which: 'p' | 'q') => { const j = geom.custom?.joints.find((x) => x.id === joint); return j ? (which === 'q' ? j.q : j.p) : undefined; };
+  if (geom.kind === 'custom') {
+    for (const key of Object.keys(setup.ranges)) {
+      const cv = parseCustomVarKey(key);
+      const j = cv && geom.custom?.joints.find((x) => x.id === cv.joint);
+      const v = cv && customPoint(cv.joint, cv.which);
+      if (!cv || !j || !v) continue;
+      entries.push({ key, axis: cv.axis, label: `${j.name}${j.kind === 'ball' ? '' : cv.which === 'p' ? ' (1)' : ' (2)'} ${AXES[cv.axis]}`, now: [v.x, v.y, v.z][cv.axis]!, locked: false, lo: setup.ranges[key]!.lo, hi: setup.ranges[key]!.hi });
+    }
+  }
 
   return (
     <div className="inspector optimize-panel">
@@ -465,7 +476,35 @@ export function OptimizePanel() {
       <Section title="Tire grip model" open={false}>
         <GripModelFields />
       </Section>
-      <FreeCoordinates spec={spec} ranges={setup.ranges} entries={entries} update={(fn) => update((o) => ({ ...o, ranges: fn(o.ranges) }))} />
+      <FreeCoordinates spec={spec} ranges={setup.ranges} entries={entries} update={(fn) => update((o) => ({ ...o, ranges: fn(o.ranges) }))}
+        header={geom.kind === 'custom' && geom.custom ? (
+          <table className="opt-table">
+            <thead><tr><th>Linkage points</th><th /><th /><th /></tr></thead>
+            <tbody>
+              {geom.custom.joints.flatMap((j) => (j.kind === 'ball' ? ['p'] as const : ['p', 'q'] as const).map((w) => (
+                <tr key={`${j.id}-${w}`}>
+                  <td>{j.name}{j.kind === 'ball' ? '' : w === 'p' ? ' (1)' : ' (2)'}</td>
+                  {([0, 1, 2] as const).map((a) => {
+                    const key = customVarKey(j.id, w, a);
+                    const on = !!setup.ranges[key];
+                    const v = customPoint(j.id, w);
+                    return (
+                      <td key={a}>
+                        <button className={`chip axis-chip${on ? ' on' : ''}`} title={on ? 'Free: click to fix' : 'Fixed: click to let the optimizer move it'}
+                          onClick={() => update((o) => {
+                            const r = { ...o.ranges };
+                            if (r[key]) delete r[key];
+                            else if (v) { const now = [v.x, v.y, v.z][a]!; r[key] = { lo: numField(now - OPT_DEFAULT_RANGE), hi: numField(now + OPT_DEFAULT_RANGE) }; }
+                            return { ...o, ranges: r };
+                          })}>{AXES[a]}</button>
+                      </td>
+                    );
+                  })}
+                </tr>
+              )))}
+            </tbody>
+          </table>
+        ) : undefined} />
       <Section title="Run">
         <RunArea
           useRun={useCornerRun} blockers={built.blockers} meta={GOAL_META} current={geom}
@@ -473,7 +512,26 @@ export function OptimizePanel() {
           notes={skippedNote(built.skippedLocked, (k) => { const v = parseVarKey(k)!; return `${POINT_LABELS[v.k]} ${AXES[v.axis]}`; }, built.problem.holds ?? [])}
           start={(onP) => runOptimizer(built.problem, onP)}
           onApply={(r) => {
-            applyOptimized(r.variables.map((v) => ({ key: pointKeyOf(v.point), axis: v.axis, value: v.after })));
+            // Hardpoints through the optimizer's apply (its Undo); a custom linkage's joint points into the linkage.
+            const pts = r.variables.filter((v) => !customOfVariable(v.point));
+            if (pts.length) applyOptimized(pts.map((v) => ({ key: pointKeyOf(v.point), axis: v.axis, value: v.after })));
+            const cust = r.variables.filter((v) => customOfVariable(v.point));
+            const c0 = useApp.getState().geom.custom;
+            if (cust.length && c0) {
+              const joints = c0.joints.map((j) => {
+                let out = j;
+                for (const v of cust) {
+                  const cv = customOfVariable(v.point)!;
+                  if (cv.joint !== j.id) continue;
+                  const p = cv.which === 'q' ? out.q : out.p;
+                  if (!p) continue;
+                  const np = { ...p, [AXES[v.axis].toLowerCase()]: v.after };
+                  out = { ...out, [cv.which]: np };
+                }
+                return out;
+              });
+              useApp.getState().setCustom({ ...c0, joints });
+            }
             notify(`Optimized design applied to ${sharers.join(', ')}. Undo is in the Optimize tab.`);
           }}
           undo={{ available: !!optUndo && optUndo.root === root, run: undoOptimized }}

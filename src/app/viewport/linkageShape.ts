@@ -36,7 +36,7 @@ export function customShape(p: CornerPoints): CustomShape | null {
   for (const j of js) {
     if (j.kind === 'rod') { rods.push({ a: j.pts[0]!, b: j.pts[1]!, steering: j.a === 'rack' || j.b === 'rack' }); put(j.a, j.pts[0]!); put(j.b, j.pts[1]!); continue; }
     for (const q of j.pts) { put(j.a, q); put(j.b, q); }
-    if (j.kind === 'hinge') { if (fixed(j.a) || fixed(j.b)) frameHinges.push([j.pts[0]!, j.pts[1]!]); }
+    if (j.kind !== 'ball') { if (fixed(j.a) || fixed(j.b)) frameHinges.push([j.pts[0]!, j.pts[1]!]); }
     else balls.push(j.pts[0]!);
   }
   put('upright', p.wheelCenter);

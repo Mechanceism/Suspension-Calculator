@@ -117,13 +117,16 @@ Every type is the same kind of relation system on the same point names; `kind` p
   - **Joints:** between the frame, the steering rack, the knuckle (which carries the wheel) and any bodies you add:
     - a **ball joint** (a shared point; 3 equations);
     - a **hinge / bushing** (a common axis through two points; 5);
-    - a **rod** (a fixed-length link with ball ends; 1).
+    - a **rod** (a fixed-length link with ball ends; 1);
+    - **slide and turn** (cylindrical: the two bodies slide along and turn about a common axis; 4), e.g. a strut tube or a sliding pillar;
+    - a **slider** (prismatic: they only slide along it; 5). A MacPherson built from a lower arm, a top-mount body on a ball joint and a slider along the strut moves exactly like the built-in MacPherson (camber and toe to 1e−7). With *slide and turn* instead, the top mount could spin freely: the freedom count says 2.
   - **Freedom:** a corner needs exactly one free motion with the steering held, 6 · moving bodies − equations = 1. The editor counts it and says what to add or remove, and finds bodies joined to nothing.
   - **Results from the motion itself**, at each solved state, by central differences (two extra solves each):
     - Instant axis: the knuckle's twist (ω, v) for ±0.25 mm of travel. As for the multilink: the planes through two points on the steering axis normal to their velocities, so the bump-steer part is left out; components within the differencing noise snap to zero (an axis along the car has SVSA ∞).
     - Steering axis: the knuckle's screw axis for ±0.1 mm of rack, between the ground and 150 mm above the wheel center. It is taken with the wheel center held at its height; for a double wishbone this is within ~0.5 mm of the ball-joint line (KPI and caster agree to 0.01°). Without a rod or joint to the rack, the corner doesn't steer.
     - So camber / toe curves, KPI, caster, scrub, trail, the instant centers and the roll center work as for the built-in types.
   - **Coilover:** `Dmp_Chs` on the frame, `Dmp_Arm` on the body you choose.
+  - **Moving its points:** click a joint's point in the Corner view for X / Y / Z arrows. Free coordinates in the corner optimizer include *Linkage points* (variables `custom:<joint>:<p|q>`), applied back into the linkage.
   - **Whole car:** like any other type: tables, the vehicle solve, ride, handling, tests and the optimizer (its free points are the hub and coilover points; the linkage's own points are edited in the Linkage editor).
   - **Switching to it** starts from the current arms (hinged arm bodies, ball joints to the knuckle, the tie rod as a rod from the rack), so it moves the same. Switching away and back keeps your linkage. Saved with the project (format 27).
   - **Tested:**

@@ -363,3 +363,39 @@ export function pointOnLine(sys: ConstraintSystem, name: string, b: string, l1: 
     },
   };
 }
+
+/**
+ * Cylindrical joint between bodies `a` and `b` along the axis through design points p1 → p2: they slide
+ * along it and turn about it (a strut's tube in its body). b's two axis points stay on a's axis. 4 equations.
+ */
+export function cylindrical(sys: ConstraintSystem, name: string, a: string, b: string, p1: Vec3, p2: Vec3): Constraint {
+  const a1 = sys.attach(a, p1), a2 = sys.attach(a, p2), b1 = sys.attach(b, p1), b2 = sys.attach(b, p2);
+  return {
+    name, size: 4,
+    residual(ctx, out, o) {
+      const wa1 = ctx.world(a1);
+      const u = normalize(sub(ctx.world(a2), wa1));
+      const e1 = perpendicular(u), e2 = cross(u, e1);
+      const d1 = sub(ctx.world(b1), wa1), d2 = sub(ctx.world(b2), wa1);
+      out[o] = dot(d1, e1); out[o + 1] = dot(d1, e2); out[o + 2] = dot(d2, e1); out[o + 3] = dot(d2, e2);
+    },
+  };
+}
+
+/**
+ * Prismatic (sliding) joint between bodies `a` and `b` along the axis p1 → p2: they only slide along it
+ * (cylindrical, and no turning about it). 5 equations.
+ */
+export function prismatic(sys: ConstraintSystem, name: string, a: string, b: string, p1: Vec3, p2: Vec3): Constraint {
+  const cyl = cylindrical(sys, name, a, b, p1, p2);
+  const a1 = sys.attach(a, p1), a2 = sys.attach(a, p2);
+  const n0 = perpendicular(normalize(sub(p2, p1)));
+  return {
+    name, size: 5,
+    residual(ctx, out, o) {
+      cyl.residual(ctx, out, o);
+      const u = normalize(sub(ctx.world(a2), ctx.world(a1)));
+      out[o + 4] = dot(cross(ctx.direction(a, n0), ctx.direction(b, n0)), u);
+    },
+  };
+}

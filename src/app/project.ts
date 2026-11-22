@@ -588,7 +588,7 @@ function readCustom(raw: unknown, where: string, w: string[]): CustomLinkage | u
   const joints: CustomJoint[] = [];
   for (const j of Array.isArray(raw.joints) ? raw.joints : []) {
     if (!isObj(j)) continue;
-    const kind = j.kind === 'ball' || j.kind === 'hinge' || j.kind === 'rod' ? j.kind : null;
+    const kind = j.kind === 'ball' || j.kind === 'hinge' || j.kind === 'rod' || j.kind === 'cylinder' || j.kind === 'slider' ? j.kind : null;
     const p = vec(j.p), q = vec(j.q);
     if (!kind || typeof j.id !== 'string' || typeof j.a !== 'string' || typeof j.b !== 'string' || !ok(p) || (kind !== 'ball' && !ok(q))) {
       w.push(`${where}: a joint couldn't be read, dropped`);

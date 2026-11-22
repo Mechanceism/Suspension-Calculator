@@ -636,6 +636,8 @@ export interface AppState extends DesignState {
   notify(text: string, kind?: 'info' | 'warn' | 'error'): void;
   loadPreset(id: string): void;
   select(sel: Selection): void;
+  /** Custom linkage: the joint point picked in the view (moved with the arrows), or null. */
+  customPick: { joint: string; which: 'p' | 'q' } | null;
   movePoint(key: PointKey, delta: Vec3): void;
   /** Move several hardpoints by the same amount. */
   movePoints(keys: PointKey[], delta: Vec3): void;
@@ -1531,7 +1533,8 @@ export const useApp = create<AppState>((set, get) => ({
   measureMode: false,
   measure: [],
 
-  select: (selection) => set(selection ? { selection, leftTab: 'inspector' } : { selection }),
+  select: (selection) => set(selection ? { selection, leftTab: 'inspector', customPick: null } : { selection, customPick: null }),
+  customPick: null,
   movePoints: (keys, delta) => {
     const geom = get().geom;
     const points = { ...geom.points };

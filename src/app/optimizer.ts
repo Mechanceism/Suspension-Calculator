@@ -42,6 +42,18 @@ export function parseVarKey(key: string): { k: PointKey; axis: 0 | 1 | 2 } | nul
   const axis = AXES.indexOf(a as 'x');
   return (POINT_KEYS as readonly string[]).includes(k!) && axis >= 0 ? { k: k as PointKey, axis: axis as 0 | 1 | 2 } : null;
 }
+/** Custom linkage joint points: `custom.<joint>.<p|q>.<x|y|z>` ↔ the optimizer's `custom:<joint>:<p|q>`. */
+export const customVarKey = (joint: string, which: 'p' | 'q', axis: 0 | 1 | 2) => `custom.${joint}.${which}.${AXES[axis]}`;
+export function parseCustomVarKey(key: string): { joint: string; which: 'p' | 'q'; axis: 0 | 1 | 2 } | null {
+  const m = /^custom\.(.+)\.(p|q)\.([xyz])$/.exec(key);
+  return m ? { joint: m[1]!, which: m[2] as 'p' | 'q', axis: AXES.indexOf(m[3] as 'x') as 0 | 1 | 2 } : null;
+}
+/** The joint and point of a `custom:<joint>:<p|q>` optimizer variable (null for a hardpoint). */
+export function customOfVariable(id: string): { joint: string; which: 'p' | 'q' } | null {
+  if (!id.startsWith('custom:')) return null;
+  const [, joint, which] = id.split(':');
+  return { joint: joint!, which: which === 'q' ? 'q' : 'p' };
+}
 /** Vehicle optimizer keys carry the design (root corner): `FL.trInner.y`. */
 export const vehVarKey = (root: CornerId, k: PointKey, axis: 0 | 1 | 2) => `${root}.${varKey(k, axis)}`;
 export function parseVehVarKey(key: string): { root: CornerId; k: PointKey; axis: 0 | 1 | 2 } | null {
@@ -147,6 +159,12 @@ export function buildProblem(s: AppState): BuiltProblem<CornerProblem> {
   const variables: Variable[] = [];
   const skippedLocked: string[] = [];
   for (const [key, r] of Object.entries(o.ranges)) {
+    const cv = parseCustomVarKey(key);
+    if (cv) {
+      // A custom linkage's joint point (only while the design is one).
+      if (s.geom.kind === 'custom' && s.geom.custom?.joints.some((j) => j.id === cv.joint)) variables.push({ point: `custom:${cv.joint}:${cv.which}`, axis: cv.axis, lo: r.lo.value, hi: r.hi.value });
+      continue;
+    }
     const v = parseVarKey(key);
     if (!v) continue;
     if (pointAxisLocked(s.locks, root, v.k, v.axis, s.geom.damperArm, s.geom.kind, layoutOf(s.geom), s.geom.steerMechanism, s.geom.steeredAxle)) { skippedLocked.push(key); continue; }

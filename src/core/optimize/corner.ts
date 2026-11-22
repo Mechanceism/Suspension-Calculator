@@ -31,7 +31,9 @@ export type HardpointId =
   /** Rocker layout: pivot axis and pushrod ends. */
   | 'rockerPivot1' | 'rockerPivot2' | 'pushrodLower' | 'pushrodUpper'
   /** Steering-arm mechanism: its pivot axis. */
-  | 'steerPivot1' | 'steerPivot2';
+  | 'steerPivot1' | 'steerPivot2'
+  /** Custom linkage: a joint's point, `custom:<joint id>:p` or `:q`. */
+  | `custom:${string}`;
 
 export type GoalKind =
   | 'bumpSteer' | 'camberGain' | 'rollCamber' | 'rollCenter' | 'rcMigration'
@@ -123,6 +125,12 @@ export function getPoint(g: DoubleWishboneGeometry, id: HardpointId): Vec3 | und
     case 'steerPivot1': return g.steering?.kind === 'arm' ? g.steering.pivot1 : undefined;
     case 'steerPivot2': return g.steering?.kind === 'arm' ? g.steering.pivot2 : undefined;
   }
+  if (id.startsWith('custom:')) {
+    const [, jid, which] = id.split(':');
+    const j = g.custom?.joints.find((x) => x.id === jid);
+    return j ? (which === 'q' ? j.q : j.p) : undefined;
+  }
+  return undefined;
 }
 
 /** A copy of the geometry with the variables set to x. */
@@ -143,6 +151,12 @@ export function withVariables(g: DoubleWishboneGeometry, vars: Variable[], x: nu
     damper: g.damper ? { ...g.damper, chassis: P('damperChassis'), armPoint: P('damperArm') } : undefined,
     ...(g.steering?.kind === 'arm' ? { steering: { kind: 'arm' as const, pivot1: P('steerPivot1'), pivot2: P('steerPivot2') } } : {}),
     ...(g.rocker ? { rocker: { ...g.rocker, pivot1: P('rockerPivot1'), pivot2: P('rockerPivot2'), pushrodLower: P('pushrodLower'), pushrodUpper: P('pushrodUpper') } } : {}),
+    ...(g.custom ? {
+      custom: {
+        ...g.custom,
+        joints: g.custom.joints.map((j) => ({ ...j, p: pts.get(`custom:${j.id}:p`) ?? j.p, ...(j.q ? { q: pts.get(`custom:${j.id}:q`) ?? j.q } : {}) })),
+      },
+    } : {}),
   };
 }
 

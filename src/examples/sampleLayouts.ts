@@ -64,3 +64,30 @@ export const SAMPLE_LAYOUTS: Layout[] = [
   layout('C', 'Unequal arms, FVSA 2000', 2000, 250, 200),
   layout('D', 'Unequal arms, FVSA 1000', 1000, 250, 200),
 ];
+
+/**
+ * Sample MacPherson strut (front-left): L-shaped lower arm, strut from the upright up to a top mount
+ * inboard and slightly rearward (KPI ≈ 13.6°, a little caster). The hub sits further outboard than on the
+ * double wishbone samples so the strut clears the tire. The damper / spring is the strut.
+ */
+export const SAMPLE_MACPHERSON: DoubleWishboneGeometry = {
+  kind: 'macpherson',
+  uca: { fwd: vec3(330, 330, 150), aft: vec3(330, 330, -150), out: vec3(470, 650, -20) }, // unused (no upper arm)
+  lca: { fwd: vec3(300, 20, 120), aft: vec3(330, 25, -220), out: vec3(620, 30, 5) },
+  tieRod: { inner: vec3(220, 160, -130), outer: vec3(580, 160, -140) },
+  wheel: { center: vec3(650, 160, 0), spinAxis: vec3(1, 0, 0), radius: WHEEL_RADIUS, width: 205 },
+  damper: { chassis: vec3(470, 650, -20), arm: 'upright', armPoint: vec3(520, 300, 0) },
+};
+
+/**
+ * Sample five-link multilink (left side): upper front / rear and lower front / rear links ending at
+ * separate points on the upright, plus a toe link (the "tie rod"; held when the corner isn't steered).
+ */
+export const SAMPLE_MULTILINK: DoubleWishboneGeometry = {
+  kind: 'multilink',
+  uca: { fwd: vec3(280, 330, 120), aft: vec3(280, 320, -140), out: vec3(540, 320, 40), out2: vec3(530, 315, -50) },
+  lca: { fwd: vec3(230, 50, 200), aft: vec3(240, 40, -150), out: vec3(565, 45, 50), out2: vec3(560, 35, -60) },
+  tieRod: { inner: vec3(220, 110, -160), outer: vec3(545, 105, -150) },
+  wheel: { center: WHEEL_CENTER, spinAxis: vec3(1, 0, 0), radius: WHEEL_RADIUS, width: 205 },
+  damper: { chassis: vec3(300, 380, 30), arm: 'upright', armPoint: vec3(500, 60, 0) },
+};

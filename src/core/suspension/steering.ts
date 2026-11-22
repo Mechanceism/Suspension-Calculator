@@ -3,7 +3,7 @@
  * (docs/MATH.md § Steering).
  *
  * Torque about the steering axis from a tire force F applied at point p:
- *   T = û · ((p − q) × F)          û = steering-axis unit vector (LBJ → UBJ), q = LBJ
+ *   T = û · ((p − q) × F)          û = steering-axis unit vector (LBJ → UBJ / strut top / virtual pivot), q = its lower point
  * For an SLA with the spring on an arm, the ball-joint forces act on the axis and the tie rod is the
  * only thing that resists rotation about it, so the tie-rod force follows from the moment balance:
  *   T + f · û · ((r_TR − q) × d) = 0      d = unit vector tie-rod outer → inner, f = tension
@@ -56,9 +56,9 @@ export interface SteeringLoads {
 /** Lever of the tie rod about the steering axis: û · ((r_TR − q) × d), mm. */
 export function steeringArmLever(state: CornerState): number {
   const p = state.points;
-  const u = normalize(sub(p.ucaOut, p.lcaOut));
+  const u = normalize(sub(p.steerUpper, p.steerLower));
   const d = normalize(sub(p.trInner, p.trOuter));
-  return dot(u, cross(sub(p.trOuter, p.lcaOut), d));
+  return dot(u, cross(sub(p.trOuter, p.steerLower), d));
 }
 
 /**
@@ -68,10 +68,10 @@ export function steeringArmLever(state: CornerState): number {
  */
 export function steeringLoads(state: CornerState, contact: Vec3, forces: TireForces, rackAxis: Vec3, cFactor: number): SteeringLoads {
   const p = state.points;
-  const u = normalize(sub(p.ucaOut, p.lcaOut));
+  const u = normalize(sub(p.steerUpper, p.steerLower));
   const heading = normalize(cross(state.spinAxis, Y_AXIS));
   const lateralPoint = addScaled(contact, heading, -forces.pneumaticTrail);
-  const q = p.lcaOut;
+  const q = p.steerLower;
   const fVert = vec3(0, forces.vertical, 0);
   const fLong = vec3(0, 0, forces.longitudinal);
   const fLat = vec3(forces.lateral, 0, 0);

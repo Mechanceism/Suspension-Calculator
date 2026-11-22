@@ -341,3 +341,25 @@ export function hingeAngle(
     },
   };
 }
+
+/**
+ * A fixed point lies on a line fixed to body `b` (through design points l1 → l2): e.g. a MacPherson strut
+ * (the strut axis on the upright always passes through the top mount on the chassis; the strut slides
+ * and turns on it). 2 equations.
+ */
+export function pointOnLine(sys: ConstraintSystem, name: string, b: string, l1: Vec3, l2: Vec3, fixedPoint: Vec3): Constraint {
+  const r1 = sys.attach(b, l1);
+  const r2 = sys.attach(b, l2);
+  return {
+    name, size: 2,
+    residual(ctx, out, o) {
+      const w1 = ctx.world(r1);
+      const u = normalize(sub(ctx.world(r2), w1));
+      const e1 = perpendicular(u);
+      const e2 = cross(u, e1);
+      const d = sub(fixedPoint, w1);
+      out[o] = dot(d, e1);
+      out[o + 1] = dot(d, e2);
+    },
+  };
+}

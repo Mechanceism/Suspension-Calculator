@@ -5,11 +5,11 @@
  * Kinematic mode: the chassis is fixed and level, so the ground is the horizontal plane through
  * the rigid-tire contact point.
  */
-import { type Vec3, vec3, sub, cross, normalize, X_AXIS, Y_AXIS, Z_AXIS } from '../math/vec3';
+import { type Vec3, vec3, add, sub, cross, normalize, scale, dot, length, X_AXIS, Y_AXIS, Z_AXIS } from '../math/vec3';
 import {
-  type Line, lineThrough, planeFromPoints, intersectPlanes, intersectLinePlane, pointOnLineAt,
+  type Line, type Plane, lineThrough, planeFromPoints, intersectPlanes, intersectLinePlane, pointOnLineAt,
 } from '../math/geom';
-import type { CornerState } from './doubleWishbone';
+import type { CornerState, CornerPoints } from './doubleWishbone';
 
 export interface Characteristics {
   /** + = top of wheel leans outboard. */
@@ -38,7 +38,11 @@ export interface Characteristics {
   steeringAxis: Line;
   steeringAxisAtGround: Vec3 | null;
 
-  /** Intersection of the two arm planes. null = arm planes parallel (IC at infinity). */
+  /**
+   * Instant axis of the upright's motion (rack held). Double wishbone: the two arm planes' intersection;
+   * MacPherson: the lower-arm plane and the plane through the strut top normal to the strut; multilink:
+   * the planes through the two virtual steering pivots normal to their velocities (from the links). null = at infinity.
+   */
   instantAxis: Line | null;
   /** Front-view IC (on the transverse plane through the contact point). null = at infinity. */
   frontViewIC: Vec3 | null;
@@ -72,17 +76,34 @@ export function characteristics(state: CornerState): Characteristics {
   const heading = normalize(cross(a, Y_AXIS));
   const toe = Math.atan2(-heading.x, heading.z);
 
-  const u = normalize(sub(p.ucaOut, p.lcaOut));
+  const u = normalize(sub(p.steerUpper, p.steerLower));
   const caster = Math.atan2(-u.z, u.y);
   const kpi = Math.atan2(-u.x, u.y);
-  const steeringAxis = lineThrough(p.lcaOut, p.ucaOut);
+  const steeringAxis = lineThrough(p.steerLower, p.steerUpper);
   const g = pointOnLineAt(steeringAxis, Y_AXIS, groundY);
   const k = pointOnLineAt(steeringAxis, Y_AXIS, wc.y);
 
-  // Instant axis from the two arm planes.
-  const ucaPlane = planeFromPoints(p.ucaFwd, p.ucaAft, p.ucaOut);
-  const lcaPlane = planeFromPoints(p.lcaFwd, p.lcaAft, p.lcaOut);
-  const instantAxis = ucaPlane && lcaPlane ? intersectPlanes(ucaPlane, lcaPlane) : null;
+  // Instant axis: from two planes the upright's motion is confined to, or from its five links.
+  let ucaPlane: Plane | null = null;
+  let instantAxis: Line | null = null;
+  if (state.kind === 'multilink') {
+    // Planes through the two (virtual) steering pivots, normal to their velocities: for a double
+    // wishbone these are exactly the arm planes. Points on the steering axis don't move when the
+    // upright turns about it, so this is the suspension's axis without the bump-steer part.
+    const tw = linkTwist(p);
+    const vel = (q: Vec3) => (tw ? add(tw.v, cross(tw.w, q)) : null);
+    const vu = vel(p.steerUpper), vl = vel(p.steerLower);
+    if (vu && vl && length(vu) > 0 && length(vl) > 0) {
+      ucaPlane = { point: p.steerUpper, normal: normalize(vu) };
+      instantAxis = intersectPlanes(ucaPlane, { point: p.steerLower, normal: normalize(vl) });
+    }
+  } else {
+    const lcaPlane = planeFromPoints(p.lcaFwd, p.lcaAft, p.lcaOut);
+    ucaPlane = state.kind === 'macpherson' && p.strutTop && p.strutLower
+      ? { point: p.strutTop, normal: normalize(sub(p.strutTop, p.strutLower)) }
+      : planeFromPoints(p.ucaFwd, p.ucaAft, p.ucaOut);
+    instantAxis = ucaPlane && lcaPlane ? intersectPlanes(ucaPlane, lcaPlane) : null;
+  }
 
   const frontViewIC = instantAxis ? intersectLinePlane(instantAxis, transversePlaneAt(cp.z)) : null;
   const sideViewIC = instantAxis ? intersectLinePlane(instantAxis, longitudinalPlaneAt(wc.x)) : null;
@@ -123,6 +144,53 @@ export function characteristics(state: CornerState): Characteristics {
     out.damperLength = Math.hypot(d.x, d.y, d.z);
   }
   return out;
+}
+
+/**
+ * Instantaneous screw axis of the upright held by five links (rack fixed): its twist (ω, v) keeps every
+ * link's length, d_i · (v + ω × q_i) = 0 with d_i = q_i − c_i, five equations in six unknowns, so the
+ * twist is their null vector (cofactors). Axis through ω × v / |ω|² along ω; null when the upright only
+ * translates (axis at infinity).
+ */
+export function screwAxis(p: CornerPoints): Line | null {
+  const tw = linkTwist(p);
+  if (!tw) return null;
+  const { w, v } = tw;
+  const scaleN = Math.max(length(w), length(v) / 1000);
+  if (!(scaleN > 0) || length(w) < 1e-9 * scaleN) return null;
+  return { point: scale(cross(w, v), 1 / dot(w, w)), dir: normalize(w) };
+}
+
+/** The upright's twist (ω, v at the origin) allowed by its five links, up to scale; null if locked. */
+export function linkTwist(p: CornerPoints): { w: Vec3; v: Vec3 } | null {
+  const links: [Vec3, Vec3][] = [
+    [p.ucaFwd, p.ucaOut], [p.ucaAft, p.ucaOut2 ?? p.ucaOut], [p.lcaFwd, p.lcaOut], [p.lcaAft, p.lcaOut2 ?? p.lcaOut], [p.trInner, p.trOuter],
+  ];
+  const rows = links.map(([c, q]) => {
+    const d = normalize(sub(q, c));
+    const m = cross(q, d);
+    return [m.x, m.y, m.z, d.x, d.y, d.z];
+  });
+  const n = [0, 1, 2, 3, 4, 5].map((j) => (j % 2 ? -1 : 1) * det5(rows.map((r) => r.filter((_, k) => k !== j))));
+  const w = vec3(n[0]!, n[1]!, n[2]!), v = vec3(n[3]!, n[4]!, n[5]!);
+  return length(w) > 0 || length(v) > 0 ? { w, v } : null;
+}
+
+function det5(a: number[][]): number {
+  const m = a.map((r) => [...r]);
+  let det = 1;
+  for (let c = 0; c < 5; c++) {
+    let piv = c;
+    for (let r = c + 1; r < 5; r++) if (Math.abs(m[r]![c]!) > Math.abs(m[piv]![c]!)) piv = r;
+    if (Math.abs(m[piv]![c]!) < 1e-300) return 0;
+    if (piv !== c) { [m[piv], m[c]] = [m[c]!, m[piv]!]; det = -det; }
+    det *= m[c]![c]!;
+    for (let r = c + 1; r < 5; r++) {
+      const f = m[r]![c]! / m[c]![c]!;
+      for (let k = c; k < 5; k++) m[r]![k]! -= f * m[c]![k]!;
+    }
+  }
+  return det;
 }
 
 /** Anti-dive / anti-squat percentage: tan(θ) · (wheelbase / CG height) · force fraction · 100. */

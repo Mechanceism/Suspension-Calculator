@@ -1,6 +1,8 @@
 /**
- * Double wishbone (SLA) corner kinematics (L1).
+ * Corner kinematics (L1): double wishbone (SLA), MacPherson strut and five-link multilink, all built from
+ * the same relations (docs/MATH.md § L1).
  *
+ * Double wishbone:
  * Bodies: chassis (fixed), rack (fixed, positioned by rack travel), UCA, LCA, upright.
  * Relations:
  *   UCA ↔ chassis   revolute about UCA_Fwd–UCA_Aft         5 eq
@@ -10,6 +12,16 @@
  *   tie rod         fixed length TR_In (rack) → TR_Out     1 eq
  *   travel driver   wheel center / contact patch / arm angle  1 eq
  *                                                     total 18 = 3 free bodies × 6
+ *
+ * MacPherson strut (bodies: chassis, rack, LCA, upright with the strut tube):
+ *   LCA ↔ chassis revolute 5 · LCA ↔ upright ball joint 3 · strut axis (on the upright) through the
+ *   top mount (chassis) 2 · tie rod 1 · travel 1                                 total 12 = 2 × 6
+ *   The steering axis runs from the lower ball joint to the top mount.
+ * Multilink, five links (bodies: chassis, rack, upright): each link is a rod with ball ends between a
+ *   chassis point and an upright point (upper front, upper rear, lower front, lower rear, tie rod / toe
+ *   link) 5 · travel 1                                                             total 6 = 1 × 6
+ *   A double wishbone is the special case where each pair of links meets at one ball joint. The
+ *   steering axis is virtual: through the points where each pair of links passes closest.
  *
  * Pivot axes are NOT assumed parallel to Z and ball joints are NOT assumed centered between pivots.
  * Steering jacking is not a separate formula: moving the rack rotates the upright about the
@@ -21,19 +33,34 @@ import {
 import { mulVec, transpose } from '../math/mat3';
 import {
   ConstraintSystem, PoseContext, type Poses, type SolveResult, type PointRef,
-  coincident, fixedDistance, revolute, coordinate, hingeAngle,
+  coincident, fixedDistance, revolute, coordinate, hingeAngle, pointOnLine,
 } from '../solver/system';
+
+/** Suspension type of a corner. */
+export type SuspensionKind = 'doubleWishbone' | 'macpherson' | 'multilink';
+export const SUSPENSION_KINDS: SuspensionKind[] = ['doubleWishbone', 'macpherson', 'multilink'];
+export const SUSPENSION_LABELS: Record<SuspensionKind, string> = {
+  doubleWishbone: 'Double wishbone (SLA)', macpherson: 'MacPherson strut', multilink: 'Multilink (5 links)',
+};
 
 export interface ArmPoints {
   /** Forward inboard pivot (larger Z). */
   readonly fwd: Vec3;
   /** Rearward inboard pivot (smaller Z). */
   readonly aft: Vec3;
-  /** Outboard ball joint. */
+  /** Outboard ball joint (multilink: the front link's upright end). */
   readonly out: Vec3;
+  /** Multilink only: the rear link's upright end (the two links of a pair no longer share a ball joint). */
+  readonly out2?: Vec3;
 }
 
+/**
+ * Geometry of one corner, any type (`kind`, default double wishbone). The point names are shared:
+ * MacPherson uses the lower arm, tie rod, wheel and the damper as the strut (the upper arm is ignored); multilink uses
+ * both arms' pivots as the chassis ends of four links, with `out` / `out2` as their upright ends.
+ */
 export interface DoubleWishboneGeometry {
+  readonly kind?: SuspensionKind;
   readonly uca: ArmPoints;
   readonly lca: ArmPoints;
   readonly tieRod: { readonly inner: Vec3; readonly outer: Vec3 };
@@ -48,9 +75,21 @@ export interface DoubleWishboneGeometry {
   };
   /** Direction TR_In moves for positive rack travel. Default +X (outboard). */
   readonly rackAxis?: Vec3;
-  /** Optional spring/damper: chassis mount and a mount on one of the arms. */
-  readonly damper?: { readonly chassis: Vec3; readonly arm: 'uca' | 'lca'; readonly armPoint: Vec3 };
+  /**
+   * Optional spring/damper: chassis mount and a mount on an arm or the upright. MacPherson: required, it
+   * is the strut (chassis = the top mount, armPoint = a point on the strut axis fixed to the upright).
+   */
+  readonly damper?: { readonly chassis: Vec3; readonly arm: MountBody; readonly armPoint: Vec3 };
 }
+
+/** Any corner type's geometry. */
+export type CornerGeometry = DoubleWishboneGeometry;
+/** Moving body a mount is fixed to. */
+export type MountBody = 'uca' | 'lca' | 'upright';
+export const kindOf = (g: DoubleWishboneGeometry): SuspensionKind => g.kind ?? 'doubleWishbone';
+/** MacPherson strut: top mount and its point on the upright (the damper's two mounts). */
+export const strutOf = (g: DoubleWishboneGeometry): { top: Vec3; lower: Vec3 } | null =>
+  (g.damper ? { top: g.damper.chassis, lower: g.damper.armPoint } : null);
 
 /**
  * How suspension travel is prescribed.
@@ -79,9 +118,19 @@ export interface CornerPoints {
   contact: Vec3;
   damperChassis?: Vec3;
   damperArm?: Vec3;
+  /** Steering (kingpin) axis: lower and upper points (ball joints; MacPherson: LBJ and top mount; multilink: virtual pivots). */
+  steerLower: Vec3;
+  steerUpper: Vec3;
+  /** Multilink: the rear links' upright ends. */
+  ucaOut2?: Vec3;
+  lcaOut2?: Vec3;
+  /** MacPherson: strut top mount (chassis) and the strut's point on the upright. */
+  strutTop?: Vec3;
+  strutLower?: Vec3;
 }
 
 export interface CornerState {
+  readonly kind: SuspensionKind;
   readonly inputs: Required<CornerInputs>;
   readonly solve: SolveResult;
   readonly poses: Poses;
@@ -110,43 +159,63 @@ export function contactPoint(center: Vec3, spinAxisUnit: Vec3, radius: number): 
 
 export class DoubleWishbone {
   readonly rackAxis: Vec3;
+  readonly kind: SuspensionKind;
+  /** Moving bodies of this type (a mount on a body it doesn't have goes on the upright). */
+  readonly bodies: MountBody[];
   private readonly spinAxisDesign: Vec3;
 
   constructor(readonly geometry: DoubleWishboneGeometry) {
     this.rackAxis = normalize(geometry.rackAxis ?? X_AXIS);
     this.spinAxisDesign = normalize(geometry.wheel.spinAxis);
+    this.kind = kindOf(geometry);
+    this.bodies = this.kind === 'doubleWishbone' ? ['uca', 'lca', 'upright'] : this.kind === 'macpherson' ? ['lca', 'upright'] : ['upright'];
     const g = geometry;
-    const pairs: [string, Vec3, Vec3][] = [
-      ['UCA pivots', g.uca.fwd, g.uca.aft],
-      ['LCA pivots', g.lca.fwd, g.lca.aft],
-      ['ball joints', g.uca.out, g.lca.out],
-      ['tie rod', g.tieRod.inner, g.tieRod.outer],
-    ];
+    const pairs: [string, Vec3, Vec3][] = [['tie rod', g.tieRod.inner, g.tieRod.outer], ['LCA pivots', g.lca.fwd, g.lca.aft]];
+    if (this.kind === 'doubleWishbone') pairs.push(['UCA pivots', g.uca.fwd, g.uca.aft], ['ball joints', g.uca.out, g.lca.out]);
+    if (this.kind === 'macpherson') {
+      const st = strutOf(g);
+      if (!st) throw new Error('MacPherson strut: the strut (damper) top mount and lower point are missing');
+      pairs.push(['strut points', st.top, st.lower], ['lower ball joint and strut top', g.lca.out, st.top]);
+    }
+    if (this.kind === 'multilink') {
+      const l = multiLinks(g);
+      for (const k of l) pairs.push([`${k.name} link ends`, k.chassis, k.upright]);
+      pairs.push(['upper links', g.uca.fwd, g.uca.aft]);
+    }
     for (const [label, a, b] of pairs) {
       if (dist(a, b) < 1e-6) throw new Error(`Degenerate geometry: ${label} coincide`);
     }
+  }
+
+  /** Body origin (design coordinates) of a moving body. */
+  private originOf(body: MountBody): Vec3 {
+    const g = this.geometry;
+    if (body === 'uca') return centroid(g.uca.fwd, g.uca.aft, g.uca.out);
+    if (body === 'lca') return centroid(g.lca.fwd, g.lca.aft, g.lca.out);
+    if (this.kind === 'macpherson') return centroid(g.lca.out, strutOf(g)!.lower, g.tieRod.outer, g.wheel.center);
+    if (this.kind === 'multilink') return centroid(g.uca.out, g.uca.out2 ?? g.uca.out, g.lca.out, g.lca.out2 ?? g.lca.out, g.tieRod.outer, g.wheel.center);
+    return centroid(g.uca.out, g.lca.out, g.tieRod.outer, g.wheel.center);
+  }
+
+  /** The body a mount ends up on for this type (the upright when this type has no such arm). */
+  mountBody(body: MountBody): MountBody {
+    return this.bodies.includes(body) ? body : 'upright';
   }
 
   /**
    * Where a point fixed to one of the moving bodies (given at its design position) is in a solved
    * state — e.g. an anti-roll-bar drop-link mount on the lower arm.
    */
-  pointOn(state: CornerState, body: 'uca' | 'lca' | 'upright', designPoint: Vec3): Vec3 {
-    const g = this.geometry;
-    const origin = body === 'uca' ? centroid(g.uca.fwd, g.uca.aft, g.uca.out)
-      : body === 'lca' ? centroid(g.lca.fwd, g.lca.aft, g.lca.out)
-        : centroid(g.uca.out, g.lca.out, g.tieRod.outer, g.wheel.center);
-    return new PoseContext(state.poses).world({ body, local: sub(designPoint, origin) });
+  pointOn(state: CornerState, body: MountBody, designPoint: Vec3): Vec3 {
+    const b = this.mountBody(body);
+    return new PoseContext(state.poses).world({ body: b, local: sub(designPoint, this.originOf(b)) });
   }
 
   /** Inverse of pointOn: the design position of the body point that is at `worldPoint` in `state`. */
-  designPointOf(state: CornerState, body: 'uca' | 'lca' | 'upright', worldPoint: Vec3): Vec3 {
-    const g = this.geometry;
-    const origin = body === 'uca' ? centroid(g.uca.fwd, g.uca.aft, g.uca.out)
-      : body === 'lca' ? centroid(g.lca.fwd, g.lca.aft, g.lca.out)
-        : centroid(g.uca.out, g.lca.out, g.tieRod.outer, g.wheel.center);
-    const pose = state.poses[body]!;
-    return add(origin, mulVec(transpose(pose.rotation), sub(worldPoint, pose.position)));
+  designPointOf(state: CornerState, body: MountBody, worldPoint: Vec3): Vec3 {
+    const b = this.mountBody(body);
+    const pose = state.poses[b]!;
+    return add(this.originOf(b), mulVec(transpose(pose.rotation), sub(worldPoint, pose.position)));
   }
 
   /** Design (static) state: all inputs zero. */
@@ -174,18 +243,31 @@ export class DoubleWishbone {
     const spinAxis = normalize(ctx.direction('upright', this.spinAxisDesign));
     const wheelCenter = ctx.world(refs.wheelCenter);
     const g = this.geometry;
+    const ucaOut = ctx.world(refs.ucaOut), lcaOut = ctx.world(refs.lcaOut);
     const points: CornerPoints = {
-      ucaFwd: g.uca.fwd, ucaAft: g.uca.aft, ucaOut: ctx.world(refs.ucaOut),
-      lcaFwd: g.lca.fwd, lcaAft: g.lca.aft, lcaOut: ctx.world(refs.lcaOut),
+      ucaFwd: g.uca.fwd, ucaAft: g.uca.aft, ucaOut,
+      lcaFwd: g.lca.fwd, lcaAft: g.lca.aft, lcaOut,
       trInner: ctx.world(refs.trInner), trOuter: ctx.world(refs.trOuter),
       wheelCenter,
       contact: contactPoint(wheelCenter, spinAxis, g.wheel.radius),
+      steerLower: lcaOut, steerUpper: ucaOut,
     };
+    if (this.kind === 'macpherson') {
+      points.strutTop = strutOf(g)!.top;
+      points.strutLower = ctx.world(refs.strutLower!);
+      points.steerUpper = points.strutTop;
+    }
+    if (this.kind === 'multilink') {
+      points.ucaOut2 = ctx.world(refs.ucaOut2!);
+      points.lcaOut2 = ctx.world(refs.lcaOut2!);
+      points.steerUpper = virtualPivot(g.uca.fwd, ucaOut, g.uca.aft, points.ucaOut2);
+      points.steerLower = virtualPivot(g.lca.fwd, lcaOut, g.lca.aft, points.lcaOut2);
+    }
     if (refs.damperArm && g.damper) {
       points.damperChassis = g.damper.chassis;
       points.damperArm = ctx.world(refs.damperArm);
     }
-    return { inputs: full, solve: result, poses: result.poses, points, spinAxis };
+    return { kind: this.kind, inputs: full, solve: result, poses: result.poses, points, spinAxis };
   }
 
   /**
@@ -218,17 +300,31 @@ export class DoubleWishbone {
     const sys = new ConstraintSystem();
     sys.addBody('chassis', { x: 0, y: 0, z: 0 }, { fixed: true });
     sys.addBody('rack', g.tieRod.inner, { fixed: true });
-    const ucaOrigin = centroid(g.uca.fwd, g.uca.aft, g.uca.out);
-    const lcaOrigin = centroid(g.lca.fwd, g.lca.aft, g.lca.out);
-    const uprOrigin = centroid(g.uca.out, g.lca.out, g.tieRod.outer, g.wheel.center);
-    sys.addBody('uca', ucaOrigin, { size: Math.max(dist(ucaOrigin, g.uca.out), 1) });
-    sys.addBody('lca', lcaOrigin, { size: Math.max(dist(lcaOrigin, g.lca.out), 1) });
-    sys.addBody('upright', uprOrigin, { size: Math.max(dist(g.uca.out, g.lca.out) / 2, 1) });
-
-    sys.add(revolute(sys, 'UCA pivot', 'chassis', 'uca', g.uca.fwd, g.uca.aft));
-    sys.add(revolute(sys, 'LCA pivot', 'chassis', 'lca', g.lca.fwd, g.lca.aft));
-    sys.add(coincident('UCA ball joint', sys.attach('uca', g.uca.out), sys.attach('upright', g.uca.out)));
-    sys.add(coincident('LCA ball joint', sys.attach('lca', g.lca.out), sys.attach('upright', g.lca.out)));
+    const uprOrigin = this.originOf('upright');
+    if (this.kind === 'doubleWishbone') {
+      const ucaOrigin = this.originOf('uca');
+      const lcaOrigin = this.originOf('lca');
+      sys.addBody('uca', ucaOrigin, { size: Math.max(dist(ucaOrigin, g.uca.out), 1) });
+      sys.addBody('lca', lcaOrigin, { size: Math.max(dist(lcaOrigin, g.lca.out), 1) });
+      sys.addBody('upright', uprOrigin, { size: Math.max(dist(g.uca.out, g.lca.out) / 2, 1) });
+      sys.add(revolute(sys, 'UCA pivot', 'chassis', 'uca', g.uca.fwd, g.uca.aft));
+      sys.add(revolute(sys, 'LCA pivot', 'chassis', 'lca', g.lca.fwd, g.lca.aft));
+      sys.add(coincident('UCA ball joint', sys.attach('uca', g.uca.out), sys.attach('upright', g.uca.out)));
+      sys.add(coincident('LCA ball joint', sys.attach('lca', g.lca.out), sys.attach('upright', g.lca.out)));
+    } else if (this.kind === 'macpherson') {
+      const st = strutOf(g)!;
+      const lcaOrigin = this.originOf('lca');
+      sys.addBody('lca', lcaOrigin, { size: Math.max(dist(lcaOrigin, g.lca.out), 1) });
+      sys.addBody('upright', uprOrigin, { size: Math.max(dist(st.top, g.lca.out) / 2, 1) });
+      sys.add(revolute(sys, 'LCA pivot', 'chassis', 'lca', g.lca.fwd, g.lca.aft));
+      sys.add(coincident('LCA ball joint', sys.attach('lca', g.lca.out), sys.attach('upright', g.lca.out)));
+      sys.add(pointOnLine(sys, 'strut through the top mount', 'upright', st.lower, st.top, st.top));
+    } else {
+      sys.addBody('upright', uprOrigin, { size: Math.max(dist(g.uca.out, g.lca.out) / 2, 1) });
+      for (const l of multiLinks(g)) {
+        sys.add(fixedDistance(`${l.name} link`, sys.attach('chassis', l.chassis), sys.attach('upright', l.upright), dist(l.chassis, l.upright)));
+      }
+    }
     const trInner = sys.attach('rack', g.tieRod.inner);
     const trOuter = sys.attach('upright', g.tieRod.outer);
     sys.add(fixedDistance('tie rod', trInner, trOuter, dist(g.tieRod.inner, g.tieRod.outer)));
@@ -250,16 +346,20 @@ export class DoubleWishbone {
         break;
       }
       case 'lowerArmAngle':
-        // Axis aft → fwd (+Z-ish) so a positive angle raises the outboard ball joint.
-        sys.add(hingeAngle(sys, 'travel (LCA angle)', 'lca', g.lca.aft, g.lca.fwd, g.lca.out, inputs.armAngle));
+        // Axis aft → fwd (+Z-ish) so a positive angle raises the outboard ball joint. Multilink: the lower
+        // front link's upright end turning about the two lower chassis points (a virtual arm).
+        sys.add(hingeAngle(sys, 'travel (LCA angle)', this.kind === 'multilink' ? 'upright' : 'lca', g.lca.aft, g.lca.fwd, g.lca.out, inputs.armAngle));
         break;
     }
 
     const refs: CornerRefs = {
-      ucaOut: sys.attach('upright', g.uca.out),
+      // MacPherson has no upper arm: its "upper ball joint" reads as the strut top (a fixed point).
+      ucaOut: sys.attach(this.kind === 'macpherson' ? 'chassis' : 'upright', this.kind === 'macpherson' ? strutOf(g)!.top : g.uca.out),
       lcaOut: sys.attach('upright', g.lca.out),
       trInner, trOuter, wheelCenter,
-      damperArm: g.damper ? sys.attach(g.damper.arm, g.damper.armPoint) : undefined,
+      damperArm: g.damper ? sys.attach(this.mountBody(g.damper.arm), g.damper.armPoint) : undefined,
+      ...(this.kind === 'macpherson' ? { strutLower: sys.attach('upright', strutOf(g)!.lower) } : {}),
+      ...(this.kind === 'multilink' ? { ucaOut2: sys.attach('upright', g.uca.out2 ?? g.uca.out), lcaOut2: sys.attach('upright', g.lca.out2 ?? g.lca.out) } : {}),
     };
     return { sys, refs };
   }
@@ -268,6 +368,33 @@ export class DoubleWishbone {
 interface CornerRefs {
   ucaOut: PointRef; lcaOut: PointRef; trInner: PointRef; trOuter: PointRef; wheelCenter: PointRef;
   damperArm: PointRef | undefined;
+  strutLower?: PointRef; ucaOut2?: PointRef; lcaOut2?: PointRef;
+}
+
+/** The four arm links of a multilink corner (chassis end → upright end); the tie rod is the fifth. */
+export function multiLinks(g: DoubleWishboneGeometry): { name: string; chassis: Vec3; upright: Vec3 }[] {
+  return [
+    { name: 'upper front', chassis: g.uca.fwd, upright: g.uca.out },
+    { name: 'upper rear', chassis: g.uca.aft, upright: g.uca.out2 ?? g.uca.out },
+    { name: 'lower front', chassis: g.lca.fwd, upright: g.lca.out },
+    { name: 'lower rear', chassis: g.lca.aft, upright: g.lca.out2 ?? g.lca.out },
+  ];
+}
+
+/**
+ * Virtual pivot of two links (a1 → b1, a2 → b2): the midpoint of the shortest segment between their
+ * lines, where the pair acts like one ball joint (multilink virtual steering axis). Parallel links: the
+ * midpoint of their upright ends.
+ */
+export function virtualPivot(a1: Vec3, b1: Vec3, a2: Vec3, b2: Vec3): Vec3 {
+  const d1 = sub(b1, a1), d2 = sub(b2, a2), r = sub(a1, a2);
+  const a = d1.x * d1.x + d1.y * d1.y + d1.z * d1.z, e = d2.x * d2.x + d2.y * d2.y + d2.z * d2.z;
+  const b = d1.x * d2.x + d1.y * d2.y + d1.z * d2.z;
+  const c = d1.x * r.x + d1.y * r.y + d1.z * r.z, f = d2.x * r.x + d2.y * r.y + d2.z * r.z;
+  const den = a * e - b * b;
+  if (!(Math.abs(den) > 1e-9 * a * e)) return scale(add(b1, b2), 0.5);
+  const s = (b * f - c * e) / den, t = (a * f - b * c) / den;
+  return scale(add(add(a1, scale(d1, s)), add(a2, scale(d2, t))), 0.5);
 }
 
 /** Convenience: distance helpers used by checks and tests. */

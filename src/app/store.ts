@@ -183,7 +183,7 @@ export function editableFromLayout(id: string): EditableGeometry {
       dmpChassis: fields(g.damper?.chassis ?? vec3(300, 380, 30)),
       dmpArm: fields(g.damper?.armPoint ?? vec3(480, 45, 30)),
     },
-    damperArm: g.damper?.arm ?? 'lca',
+    damperArm: g.damper?.arm === 'uca' ? 'uca' : 'lca',
     scalars: {
       staticCamber: field(0, 'angle'),
       staticToe: field(0, 'angle'),

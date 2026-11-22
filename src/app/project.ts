@@ -60,7 +60,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 29;
+export const FORMAT_VERSION = 30;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -102,6 +102,8 @@ export interface ProjectFile {
   steering: Record<string, FieldJson>;
   /** The other steering mechanism's own ratio and limit (format 23). */
   steeringSaved?: Record<string, Record<string, FieldJson>>;
+  /** Format 30: a measured steering ratio ('steering-wheel °, input' per line). */
+  steeringCurve?: string;
   motion: { droop: number; bump: number; driver: DesignState['driver'] };
   shared: Record<Axle, {
     antiRollBar: SharedDesign['antiRollBar']; heaveSpring: SharedDesign['heaveSpring'];
@@ -183,6 +185,7 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
     vehicle: { fields: mapFields(VEHICLE_KEYS, d.vehicle), autoPreload: d.autoPreload, cornerLoadMode: d.cornerLoadMode },
     steering: mapFields(STEER_KEYS, d.steer),
     steeringSaved: Object.fromEntries(Object.entries(d.steerSaved).map(([m, rec]) => [m, mapFields(MECH_STEER_KEYS, rec!)])),
+    ...(d.steerCurve ? { steeringCurve: d.steerCurve } : {}),
     motion: { droop: d.droop, bump: d.bump, driver: d.driver },
     shared: Object.fromEntries((['front', 'rear'] as const).map((a) => {
       const sh = d.shared[a];
@@ -346,6 +349,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   27: (f) => ({ ...f, formatVersion: 28 }),
   // 28 → 29: drop links on the lower arm (the only choice before).
   28: (f) => ({ ...f, formatVersion: 29 }),
+  // 29 → 30: no measured steering ratio.
+  29: (f) => ({ ...f, formatVersion: 30 }),
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */
@@ -754,6 +759,8 @@ export function importProject(data: unknown): ImportResult {
     ...corners.FL, // replaced with the active corner's root below
     // The variable ratio came with format 20: older files keep a constant ratio quietly.
     // Format 23: the other mechanism's own steering values (older files: none, quietly).
+    // Format 30: a measured steering ratio (older files: none, quietly).
+    ...(typeof f.steeringCurve === 'string' && f.steeringCurve.trim() ? { steerCurve: f.steeringCurve } : {}),
     steerSaved: Object.fromEntries(Object.entries(isObj(f.steeringSaved) ? f.steeringSaved : {})
       .filter(([m, rec]) => (m === 'rack' || m === 'arm') && isObj(rec))
       .map(([m, rec]) => [m, readRecord(rec, MECH_STEER_KEYS, (k) => STEER_META[k].quantity, def.steer, `steering (${m})`, warnings)])) as DesignState['steerSaved'],

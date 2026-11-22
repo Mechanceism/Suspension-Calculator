@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react';
+import { parseSteerCurve } from '../../core/tests/steer';
 import { useApp, STEER_META, rackAhead, rootOf, type SteerKey } from '../store';
 import { parseValue } from '../../core/units/units';
 import { lockKeys } from '../locks';
@@ -29,7 +31,33 @@ export function SteerFields({ keys }: { keys: SteerKey[] }) {
   );
 }
 
-export const SteeringSystemFields = () => <><MechanismRow /><SteerFields keys={SYSTEM} /><RackLayoutFields /></>;
+export const SteeringSystemFields = () => <><MechanismRow /><SteerFields keys={SYSTEM} /><RatioCurveField /><RackLayoutFields /></>;
+
+/**
+ * A measured steering ratio: steering-wheel angle vs input (rack mm, or arm ° with a steering arm) from
+ * center out, one pair per line. When it reads, it replaces the c-factors above (mirrored the other way).
+ */
+function RatioCurveField() {
+  const text = useApp((s) => s.steerCurve ?? '');
+  const arm = useApp((s) => s.geom.steerMechanism === 'arm');
+  const [draft, setDraft] = useState(text);
+  useEffect(() => setDraft(text), [text]);
+  const parsed = draft.trim() ? parseSteerCurve(draft) : null;
+  return (
+    <details className="ratio-curve" open={!!text}>
+      <summary title="Measured or published steering ratio: steering-wheel angle and the rack travel (or arm angle) at it, from center to lock">Measured ratio curve {text ? '(in use)' : '(optional)'}</summary>
+      <textarea rows={4} value={draft} placeholder={`steering-wheel °, ${arm ? 'arm °' : 'rack mm'} — e.g.\n90, 18\n180, 38\n360, 82\n540, 120`}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => { if (draft !== text) useApp.setState({ steerCurve: draft.trim() ? draft : undefined, presetId: 'custom' }); }} />
+      {parsed && (
+        <div className={`small-text ${parsed.ok && !parsed.bad.length ? 'muted' : 'warn-text'}`}>
+          {parsed.ok ? `${parsed.curve.length} pairs read; it replaces the c-factors (the local ratio comes from its slope).` : 'Needs pairs that both grow from center out (steering-wheel °, then input).'}
+          {parsed.bad.length > 0 && ` Couldn't read: ${parsed.bad.slice(0, 3).join(' · ')}`}
+        </div>
+      )}
+    </details>
+  );
+}
 
 /** Rack, or steering arm / plate (ATV plate on the column, pitman / idler arm with a center link). */
 function MechanismRow() {

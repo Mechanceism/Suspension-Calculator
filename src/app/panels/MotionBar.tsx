@@ -8,7 +8,7 @@ import { steeringWheelAngle, inputForWheelAngle } from '../../core/tests/steer';
 import { useConversion, toDisplay, fromDisplay } from '../units';
 import { Num } from './UnitText';
 import { useEffect, useRef } from 'react';
-import { useApp } from '../store';
+import { ratioSpecOf, useApp } from '../store';
 import type { Model } from '../useModel';
 
 function usePlayLoop(active: boolean, period: number, onPhase: (s: number) => void) {
@@ -45,7 +45,8 @@ export function MotionBar({ model }: { model: Model }) {
   const steers = useApp((s) => s.settings[s.activeCorner].steered);
   const hasSpring = Boolean(model.corner?.geometry.damper);
   const loaded = mode === 'loaded' && hasSpring;
-  const ratio = { cFactor, cFactorLock, rackLimit };
+  const curveText = useApp((s) => s.steerCurve);
+  const ratio = { ...ratioSpecOf({ steer: useApp.getState().steer, steerCurve: curveText }), cFactor, cFactorLock, rackLimit };
   const swLimit = steeringWheelAngle(rackLimit, ratio);
   const shownTravel = model.current?.travel ?? travel;
   const shownLoad = model.current?.loadFactor ?? loadFactor;

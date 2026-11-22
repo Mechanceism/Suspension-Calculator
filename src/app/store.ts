@@ -6,6 +6,7 @@ import { create } from 'zustand';
 import { parseValue, formatValue, type Quantity } from '../core/units/units';
 import { vec3, type Vec3 } from '../core/math/vec3';
 import { customFromWishbone, type CustomLinkage } from '../core/suspension/customLinkage';
+import { parseSteerCurve } from '../core/tests/steer';
 import { DoubleWishbone, spinAxisFromCamberToe, SUSPENSION_LABELS, virtualPivot, isBeam, type DoubleWishboneGeometry, type TravelDriver, type SuspensionKind } from '../core/suspension/doubleWishbone';
 import { SAMPLE_LAYOUTS, SAMPLE_SPRING, PRESET_LAYOUTS } from '../examples/sampleLayouts';
 import { fitFreeLength } from '../core/suspension/spring';
@@ -331,6 +332,15 @@ export function steeredAxlePoints(e: EditableGeometry, wheelbase: number): Parti
     lcaOut2: fields(lo), ucaOut2: fields(up),
     trOuter: fields(vec3(armX, c.y - 20, armZ)),
     trInner: fields(vec3(60, c.y + 10, armZ)),
+  };
+}
+
+/** The steering ratio as the core reads it: c-factors, the limit, and the measured curve when there is one. */
+export function ratioSpecOf(s: Pick<DesignState, 'steer' | 'steerCurve'>) {
+  const parsed = s.steerCurve ? parseSteerCurve(s.steerCurve) : null;
+  return {
+    cFactor: s.steer.cFactor.value, cFactorLock: s.steer.cFactorLock.value, rackLimit: s.steer.rackLimit.value,
+    ...(parsed?.ok ? { curve: parsed.curve } : {}),
   };
 }
 
@@ -1030,6 +1040,8 @@ export interface DesignState {
   /** Damper force curve (linear or two-stage). */
   damperMode: DamperMode;
   steer: Record<SteerKey, Field>;
+  /** Measured steering ratio: 'steering-wheel °, input' pairs, one per line ('' = none; replaces the c-factors). */
+  steerCurve?: string;
   /**
    * Each steering mechanism's own ratio and limit (rack mm, arm degrees), kept while the other one is in
    * use and put back when switching to it again.

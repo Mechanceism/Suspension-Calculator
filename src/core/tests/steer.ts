@@ -26,6 +26,43 @@ export interface SteeringSpec {
   cFactor: number;
   /** Variable ratio (geared cam / variable-ratio rack): the same at full lock; omitted or ≤ 0 = constant. */
   cFactorLock?: number;
+  /**
+   * Measured ratio: steering-wheel angle (deg) vs input (rack mm or arm deg) from center out (mirrored for the
+   * other way). When given (2+ pairs) it replaces cFactor / cFactorLock: linear between the pairs, the end
+   * slopes beyond them.
+   */
+  curve?: { wheel: number; input: number }[];
+}
+
+type RatioSpec = Pick<SteeringSpec, 'cFactor' | 'cFactorLock' | 'rackLimit' | 'curve'>;
+
+/** A usable curve: from center (0, 0) out, both columns increasing; null when there isn't one. */
+function curveOf(s: RatioSpec): { wheel: number[]; input: number[] } | null {
+  const c = s.curve;
+  if (!c || c.length < 1) return null;
+  const pts = [{ wheel: 0, input: 0 }, ...c.filter((p) => p.wheel > 0 && p.input > 0)].sort((a, b) => a.wheel - b.wheel);
+  for (let i = 1; i < pts.length; i++) if (!(pts[i]!.input > pts[i - 1]!.input) || !(pts[i]!.wheel > pts[i - 1]!.wheel)) return null;
+  return pts.length >= 2 ? { wheel: pts.map((p) => p.wheel), input: pts.map((p) => p.input) } : null;
+}
+
+/** Piecewise-linear y(x) on increasing xs, extended by the end slopes. */
+function interp(xs: number[], ys: number[], x: number): number {
+  const n = xs.length;
+  let i = 0;
+  while (i < n - 2 && x > xs[i + 1]!) i++;
+  return ys[i]! + ((ys[i + 1]! - ys[i]!) * (x - xs[i]!)) / (xs[i + 1]! - xs[i]!);
+}
+
+/** Parse "wheel°, input" pairs, one per line (or ';'); returns the pairs and any lines that couldn't be read. */
+export function parseSteerCurve(text: string): { curve: { wheel: number; input: number }[]; bad: string[]; ok: boolean } {
+  const curve: { wheel: number; input: number }[] = [];
+  const bad: string[] = [];
+  for (const line of text.split(/[\n;]+/).map((l) => l.trim()).filter(Boolean)) {
+    const m = /^(-?\d+(?:\.\d+)?)\s*[, \t]\s*(-?\d+(?:\.\d+)?)$/.exec(line);
+    if (!m) { bad.push(line); continue; }
+    curve.push({ wheel: Math.abs(Number(m[1])), input: Math.abs(Number(m[2])) });
+  }
+  return { curve, bad, ok: !!curveOf({ cFactor: 1, rackLimit: 1, curve }) };
 }
 
 /**
@@ -33,7 +70,9 @@ export interface SteeringSpec {
  * from cFactor at center to cFactorLock at full lock, linearly with |input| / limit:
  *   c(r) = c0 + (c1 − c0)·|r|/L,   θ_sw(r) = 360 · ∫ dr / c(r) = 360 · L / (c1 − c0) · ln(c(r) / c0)
  */
-export function steeringWheelAngle(input: number, s: Pick<SteeringSpec, 'cFactor' | 'cFactorLock' | 'rackLimit'>): number {
+export function steeringWheelAngle(input: number, s: RatioSpec): number {
+  const cv = curveOf(s);
+  if (cv) return Math.sign(input) * interp(cv.input, cv.wheel, Math.abs(input));
   const c0 = s.cFactor, c1 = s.cFactorLock && s.cFactorLock > 0 ? s.cFactorLock : c0, L = Math.abs(s.rackLimit) || 1;
   if (!(c0 > 0)) return NaN;
   if (Math.abs(c1 - c0) < 1e-9 * c0) return (input / c0) * 360;
@@ -42,7 +81,9 @@ export function steeringWheelAngle(input: number, s: Pick<SteeringSpec, 'cFactor
 }
 
 /** Inverse of steeringWheelAngle: the steering input for a steering-wheel angle (deg). */
-export function inputForWheelAngle(sw: number, s: Pick<SteeringSpec, 'cFactor' | 'cFactorLock' | 'rackLimit'>): number {
+export function inputForWheelAngle(sw: number, s: RatioSpec): number {
+  const cv = curveOf(s);
+  if (cv) return Math.sign(sw) * interp(cv.wheel, cv.input, Math.abs(sw));
   const c0 = s.cFactor, c1 = s.cFactorLock && s.cFactorLock > 0 ? s.cFactorLock : c0, L = Math.abs(s.rackLimit) || 1;
   if (!(c0 > 0)) return NaN;
   if (Math.abs(c1 - c0) < 1e-9 * c0) return (sw / 360) * c0;
@@ -51,7 +92,14 @@ export function inputForWheelAngle(sw: number, s: Pick<SteeringSpec, 'cFactor' |
 }
 
 /** Input per steering-wheel revolution at an input (the local ratio), rack mm/rev or arm deg/rev. */
-export function inputPerRev(input: number, s: Pick<SteeringSpec, 'cFactor' | 'cFactorLock' | 'rackLimit'>): number {
+export function inputPerRev(input: number, s: RatioSpec): number {
+  const cv = curveOf(s);
+  if (cv) {
+    // The local slope of the curve, per revolution.
+    const a = Math.abs(input), h = Math.max(1e-3, (cv.input[cv.input.length - 1]! || 1) * 1e-3);
+    const w0 = interp(cv.input, cv.wheel, Math.max(0, a - h)), w1 = interp(cv.input, cv.wheel, a + h);
+    return w1 > w0 ? (360 * (a + h - Math.max(0, a - h))) / (w1 - w0) : NaN;
+  }
   const c0 = s.cFactor, c1 = s.cFactorLock && s.cFactorLock > 0 ? s.cFactorLock : c0, L = Math.abs(s.rackLimit) || 1;
   return c0 + (c1 - c0) * Math.min(1, Math.abs(input) / L);
 }
@@ -89,7 +137,7 @@ export function steerForTurn(
 ): SteerNeed | null {
   if (path === 'straight') return null;
   const ex = Number.isFinite(extra) ? Math.round(extra / 1e-5) * 1e-5 : 0;
-  const key = `${path}|${radius}|${ex}|${wheelbase}|${steering.rackLimit}|${steering.cFactor}|${steering.cFactorLock ?? 0}|${CORNER_IDS.map((id) => (steering.steered[id] ? 1 : 0)).join('')}`;
+  const key = `${path}|${radius}|${ex}|${wheelbase}|${steering.rackLimit}|${steering.cFactor}|${steering.cFactorLock ?? 0}|${JSON.stringify(steering.curve ?? [])}|${CORNER_IDS.map((id) => (steering.steered[id] ? 1 : 0)).join('')}`;
   let m = cache.get(built);
   if (!m) { m = new Map(); cache.set(built, m); }
   if (m.has(key)) return m.get(key)!;

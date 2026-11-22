@@ -10,7 +10,7 @@ import { LocksPanel } from './LocksPanel';
 import { VehicleOptimizePanel } from './OptimizePanel';
 import { CORNER_IDS, type CornerId } from '../../core/vehicle/vehicle';
 import { deg } from '../../core/suspension/characteristics';
-import {
+import { ratioSpecOf,
   useApp, VEHICLE_KEYS, VEHICLE_META, CORNER_NAMES, SHARED_META, rootOf,
   type CornerLinks, type DiffType, type Axle, type SharedDesign,
   BRAKE_KEYS, BRAKE_META, FADE_KEYS, FADE_META, TOW_KEYS, TOW_META,
@@ -389,7 +389,8 @@ export function VehicleMotionBar() {
   const armMech = useApp((s) => s.geom.steerMechanism === 'arm');
   const rackLimit = useApp((s) => s.steer.rackLimit.value);
   const set = useApp((s) => s.set);
-  const ratio = { cFactor, cFactorLock, rackLimit };
+  const curveText = useApp((s) => s.steerCurve);
+  const ratio = { ...ratioSpecOf({ steer: useApp.getState().steer, steerCurve: curveText }), cFactor, cFactorLock, rackLimit };
   const swLimit = steeringWheelAngle(rackLimit, ratio);
   usePlay(playing, 5000, (s) => useApp.getState().set('lateralG', Number((1.2 * s).toFixed(3))));
   usePlay(playingSteer, 5000, (s) => useApp.getState().set('rack', s * rackLimit));

@@ -7,7 +7,7 @@
  * (motion ratio, wheel rate, ride rate, ride frequency).
  */
 import { useMemo, useRef } from 'react';
-import { useApp, toGeometry, toProfile, toForceModel, sprungLoad, vehicleStaticLoads, mergedCorners } from './store';
+import { useApp, ratioSpecOf, toGeometry, toProfile, toForceModel, sprungLoad, vehicleStaticLoads, mergedCorners } from './store';
 import { DoubleWishbone, type CornerState } from '../core/suspension/doubleWishbone';
 import { rollCamber, ackermann } from '../core/suspension/derived';
 import { steeringWheelAngle, inputPerRev } from '../core/tests/steer';
@@ -152,7 +152,8 @@ export function useModel(): Model {
   const bumpStop = useApp((s) => s.bumpStop);
   const steer = useApp((s) => s.steer);
   const cFactor = steer.cFactor.value;
-  const ratioSpec = { cFactor, cFactorLock: steer.cFactorLock.value, rackLimit: steer.rackLimit.value };
+  const curveText = useApp((s) => s.steerCurve);
+  const ratioSpec = { ...ratioSpecOf({ steer, steerCurve: curveText }), cFactor };
   const driver = mode === 'loaded' ? 'wheelCenter' : sliderDriver;
   const factor = mode === 'loaded' ? loadFactor : 1;
 

@@ -21,7 +21,7 @@ import type { TireSample, TireFitResult } from '../core/tire/fit';
 import type { TireForceModel } from '../core/tire/model';
 import { CORNER_IDS, tirePressure, type AxleShared, type CornerId, type DamperSpec } from '../core/vehicle/vehicle';
 import { vec3 } from '../core/math/vec3';
-import { layoutOf,
+import { ratioSpecOf, layoutOf,
   POINT_KEYS, rootOf, toGeometry, toProfile, toForceModel, mergedCorners, vehicleStaticLoads, defaultOptimizerSetup, GRIP_KEYS, MF_KEYS,
   type AppState, type FadeKey, type PointKey, type OptimizerSetup, type SharedDesign, type GripKey, type MFKey, type Field, type DamperKey, type DamperMode,
   type BrakeKey,
@@ -247,6 +247,7 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
     steering: {
       steered: Object.fromEntries(CORNER_IDS.map((id) => [id, s.settings[id].steered])),
       rackLimit: Math.abs(s.steer.rackLimit.value), cFactor: s.steer.cFactor.value, cFactorLock: s.steer.cFactorLock.value,
+      ...(ratioSpecOf(s).curve ? { curve: ratioSpecOf(s).curve } : {}),
     },
     ride: { rollInertia: Math.max(0.1, v.rollInertia.value), pitchInertia: Math.max(0.1, v.pitchInertia.value), yawInertia: Math.max(0.1, v.yawInertia.value), tireDamping: Math.max(0, v.tireDamping.value) },
     mass: v.mass.value, cg: { x: v.cgX.value, height: v.cgY.value, z: v.cgZ.value }, wheelbase: v.wheelbase.value,

@@ -35,7 +35,7 @@ import {
 const G = 9.80665;
 
 export type VehicleGoalKind =
-  | 'grip' | 'contactArea' | 'inclination' | 'roll' | 'lltd' | 'pitch' | 'antiDive' | 'antiSquat' | 'bumpSteer' | 'testPass' | 'testReserve';
+  | 'grip' | 'contactArea' | 'inclination' | 'roll' | 'lltd' | 'rollStiffness' | 'pitch' | 'antiDive' | 'antiSquat' | 'bumpSteer' | 'testPass' | 'testReserve';
 
 export interface VehicleGoalMeta {
   short: string; label: string; unit: string; target: number; tolerance: number; hint: string; maximize?: boolean;
@@ -49,6 +49,7 @@ export const VEHICLE_GOAL_META: Record<VehicleGoalKind, VehicleGoalMeta> = {
   inclination: { short: 'Outside incl.', label: 'Outside-tire inclination (cornering)', unit: '°', target: -1, tolerance: 0.05, uses: 'lateral', hint: 'Inclination to the ground of the two outside (loaded) tires in the cornering case. + = top outboard.' },
   roll: { short: 'Roll gradient', label: 'Roll gradient (cornering)', unit: '°/g', target: 1, tolerance: 0.02, uses: 'lateral', hint: 'Body roll per g of lateral acceleration.' },
   lltd: { short: 'LLTD front', label: 'Front share of lateral load transfer', unit: '%', target: 50, tolerance: 0.5, uses: 'lateral', hint: 'Above ~50% the car tends to understeer.' },
+  rollStiffness: { short: 'Roll stiff. front', label: 'Front share of roll stiffness', unit: '%', target: 50, tolerance: 0.5, uses: 'lateral', hint: 'Front axle\'s share of the load moved through the springs and anti-roll bars (the body-roll part of the transfer; roll centers from each design). More front = more understeer.' },
   pitch: { short: 'Brake pitch', label: 'Pitch under braking', unit: '°', target: 0.5, tolerance: 0.02, uses: 'braking', hint: 'Nose-down pitch in the braking case.' },
   antiDive: { short: 'Anti-dive', label: 'Anti-dive (front, braking)', unit: '%', target: 20, tolerance: 1, uses: 'geometry', hint: 'Classic geometric anti-dive at static height from the side-view IC, brake mount and bias.' },
   antiSquat: { short: 'Anti-squat', label: 'Anti-squat (rear, accelerating)', unit: '%', target: 30, tolerance: 1, uses: 'geometry', hint: 'Classic geometric anti-squat of the powered rear corners (needs powered rear corners).' },
@@ -287,6 +288,19 @@ function lltdOf(c: CaseEval): number | null {
   return tf + tr !== 0 ? (100 * tf) / (tf + tr) : null;
 }
 
+/** Front share of the spring-path (elastic) transfer: total minus the roll-center part, per axle. */
+function rollStiffnessShareOf(c: CaseEval, chars: Record<CornerId, { rollCenterHeight: number | null }>): number | null {
+  const r = c.result.corners;
+  const part = (l: CornerId, rr: CornerId) => {
+    const total = Math.abs(r[rr].tireLoad - r[l].tireLoad) / 2;
+    const track = Math.abs(r[l].contact.x - r[rr].contact.x);
+    const h = chars[l].rollCenterHeight ?? 0;
+    return total - (track > 0 ? (Math.abs(r[l].lateralForce + r[rr].lateralForce) * h) / track : 0);
+  };
+  const f = part('FL', 'FR'), b = part('RL', 'RR');
+  return f + b > 0 ? (100 * f) / (f + b) : null;
+}
+
 /** Outside corners: a left turn (lateral > 0) loads the right side. */
 const outsideOf = (c: CaseEval): CornerId[] => (c.result.corners.FR.tireLoad >= c.result.corners.FL.tireLoad ? ['FR', 'RR'] : ['FL', 'RL']);
 /** The most-cornering and the hardest-braking case (fixed or test states). */
@@ -337,6 +351,7 @@ export function vehicleGoalValue(kind: VehicleGoalKind, p: VehicleProblem, e: Ve
       return (100 * e.cases.reduce((a, c, i) => a + w[i]! * (1 - (c.result.grip?.maxUtilization ?? 1)), 0)) / tw;
     }
     case 'lltd': return lat ? lltdOf(lat) : null;
+    case 'rollStiffness': return lat ? rollStiffnessShareOf(lat, e.chars) : null;
     case 'pitch': return brk ? deg(brk.result.pose.pitch) : null;
     case 'antiDive': case 'antiSquat': return antiOf(p, e, kind);
     case 'bumpSteer': {

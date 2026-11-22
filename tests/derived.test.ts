@@ -127,3 +127,43 @@ describe('coilover placement', () => {
     expect(coiloverGeometry(m.chassis, m.lower).length).toBeCloseTo(g.length, 9);
   });
 });
+
+describe('new variables as optimizer goals', () => {
+  it('the corner optimizer reaches an Ackermann target (steering arm) and a caster-gain target (upper pivots)', async () => {
+    const { optimizeCorner, sampleCorner, goalValue } = await import('../src/core');
+    const g = SAMPLE_LAYOUTS.find((l) => l.id === 'C')!.geometry;
+    const base = { geometry: g, droop: 40, bump: 40, samples: 9, wheelbase: 1550, rackPositions: [-20, 20] };
+    const before = goalValue('ackermann', sampleCorner(g, base)!)!;
+    const v = (point: 'trOuter' | 'trInner' | 'ucaFwd' | 'ucaAft', axis: 0 | 1 | 2, lo: number, hi: number) => ({ point, axis, lo, hi });
+    const ack = optimizeCorner({
+      ...base, goals: [{ kind: 'ackermann', target: 60, weight: 1 }],
+      variables: [v('trOuter', 0, g.tieRod.outer.x - 60, g.tieRod.outer.x + 60), v('trInner', 0, g.tieRod.inner.x - 60, g.tieRod.inner.x + 60)],
+    });
+    const after = goalValue('ackermann', sampleCorner(ack.geometry, base)!)!;
+    expect(Math.abs(after - 60)).toBeLessThan(Math.abs(before - 60));
+    expect(Math.abs(after - 60)).toBeLessThan(5);
+    const cg = optimizeCorner({
+      ...base, goals: [{ kind: 'casterGain', target: 2, weight: 1 }],
+      variables: [v('ucaFwd', 1, g.uca.fwd.y - 40, g.uca.fwd.y + 40), v('ucaAft', 1, g.uca.aft.y - 40, g.uca.aft.y + 40)],
+    });
+    expect(goalValue('casterGain', sampleCorner(cg.geometry, base)!)!).toBeCloseTo(2, 0);
+    expect(goalValue('trackChange', sampleCorner(g, base)!)).not.toBeNull();
+  });
+});
+
+describe('vehicle goal: front share of roll stiffness', () => {
+  it('a front anti-roll bar raises the front share', async () => {
+    const { buildVehicleProblem } = await import('../src/app/optimizer');
+    const { defaultDesign } = await import('../src/app/store');
+    const { evaluateVehicle, vehicleGoalValue } = await import('../src/core');
+    const { problem } = buildVehicleProblem(defaultDesign() as never);
+    const p = { ...problem, cases: { lateralG: 0.8, brakingG: 0, accelG: 0 }, states: undefined };
+    const geoms = Object.fromEntries(Object.entries(p.designs).map(([k, v]) => [k, v!.geometry]));
+    const share = (q: typeof p) => vehicleGoalValue('rollStiffness', q, evaluateVehicle(q, geoms)!)!;
+    const plain = share(p);
+    expect(plain).toBeGreaterThan(40);
+    expect(plain).toBeLessThan(60);
+    const withBar = share({ ...p, shared: { ...p.shared, front: { ...p.shared.front, antiRollBar: { kind: 'wheelRate', rate: 30 } } } });
+    expect(withBar).toBeGreaterThan(plain + 10);
+  });
+});

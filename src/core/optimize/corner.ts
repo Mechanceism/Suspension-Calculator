@@ -9,6 +9,8 @@
  * starting design when the goals alone don't pin it down (e.g. six free tie-rod coordinates for one
  * toe curve).
  */
+import { ackermann } from '../suspension/derived';
+import { headingAngle } from '../suspension/steering';
 import { vec3, addScaled, dot, Y_AXIS, type Vec3 } from '../math/vec3';
 import { patchGrip, DEFAULT_GRIP, type GripModel, type PatchGrip } from '../tire/grip';
 import { mfPeaks, DEFAULT_MF, type TireGrip } from '../tire/magicFormula';
@@ -30,7 +32,7 @@ export type HardpointId =
 export type GoalKind =
   | 'bumpSteer' | 'camberGain' | 'rollCamber' | 'rollCenter' | 'rcMigration'
   | 'kpi' | 'caster' | 'scrubRadius' | 'trail' | 'antiAngle' | 'motionRatio'
-  | 'contactArea' | 'grip';
+  | 'contactArea' | 'grip' | 'casterGain' | 'trackChange' | 'ackermann';
 
 export interface GoalMeta {
   /** Short name for narrow tables. */
@@ -60,6 +62,9 @@ export const GOAL_META: Record<GoalKind, GoalMeta> = {
   antiAngle: { short: 'Anti angle', label: 'Side-view anti angle (static)', unit: '°', target: 3, tolerance: 0.1, hint: 'Angle of the contact patch → side-view IC line (anti-dive / anti-lift with outboard brakes).' },
   contactArea: { short: 'Contact area', label: 'Contact area (largest)', unit: 'cm²', target: 0, tolerance: 0.01, maximize: true, hint: 'Patch area, averaged over the static case and the outside wheel in roll (at the roll angle and roll load below). Needs a tire model.' },
   grip: { short: 'Grip', label: 'Grip: peak lateral force (largest)', unit: 'N', target: 0, tolerance: 0.01, maximize: true, hint: 'Peak lateral force of the tire (Magic Formula tire grip model: load, inclination, pressure). Averaged over the static case and the outside wheel in roll, where leaning its top into the turn adds camber thrust.' },
+  casterGain: { short: 'Caster gain', label: 'Caster change in heave', unit: '°/100 mm', target: 0, tolerance: 0.05, hint: 'Caster change per 100 mm of bump, fitted over the travel range (anti-dive geometry gains caster in bump).' },
+  trackChange: { short: 'Track change', label: 'Track change (scrub) in heave', unit: 'mm/100 mm', target: 0, tolerance: 0.5, hint: 'Half-track change per 100 mm of bump (+ = contact moves outboard): tire scrub over bumps. Fitted over the travel range.' },
+  ackermann: { short: 'Ackermann', label: 'Ackermann (at the check rack travel)', unit: '%', target: 50, tolerance: 2, hint: 'With the mirrored corner, at the rack travel set for the bump-steer check (or 20 mm), the vehicle wheelbase and the steering-axis track: 100 % = ideal Ackermann, 0 = parallel, < 0 = anti-Ackermann.' },
   motionRatio: { short: 'Motion ratio', label: 'Motion ratio (static)', unit: '', target: 0.7, tolerance: 0.005, hint: 'Damper travel per wheel travel at design height.' },
 };
 export const GOAL_KINDS = Object.keys(GOAL_META) as GoalKind[];
@@ -90,6 +95,8 @@ export interface CornerProblem {
   holds?: Hold[];
   /** Weight of the "prefer small changes" term (per 10 mm moved). */
   keepClose?: number;
+  /** Wheelbase, mm (Ackermann goal; default 1550). */
+  wheelbase?: number;
   /** Tire, static corner load and grip model, for the contact-area and grip goals. */
   tire?: { profile: TireProfile; model: TireForceModel; staticLoad: number; rollLoadFactor: number; grip?: GripModel; tireGrip?: TireGrip; pressure?: number };
   maxIterations?: number;
@@ -139,6 +146,8 @@ export interface CornerSamples {
   i0: number;
   /** Toe through travel at each extra rack position. */
   rackToe: { rack: number; toe: number[] }[];
+  /** Ackermann % with the mirrored corner (null when not asked or not solvable). */
+  ackermann?: number | null;
   /** Outside-wheel travel and characteristics at the roll angle. */
   roll: { travel: number; chars: Characteristics; angle: number } | null;
   /** Motion ratio at design height (null without a damper). */
@@ -234,7 +243,19 @@ export function sampleCorner(geometry: DoubleWishboneGeometry, p: Omit<CornerPro
       motionRatio = -(cb.damperLength - ca.damperLength) / (cb.contactPoint.y - ca.contactPoint.y);
     }
   }
-  return { travels, chars, i0, rackToe, roll, motionRatio, grip };
+  let ackermannPct: number | null = null;
+  if (all || need.has('ackermann')) {
+    // The mirrored pair at ± rack travel: this wheel at +r, its mirror image (the other side) at −r.
+    const r = Math.max(...(p.rackPositions ?? []).map(Math.abs), 0) || 20;
+    const h0 = headingAngle(states[i0]!.spinAxis);
+    const a = corner.solve({ rack: r }, states[i0]!.poses), b = corner.solve({ rack: -r }, states[i0]!.poses);
+    const g = chars[i0]!.steeringAxisAtGround;
+    if (converged(a) && converged(b)) {
+      const v = ackermann(headingAngle(a.spinAxis) - h0, -(headingAngle(b.spinAxis) - h0), p.wheelbase ?? 1550, 2 * Math.abs(g ? g.x : chars[i0]!.contactPoint.x)).percent;
+      ackermannPct = Number.isFinite(v) ? v : null;
+    }
+  }
+  return { travels, chars, i0, rackToe, roll, motionRatio, grip, ackermann: ackermannPct };
 }
 
 /** Least-squares slope through the origin-shifted points (x, y − y0). */
@@ -273,6 +294,9 @@ export function goalValue(kind: GoalKind, s: CornerSamples, target = GOAL_META[k
     case 'trail': return c0.mechanicalTrail;
     case 'antiAngle': return deg(c0.antiAngleContact);
     case 'motionRatio': return s.motionRatio;
+    case 'casterGain': return 100 * deg(slopeThrough(s.travels, s.chars.map((c) => c.caster), s.i0));
+    case 'trackChange': return 100 * slopeThrough(s.travels, s.chars.map((c) => c.halfTrack), s.i0);
+    case 'ackermann': return s.ackermann ?? null;
     case 'contactArea': {
       if (!s.grip) return null;
       const v = [s.grip.static.area, ...(s.grip.roll ? [s.grip.roll.area] : [])];
@@ -304,6 +328,10 @@ export function cornerGoalResiduals(goal: Goal, s: CornerSamples, ref?: number |
     }
     case 'camberGain':
       return s.travels.map((t, i) => (deg(s.chars[i]!.camber - s.chars[s.i0]!.camber) - (goal.target / 100) * t) / tol);
+    case 'casterGain':
+      return s.travels.map((t, i) => (deg(s.chars[i]!.caster - s.chars[s.i0]!.caster) - (goal.target / 100) * t) / tol);
+    case 'trackChange':
+      return s.travels.map((t, i) => (s.chars[i]!.halfTrack - s.chars[s.i0]!.halfTrack - (goal.target / 100) * t) / tol);
     case 'rcMigration': {
       const rc0 = s.chars[s.i0]!.rollCenterHeight;
       return s.travels.map((t, i) => {

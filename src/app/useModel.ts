@@ -332,7 +332,8 @@ export function useModel(): Model {
       parkingWheelTorque: mech.kind === 'arm' ? (parkT / (((1 / cLocal) * 360) / Math.abs(dHeading))) / 1000 : (parkRack * cLocal) / (2 * Math.PI) / 1000,
     };
     };
-    const steering = interacting && lastSlow.current.steering ? lastSlow.current.steering : computeSteering();
+    // A beam axle doesn't steer here: no steering readout.
+    const steering = corner.solidAxle ? null : interacting && lastSlow.current.steering ? lastSlow.current.steering : computeSteering();
     if (!interacting) {
       lastSlow.current = { wheelRate: springInfo?.wheelRate ?? NaN, tireRate: springInfo?.tireRate ?? Infinity, steering };
     }
@@ -356,7 +357,7 @@ export function useModel(): Model {
   const curTireLoad = Math.round(current?.tireLoad ?? spring.cornerLoad.value);
   const steerSweep = useMemo<SteerSample[]>(() => {
     const corner = built.corner;
-    if (!corner || !current) return [];
+    if (!corner || !current || corner.solidAxle) return [];
     if (interacting) return lastSteerSweep.current;
     const armAngle = armKey / 1e5;
     const n = 25;

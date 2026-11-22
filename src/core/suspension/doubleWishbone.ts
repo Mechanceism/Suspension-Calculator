@@ -42,20 +42,24 @@
  * UBJ–LBJ line and the solve produces the height change directly.
  */
 import {
-  type Vec3, add, sub, scale, length, normalize, rejectFrom, Y_AXIS, X_AXIS, distance as dist,
+  type Vec3, vec3, add, sub, scale, length, normalize, rejectFrom, Y_AXIS, X_AXIS, distance as dist,
 } from '../math/vec3';
 import { mulVec, transpose, fromAxisAngle } from '../math/mat3';
+import { SolidAxle, axleCharacteristics, mirroredLinks, type SolidAxleGeometry, type AxleState, type AxleCharacteristics } from './solidAxle';
 import {
   ConstraintSystem, PoseContext, type Poses, type SolveResult, type PointRef,
   coincident, fixedDistance, revolute, coordinate, hingeAngle, pointOnLine,
 } from '../solver/system';
 
 /** Suspension type of a corner. */
-export type SuspensionKind = 'doubleWishbone' | 'macpherson' | 'multilink' | 'singleArm' | 'rigid';
-export const SUSPENSION_KINDS: SuspensionKind[] = ['doubleWishbone', 'macpherson', 'multilink', 'singleArm', 'rigid'];
+export type SuspensionKind = 'doubleWishbone' | 'macpherson' | 'multilink' | 'singleArm' | 'beam4' | 'beam3' | 'rigid';
+export const SUSPENSION_KINDS: SuspensionKind[] = ['doubleWishbone', 'macpherson', 'multilink', 'singleArm', 'beam4', 'beam3', 'rigid'];
+/** Solid (beam) axle types: one design spans the whole axle (both wheels). */
+export const isBeam = (k: SuspensionKind | undefined) => k === 'beam4' || k === 'beam3';
 export const SUSPENSION_LABELS: Record<SuspensionKind, string> = {
   doubleWishbone: 'Double wishbone (SLA)', macpherson: 'MacPherson strut', multilink: 'Multilink (5 links)',
-  singleArm: 'Single arm (swing / trailing arm, knuckle on the arm)', rigid: 'No suspension (rigid, e.g. a kart)',
+  singleArm: 'Single arm (swing / trailing arm, knuckle on the arm)',
+  beam4: 'Solid axle, 4-link', beam3: 'Solid axle, 3-link + Panhard rod', rigid: 'No suspension (rigid, e.g. a kart)',
 };
 
 export interface ArmPoints {
@@ -102,6 +106,8 @@ export interface DoubleWishboneGeometry {
    * runs from `pushrodLower` (on `pushrodBody`) to `pushrodUpper` (on the rocker). The damper's armPoint
    * is then on the rocker (damper.arm = 'rocker').
    */
+  /** Solid axle, 3-link: the Panhard rod (frame end — usually on the other side — and axle end). */
+  readonly panhard?: { readonly chassis: Vec3; readonly axle: Vec3 };
   readonly rocker?: {
     readonly pivot1: Vec3; readonly pivot2: Vec3;
     readonly pushrodBody: MountBody; readonly pushrodLower: Vec3; readonly pushrodUpper: Vec3;
@@ -161,6 +167,10 @@ export interface CornerPoints {
   /** Steering-arm mechanism: its pivot axis (frame). */
   steerPivot1?: Vec3;
   steerPivot2?: Vec3;
+  /** Solid axle: the Panhard rod's ends now, and the right wheel's center (the axle's other end). */
+  panhardChassis?: Vec3;
+  panhardAxle?: Vec3;
+  axleRight?: Vec3;
   /** Rocker layout: the rocker's pivot axis (frame) and the pushrod's two ends. */
   rockerPivot1?: Vec3;
   rockerPivot2?: Vec3;
@@ -170,6 +180,8 @@ export interface CornerPoints {
 
 export interface CornerState {
   readonly kind: SuspensionKind;
+  /** Solid axle: the whole axle's state and characteristics (the corner shows its left wheel in heave). */
+  readonly axle?: { state: AxleState; chars: AxleCharacteristics };
   readonly inputs: Required<CornerInputs>;
   readonly solve: SolveResult;
   readonly poses: Poses;
@@ -203,10 +215,18 @@ export class DoubleWishbone {
   readonly bodies: MountBody[];
   private readonly spinAxisDesign: Vec3;
 
+  /** Solid axle types: the axle itself. */
+  readonly solidAxle: SolidAxle | null = null;
+
   constructor(readonly geometry: DoubleWishboneGeometry) {
     this.rackAxis = normalize(geometry.rackAxis ?? X_AXIS);
     this.spinAxisDesign = normalize(geometry.wheel.spinAxis);
     this.kind = kindOf(geometry);
+    if (isBeam(this.kind)) {
+      this.bodies = ['upright'];
+      this.solidAxle = new SolidAxle(solidAxleOf(geometry));
+      return;
+    }
     const sa = geometry.steering;
     if (sa?.kind === 'arm' && dist(sa.pivot1, sa.pivot2) < 1e-6) throw new Error('Degenerate geometry: steering arm pivot axis points coincide');
     const rk = geometry.rocker;
@@ -291,6 +311,7 @@ export class DoubleWishbone {
       rack: inputs.rack ?? 0,
       driver: inputs.driver ?? 'wheelCenter',
     };
+    if (this.solidAxle) return this.solveBeam(full, initial);
     const { sys, refs } = this.build(full);
     const start: Poses = { ...sys.designPoses(), ...(initial ?? {}) };
     // Fixed bodies always take their input-driven pose.
@@ -350,6 +371,40 @@ export class DoubleWishbone {
       points.pushrodUpper = ctx.world(refs.pushrodUpper);
     }
     return { kind: this.kind, inputs: full, solve: result, poses: result.poses, points, spinAxis };
+  }
+
+  /**
+   * Solid axle as a corner: the axle heaves by the travel (both wheels), and the corner is its left wheel.
+   * The links show as the arm points (lower: LCA_Fwd → LCA_Out, upper: UCA_Fwd → UCA_Out); the steering
+   * axis is a vertical line through the wheel (a beam axle here doesn't steer).
+   */
+  private solveBeam(full: Required<CornerInputs>, initial?: Poses): CornerState {
+    const ax = this.solidAxle!;
+    const st = ax.solve({ left: full.travel, right: full.travel }, initial);
+    const g = this.geometry;
+    const find = (name: string) => st.links.find((l) => l.name === name);
+    const lower = find('lower (left)'), upper = find('upper (left)') ?? find('upper (center)');
+    const pan = find('Panhard rod');
+    const w = st.left;
+    const points: CornerPoints = {
+      ucaFwd: g.uca.fwd, ucaAft: g.uca.fwd, ucaOut: upper?.axle ?? g.uca.out,
+      lcaFwd: g.lca.fwd, lcaAft: g.lca.fwd, lcaOut: lower?.axle ?? g.lca.out,
+      trInner: g.tieRod.inner, trOuter: g.tieRod.outer,
+      wheelCenter: w.center, contact: w.contact,
+      steerLower: w.contact, steerUpper: add(w.center, scale(Y_AXIS, 100)),
+      ...(pan ? { panhardChassis: pan.chassis, panhardAxle: pan.axle } : {}),
+      axleRight: st.right.center,
+    };
+    if (g.damper && st.springLength) {
+      // The left spring's axle end: where the axle carries it now.
+      const R = st.poses.axle!.rotation, o = st.poses.axle!.position;
+      const c0 = scale(add(g.wheel.center, vec3(-g.wheel.center.x, g.wheel.center.y, g.wheel.center.z)), 0.5);
+      points.damperChassis = g.damper.chassis;
+      points.damperArm = add(o, mulVec(R, sub(g.damper.armPoint, c0)));
+    }
+    let chars: AxleCharacteristics | null = null;
+    try { chars = axleCharacteristics(ax, st); } catch { chars = null; }
+    return { kind: this.kind, inputs: full, solve: st.solve, poses: st.poses, points, spinAxis: w.spinAxis, ...(chars ? { axle: { state: st, chars } } : {}) };
   }
 
   /**
@@ -512,3 +567,22 @@ export const linkLengths = (p: CornerPoints) => ({
   ballJoints: length(sub(p.ucaOut, p.lcaOut)),
   damper: p.damperChassis && p.damperArm ? length(sub(p.damperArm, p.damperChassis)) : undefined,
 });
+
+/**
+ * The solid axle a beam-type design describes (left-side points; the right side mirrors): lower links
+ * LCA_Fwd → LCA_Out, upper links UCA_Fwd → UCA_Out (4-link: one per side; 3-link: one in the middle, as
+ * given), the Panhard rod (3-link), the spring Dmp_Chs → Dmp_Arm per side, the wheel.
+ */
+export function solidAxleOf(g: DoubleWishboneGeometry): SolidAxleGeometry {
+  const kind = kindOf(g);
+  const lower = mirroredLinks([{ name: 'lower', chassis: g.lca.fwd, axle: g.lca.out }]);
+  const links = kind === 'beam3'
+    ? [...lower, { name: 'upper (center)', chassis: g.uca.fwd, axle: g.uca.out }, ...(g.panhard ? [{ name: 'Panhard rod', chassis: g.panhard.chassis, axle: g.panhard.axle }] : [])]
+    : [...lower, ...mirroredLinks([{ name: 'upper', chassis: g.uca.fwd, axle: g.uca.out }])];
+  return {
+    kind: 'solidAxle',
+    wheel: { center: g.wheel.center, spinAxis: g.wheel.spinAxis, radius: g.wheel.radius, ...(g.wheel.width ? { width: g.wheel.width } : {}) },
+    links,
+    ...(g.damper ? { springs: { left: { chassis: g.damper.chassis, axle: g.damper.armPoint } } } : {}),
+  };
+}

@@ -11,7 +11,7 @@
 import { vec3, Y_AXIS, type Vec3 } from '../math/vec3';
 import type { SteeringSpec } from '../tests/steer';
 import type { AeroModel } from '../vehicle/aero';
-import { DoubleWishbone, type DoubleWishboneGeometry } from '../suspension/doubleWishbone';
+import { DoubleWishbone, isBeam, solidAxleOf, type DoubleWishboneGeometry } from '../suspension/doubleWishbone';
 import type { TrailerSpec } from '../vehicle/towing';
 import { characteristics, deg, type Characteristics } from '../suspension/characteristics';
 import { fitFreeLength } from '../suspension/spring';
@@ -222,7 +222,9 @@ export function assembleVehicle(p: VehicleProblem, geometries: Partial<Record<Co
   // Solid axles: build them, and give their wheels the characteristics the rest of the car reads.
   const axles: Partial<Record<'front' | 'rear', { axle: SolidAxle; table: AxleTable; design: AxleState }>> = {};
   for (const which of ['front', 'rear'] as const) {
-    const g = p.axles?.[which];
+    // A beam-type design on this axle (the corner's root) makes it a solid axle too.
+    const rootG = geometries[p.roots[which === 'front' ? 'FL' : 'RL']];
+    const g = p.axles?.[which] ?? (rootG && isBeam(rootG.kind) ? solidAxleOf(rootG) : undefined);
     if (!g) continue;
     try {
       const axle = new SolidAxle(g);

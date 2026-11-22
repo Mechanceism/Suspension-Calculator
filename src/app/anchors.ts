@@ -14,6 +14,7 @@ export const STATE_KEY: Record<PointKey, keyof CornerPoints> = {
   ucaOut2: 'ucaOut2', lcaOut2: 'lcaOut2',
   rkrPiv1: 'rockerPivot1', rkrPiv2: 'rockerPivot2', prArm: 'pushrodLower', prRkr: 'pushrodUpper',
   strPiv1: 'steerPivot1', strPiv2: 'steerPivot2',
+  phChs: 'panhardChassis', phAxle: 'panhardAxle',
 };
 
 export const DERIVED_LABELS: Record<Exclude<AnchorId, PointKey>, string> = {

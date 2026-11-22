@@ -6,7 +6,7 @@ import { layoutOf, useApp, POINT_NAMES, activeParam, SPRING_META, vehicleStaticL
 import { lockKeys, pointAxisLocked } from '../locks';
 import { toGeometry } from '../store';
 import { componentDefs, family, ownersOf, pointLabel } from '../components';
-import { SUSPENSION_KINDS, SUSPENSION_LABELS, type SuspensionKind } from '../../core/suspension/doubleWishbone';
+import { SUSPENSION_KINDS, SUSPENSION_LABELS, isBeam, type SuspensionKind } from '../../core/suspension/doubleWishbone';
 import { coiloverGeometry, setCoilover, moveAlongArm } from '../../core/suspension/coilover';
 import { parseValue } from '../../core/units/units';
 import type { Vec3 } from '../../core/math/vec3';
@@ -277,7 +277,7 @@ function ComponentInspector({ id, model }: { id: ComponentId; model: Model }) {
         <button className="icon-btn" title="Focus camera" onClick={() => focusOn(id)}>◎ Focus</button>
       </div>
       <Family {...fam} />
-      {(id === 'uca' || id === 'lca') && (kind === 'doubleWishbone' || ((kind === 'macpherson' || kind === 'singleArm') && id === 'lca')) && <Section title="Dimensions"><ArmSection arm={id} model={model} /></Section>}
+      {(id === 'uca' || id === 'lca') && (kind === 'doubleWishbone' || ((kind === 'macpherson' || kind === 'singleArm') && id === 'lca')) && !isBeam(kind) && <Section title="Dimensions"><ArmSection arm={id} model={model} /></Section>}
       {id === 'chassis' && <Section title="Corner load & travel"><ChassisSection /></Section>}
       {id === 'upright' && <Section title="Steering axis"><UprightSection model={model} /></Section>}
       {id === 'tieRod' && <Section title="Tie rod"><TieRodSection model={model} /></Section>}

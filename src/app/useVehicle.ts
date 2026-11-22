@@ -16,6 +16,8 @@ import { fitFreeLength } from '../core/suspension/spring';
 import { contactPatch, type ContactPatch, type TireProfile } from '../core/tire/geometry';
 import type { TireForceModel } from '../core/tire/model';
 import { CornerTable } from '../core/vehicle/cornerTable';
+import { AxleTable, AxleCornerTable } from '../core/vehicle/axleTable';
+import type { CornerTableLike } from '../core/vehicle/vehicle';
 import {
   CORNER_IDS, isLeft, isFront, placement, poseFns, solveVehicle, vehicleAt, designGroundY, axleRollCenter,
   type CornerId, type VehicleResult, type ChassisPose, type VehicleCorner, type AxleShared,
@@ -117,6 +119,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
   const brakingG = road.brakingG;
   const accelG = road.accelG;
   const tableCache = useRef(new WeakMap<object, Map<string, CornerTable>>());
+  const axleCache = useRef(new WeakMap<object, Map<string, AxleTable>>());
   const lastPose = useRef<ChassisPose | undefined>(undefined);
 
   // Corners: linked corners share a design object (and so a DoubleWishbone and its tables).
@@ -171,19 +174,36 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         const dl = axleShared.antiRollBar === 'torsionBar'
           ? vec3(axleShared.dropLink[0].value, axleShared.dropLink[1].value, axleShared.dropLink[2].value) : null;
         const key = `${cornerRack.toFixed(3)}|${range[0]}|${range[1]}|${dl ? `${dl.x},${dl.y},${dl.z}` : '-'}`;
-        let table = byRack.get(key);
-        if (!table) {
-          table = new CornerTable(b.corner, cornerRack, range, 41, dl ? { body: 'lca', point: dl } : undefined);
-          byRack.set(key, table);
-          if (byRack.size > 24) byRack.delete(byRack.keys().next().value!);
-        }
         const mu = d.spring.unsprungMass.value;
         const rigid = b.corner.kind === 'rigid';
-        const freeLength = s.autoPreload && !rigid
-          ? fitFreeLength(b.corner, d.spring.springRate.value, Math.max(0, staticLoads[id] - mu * G))
-          : d.spring.freeLength.value;
+        // A solid axle: one table over both wheels' travel (cached with the design), preload from its heave ratio.
+        let axleRef: { table: AxleTable; side: 'L' | 'R' } | undefined;
+        let table: CornerTableLike | undefined;
+        let freeLength = d.spring.freeLength.value;
+        if (b.corner.solidAxle) {
+          const akey = `axle|${range[0]}|${range[1]}`;
+          let at = axleCache.current.get(b.corner)?.get(akey);
+          if (!at) {
+            at = new AxleTable(b.corner.solidAxle, range, 17);
+            axleCache.current.set(b.corner, new Map([[akey, at]]));
+          }
+          const side = isLeft(id) ? 'L' : 'R';
+          axleRef = { table: at, side };
+          table = new AxleCornerTable(at, side);
+          const s0 = at.at(side, 0, 0), mr = -(s0.dL + s0.dLX);
+          if (s.autoPreload && Number.isFinite(s0.L) && mr > 1e-6) freeLength = s0.L + Math.max(0, staticLoads[id] - mu * G) / mr / d.spring.springRate.value;
+        } else {
+          let t = byRack.get(key);
+          if (!t) {
+            t = new CornerTable(b.corner, cornerRack, range, 41, dl ? { body: 'lca', point: dl } : undefined);
+            byRack.set(key, t);
+            if (byRack.size > 24) byRack.delete(byRack.keys().next().value!);
+          }
+          table = t;
+          if (s.autoPreload && !rigid) freeLength = fitFreeLength(b.corner, d.spring.springRate.value, Math.max(0, staticLoads[id] - mu * G));
+        }
         corners.push({
-          id, table, unsprungMass: mu, ...(rigid ? { rigid: true } : {}), tire: { profile: b.profile, model: b.model, ...(tireFileRear && !isFront(id) ? { grip: tireGripFor({ tireGrip: gripFields, tireFile, tireFileRear }, 'rear') } : {}) }, brake: s.settings[id].brake, abs: s.settings[id].abs,
+          id, table: table!, ...(axleRef ? { axle: axleRef } : {}), unsprungMass: mu, ...(rigid ? { rigid: true } : {}), tire: { profile: b.profile, model: b.model, ...(tireFileRear && !isFront(id) ? { grip: tireGripFor({ tireGrip: gripFields, tireFile, tireFileRear }, 'rear') } : {}) }, brake: s.settings[id].brake, abs: s.settings[id].abs,
           drive: s.settings[id].powered ? s.settings[id].drive : 'none',
           spring: {
             rate: d.spring.springRate.value, freeLength,

@@ -108,7 +108,7 @@ Done: File → Setup wizard (and Vehicle → Inputs), eleven steps with a step l
 - ✅ **Towing, static:** hitch point, tongue weight and the trailer's pull / push and side force at the hitch while cornering, braking and accelerating (with / without trailer brakes), in the steady solve, the ride and handling.
 
 **Large (after the medium ones):**
-- **Solid axle, twist beam and leaf springs:** both wheels on one body located by links (4-link, 3-link + Panhard, Watt's, leaf springs); a twist beam as two trailing arms joined by a twisting beam. A leaf spring locates the axle as well as springing it, so it comes with the solid axle.
+- ✅ (solid axle, first part) **Solid axle, twist beam and leaf springs:** solid axle with a 4-link or 3-link + Panhard rod done (kinematics, the whole car, ride, app, presets). Next: leaf springs and the twist beam. Originally: both wheels on one body located by links (4-link, 3-link + Panhard, Watt's, leaf springs); a twist beam as two trailing arms joined by a twisting beam. A leaf spring locates the axle as well as springing it, so it comes with the solid axle.
 - **Brake fade:** rotor temperature over a test (brake energy into the rotor) and pad μ vs temperature; a fade check.
 - **Trailer sway:** the trailer as a second body in the handling model.
 - **User-defined linkages:** an editor for bodies and joints (the solver already takes any).

@@ -36,9 +36,11 @@
  *  21  brake hydraulics (pedal, master cylinders, calipers, pads, rotors; off by default)
  *  22  towing a trailer (static hitch forces; off by default)
  *  23  each steering mechanism keeps its own ratio and limit (the unused one is saved too)
+ *  24  solid axle types (4-link, 3-link + Panhard rod: FL_PH_Chs, FL_PH_Axle)
  */
 import pkg from '../../package.json';
 import { rockerFromCoilover } from '../core/suspension/coilover';
+import { SUSPENSION_KINDS, type SuspensionKind } from '../core/suspension/doubleWishbone';
 import { parseValue, type Quantity } from '../core/units/units';
 import { CORNER_IDS, type CornerId } from '../core/vehicle/vehicle';
 import { DIM_MEASURES } from '../core/suspension/dimensions';
@@ -57,7 +59,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 23;
+export const FORMAT_VERSION = 24;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -67,7 +69,7 @@ type Json = Record<string, unknown>;
 export const cornerParam = (id: CornerId, flName: string) => flName.replace(/^FL_/, `${id}_`);
 
 export interface CornerJson {
-  type: 'doubleWishbone' | 'macpherson' | 'multilink' | 'singleArm' | 'rigid';
+  type: SuspensionKind;
   points: Record<string, { x: FieldJson; y: FieldJson; z: FieldJson }>;
   scalars: Record<string, FieldJson>;
   damperArm: 'lca' | 'uca' | 'upright';
@@ -322,6 +324,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   21: (f) => ({ ...f, formatVersion: 22 }),
   // 22 → 23: no saved values for the other steering mechanism.
   22: (f) => ({ ...f, formatVersion: 23 }),
+  // 23 → 24: no solid axles.
+  23: (f) => ({ ...f, formatVersion: 24 }),
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */
@@ -591,6 +595,8 @@ function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: str
     if (!isObj(p) && (k === 'rkrPiv1' || k === 'rkrPiv2' || k === 'prArm' || k === 'prRkr')) { rockerMissing = true; continue; }
     // Format 20 added the steering-arm pivot: older files get one ahead of the inner tie-rod joint, quietly.
     if (!isObj(p) && (k === 'strPiv1' || k === 'strPiv2')) { pivotMissing = true; continue; }
+    // Format 24 added the Panhard rod (solid axle, 3-link): older files take the default, quietly.
+    if (!isObj(p) && (k === 'phChs' || k === 'phAxle')) continue;
     if (!isObj(p)) w.push(`${name}: missing, using default`);
     points[k] = (['x', 'y', 'z'] as const).map((ax, i) =>
       readField(obj[ax], 'length', def.geom.points[k][i]!, `${name}.${ax}`, isObj(p) ? w : [])) as [Field, Field, Field];
@@ -613,7 +619,7 @@ function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: str
       steerMechanism: c.steerMechanism === 'arm' ? 'arm' : 'rack',
       springLayout: c.springLayout === 'rocker' ? 'rocker' : 'coilover',
       pushrodOn: c.pushrodOn === 'uca' || c.pushrodOn === 'upright' ? c.pushrodOn : 'lca',
-      damperArm: c.damperArm === 'uca' || c.damperArm === 'upright' ? c.damperArm : 'lca', kind: c.type === 'macpherson' || c.type === 'multilink' || c.type === 'singleArm' || c.type === 'rigid' ? c.type : 'doubleWishbone' },
+      damperArm: c.damperArm === 'uca' || c.damperArm === 'upright' ? c.damperArm : 'lca', kind: (SUSPENSION_KINDS as string[]).includes(c.type as string) ? c.type as SuspensionKind : 'doubleWishbone' },
     spring: readRecord(c.spring, SPRING_KEYS, (k) => SPRING_META[k].quantity, def.spring, `${id}.spring`, w),
     // Damping rates are new in format 8: older files take the defaults quietly.
     damper: (() => {

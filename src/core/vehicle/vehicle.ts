@@ -438,22 +438,28 @@ function settleAxle(
   axle: AxleShared, guess: [number | undefined, number | undefined],
 ): [CornerResult, CornerResult] {
   const [a, b] = cs;
-  // Each travel's generalized force: its own wheel's, plus (solid axle) the other wheel's work on it.
-  const wA = (qa: number, qb: number) => cornerWork(a, input, pose, f[0], { partner: b, axle }, qa, qb).work + (b.axle ? cornerWork(b, input, pose, f[1], { partner: a, axle }, qb, qa).cross : 0);
-  const wB = (qb: number, qa: number) => cornerWork(b, input, pose, f[1], { partner: a, axle }, qb, qa).work + (a.axle ? cornerWork(a, input, pose, f[0], { partner: b, axle }, qa, qb).cross : 0);
+  // Both travels' generalized forces at once: each its own wheel's work, plus (solid axle) the other
+  // wheel's work on it. One evaluation = two corner evaluations.
+  const both = (qa: number, qb: number): [number, number] => {
+    const ra = cornerWork(a, input, pose, f[0], { partner: b, axle }, qa, qb);
+    const rb = cornerWork(b, input, pose, f[1], { partner: a, axle }, qb, qa);
+    return [ra.work + (b.axle ? rb.cross : 0), rb.work + (a.axle ? ra.cross : 0)];
+  };
+  const wA = (qa: number, qb: number) => both(qa, qb)[0];
+  const wB = (qb: number, qa: number) => both(qa, qb)[1];
   let qa = guess[0] ?? 0;
   let qb = guess[1] ?? 0;
   const clampA = (q: number) => Math.min(a.table.hi, Math.max(a.table.lo, q));
   const clampB = (q: number) => Math.min(b.table.hi, Math.max(b.table.lo, q));
   for (let it = 0; it < 30; it++) {
-    const ga = wA(qa, qb);
-    const gb = wB(qb, qa);
+    const [ga, gb] = both(qa, qb);
     if (Math.abs(ga) < 1e-3 && Math.abs(gb) < 1e-3) break;
     const h = 1e-3;
-    const j11 = (wA(qa + h, qb) - ga) / h;
-    const j12 = (wA(qa, qb + h) - ga) / h;
-    const j21 = (wB(qb, qa + h) - gb) / h;
-    const j22 = (wB(qb + h, qa) - gb) / h;
+    const [pa1, pb1] = both(qa + h, qb), [pa2, pb2] = both(qa, qb + h);
+    const j11 = (pa1 - ga) / h;
+    const j12 = (pa2 - ga) / h;
+    const j21 = (pb1 - gb) / h;
+    const j22 = (pb2 - gb) / h;
     const det = j11 * j22 - j12 * j21;
     if (!Number.isFinite(det) || Math.abs(det) < 1e-12) break;
     let da = (-ga * j22 + gb * j12) / det;

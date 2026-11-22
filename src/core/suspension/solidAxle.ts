@@ -14,7 +14,12 @@
 import { type Vec3, vec3, add, sub, scale, cross, normalize, length, distance as dist, Y_AXIS } from '../math/vec3';
 import type { Mat3 } from '../math/mat3';
 import { ConstraintSystem, PoseContext, type Poses, type SolveResult, type PointRef, fixedDistance, coordinate } from '../solver/system';
-import { contactPoint } from './doubleWishbone';
+
+/** Rigid-tire contact point: lowest point of the wheel's circle (kept here to avoid an import cycle). */
+function contactPoint(center: Vec3, spinAxisUnit: Vec3, radius: number): Vec3 {
+  const down = normalize(sub(Y_AXIS, scale(spinAxisUnit, spinAxisUnit.y)));
+  return sub(center, scale(down, radius));
+}
 
 export interface AxleLink {
   name: string;

@@ -87,6 +87,7 @@ export function characteristics(state: CornerState): Characteristics {
   let ucaPlane: Plane | null = null;
   let instantAxis: Line | null = null;
   let axisTrace: Vec3 | null = null;
+  if (state.axle) return beamCharacteristics(state, camber, toe);
   if (state.kind === 'rigid') { /* no suspension motion: no instant axis */ } else if (state.kind === 'singleArm') {
     // The arm swings about its frame pivots: that line is the instant axis (fixed to the frame).
     instantAxis = lineThrough(p.lcaFwd, p.lcaAft);
@@ -149,6 +150,27 @@ export function characteristics(state: CornerState): Characteristics {
     const d = sub(p.damperArm, p.damperChassis);
     out.damperLength = Math.hypot(d.x, d.y, d.z);
   }
+  return out;
+}
+
+/** A solid axle's left wheel as a corner: the axle's roll center and side-view IC; no steering axis. */
+function beamCharacteristics(state: CornerState, camber: number, toe: number): Characteristics {
+  const p = state.points, a = state.axle!.chars, wc = p.wheelCenter, cp = p.contact;
+  const groundY = cp.y;
+  const sv = a.sideViewIC;
+  const sideViewIC = sv ? vec3(wc.x, sv.y, sv.z) : null;
+  const angle = (ref: Vec3) => (sideViewIC && Math.abs(ref.z - sideViewIC.z) > 1e-9 ? Math.atan((sideViewIC.y - ref.y) / (ref.z - sideViewIC.z)) : 0);
+  const rc = a.rollCenterHeight !== null && a.rollCenterX !== null ? vec3(a.rollCenterX, groundY + a.rollCenterHeight, cp.z) : null;
+  const out: Characteristics = {
+    camber, toe, caster: 0, kpi: 0, scrubRadius: NaN, mechanicalTrail: NaN, kingpinOffsetAtWheelCenter: NaN, casterOffsetAtWheelCenter: NaN,
+    wheelCenter: wc, contactPoint: cp, groundY, halfTrack: cp.x,
+    steeringAxis: lineThrough(cp, vec3(cp.x, cp.y + 1, cp.z)), steeringAxisAtGround: null,
+    // In roll the axle turns about the roll center itself: it is the front-view instant center.
+    instantAxis: null, frontViewIC: rc, fvsa: rc ? cp.x - rc.x : Infinity,
+    sideViewIC, svsa: sideViewIC ? cp.z - sideViewIC.z : Infinity,
+    rollCenterHeight: a.rollCenterHeight, antiAngleContact: angle(cp), antiAngleWheelCenter: angle(wc),
+  };
+  if (p.damperChassis && p.damperArm) out.damperLength = length(sub(p.damperArm, p.damperChassis));
   return out;
 }
 

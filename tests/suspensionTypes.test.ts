@@ -260,3 +260,70 @@ describe('no suspension (rigid)', () => {
     expect(r.findings.flat().filter((f) => f.check === 'noSolution')).toEqual([]);
   });
 });
+
+describe('single arm (knuckle on the arm)', () => {
+  it('swing arm: the instant axis is the arm pivot line, camber gain ≈ 1 / swing-arm length, steers on the arm\'s kingpin', async () => {
+    const { SAMPLE_SWING_ARM: g } = await import('../src/examples/sampleLayouts');
+    const c = new DoubleWishbone(g);
+    expect(c.bodies).toEqual(['lca', 'upright']);
+    const states = c.sweep([-40, -20, 0, 20, 40], (t) => ({ travel: t }));
+    expect(states.every((s) => s.solve.status === 'converged')).toBe(true);
+    const ch = characteristics(states[2]!);
+    // Front-view IC at the arm's pivot (x = 80, y = 60).
+    expect(ch.frontViewIC!.x).toBeCloseTo(80, 6);
+    expect(ch.frontViewIC!.y).toBeCloseTo(60, 6);
+    // Camber gain (rad/mm) ≈ −1 / FVSA measured to the wheel center's level arm.
+    const gain = (characteristics(states[3]!).camber - characteristics(states[1]!).camber) / 40;
+    const arm = Math.hypot(states[2]!.points.wheelCenter.x - 80, states[2]!.points.wheelCenter.y - 60);
+    expect(gain).toBeCloseTo(-1 / arm, 4);
+    // Kingpin moves with the arm: it tilts with travel.
+    expect(Math.abs(characteristics(states[4]!).kpi - ch.kpi)).toBeGreaterThan(0.01);
+    // Steering turns the knuckle about the kingpin.
+    const s1 = c.solve({ rack: 10 });
+    expect(Math.abs(characteristics(s1).toe - ch.toe)).toBeGreaterThan(0.02);
+    // The kingpin bottom stays on the arm (it only moves by the steering jacking).
+    expect(length(sub(s1.points.lcaOut, states[2]!.points.lcaOut))).toBeLessThan(0.5);
+    // Inner tie-rod joint near the pivot line: small bump steer.
+    const toe = states.map((s) => characteristics(s).toe * 180 / Math.PI);
+    expect(Math.abs(toe[4]! - toe[0]!)).toBeLessThan(1);
+  });
+
+  it('trailing arm: no camber change in heave, roll center at the ground, side-view swing arm to the pivot', async () => {
+    const { SAMPLE_TRAILING_ARM: g } = await import('../src/examples/sampleLayouts');
+    const c = new DoubleWishbone(g);
+    const s0 = c.solve({}), s1 = c.solve({ travel: 30 });
+    expect(s1.solve.status).toBe('converged');
+    // No camber change from the arm; only the toe link's small steer about the kingpin (< 0.1°).
+    expect(Math.abs(characteristics(s1).camber - characteristics(s0).camber) * 180 / Math.PI).toBeLessThan(0.1);
+    const ch = characteristics(s0);
+    expect(ch.frontViewIC).toBeNull();
+    expect(ch.rollCenterHeight!).toBeCloseTo(0, 6);
+    expect(ch.svsa).toBeCloseTo(ch.contactPoint.z - 420, 6);
+  });
+
+  it('switching from a double wishbone keeps the steering axis; the whole car settles with swing arms in front', async () => {
+    const { editableFromLayout, convertGeometry, toGeometry } = await import('../src/app/store');
+    const dw = editableFromLayout('C');
+    const sa = convertGeometry(dw, 'singleArm');
+    const a = characteristics(new DoubleWishbone(toGeometry(dw)).solve({})), b = characteristics(new DoubleWishbone(toGeometry(sa)).solve({}));
+    expect(b.kpi).toBeCloseTo(a.kpi, 6);
+    expect(b.caster).toBeCloseTo(a.caster, 6);
+    const { assembleVehicle, solveCase, DEFAULT_MF } = await import('../src/core');
+    const { SAMPLE_SWING_ARM, SAMPLE_SPRING } = await import('../src/examples/sampleLayouts');
+    const gas = { kind: 'gas' as const, volumeChange: true, volumeFactor: 1, conditions: { setPressure: 83, setAltitude: 0, setTemperature: 20, operatingAltitude: 0, operatingTemperature: 20 } };
+    const profile = { radius: 260, width: 205, shoulderRadius: 25, rimRadius: 165 };
+    const d = (geometry: DoubleWishboneGeometry) => ({ geometry, profile, model: gas, springRate: SAMPLE_SPRING.rate, freeLength: SAMPLE_SPRING.freeLength, unsprungMass: 15 });
+    const p = {
+      designs: { FL: d(SAMPLE_SWING_ARM), RL: d(C) }, roots: { FL: 'FL', FR: 'FL', RL: 'RL', RR: 'RL' } as const,
+      settings: { FL: { brake: 'outboard', drive: 'none' }, FR: { brake: 'outboard', drive: 'none' }, RL: { brake: 'outboard', drive: 'chassis' }, RR: { brake: 'outboard', drive: 'chassis' } } as const,
+      mass: 300, cg: { x: 0, height: 280, z: -0.47 * 1550 }, wheelbase: 1550, brakeBias: 0.6, driveSplit: 0.5, autoPreload: true,
+      shared: { front: { antiRollBar: { kind: 'wheelRate' as const, rate: 10 }, heaveSpring: { kind: 'none' as const } }, rear: { antiRollBar: { kind: 'none' as const }, heaveSpring: { kind: 'none' as const } } },
+      dropLinks: { front: null, rear: null }, droop: 50, bump: 50, cases: { lateralG: 0, brakingG: 0, accelG: 0 }, goals: [], variables: [], tireGrip: DEFAULT_MF,
+    };
+    const asm = assembleVehicle(p as never, { FL: SAMPLE_SWING_ARM, RL: C })!;
+    expect(asm).not.toBeNull();
+    const r = solveCase(p as never, asm, { name: 't', kind: 'state', g: 0.7, lateralG: 0.7, brakingG: 0, accelG: 0 })!.result;
+    expect(r.converged).toBe(true);
+    expect(r.corners.FR.tireLoad).toBeGreaterThan(r.corners.FL.tireLoad);
+  });
+});

@@ -23,6 +23,11 @@
  *   A double wishbone is the special case where each pair of links meets at one ball joint. The
  *   steering axis is virtual: through the points where each pair of links passes closest.
  *
+ * Single arm (bodies: chassis, rack, arm, upright): the knuckle rides on the arm, turning only on a kingpin
+ *   fixed to the arm (UCA_Out top, LCA_Out bottom); the arm pivots on the frame (LCA_Fwd – LCA_Aft):
+ *   arm revolute 5 · kingpin revolute 5 · tie rod 1 · travel 1                      total 12 = 2 × 6
+ *   The suspension's instant axis is the arm's pivot line. Pivot line along the car = swing arm (long-
+ *   travel trophy-truck style), across it = trailing arm, angled = semi-trailing.
  * No suspension (rigid; bodies: chassis, a "carrier" that only takes the travel input as a vertical shift,
  *   rack, upright): the upright turns on a fixed kingpin (UCA_Out top, LCA_Out bottom) for steering:
  *   revolute 5 · tie rod 1 = 6. Travel lifts the whole corner straight up (no camber or toe change); the
@@ -42,10 +47,11 @@ import {
 } from '../solver/system';
 
 /** Suspension type of a corner. */
-export type SuspensionKind = 'doubleWishbone' | 'macpherson' | 'multilink' | 'rigid';
-export const SUSPENSION_KINDS: SuspensionKind[] = ['doubleWishbone', 'macpherson', 'multilink', 'rigid'];
+export type SuspensionKind = 'doubleWishbone' | 'macpherson' | 'multilink' | 'singleArm' | 'rigid';
+export const SUSPENSION_KINDS: SuspensionKind[] = ['doubleWishbone', 'macpherson', 'multilink', 'singleArm', 'rigid'];
 export const SUSPENSION_LABELS: Record<SuspensionKind, string> = {
-  doubleWishbone: 'Double wishbone (SLA)', macpherson: 'MacPherson strut', multilink: 'Multilink (5 links)', rigid: 'No suspension (rigid, e.g. a kart)',
+  doubleWishbone: 'Double wishbone (SLA)', macpherson: 'MacPherson strut', multilink: 'Multilink (5 links)',
+  singleArm: 'Single arm (swing / trailing arm, knuckle on the arm)', rigid: 'No suspension (rigid, e.g. a kart)',
 };
 
 export interface ArmPoints {
@@ -173,7 +179,14 @@ export class DoubleWishbone {
     this.rackAxis = normalize(geometry.rackAxis ?? X_AXIS);
     this.spinAxisDesign = normalize(geometry.wheel.spinAxis);
     this.kind = kindOf(geometry);
-    this.bodies = this.kind === 'doubleWishbone' ? ['uca', 'lca', 'upright'] : this.kind === 'macpherson' ? ['lca', 'upright'] : ['upright'];
+    this.bodies = this.kind === 'doubleWishbone' ? ['uca', 'lca', 'upright'] : this.kind === 'macpherson' || this.kind === 'singleArm' ? ['lca', 'upright'] : ['upright'];
+    if (this.kind === 'singleArm') {
+      const g = geometry;
+      for (const [label, a, b] of [['arm pivots', g.lca.fwd, g.lca.aft], ['kingpin top and bottom', g.uca.out, g.lca.out], ['tie rod', g.tieRod.inner, g.tieRod.outer]] as const) {
+        if (dist(a, b) < 1e-6) throw new Error(`Degenerate geometry: ${label} coincide`);
+      }
+      return;
+    }
     if (this.kind === 'rigid') {
       if (dist(geometry.uca.out, geometry.lca.out) < 1e-6) throw new Error('Degenerate geometry: kingpin top and bottom coincide');
       if (dist(geometry.tieRod.inner, geometry.tieRod.outer) < 1e-6) throw new Error('Degenerate geometry: tie rod coincide');
@@ -335,6 +348,12 @@ export class DoubleWishbone {
       sys.add(revolute(sys, 'LCA pivot', 'chassis', 'lca', g.lca.fwd, g.lca.aft));
       sys.add(coincident('LCA ball joint', sys.attach('lca', g.lca.out), sys.attach('upright', g.lca.out)));
       sys.add(pointOnLine(sys, 'strut through the top mount', 'upright', st.lower, st.top, st.top));
+    } else if (this.kind === 'singleArm') {
+      const lcaOrigin = this.originOf('lca');
+      sys.addBody('lca', lcaOrigin, { size: Math.max(dist(lcaOrigin, g.lca.out), 1) });
+      sys.addBody('upright', uprOrigin, { size: Math.max(dist(g.uca.out, g.lca.out) / 2, 1) });
+      sys.add(revolute(sys, 'arm pivot', 'chassis', 'lca', g.lca.fwd, g.lca.aft));
+      sys.add(revolute(sys, 'kingpin', 'lca', 'upright', g.lca.out, g.uca.out));
     } else if (this.kind === 'rigid') {
       sys.addBody('carrier', { x: 0, y: 0, z: 0 }, { fixed: true });
       sys.addBody('upright', uprOrigin, { size: Math.max(dist(g.uca.out, g.lca.out) / 2, 1) });

@@ -92,9 +92,38 @@ export const SAMPLE_MULTILINK: DoubleWishboneGeometry = {
   damper: { chassis: vec3(300, 380, 30), arm: 'upright', armPoint: vec3(500, 60, 0) },
 };
 
+/**
+ * Sample single arm, swing-arm layout (long-travel, trophy-truck style): one long lower arm pivoting on the
+ * frame near the centerline (pivot line along the car), the knuckle turning on a kingpin carried by the arm.
+ * The inner tie-rod joint sits near the arm's pivot line (little bump steer).
+ */
+export const SAMPLE_SWING_ARM: DoubleWishboneGeometry = {
+  kind: 'singleArm',
+  uca: { fwd: vec3(250, 330, 150), aft: vec3(250, 330, -150), out: vec3(565, 330, -10) }, // out = kingpin top (on the arm)
+  lca: { fwd: vec3(80, 60, 220), aft: vec3(80, 60, -220), out: vec3(590, 30, 0) },       // pivots on the frame, out = kingpin bottom
+  tieRod: { inner: vec3(90, 70, -130), outer: vec3(560, 90, -130) },
+  wheel: { center: WHEEL_CENTER, spinAxis: vec3(1, 0, 0), radius: WHEEL_RADIUS, width: 205 },
+  damper: { chassis: vec3(300, 450, 30), arm: 'lca', armPoint: vec3(430, 50, 30) },
+};
+
+/**
+ * Sample single arm, trailing-arm layout (rear): the arm pivots ahead of the wheel on a line across the car,
+ * so the wheel moves in an arc in side view with no camber change; the toe link holds the knuckle.
+ */
+export const SAMPLE_TRAILING_ARM: DoubleWishboneGeometry = {
+  kind: 'singleArm',
+  uca: { fwd: vec3(250, 330, 150), aft: vec3(250, 330, -150), out: vec3(560, 300, -10) },
+  lca: { fwd: vec3(300, 80, 420), aft: vec3(520, 80, 420), out: vec3(560, 40, 0) },
+  tieRod: { inner: vec3(300, 100, 380), outer: vec3(500, 100, -90) },
+  wheel: { center: WHEEL_CENTER, spinAxis: vec3(1, 0, 0), radius: WHEEL_RADIUS, width: 205 },
+  damper: { chassis: vec3(470, 450, -60), arm: 'lca', armPoint: vec3(500, 60, -40) },
+};
+
 /** Every preset the app offers: the double wishbone samples, then one of each other type. */
 export const PRESET_LAYOUTS: Layout[] = [
   ...SAMPLE_LAYOUTS,
   { id: 'M', label: 'MacPherson strut', geometry: SAMPLE_MACPHERSON },
   { id: 'L', label: 'Multilink (5 links)', geometry: SAMPLE_MULTILINK },
+  { id: 'S', label: 'Single arm: swing arm (long travel)', geometry: SAMPLE_SWING_ARM },
+  { id: 'T', label: 'Single arm: trailing arm', geometry: SAMPLE_TRAILING_ARM },
 ];

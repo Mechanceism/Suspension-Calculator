@@ -32,6 +32,18 @@ export function componentDefs(damperArm: ArmChoice, kind: SuspensionKind = 'doub
       spring: { id: 'spring', label: 'Strut (spring / damper, top mount)', points: ['dmpChassis', 'dmpArm'], parents: ['chassis'] },
     };
   }
+  if (kind === 'singleArm') {
+    return {
+      chassis: { id: 'chassis', label: 'Chassis / frame', points: ['lcaFwd', 'lcaAft', 'dmpChassis'], parents: [] },
+      uca: { id: 'uca', label: 'Upper arm (none)', points: [], parents: ['chassis'], absent: true },
+      lca: { id: 'lca', label: 'Arm (carries the kingpin)', points: ['lcaFwd', 'lcaAft', 'lcaOut', 'ucaOut', ...(damperArm !== 'upright' ? ['dmpArm' as const] : [])], parents: ['chassis'] },
+      rack: { id: 'rack', label: 'Steering rack', points: ['trInner'], parents: ['chassis'] },
+      tieRod: { id: 'tieRod', label: 'Tie rod / toe link', points: ['trInner', 'trOuter'], parents: ['rack'] },
+      upright: { id: 'upright', label: 'Knuckle (on the kingpin)', points: ['ucaOut', 'lcaOut', 'trOuter', 'wheelCenter', ...(damperArm === 'upright' ? ['dmpArm' as const] : [])], parents: ['lca', 'tieRod'] },
+      wheel: { id: 'wheel', label: 'Wheel & tire', points: ['wheelCenter'], parents: ['upright'] },
+      spring: { id: 'spring', label: 'Coilover (spring/damper)', points: ['dmpChassis', 'dmpArm'], parents: ['chassis', damperArm === 'upright' ? 'upright' : 'lca'] },
+    };
+  }
   if (kind === 'rigid') {
     return {
       chassis: { id: 'chassis', label: 'Chassis / frame (kingpin mounts)', points: ['ucaOut', 'lcaOut'], parents: [] },
@@ -97,6 +109,7 @@ export const POINT_LABELS: Record<PointKey, string> = {
 const KIND_LABELS: Partial<Record<SuspensionKind, Partial<Record<PointKey, string>>>> = {
   macpherson: { dmpChassis: 'Strut top mount', dmpArm: 'Strut lower point (on the upright)' },
   rigid: { ucaOut: 'Kingpin top', lcaOut: 'Kingpin bottom' },
+  singleArm: { lcaFwd: 'Arm front pivot (frame)', lcaAft: 'Arm rear pivot (frame)', lcaOut: 'Kingpin bottom (on the arm)', ucaOut: 'Kingpin top (on the arm)', dmpArm: 'Coilover lower mount' },
   multilink: {
     ucaFwd: 'Upper front link, chassis', ucaOut: 'Upper front link, upright end', ucaAft: 'Upper rear link, chassis',
     lcaFwd: 'Lower front link, chassis', lcaOut: 'Lower front link, upright end', lcaAft: 'Lower rear link, chassis',

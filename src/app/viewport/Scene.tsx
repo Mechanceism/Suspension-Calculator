@@ -203,7 +203,7 @@ function Joints({ state, cur }: { state: CornerState; cur: Current }) {
   const p = state.points;
   return (
     <group>
-      {vis.chassis && (state.kind === 'rigid' ? ([] as const) : state.kind === 'macpherson' ? (['lcaFwd', 'lcaAft'] as const) : (['ucaFwd', 'ucaAft', 'lcaFwd', 'lcaAft'] as const)).map((k) => <PickJoint key={k} id={k} p={p[k]} color={COLORS.chassis} />)}
+      {vis.chassis && (state.kind === 'rigid' ? ([] as const) : state.kind === 'macpherson' || state.kind === 'singleArm' ? (['lcaFwd', 'lcaAft'] as const) : (['ucaFwd', 'ucaAft', 'lcaFwd', 'lcaAft'] as const)).map((k) => <PickJoint key={k} id={k} p={p[k]} color={COLORS.chassis} />)}
       {(vis.uca || vis.upright) && state.kind !== 'macpherson' && <PickJoint id="ucaOut" p={p.ucaOut} color={COLORS.uca} r={9} />}
       {(vis.lca || vis.upright) && <PickJoint id="lcaOut" p={p.lcaOut} color={COLORS.lca} r={9} />}
       {state.kind === 'multilink' && (vis.uca || vis.upright) && p.ucaOut2 && <PickJoint id="ucaOut2" p={p.ucaOut2} color={COLORS.uca} r={9} />}
@@ -232,7 +232,7 @@ function Chassis({ state, rackLimit, rackAxis }: { state: CornerState; rackLimit
   };
   // Chassis rails along the arms' pivot lines (a MacPherson has no upper arm: its rail is at the top mount).
   const rail = (q: Vec3) => ext(add(q, vec3(-120, 0, 120)), add(q, vec3(-120, 0, -120)));
-  const [u1, u2] = state.kind === 'rigid' ? rail(p.ucaOut) : state.kind === 'macpherson' && p.strutTop ? ext(add(p.strutTop, vec3(0, 0, 120)), sub(p.strutTop, vec3(0, 0, 120))) : ext(p.ucaFwd, p.ucaAft);
+  const [u1, u2] = state.kind === 'rigid' ? rail(p.ucaOut) : state.kind === 'singleArm' ? ext(p.lcaFwd, p.lcaAft) : state.kind === 'macpherson' && p.strutTop ? ext(add(p.strutTop, vec3(0, 0, 120)), sub(p.strutTop, vec3(0, 0, 120))) : ext(p.ucaFwd, p.ucaAft);
   const [l1, l2] = state.kind === 'rigid' ? rail(p.lcaOut) : ext(p.lcaFwd, p.lcaAft);
   const r1 = add(rackCenter, scale(rackAxis, -rackLimit));
   const r2 = add(rackCenter, scale(rackAxis, rackLimit));

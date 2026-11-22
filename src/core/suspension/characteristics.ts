@@ -86,7 +86,12 @@ export function characteristics(state: CornerState): Characteristics {
   // Instant axis: from two planes the upright's motion is confined to, or from its five links.
   let ucaPlane: Plane | null = null;
   let instantAxis: Line | null = null;
-  if (state.kind === 'rigid') { /* no suspension motion: no instant axis */ } else if (state.kind === 'multilink') {
+  let axisTrace: Vec3 | null = null;
+  if (state.kind === 'rigid') { /* no suspension motion: no instant axis */ } else if (state.kind === 'singleArm') {
+    // The arm swings about its frame pivots: that line is the instant axis (fixed to the frame).
+    instantAxis = lineThrough(p.lcaFwd, p.lcaAft);
+    axisTrace = instantAxis.dir;
+  } else if (state.kind === 'multilink') {
     // Planes through the two (virtual) steering pivots, normal to their velocities: for a double
     // wishbone these are exactly the arm planes. Points on the steering axis don't move when the
     // upright turns about it, so this is the suspension's axis without the bump-steer part.
@@ -112,6 +117,7 @@ export function characteristics(state: CornerState): Characteristics {
   let rollCenterHeight: number | null = null;
   let dir: { x: number; y: number } | null = null;
   if (frontViewIC) dir = { x: frontViewIC.x - cp.x, y: frontViewIC.y - cp.y };
+  else if (axisTrace) dir = { x: axisTrace.x, y: axisTrace.y }; // pivot line across the car (trailing arm): RC at its height trend
   else if (ucaPlane && !instantAxis) {
     const t = cross(Z_AXIS, ucaPlane.normal); // front-view trace of the (parallel) arm planes
     dir = { x: t.x, y: t.y };

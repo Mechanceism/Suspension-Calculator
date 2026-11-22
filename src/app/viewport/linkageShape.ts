@@ -26,6 +26,13 @@ export function linkageShape(p: CornerPoints, kind: SuspensionKind): LinkageShap
       upright: [p.lcaOut, lower, p.trOuter, p.lcaOut], axis: [p.steerLower, p.steerUpper],
     };
   }
+  if (kind === 'singleArm') {
+    // The arm (triangle to the kingpin bottom) carries the kingpin up to its top.
+    return {
+      ucaTri: null, lcaTri: [p.lcaFwd, p.lcaAft, p.lcaOut], uca: [], lca: [[p.lcaFwd, p.lcaOut], [p.lcaAft, p.lcaOut], [p.lcaOut, p.ucaOut]],
+      upright: [p.ucaOut, p.lcaOut, p.trOuter, p.ucaOut], axis: [p.lcaOut, p.ucaOut],
+    };
+  }
   if (kind === 'rigid') {
     // The kingpin is held by the frame: short brackets inboard from each end.
     const br = (q: Vec3): [Vec3, Vec3] => [{ x: q.x - 120, y: q.y, z: q.z }, q];

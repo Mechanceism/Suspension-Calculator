@@ -24,7 +24,7 @@ function focusSphere(model: Model, focus: FocusKey, radius: number): { center: V
   if (!s) return null;
   const p = s.points;
   const groups: Record<FocusKey, Vec3[]> = {
-    corner: [...(s.kind === 'macpherson' ? [p.steerUpper] : s.kind === 'rigid' ? [p.ucaOut] : [p.ucaFwd, p.ucaAft, p.ucaOut]), ...(s.kind === 'rigid' ? [] : [p.lcaFwd, p.lcaAft]), p.lcaOut, p.trInner, p.trOuter, p.contact,
+    corner: [...(s.kind === 'macpherson' ? [p.steerUpper] : s.kind === 'rigid' || s.kind === 'singleArm' ? [p.ucaOut] : [p.ucaFwd, p.ucaAft, p.ucaOut]), ...(s.kind === 'rigid' ? [] : [p.lcaFwd, p.lcaAft]), p.lcaOut, p.trInner, p.trOuter, p.contact,
       { x: p.wheelCenter.x, y: p.wheelCenter.y + radius, z: p.wheelCenter.z }],
     wheel: [p.wheelCenter, p.contact, { x: p.wheelCenter.x, y: p.wheelCenter.y + radius, z: p.wheelCenter.z }],
     upright: [p.steerUpper, p.lcaOut, p.trOuter, p.wheelCenter, ...(p.ucaOut2 ? [p.ucaOut2] : []), ...(p.lcaOut2 ? [p.lcaOut2] : [])],
@@ -32,7 +32,7 @@ function focusSphere(model: Model, focus: FocusKey, radius: number): { center: V
     lca: [p.lcaFwd, p.lcaAft, p.lcaOut, ...(p.lcaOut2 ? [p.lcaOut2] : [])],
     tieRod: [p.trInner, p.trOuter],
     rack: [p.trInner],
-    chassis: s.kind === 'rigid' ? [p.ucaOut, p.lcaOut] : s.kind === 'macpherson' ? [p.steerUpper, p.lcaFwd, p.lcaAft] : [p.ucaFwd, p.ucaAft, p.lcaFwd, p.lcaAft],
+    chassis: s.kind === 'singleArm' ? [p.lcaFwd, p.lcaAft] : s.kind === 'rigid' ? [p.ucaOut, p.lcaOut] : s.kind === 'macpherson' ? [p.steerUpper, p.lcaFwd, p.lcaAft] : [p.ucaFwd, p.ucaAft, p.lcaFwd, p.lcaAft],
     spring: p.damperChassis && p.damperArm ? [p.damperChassis, p.damperArm] : [p.wheelCenter],
     contact: [p.contact],
   };

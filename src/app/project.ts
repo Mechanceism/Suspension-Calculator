@@ -60,7 +60,7 @@ type Json = Record<string, unknown>;
 export const cornerParam = (id: CornerId, flName: string) => flName.replace(/^FL_/, `${id}_`);
 
 export interface CornerJson {
-  type: 'doubleWishbone' | 'macpherson' | 'multilink' | 'rigid';
+  type: 'doubleWishbone' | 'macpherson' | 'multilink' | 'singleArm' | 'rigid';
   points: Record<string, { x: FieldJson; y: FieldJson; z: FieldJson }>;
   scalars: Record<string, FieldJson>;
   damperArm: 'lca' | 'uca' | 'upright';
@@ -558,7 +558,7 @@ function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: str
   const tireRaw = isObj(c.tire) ? c.tire : {};
   const model = tireRaw.model === 'rigid' || tireRaw.model === 'stiffness' || tireRaw.model === 'gas' ? tireRaw.model : def.tireModel;
   return {
-    geom: { points, scalars, damperArm: c.damperArm === 'uca' || c.damperArm === 'upright' ? c.damperArm : 'lca', kind: c.type === 'macpherson' || c.type === 'multilink' || c.type === 'rigid' ? c.type : 'doubleWishbone' },
+    geom: { points, scalars, damperArm: c.damperArm === 'uca' || c.damperArm === 'upright' ? c.damperArm : 'lca', kind: c.type === 'macpherson' || c.type === 'multilink' || c.type === 'singleArm' || c.type === 'rigid' ? c.type : 'doubleWishbone' },
     spring: readRecord(c.spring, SPRING_KEYS, (k) => SPRING_META[k].quantity, def.spring, `${id}.spring`, w),
     // Damping rates are new in format 8: older files take the defaults quietly.
     damper: (() => {

@@ -24,12 +24,12 @@ export function SpringFields({ keys = SPRING_KEYS }: { keys?: readonly SpringKey
           <option value="coilover">{kind === 'rigid' ? 'None (no suspension)' : kind === 'macpherson' ? 'Strut (upright → top mount)' : kind === 'multilink' ? 'Coilover, upright → chassis' : 'Coilover, arm → chassis'}</option>
         </select>
       </div>
-      {kind === 'doubleWishbone' && (
+      {(kind === 'doubleWishbone' || kind === 'singleArm') && (
         <div className="row">
           <span className="muted">Lower mount on</span>
-          <select value={damperArm} onChange={(e) => setDamperArm(e.target.value as ArmChoice)}>
-            <option value="lca">Lower control arm</option>
-            <option value="uca">Upper control arm</option>
+          <select value={kind === 'singleArm' && damperArm === 'uca' ? 'lca' : damperArm} onChange={(e) => setDamperArm(e.target.value as ArmChoice)}>
+            <option value="lca">{kind === 'singleArm' ? 'The arm' : 'Lower control arm'}</option>
+            {kind === 'doubleWishbone' && <option value="uca">Upper control arm</option>}
             <option value="upright">Upright / knuckle</option>
           </select>
         </div>

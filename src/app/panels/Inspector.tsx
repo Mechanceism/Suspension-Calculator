@@ -129,7 +129,7 @@ function CoiloverPlacement() {
   const d = g.damper;
   if (!d) return null;
   const kind = geom.kind ?? 'doubleWishbone';
-  const arm = kind === 'doubleWishbone' && (geom.damperArm === 'uca' || geom.damperArm === 'lca') ? g[geom.damperArm] : kind === 'macpherson' ? undefined : undefined;
+  const arm = kind === 'doubleWishbone' && (geom.damperArm === 'uca' || geom.damperArm === 'lca') ? g[geom.damperArm] : kind === 'singleArm' && geom.damperArm !== 'upright' ? g.lca : undefined;
   const c = coiloverGeometry(d.chassis, d.armPoint, arm);
   const put = (moves: { key: 'dmpChassis' | 'dmpArm'; p: Vec3 }[]) => {
     const updates = moves.flatMap(({ key, p }) => ([0, 1, 2] as const).map((axis) => ({ key, axis, value: [p.x, p.y, p.z][axis]! })));
@@ -274,7 +274,7 @@ function ComponentInspector({ id, model }: { id: ComponentId; model: Model }) {
         <button className="icon-btn" title="Focus camera" onClick={() => focusOn(id)}>◎ Focus</button>
       </div>
       <Family {...fam} />
-      {(id === 'uca' || id === 'lca') && (kind === 'doubleWishbone' || (kind === 'macpherson' && id === 'lca')) && <Section title="Dimensions"><ArmSection arm={id} model={model} /></Section>}
+      {(id === 'uca' || id === 'lca') && (kind === 'doubleWishbone' || ((kind === 'macpherson' || kind === 'singleArm') && id === 'lca')) && <Section title="Dimensions"><ArmSection arm={id} model={model} /></Section>}
       {id === 'chassis' && <Section title="Corner load & travel"><ChassisSection /></Section>}
       {id === 'upright' && <Section title="Steering axis"><UprightSection model={model} /></Section>}
       {id === 'tieRod' && <Section title="Tie rod"><TieRodSection model={model} /></Section>}

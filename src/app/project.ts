@@ -32,6 +32,7 @@
  *      rear-link upright ends (FL_UCA_Out2, FL_LCA_Out2)
  *  19  spring layout per design (coilover, or pushrod / pullrod + rocker) and the rocker points
  *      (FL_Rkr_Piv1, FL_Rkr_Piv2, FL_PR_Arm, FL_PR_Rkr); the single-arm suspension type
+ *  20  steering mechanism (rack, or steering arm / plate with its pivot FL_Str_Piv1–2) and the variable ratio
  */
 import pkg from '../../package.json';
 import { rockerFromCoilover } from '../core/suspension/coilover';
@@ -53,7 +54,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 19;
+export const FORMAT_VERSION = 20;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -69,6 +70,7 @@ export interface CornerJson {
   damperArm: 'lca' | 'uca' | 'upright';
   springLayout?: 'coilover' | 'rocker';
   pushrodOn?: 'lca' | 'uca' | 'upright';
+  steerMechanism?: 'rack' | 'arm';
   spring: Record<string, FieldJson>;
   damper: { fields: Record<string, FieldJson>; bumpStop: boolean; mode?: 'linear' | 'twoStage' };
   tire: { model: DesignState['tireModel']; volumeChange: boolean; sizeText: string; fields: Record<string, FieldJson> };
@@ -140,7 +142,7 @@ function cornerToJson(id: CornerId, c: CornerDesign): CornerJson {
     })),
     scalars: Object.fromEntries(SCALAR_KEYS.map((k) => [cornerParam(id, SCALAR_META[k].name), fj(c.geom.scalars[k])])),
     damperArm: c.geom.damperArm,
-    springLayout: layoutOf(c.geom), pushrodOn: c.geom.pushrodOn ?? 'lca',
+    springLayout: layoutOf(c.geom), pushrodOn: c.geom.pushrodOn ?? 'lca', steerMechanism: c.geom.steerMechanism ?? 'rack',
     spring: mapFields(SPRING_KEYS, c.spring),
     damper: { fields: mapFields(DAMPER_KEYS, c.damper), bumpStop: c.bumpStop, mode: c.damperMode },
     tire: { model: c.tireModel, volumeChange: c.volumeChange, sizeText: c.tireSizeText, fields: mapFields(TIRE_KEYS, c.tire) },
@@ -302,6 +304,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   17: (f) => ({ ...f, formatVersion: 18 }),
   // 18 → 19: every spring was a coilover; rocker points are built from it.
   18: (f) => ({ ...f, formatVersion: 19 }),
+  // 19 → 20: every car steered with a rack at a constant ratio.
+  19: (f) => ({ ...f, formatVersion: 20 }),
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */
@@ -537,6 +541,15 @@ function readRecord<K extends string>(
   return Object.fromEntries(keys.map((k) => [k, readField(obj[k], quantity(k), defaults[k], `${section}.${k}`, warnings)])) as Record<K, Field>;
 }
 
+/** Steering-arm pivot 120 mm ahead of the inner tie-rod joint (for files from before format 20). */
+function withPivotDefaults(points: CornerDesign['geom']['points'], missing: boolean): CornerDesign['geom']['points'] {
+  if (!missing) return points;
+  const v = (k: keyof typeof points, i: number) => points[k][i]!.value;
+  const f = (x: number, y: number, z: number) => [x, y, z].map((n) => ({ text: String(Number(n.toFixed(3))), value: n })) as [Field, Field, Field];
+  const [x, y, z] = [v('trInner', 0), v('trInner', 1), v('trInner', 2)];
+  return { ...points, strPiv1: f(x, y - 60, z + 120), strPiv2: f(x, y + 90, z + 120) };
+}
+
 /** Rocker points built from the coilover (for files from before format 19). */
 function withRockerDefaults(points: CornerDesign['geom']['points']): CornerDesign['geom']['points'] {
   const v = (k: keyof typeof points) => ({ x: points[k][0].value, y: points[k][1].value, z: points[k][2].value });
@@ -551,7 +564,7 @@ function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: str
   const w = isObj(raw) ? warnings : [];
   const pts = isObj(c.points) ? c.points : {};
   const points = { ...def.geom.points };
-  let rockerMissing = false;
+  let rockerMissing = false, pivotMissing = false;
   for (const k of POINT_KEYS) {
     const name = cornerParam(id, POINT_NAMES[k]);
     const p = pts[name];
@@ -560,6 +573,8 @@ function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: str
     if (!isObj(p) && (k === 'ucaOut2' || k === 'lcaOut2')) { points[k] = points[k === 'ucaOut2' ? 'ucaOut' : 'lcaOut']; continue; }
     // Format 19 added the rocker points: older files get a working rocker from their coilover, quietly.
     if (!isObj(p) && (k === 'rkrPiv1' || k === 'rkrPiv2' || k === 'prArm' || k === 'prRkr')) { rockerMissing = true; continue; }
+    // Format 20 added the steering-arm pivot: older files get one ahead of the inner tie-rod joint, quietly.
+    if (!isObj(p) && (k === 'strPiv1' || k === 'strPiv2')) { pivotMissing = true; continue; }
     if (!isObj(p)) w.push(`${name}: missing, using default`);
     points[k] = (['x', 'y', 'z'] as const).map((ax, i) =>
       readField(obj[ax], 'length', def.geom.points[k][i]!, `${name}.${ax}`, isObj(p) ? w : [])) as [Field, Field, Field];
@@ -578,7 +593,8 @@ function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: str
   const model = tireRaw.model === 'rigid' || tireRaw.model === 'stiffness' || tireRaw.model === 'gas' ? tireRaw.model : def.tireModel;
   return {
     geom: {
-      points: rockerMissing ? withRockerDefaults(points) : points, scalars,
+      points: withPivotDefaults(rockerMissing ? withRockerDefaults(points) : points, pivotMissing), scalars,
+      steerMechanism: c.steerMechanism === 'arm' ? 'arm' : 'rack',
       springLayout: c.springLayout === 'rocker' ? 'rocker' : 'coilover',
       pushrodOn: c.pushrodOn === 'uca' || c.pushrodOn === 'upright' ? c.pushrodOn : 'lca',
       damperArm: c.damperArm === 'uca' || c.damperArm === 'upright' ? c.damperArm : 'lca', kind: c.type === 'macpherson' || c.type === 'multilink' || c.type === 'singleArm' || c.type === 'rigid' ? c.type : 'doubleWishbone' },
@@ -668,7 +684,14 @@ export function importProject(data: unknown): ImportResult {
   const design: DesignState = {
     presetId: typeof f.presetId === 'string' ? f.presetId : 'custom',
     ...corners.FL, // replaced with the active corner's root below
-    steer: readRecord(f.steering, STEER_KEYS, (k) => STEER_META[k].quantity, def.steer, 'steering', warnings),
+    // The variable ratio came with format 20: older files keep a constant ratio quietly.
+    steer: (() => {
+      const w: string[] = [];
+      const r = readRecord(f.steering, STEER_KEYS, (k) => STEER_META[k].quantity, def.steer, 'steering', w);
+      const older = isObj(f.steering) && !('cFactorLock' in f.steering);
+      warnings.push(...w.filter((x) => !(older && x.startsWith('steering.cFactorLock'))));
+      return r;
+    })(),
     droop: num(motion.droop, def.droop),
     bump: num(motion.bump, def.bump),
     driver: motion.driver === 'contactPatch' ? 'contactPatch' : 'wheelCenter',

@@ -19,7 +19,14 @@ export interface ComponentDef {
  * Components per suspension type. A type without a component (MacPherson: no upper arm) keeps it with no
  * points (`absent`), so the records stay complete.
  */
-export function componentDefs(damperArm: ArmChoice, kind: SuspensionKind = 'doubleWishbone', layout: 'coilover' | 'rocker' = 'coilover', pushrodOn: ArmChoice = 'lca'): Record<ComponentId, ComponentDef & { absent?: boolean }> {
+export function componentDefs(damperArm: ArmChoice, kind: SuspensionKind = 'doubleWishbone', layout: 'coilover' | 'rocker' = 'coilover', pushrodOn: ArmChoice = 'lca', steer: 'rack' | 'arm' = 'rack'): Record<ComponentId, ComponentDef & { absent?: boolean }> {
+  const defs = withSprings(damperArm, kind, layout, pushrodOn);
+  if (steer !== 'arm') return defs;
+  // Steering arm / plate: the "rack" part is the arm on its pivot axis.
+  return { ...defs, rack: { id: 'rack', label: 'Steering arm / plate', points: ['strPiv1', 'strPiv2', 'trInner'], parents: ['chassis'] } };
+}
+
+function withSprings(damperArm: ArmChoice, kind: SuspensionKind, layout: 'coilover' | 'rocker', pushrodOn: ArmChoice): Record<ComponentId, ComponentDef & { absent?: boolean }> {
   const defs = kindDefs(damperArm, kind);
   if (layout !== 'rocker' || kind === 'macpherson' || kind === 'rigid') return defs;
   // Pushrod + rocker: the spring part holds the rocker, pushrod and spring; the pushrod's lower end belongs
@@ -119,6 +126,7 @@ export const POINT_LABELS: Record<PointKey, string> = {
   dmpChassis: 'Coilover chassis mount', dmpArm: 'Coilover arm mount',
   ucaOut2: 'Upper rear link, upright end', lcaOut2: 'Lower rear link, upright end',
   rkrPiv1: 'Rocker pivot (front)', rkrPiv2: 'Rocker pivot (rear)', prArm: 'Pushrod lower end', prRkr: 'Pushrod end on the rocker',
+  strPiv1: 'Steering arm pivot axis (bottom)', strPiv2: 'Steering arm pivot axis (top)',
 };
 
 const KIND_LABELS: Partial<Record<SuspensionKind, Partial<Record<PointKey, string>>>> = {

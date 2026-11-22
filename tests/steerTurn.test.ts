@@ -70,3 +70,46 @@ describe('full lock from a measured wheel angle', () => {
     expect(rackForWheelAngle(corner, 3, 'inside')).toBeNull(); // 172°: out of reach
   });
 });
+
+describe('steering mechanisms', () => {
+  it('a steering arm swings the inner joint on a circle; loads match virtual work for arm and rack', async () => {
+    const { DoubleWishbone, steeringLoads, headingAngle, characteristics, vec3, sub, dot, cross, length, normalize } = await import('../src/core');
+    const g0 = SAMPLE_LAYOUTS.find((l) => l.id === 'C')!.geometry;
+    // ATV-style plate on a steering column near the centerline, slightly tilted back.
+    const pivot1 = vec3(0, 40, -150), pivot2 = vec3(0, 300, -100);
+    const arm = { ...g0, steering: { kind: 'arm' as const, pivot1, pivot2 } };
+    const c = new DoubleWishbone(arm);
+    const axis = normalize(sub(pivot2, pivot1));
+    const r0 = length(cross(sub(c.solve({}).points.trInner, pivot1), axis));
+    const s10 = c.solve({ rack: 10 });
+    expect(s10.solve.status).toBe('converged');
+    expect(length(cross(sub(s10.points.trInner, pivot1), axis))).toBeCloseTo(r0, 6);
+    const h0 = headingAngle(c.solve({}).spinAxis);
+    expect(Math.abs(headingAngle(s10.spinAxis) - h0)).toBeGreaterThan(0.01);
+    // Virtual work: |input-side load| ≈ |torque about the steering axis| × |d(steer)/d(input)|.
+    const forces = { vertical: 2000, lateral: 0, longitudinal: -800, pneumaticTrail: 0 };
+    const check = (geo: typeof g0, mech: Parameters<typeof steeringLoads>[3], perUnit: number) => {
+      const k = new DoubleWishbone(geo);
+      const s = k.solve({});
+      const l = steeringLoads(s, characteristics(s).contactPoint, forces, mech, 75);
+      const dh = (headingAngle(k.solve({ rack: 0.05 }).spinAxis) - headingAngle(k.solve({ rack: -0.05 }).spinAxis)) / 0.1; // rad per input unit
+      const input = 'kind' in mech && mech.kind === 'arm' ? Math.abs(l.armTorque!) * 1000 : Math.abs(l.rackForce);
+      return { input: input * perUnit, expect: Math.abs(l.axisTorque * dh) };
+    };
+    const a = check(arm, { kind: 'arm', pivot: pivot1, axis }, Math.PI / 180); // N·mm per degree of arm
+    expect(a.input / a.expect).toBeCloseTo(1, 1);
+    const r = check(g0, vec3(1, 0, 0), 1);
+    expect(r.input / r.expect).toBeCloseTo(1, 1);
+    void dot;
+  });
+
+  it('variable ratio: the steering-wheel angle and the input round-trip; quicker toward lock', async () => {
+    const { steeringWheelAngle, inputForWheelAngle, inputPerRev } = await import('../src/core');
+    const s = { cFactor: 60, cFactorLock: 90, rackLimit: 30 };
+    for (const r of [-30, -12, 0, 5, 30]) expect(inputForWheelAngle(steeringWheelAngle(r, s), s)).toBeCloseTo(r, 9);
+    expect(inputPerRev(30, s)).toBe(90);
+    // Fewer steering-wheel degrees to full lock than at the center ratio.
+    expect(steeringWheelAngle(30, s)).toBeLessThan((30 / 60) * 360);
+    expect(steeringWheelAngle(30, { cFactor: 60, rackLimit: 30 })).toBeCloseTo(180, 9);
+  });
+});

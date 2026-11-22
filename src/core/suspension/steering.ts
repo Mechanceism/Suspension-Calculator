@@ -10,7 +10,7 @@
  * The rack (pinion) force is the tie-rod force along the rack axis, and the steering-wheel torque is
  *   T_sw = F_rack · c / 2π                c = rack travel per steering-wheel revolution.
  */
-import { type Vec3, vec3, sub, dot, cross, normalize, length, Y_AXIS, addScaled } from '../math/vec3';
+import { type Vec3, vec3, sub, dot, cross, normalize, length, scale, Y_AXIS, addScaled } from '../math/vec3';
 import type { CornerState, DoubleWishboneGeometry } from './doubleWishbone';
 
 /** Wheel heading in plan view (rad): + = front of the wheel toward +X (outboard). */
@@ -51,7 +51,12 @@ export interface SteeringLoads {
   rackForce: number;
   /** Steering-wheel torque for this corner, N·m. */
   steeringWheelTorque: number;
+  /** Steering-arm mechanism: torque the tie rod puts on the arm about its pivot axis, N·m (rackForce is then NaN). */
+  armTorque?: number;
 }
+
+/** How the steering input moves the inner tie-rod joint (rack: mm along the rack; arm: degrees about a pivot axis). */
+export type SteeringMechanism = { kind: 'rack'; axis: Vec3 } | { kind: 'arm'; pivot: Vec3; axis: Vec3 };
 
 /** Lever of the tie rod about the steering axis: û · ((r_TR − q) × d), mm. */
 export function steeringArmLever(state: CornerState): number {
@@ -66,7 +71,8 @@ export function steeringArmLever(state: CornerState): number {
  * @param rackAxis unit rack direction
  * @param cFactor  rack travel per steering-wheel revolution, mm/rev
  */
-export function steeringLoads(state: CornerState, contact: Vec3, forces: TireForces, rackAxis: Vec3, cFactor: number): SteeringLoads {
+export function steeringLoads(state: CornerState, contact: Vec3, forces: TireForces, rackAxis: Vec3 | SteeringMechanism, cFactor: number): SteeringLoads {
+  const mech: SteeringMechanism = 'kind' in rackAxis ? rackAxis : { kind: 'rack', axis: rackAxis };
   const p = state.points;
   const u = normalize(sub(p.steerUpper, p.steerLower));
   const heading = normalize(cross(state.spinAxis, Y_AXIS));
@@ -82,7 +88,13 @@ export function steeringLoads(state: CornerState, contact: Vec3, forces: TireFor
   const lever = steeringArmLever(state);
   const d = normalize(sub(p.trInner, p.trOuter));
   const tieRodForce = Math.abs(lever) > 1e-9 ? -axisTorque / lever : NaN;
-  const rackForce = tieRodForce * dot(d, normalize(rackAxis));
+  if (mech.kind === 'arm') {
+    // The tie rod pulls the arm's joint toward the knuckle (tension f along −d); torque about the pivot axis.
+    // cFactor = arm degrees per steering-wheel turn, so T_wheel = T_arm · cFactor / 360.
+    const armTorque = dot(normalize(mech.axis), cross(sub(p.trInner, mech.pivot), scale(d, -tieRodForce))) / 1000;
+    return { axisTorque, tieRodForce, steeringArm: lever, rackForce: NaN, armTorque, steeringWheelTorque: (armTorque * cFactor) / 360 };
+  }
+  const rackForce = tieRodForce * dot(d, normalize(mech.axis));
   return {
     axisTorque, tieRodForce, steeringArm: lever, rackForce,
     steeringWheelTorque: (rackForce * cFactor) / (2 * Math.PI) / 1000,

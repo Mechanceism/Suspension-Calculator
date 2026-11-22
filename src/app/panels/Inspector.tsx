@@ -17,7 +17,8 @@ function useDefs() {
   const kind = useApp((s) => s.geom.kind);
   const layout = useApp((s) => layoutOf(s.geom));
   const pushrodOn = useApp((s) => s.geom.pushrodOn ?? 'lca');
-  return componentDefs(arm, kind, layout, pushrodOn);
+  const steer = useApp((s) => s.geom.steerMechanism ?? 'rack');
+  return componentDefs(arm, kind, layout, pushrodOn, steer);
 }
 const labelOf = (k: PointKey) => { const g = useApp.getState().geom; return pointLabel(k, g.kind, layoutOf(g)); };
 import { armMetrics } from '../../core/suspension/armGeometry';
@@ -78,7 +79,7 @@ function PointsTable({ points }: { points: PointKey[] }) {
             </td>
             {([0, 1, 2] as const).map((i) => (
               <td key={i} data-lock-key={lockKeys.point(root, k, i)}>
-                <ValueInput field={geom.points[k][i]} unit="mm" onCommit={(t) => setPoint(k, i, t)} locked={pointAxisLocked(locks, root, k, i, geom.damperArm, geom.kind, layoutOf(geom))} />
+                <ValueInput field={geom.points[k][i]} unit="mm" onCommit={(t) => setPoint(k, i, t)} locked={pointAxisLocked(locks, root, k, i, geom.damperArm, geom.kind, layoutOf(geom), geom.steerMechanism)} />
               </td>
             ))}
             <td><LockButton keys={([0, 1, 2] as const).map((i) => lockKeys.point(root, k, i))} title="Lock / unlock X, Y and Z of this point" /></td>
@@ -135,7 +136,7 @@ function CoiloverPlacement() {
   const c = coiloverGeometry(d.chassis, d.armPoint, arm);
   const put = (moves: { key: 'dmpChassis' | 'dmpArm'; p: Vec3 }[]) => {
     const updates = moves.flatMap(({ key, p }) => ([0, 1, 2] as const).map((axis) => ({ key, axis, value: [p.x, p.y, p.z][axis]! })));
-    const blocked = updates.filter((u) => Math.abs(u.value - geom.points[u.key][u.axis].value) > 1e-9 && pointAxisLocked(locks, root, u.key, u.axis, geom.damperArm, geom.kind, layoutOf(geom)));
+    const blocked = updates.filter((u) => Math.abs(u.value - geom.points[u.key][u.axis].value) > 1e-9 && pointAxisLocked(locks, root, u.key, u.axis, geom.damperArm, geom.kind, layoutOf(geom), geom.steerMechanism));
     if (blocked.length) { notify(`${blocked.map((u) => `${labelOf(u.key)} ${'XYZ'[u.axis]}`).join(', ')} locked: unlock to move the ${kind === 'macpherson' ? 'strut' : 'coilover'}.`, 'warn'); return; }
     setPointsAxis(updates);
   };

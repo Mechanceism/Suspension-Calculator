@@ -10,6 +10,15 @@ import { useMemo, useRef } from 'react';
 import { useApp, toGeometry, toProfile, toForceModel, sprungLoad, vehicleStaticLoads, mergedCorners } from './store';
 import { DoubleWishbone, type CornerState } from '../core/suspension/doubleWishbone';
 import { rollCamber, ackermann } from '../core/suspension/derived';
+import { steeringWheelAngle, inputPerRev } from '../core/tests/steer';
+import type { SteeringMechanism } from '../core/suspension/steering';
+import { normalize as normV, sub as subV } from '../core/math/vec3';
+
+/** How the corner's steering input moves the inner tie-rod joint. */
+const mechanismOf = (c: { rackAxis: import('../core/math/vec3').Vec3; geometry: import('../core/suspension/doubleWishbone').DoubleWishboneGeometry }): SteeringMechanism => {
+  const s = c.geometry.steering;
+  return s?.kind === 'arm' ? { kind: 'arm', pivot: s.pivot1, axis: normV(subV(s.pivot2, s.pivot1)) } : { kind: 'rack', axis: c.rackAxis };
+};
 import { characteristics, deg, type Characteristics } from '../core/suspension/characteristics';
 import { loadCorner, type LoadedCorner } from '../core/suspension/loaded';
 import {
@@ -143,6 +152,7 @@ export function useModel(): Model {
   const bumpStop = useApp((s) => s.bumpStop);
   const steer = useApp((s) => s.steer);
   const cFactor = steer.cFactor.value;
+  const ratioSpec = { cFactor, cFactorLock: steer.cFactorLock.value, rackLimit: steer.rackLimit.value };
   const driver = mode === 'loaded' ? 'wheelCenter' : sliderDriver;
   const factor = mode === 'loaded' ? loadFactor : 1;
 
@@ -300,7 +310,9 @@ export function useModel(): Model {
     const forces = {
       vertical, lateral: steer.lateral.value, longitudinal: steer.longitudinal.value, pneumaticTrail: steer.pneumaticTrail.value,
     };
-    const loads = steeringLoads(state, contact, forces, corner.rackAxis, cFactor);
+    const mech = mechanismOf(corner);
+    const cLocal = inputPerRev(rack, ratioSpec);
+    const loads = steeringLoads(state, contact, forces, mech, cLocal);
     const axisGround = loaded?.steeringAxisAtGround ?? chars.steeringAxisAtGround;
     const samples = loaded && tireSetup
       ? patchSamples(state.points.wheelCenter, state.spinAxis, { point: vec3(0, loaded.groundY, 0), normal: Y_AXIS }, tireSetup.profile, 24, 10)
@@ -311,12 +323,13 @@ export function useModel(): Model {
     const parkRack = (parkT / lever) * rackShare;
     return {
       roadWheelAngle: headingAngle(state.spinAxis) - headingAngle(straight.spinAxis),
-      steeringWheelAngle: (rack / cFactor) * 360,
-      ratio: ((1 / cFactor) * 360) / Math.abs(dHeading),
+      steeringWheelAngle: steeringWheelAngle(rack, ratioSpec),
+      ratio: ((1 / cLocal) * 360) / Math.abs(dHeading),
       loads,
       parkingTorque: parkT,
       parkingRackForce: parkRack,
-      parkingWheelTorque: (parkRack * cFactor) / (2 * Math.PI) / 1000,
+      // Steering arm: through the overall ratio (virtual work), the same as rack force × c / 2π for a rack.
+      parkingWheelTorque: mech.kind === 'arm' ? (parkT / (((1 / cLocal) * 360) / Math.abs(dHeading))) / 1000 : (parkRack * cLocal) / (2 * Math.PI) / 1000,
     };
     };
     const steering = interacting && lastSlow.current.steering ? lastSlow.current.steering : computeSteering();
@@ -358,15 +371,15 @@ export function useModel(): Model {
     const steerTrack = 2 * Math.abs(g0 ? g0.x : mid.points.contact.x);
     return states.map((st, i) => {
       const c = characteristics(st);
-      const l = steeringLoads(st, c.contactPoint, { vertical: curTireLoad, lateral: 0, longitudinal: 0, pneumaticTrail: 0 }, corner.rackAxis, cFactor);
+      const l = steeringLoads(st, c.contactPoint, { vertical: curTireLoad, lateral: 0, longitudinal: 0, pneumaticTrail: 0 }, mechanismOf(corner), inputPerRev(racks[i]!, ratioSpec));
       return {
-        rack: racks[i]!, steeringWheelAngle: (racks[i]! / cFactor) * 360,
+        rack: racks[i]!, steeringWheelAngle: steeringWheelAngle(racks[i]!, ratioSpec),
         roadWheelAngle: headingAngle(st.spinAxis) - h0, camber: c.camber,
         jacking: y0 - st.points.contact.y, centeringTorque: l.steeringWheelTorque,
         ackermann: ackermann(yaw[i]!, -yaw[n - 1 - i]!, wheelbase, steerTrack).percent,
       };
     });
-  }, [built, armKey, rackLimit, cFactor, curTireLoad, interacting, wheelbase]);
+  }, [built, armKey, rackLimit, cFactor, ratioSpec.cFactorLock, curTireLoad, interacting, wheelbase]);
   if (!interacting) lastSteerSweep.current = steerSweep;
 
   return { error: live.error, corner: live.corner, sweep, current, steerSweep, damperLimits };

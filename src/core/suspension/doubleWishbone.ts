@@ -44,7 +44,7 @@
 import {
   type Vec3, add, sub, scale, length, normalize, rejectFrom, Y_AXIS, X_AXIS, distance as dist,
 } from '../math/vec3';
-import { mulVec, transpose } from '../math/mat3';
+import { mulVec, transpose, fromAxisAngle } from '../math/mat3';
 import {
   ConstraintSystem, PoseContext, type Poses, type SolveResult, type PointRef,
   coincident, fixedDistance, revolute, coordinate, hingeAngle, pointOnLine,
@@ -90,6 +90,13 @@ export interface DoubleWishboneGeometry {
   };
   /** Direction TR_In moves for positive rack travel. Default +X (outboard). */
   readonly rackAxis?: Vec3;
+  /**
+   * Steering mechanism: a rack (TR_In slides along rackAxis by the rack input, mm; default) or a steering
+   * arm / plate (TR_In swings about the axis pivot1 → pivot2 by the input in degrees): an ATV-style plate
+   * on the steering column, or a pitman / idler arm driving a center link (each inner joint then moves on
+   * the arm's circle).
+   */
+  readonly steering?: { readonly kind: 'rack' } | { readonly kind: 'arm'; readonly pivot1: Vec3; readonly pivot2: Vec3 };
   /**
    * Pushrod (or pullrod) and rocker: the rocker pivots on the frame axis pivot1 → pivot2; the pushrod
    * runs from `pushrodLower` (on `pushrodBody`) to `pushrodUpper` (on the rocker). The damper's armPoint
@@ -151,6 +158,9 @@ export interface CornerPoints {
   /** MacPherson: strut top mount (chassis) and the strut's point on the upright. */
   strutTop?: Vec3;
   strutLower?: Vec3;
+  /** Steering-arm mechanism: its pivot axis (frame). */
+  steerPivot1?: Vec3;
+  steerPivot2?: Vec3;
   /** Rocker layout: the rocker's pivot axis (frame) and the pushrod's two ends. */
   rockerPivot1?: Vec3;
   rockerPivot2?: Vec3;
@@ -197,6 +207,8 @@ export class DoubleWishbone {
     this.rackAxis = normalize(geometry.rackAxis ?? X_AXIS);
     this.spinAxisDesign = normalize(geometry.wheel.spinAxis);
     this.kind = kindOf(geometry);
+    const sa = geometry.steering;
+    if (sa?.kind === 'arm' && dist(sa.pivot1, sa.pivot2) < 1e-6) throw new Error('Degenerate geometry: steering arm pivot axis points coincide');
     const rk = geometry.rocker;
     if (rk) {
       if (this.kind === 'macpherson' || this.kind === 'rigid') throw new Error('A pushrod and rocker needs an arm or knuckle to push from (not a MacPherson strut or a rigid corner)');
@@ -282,10 +294,18 @@ export class DoubleWishbone {
     const { sys, refs } = this.build(full);
     const start: Poses = { ...sys.designPoses(), ...(initial ?? {}) };
     // Fixed bodies always take their input-driven pose.
-    start.rack = {
-      position: add(sys.getBody('rack').origin, scale(this.rackAxis, full.rack)),
-      rotation: sys.designPoses().rack!.rotation,
-    };
+    const st = this.geometry.steering;
+    if (st?.kind === 'arm') {
+      // The steering arm turns by the input (degrees) about its pivot axis; the inner joint rides on it.
+      const R = fromAxisAngle(normalize(sub(st.pivot2, st.pivot1)), (full.rack * Math.PI) / 180);
+      const o = sys.getBody('rack').origin;
+      start.rack = { position: add(st.pivot1, mulVec(R, sub(o, st.pivot1))), rotation: R };
+    } else {
+      start.rack = {
+        position: add(sys.getBody('rack').origin, scale(this.rackAxis, full.rack)),
+        rotation: sys.designPoses().rack!.rotation,
+      };
+    }
     start.chassis = sys.designPoses().chassis!;
     if (this.kind === 'rigid') {
       // The whole corner shifts up by the travel; the rack goes with it (nothing moves relative to the frame).
@@ -322,6 +342,7 @@ export class DoubleWishbone {
       points.damperChassis = g.damper.chassis;
       points.damperArm = ctx.world(refs.damperArm);
     }
+    if (g.steering?.kind === 'arm') { points.steerPivot1 = g.steering.pivot1; points.steerPivot2 = g.steering.pivot2; }
     if (g.rocker && refs.pushrodLower && refs.pushrodUpper) {
       points.rockerPivot1 = g.rocker.pivot1;
       points.rockerPivot2 = g.rocker.pivot2;

@@ -35,7 +35,7 @@ import { tireForce } from '../tire/model';
 import { segmentLatG, roadEffective, G, type RoadState } from './segments';
 import { wheelHeights } from './road';
 import { classifyState, worstSeverity, PROFILES, type Finding } from './checks';
-import { steerForTurn, type SteerNeed } from './steer';
+import { steerForTurn, steeringWheelAngle, type SteerNeed } from './steer';
 import {
   handlingCar, handlingForces, stepHandling, driverCommand, wheelAngles, rackFor, effAt, kinematicForces, slipUse, handlingGrip,
   KINEMATIC_SPEED, type HandlingState, type HandlingForces, type TireNow, type DriverSpec,
@@ -515,7 +515,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     const wheel = hs.want;
     return {
       rack: hs.cmd, rackUsed: hs.rack, wheelAngle: wheel * DEG, slip: (wheel - Math.atan(car!.L * kappa)) * DEG, maxAngle: lockEff * DEG,
-      steeringWheel: p.steering && p.steering.cFactor > 0 ? (hs.cmd / p.steering.cFactor) * 360 : NaN,
+      steeringWheel: p.steering && p.steering.cFactor > 0 ? steeringWheelAngle(hs.cmd, p.steering) : NaN,
       limit: tb.limit, over: tb.none || Math.abs(hs.cmd) > tb.limit + 1e-6, none: tb.none,
     };
   }

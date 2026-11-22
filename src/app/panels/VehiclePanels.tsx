@@ -1,3 +1,4 @@
+import { steeringWheelAngle, inputForWheelAngle } from '../../core/tests/steer';
 import { useEffect, useRef } from 'react';
 import { Num, UnitLabel } from './UnitText';
 import { openWizard, EstimatedNote } from './SetupWizard';
@@ -361,9 +362,12 @@ export function VehicleMotionBar() {
   const playingSteer = useApp((s) => s.playingSteer);
   const rack = useApp((s) => s.rack);
   const cFactor = useApp((s) => s.steer.cFactor.value);
+  const cFactorLock = useApp((s) => s.steer.cFactorLock.value);
+  const armMech = useApp((s) => s.geom.steerMechanism === 'arm');
   const rackLimit = useApp((s) => s.steer.rackLimit.value);
   const set = useApp((s) => s.set);
-  const swLimit = (rackLimit / cFactor) * 360;
+  const ratio = { cFactor, cFactorLock, rackLimit };
+  const swLimit = steeringWheelAngle(rackLimit, ratio);
   usePlay(playing, 5000, (s) => useApp.getState().set('lateralG', Number((1.2 * s).toFixed(3))));
   usePlay(playingSteer, 5000, (s) => useApp.getState().set('rack', s * rackLimit));
   // Play: brake to 1.2 g, then (if any corner is powered) accelerate to 0.6 g.
@@ -406,8 +410,8 @@ export function VehicleMotionBar() {
       </div>
       <div className="motion-group">
         <label className="slider">
-          <span>Steering wheel <b>{((rack / cFactor) * 360).toFixed(0)}</b>° · rack <b><Num text={rack.toFixed(1)} unit="mm" withUnit /></b></span>
-          <input type="range" min={-swLimit} max={swLimit} step={1} value={(rack / cFactor) * 360} onChange={(e) => setRack((Number(e.target.value) / 360) * cFactor)} onDoubleClick={() => setRack(0)} />
+          <span>Steering wheel <b>{steeringWheelAngle(rack, ratio).toFixed(0)}</b>° · {armMech ? <>arm <b>{rack.toFixed(1)}°</b></> : <>rack <b><Num text={rack.toFixed(1)} unit="mm" withUnit /></b></>}</span>
+          <input type="range" min={-swLimit} max={swLimit} step={1} value={steeringWheelAngle(rack, ratio)} onChange={(e) => setRack(inputForWheelAngle(Number(e.target.value), ratio))} onDoubleClick={() => setRack(0)} />
           <span className="quick">
             <button onClick={() => setRack(-rackLimit)}>◀ Lock</button>
             <button onClick={() => setRack(0)}>0</button>

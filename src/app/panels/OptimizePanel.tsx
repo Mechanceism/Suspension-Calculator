@@ -94,6 +94,7 @@ interface CoordSpec {
   /** Suspension type and spring layout of the design (its points; labels). */
   kind: SuspensionKind;
   layout: 'coilover' | 'rocker';
+  steer?: 'rack' | 'arm';
 }
 
 /** Point grid with X/Y/Z toggles (locked ones show 🔒). */
@@ -101,7 +102,7 @@ function CoordPicker({ spec, ranges, onToggle }: { spec: CoordSpec; ranges: Reco
   return (
     <table className="opt-table">
       <tbody>
-        {activePointKeys(spec.kind, spec.layout).map((k) => (
+        {activePointKeys(spec.kind, spec.layout, spec.steer).map((k) => (
           <tr key={k}>
             <td><button className="link-btn" title={`${activeParam(POINT_NAMES[k])} — highlight in the view`} onClick={() => highlight(k)}>{pointLabel(k, spec.kind, spec.layout)}</button></td>
             {([0, 1, 2] as const).map((a) => {
@@ -358,7 +359,7 @@ function CornerPresets() {
   const preset = (points: [PointKey, 0 | 1 | 2][], on: GoalKind[]) => update((o) => {
     const ranges: OptimizerSetup['ranges'] = {};
     for (const [k, a] of points) {
-      if (pointAxisLocked(locks, root, k, a, geom.damperArm, geom.kind, layoutOf(geom))) continue;
+      if (pointAxisLocked(locks, root, k, a, geom.damperArm, geom.kind, layoutOf(geom), geom.steerMechanism)) continue;
       const v = geom.points[k][a].value;
       ranges[varKey(k, a)] = { lo: numField(v - OPT_DEFAULT_RANGE), hi: numField(v + OPT_DEFAULT_RANGE) };
     }
@@ -415,8 +416,8 @@ export function OptimizePanel() {
   const spec: CoordSpec = {
     key: varKey,
     value: (k, a) => geom.points[k][a].value,
-    locked: (k, a) => pointAxisLocked(locks, root, k, a, geom.damperArm, geom.kind, layoutOf(geom)),
-    kind: geom.kind, layout: layoutOf(geom),
+    locked: (k, a) => pointAxisLocked(locks, root, k, a, geom.damperArm, geom.kind, layoutOf(geom), geom.steerMechanism),
+    kind: geom.kind, layout: layoutOf(geom), steer: geom.steerMechanism,
   };
   const entries: RangeEntry[] = Object.keys(setup.ranges).map((key) => ({ key, v: parseVarKey(key) })).filter((e) => e.v)
     .sort((a, b) => POINT_KEYS.indexOf(a.v!.k) - POINT_KEYS.indexOf(b.v!.k) || a.key.localeCompare(b.key))
@@ -493,7 +494,7 @@ function VehiclePresets() {
     for (const { root } of designRoots(s)) {
       const g = all[root].geom;
       for (const [k, a] of points) {
-        if (pointAxisLocked(s.locks, root, k, a, g.damperArm, g.kind, layoutOf(g))) continue;
+        if (pointAxisLocked(s.locks, root, k, a, g.damperArm, g.kind, layoutOf(g), g.steerMechanism)) continue;
         const v = g.points[k][a].value;
         ranges[vehVarKey(root, k, a)] = { lo: numField(v - OPT_DEFAULT_RANGE), hi: numField(v + OPT_DEFAULT_RANGE) };
       }
@@ -560,8 +561,8 @@ export function VehicleOptimizePanel() {
   const spec: CoordSpec = {
     key: (k, a) => vehVarKey(picked, k, a),
     value: (k, a) => g.points[k][a].value,
-    locked: (k, a) => pointAxisLocked(locks, picked, k, a, g.damperArm, g.kind, layoutOf(g)),
-    kind: g.kind, layout: layoutOf(g),
+    locked: (k, a) => pointAxisLocked(locks, picked, k, a, g.damperArm, g.kind, layoutOf(g), g.steerMechanism),
+    kind: g.kind, layout: layoutOf(g), steer: g.steerMechanism,
   };
   const entries: RangeEntry[] = Object.keys(o.ranges).map((key) => ({ key, v: parseVehVarKey(key) })).filter((e) => e.v)
     .sort((a, b) => a.v!.root.localeCompare(b.v!.root) || POINT_KEYS.indexOf(a.v!.k) - POINT_KEYS.indexOf(b.v!.k) || a.key.localeCompare(b.key))
@@ -571,7 +572,7 @@ export function VehicleOptimizePanel() {
       return {
         key, k: v!.k, axis: v!.axis, label: `${v!.root} ${POINT_LABELS[v!.k]} ${AXES[v!.axis]}`,
         now: d.geom.points[v!.k][v!.axis].value,
-        locked: !live || pointAxisLocked(locks, v!.root, v!.k, v!.axis, d.geom.damperArm, d.geom.kind, layoutOf(d.geom)),
+        locked: !live || pointAxisLocked(locks, v!.root, v!.k, v!.axis, d.geom.damperArm, d.geom.kind, layoutOf(d.geom), d.geom.steerMechanism),
         lo: o.ranges[key]!.lo, hi: o.ranges[key]!.hi,
       };
     });

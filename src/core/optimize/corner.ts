@@ -29,7 +29,9 @@ export type HardpointId =
   /** Multilink: the rear links' upright ends. */
   | 'ucaOut2' | 'lcaOut2'
   /** Rocker layout: pivot axis and pushrod ends. */
-  | 'rockerPivot1' | 'rockerPivot2' | 'pushrodLower' | 'pushrodUpper';
+  | 'rockerPivot1' | 'rockerPivot2' | 'pushrodLower' | 'pushrodUpper'
+  /** Steering-arm mechanism: its pivot axis. */
+  | 'steerPivot1' | 'steerPivot2';
 
 export type GoalKind =
   | 'bumpSteer' | 'camberGain' | 'rollCamber' | 'rollCenter' | 'rcMigration'
@@ -118,6 +120,8 @@ export function getPoint(g: DoubleWishboneGeometry, id: HardpointId): Vec3 | und
     case 'ucaOut2': return g.uca.out2; case 'lcaOut2': return g.lca.out2;
     case 'rockerPivot1': return g.rocker?.pivot1; case 'rockerPivot2': return g.rocker?.pivot2;
     case 'pushrodLower': return g.rocker?.pushrodLower; case 'pushrodUpper': return g.rocker?.pushrodUpper;
+    case 'steerPivot1': return g.steering?.kind === 'arm' ? g.steering.pivot1 : undefined;
+    case 'steerPivot2': return g.steering?.kind === 'arm' ? g.steering.pivot2 : undefined;
   }
 }
 
@@ -137,6 +141,7 @@ export function withVariables(g: DoubleWishboneGeometry, vars: Variable[], x: nu
     tieRod: { inner: P('trInner'), outer: P('trOuter') },
     wheel: { ...g.wheel, center: P('wheelCenter') },
     damper: g.damper ? { ...g.damper, chassis: P('damperChassis'), armPoint: P('damperArm') } : undefined,
+    ...(g.steering?.kind === 'arm' ? { steering: { kind: 'arm' as const, pivot1: P('steerPivot1'), pivot2: P('steerPivot2') } } : {}),
     ...(g.rocker ? { rocker: { ...g.rocker, pivot1: P('rockerPivot1'), pivot2: P('rockerPivot2'), pushrodLower: P('pushrodLower'), pushrodUpper: P('pushrodUpper') } } : {}),
   };
 }

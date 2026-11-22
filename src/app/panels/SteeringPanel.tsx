@@ -5,21 +5,46 @@ import { deg } from '../../core/suspension/characteristics';
 import type { Model } from '../useModel';
 import { FieldRows, fmt } from './FieldRows';
 
-const SYSTEM: SteerKey[] = ['cFactor', 'rackLimit'];
+const SYSTEM: SteerKey[] = ['cFactor', 'cFactorLock', 'rackLimit'];
+/** Labels and units of the steering inputs for the mechanism (arm: degrees instead of mm). */
+export function steerLabel(k: SteerKey, arm: boolean): { label: string; unit: string } {
+  const m = STEER_META[k];
+  if (!arm) return { label: m.label, unit: m.unit };
+  if (k === 'cFactor') return { label: 'Arm angle per steering-wheel rev', unit: '°/rev' };
+  if (k === 'cFactorLock') return { label: 'Same at full lock (geared cam; 0 = constant)', unit: '°/rev' };
+  if (k === 'rackLimit') return { label: 'Arm angle limit (±)', unit: '°' };
+  return { label: m.label, unit: m.unit };
+}
 const FORCES: SteerKey[] = ['lateral', 'longitudinal', 'pneumaticTrail', 'mu'];
 
 export function SteerFields({ keys }: { keys: SteerKey[] }) {
   const steer = useApp((s) => s.steer);
   const setSteerField = useApp((s) => s.setSteerField);
+  const arm = useApp((s) => s.geom.steerMechanism === 'arm');
   return (
     <FieldRows rows={keys.map((k) => ({
-      label: STEER_META[k].label, field: steer[k], unit: STEER_META[k].unit, onCommit: (t: string) => setSteerField(k, t),
-      lockKey: `steer.${k}`,
+      label: steerLabel(k, arm).label, field: steer[k], unit: steerLabel(k, arm).unit, onCommit: (t: string) => setSteerField(k, t),
+      lockKey: `steer.${k}`, hint: STEER_META[k].hint,
     }))} />
   );
 }
 
-export const SteeringSystemFields = () => <><SteerFields keys={SYSTEM} /><RackLayoutFields /></>;
+export const SteeringSystemFields = () => <><MechanismRow /><SteerFields keys={SYSTEM} /><RackLayoutFields /></>;
+
+/** Rack, or steering arm / plate (ATV plate on the column, pitman / idler arm with a center link). */
+function MechanismRow() {
+  const m = useApp((s) => s.geom.steerMechanism ?? 'rack');
+  const setM = useApp((s) => s.setSteerMechanism);
+  return (
+    <div className="row" title="Rack: the inner tie-rod joints slide across the car. Steering arm / plate: they swing about a pivot axis (an ATV plate on the steering column, or a steering box's pitman arm / idler arm carrying a center link). Applies to every corner.">
+      <span className="muted">Mechanism</span>
+      <select value={m} onChange={(e) => setM(e.target.value as 'rack' | 'arm')}>
+        <option value="rack">Rack and pinion</option>
+        <option value="arm">Steering arm / plate (box, cam, ATV)</option>
+      </select>
+    </div>
+  );
+}
 
 /**
  * Where the rack sits and how long it is: ahead of / behind the axle, and the distance between its inner
@@ -34,6 +59,20 @@ export function RackLayoutFields() {
   const pt = (k: 'trInner' | 'trOuter') => geom.points[k].map((f) => f.value);
   const [ix, iy, iz] = pt('trInner'), [ox, oy, oz] = pt('trOuter');
   const length = 2 * Math.abs(ix!);
+  if (geom.steerMechanism === 'arm') {
+    const [p1x, p1y, p1z] = geom.points.strPiv1.map((f) => f.value), [p2x, p2y, p2z] = geom.points.strPiv2.map((f) => f.value);
+    // Arm length: the inner joint's distance from the pivot axis.
+    const a = [p2x! - p1x!, p2y! - p1y!, p2z! - p1z!], r = [ix! - p1x!, iy! - p1y!, iz! - p1z!];
+    const al = Math.hypot(...a);
+    const t = (r[0]! * a[0]! + r[1]! * a[1]! + r[2]! * a[2]!) / (al * al);
+    const armLen = Math.hypot(r[0]! - t * a[0]!, r[1]! - t * a[1]!, r[2]! - t * a[2]!);
+    return (
+      <FieldRows rows={[
+        { label: 'Steering arm length', value: fmt(armLen, 1), unit: 'mm', hint: 'Inner tie-rod joint to the arm\'s pivot axis (move FL_Str_Piv1 / 2 or FL_TR_In to change it)' },
+        { label: 'Tie-rod length', value: fmt(Math.hypot(ox! - ix!, oy! - iy!, oz! - iz!), 1), unit: 'mm' },
+      ]} />
+    );
+  }
   return (
     <>
       <div className="row" title="Behind the axle (the steering arms point back) or ahead of it (they point forward). Switching mirrors the steering arm through the steering axis.">
@@ -76,7 +115,9 @@ export function SteeringReadout({ model }: { model: Model }) {
       { label: 'Steering arm (effective)', value: fmt(Math.abs(l.steeringArm), 1), unit: 'mm', hint: 'tie-rod lever about the steering axis' },
       { label: 'Torque about steering axis', value: fmt(l.axisTorque / 1000, 2), unit: 'N·m', hint: '+ = turns the front of the wheel outboard' },
       { label: 'Tie-rod force', value: fmt(l.tieRodForce, 0), unit: 'N', hint: '+ = tension' },
-      { label: 'Rack force', value: fmt(l.rackForce, 0), unit: 'N', hint: 'this corner, along the rack' },
+      l.armTorque !== undefined
+        ? { label: 'Steering-arm torque', value: fmt(l.armTorque, 1), unit: 'N·m', hint: 'this corner\'s tie rod on the arm, about its pivot axis' }
+        : { label: 'Rack force', value: fmt(l.rackForce, 0), unit: 'N', hint: 'this corner, along the rack' },
       { label: 'Steering-wheel torque', value: fmt(l.steeringWheelTorque, 2), unit: 'N·m', hint: 'this corner\'s share' },
       { label: 'Parking scrub torque', value: fmt(st.parkingTorque / 1000, 1), unit: 'N·m', hint: 'turning at standstill: patch twisting about the axis ground point' },
       { label: 'Parking rack force', value: fmt(st.parkingRackForce, 0), unit: 'N' },

@@ -22,8 +22,38 @@ export interface SteeringSpec {
   steered: Partial<Record<CornerId, boolean>>;
   /** Rack travel limit, ± mm. */
   rackLimit: number;
-  /** Rack travel per steering-wheel revolution, mm. */
+  /** Rack travel per steering-wheel revolution, mm (steering arm: arm degrees per revolution). At center. */
   cFactor: number;
+  /** Variable ratio (geared cam / variable-ratio rack): the same at full lock; omitted or ≤ 0 = constant. */
+  cFactorLock?: number;
+}
+
+/**
+ * Steering-wheel angle (deg) for a steering input (rack mm or arm deg). The input per wheel revolution goes
+ * from cFactor at center to cFactorLock at full lock, linearly with |input| / limit:
+ *   c(r) = c0 + (c1 − c0)·|r|/L,   θ_sw(r) = 360 · ∫ dr / c(r) = 360 · L / (c1 − c0) · ln(c(r) / c0)
+ */
+export function steeringWheelAngle(input: number, s: Pick<SteeringSpec, 'cFactor' | 'cFactorLock' | 'rackLimit'>): number {
+  const c0 = s.cFactor, c1 = s.cFactorLock && s.cFactorLock > 0 ? s.cFactorLock : c0, L = Math.abs(s.rackLimit) || 1;
+  if (!(c0 > 0)) return NaN;
+  if (Math.abs(c1 - c0) < 1e-9 * c0) return (input / c0) * 360;
+  const k = (c1 - c0) / L;
+  return Math.sign(input) * (360 / k) * Math.log((c0 + k * Math.abs(input)) / c0);
+}
+
+/** Inverse of steeringWheelAngle: the steering input for a steering-wheel angle (deg). */
+export function inputForWheelAngle(sw: number, s: Pick<SteeringSpec, 'cFactor' | 'cFactorLock' | 'rackLimit'>): number {
+  const c0 = s.cFactor, c1 = s.cFactorLock && s.cFactorLock > 0 ? s.cFactorLock : c0, L = Math.abs(s.rackLimit) || 1;
+  if (!(c0 > 0)) return NaN;
+  if (Math.abs(c1 - c0) < 1e-9 * c0) return (sw / 360) * c0;
+  const k = (c1 - c0) / L;
+  return Math.sign(sw) * (c0 / k) * (Math.exp((k * Math.abs(sw)) / 360) - 1);
+}
+
+/** Input per steering-wheel revolution at an input (the local ratio), rack mm/rev or arm deg/rev. */
+export function inputPerRev(input: number, s: Pick<SteeringSpec, 'cFactor' | 'cFactorLock' | 'rackLimit'>): number {
+  const c0 = s.cFactor, c1 = s.cFactorLock && s.cFactorLock > 0 ? s.cFactorLock : c0, L = Math.abs(s.rackLimit) || 1;
+  return c0 + (c1 - c0) * Math.min(1, Math.abs(input) / L);
 }
 
 export interface SteerNeed {
@@ -59,7 +89,7 @@ export function steerForTurn(
 ): SteerNeed | null {
   if (path === 'straight') return null;
   const ex = Number.isFinite(extra) ? Math.round(extra / 1e-5) * 1e-5 : 0;
-  const key = `${path}|${radius}|${ex}|${wheelbase}|${steering.rackLimit}|${steering.cFactor}|${CORNER_IDS.map((id) => (steering.steered[id] ? 1 : 0)).join('')}`;
+  const key = `${path}|${radius}|${ex}|${wheelbase}|${steering.rackLimit}|${steering.cFactor}|${steering.cFactorLock ?? 0}|${CORNER_IDS.map((id) => (steering.steered[id] ? 1 : 0)).join('')}`;
   let m = cache.get(built);
   if (!m) { m = new Map(); cache.set(built, m); }
   if (m.has(key)) return m.get(key)!;
@@ -113,7 +143,7 @@ function compute(
   const rackUsed = Math.max(-limit, Math.min(limit, rack));
   return {
     rack, rackUsed, wheelAngle: sign * delta * DEG, slip: extra * DEG, maxAngle: Number.isFinite(atLimit) ? Math.abs(atLimit) * DEG : 0,
-    steeringWheel: steering.cFactor > 0 ? (rack / steering.cFactor) * 360 : NaN,
+    steeringWheel: steering.cFactor > 0 ? steeringWheelAngle(rack, steering) : NaN,
     limit, over: !reached || Math.abs(rack) > limit + 1e-6, none: false,
   };
 }

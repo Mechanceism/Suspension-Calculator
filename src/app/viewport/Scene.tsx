@@ -72,7 +72,7 @@ function usePickComponent(id: ComponentId) {
         e.stopPropagation();
         // Shift / Ctrl / Cmd adds the part's points to a multi-selection.
         const n = e.nativeEvent;
-        if (n.shiftKey || n.ctrlKey || n.metaKey) { const g = useApp.getState().geom; useApp.getState().toggleSelectPoints(componentDefs(g.damperArm, g.kind, layoutOf(g), g.pushrodOn ?? 'lca')[id].points); }
+        if (n.shiftKey || n.ctrlKey || n.metaKey) { const g = useApp.getState().geom; useApp.getState().toggleSelectPoints(componentDefs(g.damperArm, g.kind, layoutOf(g), g.pushrodOn ?? 'lca', g.steerMechanism)[id].points); }
         else select({ kind: 'component', id });
       },
       onPointerOver: (e: ThreeEvent<PointerEvent>) => { e.stopPropagation(); setHover(true); document.body.style.cursor = 'pointer'; },
@@ -186,7 +186,7 @@ function PickJoint({ id, p, color, r = 7 }: { id: AnchorId; p: Vec3; color: stri
   const measure = useApp((s) => s.measure);
   const [hover, setHover] = useState(false);
   const isPoint = id in STATE_KEY;
-  const locked = useApp((s) => isPoint && anyAxisLocked(s.locks, rootOf(s.activeCorner, s.links), id as PointKey, s.geom.damperArm, s.geom.kind, layoutOf(s.geom)));
+  const locked = useApp((s) => isPoint && anyAxisLocked(s.locks, rootOf(s.activeCorner, s.links), id as PointKey, s.geom.damperArm, s.geom.kind, layoutOf(s.geom), s.geom.steerMechanism));
   const selected = (selection?.kind === 'point' && selection.id === id)
     || (selection?.kind === 'points' && selection.ids.includes(id as PointKey))
     || measure.includes(id);
@@ -221,6 +221,8 @@ function Joints({ state, cur }: { state: CornerState; cur: Current }) {
       {state.kind === 'multilink' && (vis.uca || vis.upright) && p.ucaOut2 && <PickJoint id="ucaOut2" p={p.ucaOut2} color={COLORS.uca} r={9} />}
       {state.kind === 'multilink' && (vis.lca || vis.upright) && p.lcaOut2 && <PickJoint id="lcaOut2" p={p.lcaOut2} color={COLORS.lca} r={9} />}
       {vis.tieRod && <PickJoint id="trInner" p={p.trInner} color={COLORS.chassis} />}
+      {vis.chassis && p.steerPivot1 && <PickJoint id="strPiv1" p={p.steerPivot1} color={COLORS.chassis} />}
+      {vis.chassis && p.steerPivot2 && <PickJoint id="strPiv2" p={p.steerPivot2} color={COLORS.chassis} />}
       {vis.spring && p.damperChassis && <PickJoint id="dmpChassis" p={p.damperChassis} color={COLORS.chassis} />}
       {vis.spring && p.damperArm && <PickJoint id="dmpArm" p={p.damperArm} color={COLORS.spring} />}
       {vis.spring && p.rockerPivot1 && <PickJoint id="rkrPiv1" p={p.rockerPivot1} color={COLORS.chassis} />}
@@ -266,7 +268,14 @@ function Chassis({ state, rackLimit, rackAxis }: { state: CornerState; rackLimit
           />
         </>
       )}</Part>
-      <Part id="rack">{(e) => (
+      <Part id="rack">{(e) => p.steerPivot1 && p.steerPivot2 ? (
+        <>
+          {/* Steering arm / plate: its pivot axis and the arm out to the inner tie-rod joint. */}
+          <Seg a={p.steerPivot1} b={p.steerPivot2} color={e === 2 ? COLORS.select : COLORS.chassis} width={em(3, e)} />
+          <Seg a={closestPointOnLine(lineThrough(p.steerPivot1, p.steerPivot2), p.trInner)} b={p.trInner} color={e === 2 ? COLORS.select : COLORS.tieRod} width={em(3, e)} />
+          <HitLink a={p.steerPivot1} b={p.steerPivot2} radius={14} />
+        </>
+      ) : (
         <>
           <Seg a={r1} b={r2} color={e === 2 ? COLORS.select : COLORS.chassis} width={em(2, e)} dashed={e === 0} />
           <HitLink a={r1} b={r2} radius={14} />
@@ -360,6 +369,7 @@ export function Scene({ model }: { model: Model }) {
   const kind = useApp((s) => s.geom.kind);
   const layout = useApp((s) => layoutOf(s.geom));
   const pushrodOn = useApp((s) => s.geom.pushrodOn ?? 'lca');
+  const steerMech = useApp((s) => s.geom.steerMechanism ?? 'rack');
   const rimRadius = useApp((s) => s.geom.scalars.rimDiameter.value / 2);
   const selection = useApp((s) => s.selection);
   const measureMode = useApp((s) => s.measureMode);
@@ -404,7 +414,7 @@ export function Scene({ model }: { model: Model }) {
       {ghosts && <Ghosts sweep={model.sweep} radius={radius} />}
       {vis.labels && <Labels state={state} />}
       {!measureMode && selection && (
-        <MoveGizmo ids={selectedPoints(selection, (c) => componentDefs(damperArm, kind, layout, pushrodOn)[c].points)} cur={cur} />
+        <MoveGizmo ids={selectedPoints(selection, (c) => componentDefs(damperArm, kind, layout, pushrodOn, steerMech)[c].points)} cur={cur} />
       )}
       {measureMode && <MeasureOverlay cur={cur} />}
       {vis.dimensions && <DimensionsOverlay cur={cur} />}

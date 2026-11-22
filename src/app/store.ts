@@ -32,7 +32,9 @@ export interface Field {
 }
 
 /** Hardpoints of every suspension type (each type uses some of them: activePointKeys). */
-export const POINT_KEYS = ['ucaFwd', 'ucaAft', 'ucaOut', 'lcaFwd', 'lcaAft', 'lcaOut', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm', 'ucaOut2', 'lcaOut2', 'rkrPiv1', 'rkrPiv2', 'prArm', 'prRkr'] as const;
+export const POINT_KEYS = ['ucaFwd', 'ucaAft', 'ucaOut', 'lcaFwd', 'lcaAft', 'lcaOut', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm', 'ucaOut2', 'lcaOut2', 'rkrPiv1', 'rkrPiv2', 'prArm', 'prRkr', 'strPiv1', 'strPiv2'] as const;
+/** Steering mechanism: a rack (input = rack travel, mm) or a steering arm / plate on a pivot (input = its angle, °). */
+export type SteerMechanism = 'rack' | 'arm';
 /** Spring layout: a coilover between the frame and an arm / the knuckle, or a pushrod / pullrod and rocker. */
 export type SpringLayout = 'coilover' | 'rocker';
 const ROCKER_KEYS = ['rkrPiv1', 'rkrPiv2', 'prArm', 'prRkr'] as const;
@@ -46,6 +48,7 @@ export const POINT_NAMES: Record<PointKey, string> = {
   dmpChassis: 'FL_Dmp_Chs', dmpArm: 'FL_Dmp_Arm',
   ucaOut2: 'FL_UCA_Out2', lcaOut2: 'FL_LCA_Out2',
   rkrPiv1: 'FL_Rkr_Piv1', rkrPiv2: 'FL_Rkr_Piv2', prArm: 'FL_PR_Arm', prRkr: 'FL_PR_Rkr',
+  strPiv1: 'FL_Str_Piv1', strPiv2: 'FL_Str_Piv2',
 };
 
 /** Parameter name of a hardpoint or scalar for a corner (FL_UCA_Fwd → RR_UCA_Fwd). */
@@ -131,10 +134,11 @@ export const DAMPER_META: Record<DamperKey, { label: string; quantity: Quantity;
 };
 
 /** Steering system and tire-force inputs (docs/MATH.md § Steering). */
-export const STEER_KEYS = ['cFactor', 'rackLimit', 'lateral', 'longitudinal', 'pneumaticTrail', 'mu'] as const;
+export const STEER_KEYS = ['cFactor', 'cFactorLock', 'rackLimit', 'lateral', 'longitudinal', 'pneumaticTrail', 'mu'] as const;
 export type SteerKey = (typeof STEER_KEYS)[number];
 export const STEER_META: Record<SteerKey, { label: string; quantity: Quantity; unit: string; initial: number; hint?: string }> = {
   cFactor: { label: 'Rack travel per steering-wheel rev', quantity: 'length', unit: 'mm/rev', initial: 75 },
+  cFactorLock: { label: 'Same at full lock (variable ratio; 0 = constant)', quantity: 'length', unit: 'mm/rev', initial: 0, hint: 'A variable-ratio rack or geared cam: the steering gets quicker (larger) or slower toward lock; in between it changes linearly with the travel.' },
   rackLimit: { label: 'Rack travel limit (±)', quantity: 'length', unit: 'mm', initial: 30 },
   lateral: { label: 'Lateral tire force (+ outboard)', quantity: 'force', unit: 'N', initial: 0 },
   longitudinal: { label: 'Longitudinal tire force (+ drive, − brake)', quantity: 'force', unit: 'N', initial: 0 },
@@ -169,6 +173,8 @@ export interface EditableGeometry {
   springLayout?: SpringLayout;
   /** Rocker layout: what the pushrod's lower end is on. */
   pushrodOn?: ArmChoice;
+  /** Steering mechanism (the same for every design: the input's units are shared). */
+  steerMechanism?: SteerMechanism;
   scalars: Record<ScalarKey, Field>;
   /** Which arm the coilover's lower mount is attached to. */
   damperArm: ArmChoice;
@@ -199,7 +205,9 @@ export function editableFromLayout(id: string): EditableGeometry {
       ucaOut2: fields(g.uca.out2 ?? g.uca.out),
       lcaOut2: fields(g.lca.out2 ?? g.lca.out),
       ...rockerDefaults(g.damper?.chassis ?? vec3(300, 380, 30), g.damper?.armPoint ?? vec3(480, 45, 30), g.rocker),
+      ...steerArmDefaults(g),
     },
+    steerMechanism: g.steering?.kind === 'arm' ? 'arm' : 'rack',
     springLayout: g.rocker ? 'rocker' : 'coilover',
     pushrodOn: g.rocker?.pushrodBody === 'uca' || g.rocker?.pushrodBody === 'upright' ? g.rocker.pushrodBody : 'lca',
     kind: g.kind ?? 'doubleWishbone',
@@ -223,6 +231,16 @@ function rockerDefaults(chassis: Vec3, lower: Vec3, r?: DoubleWishboneGeometry['
   return { rkrPiv1: fields(lay.pivot1), rkrPiv2: fields(lay.pivot2), prArm: fields(lay.pushrodLower), prRkr: fields(lay.pushrodUpper) };
 }
 
+/**
+ * Steering-arm pivot: given, or an upright axis 120 mm ahead of the inner tie-rod joint (the arm points back
+ * from it, so the joint swings across the car much like on a rack).
+ */
+export function steerArmDefaults(g: DoubleWishboneGeometry): Record<'strPiv1' | 'strPiv2', [Field, Field, Field]> {
+  if (g.steering?.kind === 'arm') return { strPiv1: fields(g.steering.pivot1), strPiv2: fields(g.steering.pivot2) };
+  const i = g.tieRod.inner;
+  return { strPiv1: fields(vec3(i.x, i.y - 60, i.z + 120)), strPiv2: fields(vec3(i.x, i.y + 90, i.z + 120)) };
+}
+
 /** Rocker layouts are for types with an arm or knuckle to push from. */
 export const rockerAllowed = (kind: SuspensionKind) => kind !== 'macpherson' && kind !== 'rigid';
 export const layoutOf = (e: Pick<EditableGeometry, 'kind' | 'springLayout'>): SpringLayout => (e.springLayout === 'rocker' && rockerAllowed(e.kind ?? 'doubleWishbone') ? 'rocker' : 'coilover');
@@ -241,6 +259,7 @@ export function toGeometry(e: EditableGeometry): DoubleWishboneGeometry {
     uca: { fwd: p('ucaFwd'), aft: p('ucaAft'), out: p('ucaOut'), ...(ml ? { out2: p('ucaOut2') } : {}) },
     lca: { fwd: p('lcaFwd'), aft: p('lcaAft'), out: p('lcaOut'), ...(ml ? { out2: p('lcaOut2') } : {}) },
     tieRod: { inner: p('trInner'), outer: p('trOuter') },
+    ...(e.steerMechanism === 'arm' ? { steering: { kind: 'arm' as const, pivot1: p('strPiv1'), pivot2: p('strPiv2') } } : {}),
     wheel: {
       center: vec3(hub.x - et * spinAxis.x, hub.y - et * spinAxis.y, hub.z - et * spinAxis.z),
       spinAxis,
@@ -281,9 +300,10 @@ export function flipRackSide(e: EditableGeometry): EditableGeometry {
 }
 
 /** Hardpoints a suspension type (and spring layout) uses, in table order. */
-export function activePointKeys(kind: SuspensionKind, layout: SpringLayout = 'coilover'): PointKey[] {
+export function activePointKeys(kind: SuspensionKind, layout: SpringLayout = 'coilover', steer: SteerMechanism = 'rack'): PointKey[] {
   const base = kindPointKeys(kind);
-  return layout === 'rocker' && rockerAllowed(kind) ? [...base, ...ROCKER_KEYS] : base;
+  const withRocker = layout === 'rocker' && rockerAllowed(kind) ? [...base, ...ROCKER_KEYS] : base;
+  return steer === 'arm' ? [...withRocker, 'strPiv1', 'strPiv2'] : withRocker;
 }
 function kindPointKeys(kind: SuspensionKind): PointKey[] {
   if (kind === 'macpherson') return ['lcaFwd', 'lcaAft', 'lcaOut', 'dmpChassis', 'dmpArm', 'trInner', 'trOuter', 'wheelCenter'];
@@ -537,6 +557,8 @@ export interface AppState extends DesignState {
   addMeasureAnchor(a: AnchorId, at?: Vec3): void;
   setSpringField(key: SpringKey, text: string): void;
   setDamperArm(arm: ArmChoice): void;
+  /** Rack or steering arm / plate, for every design (units of the steering input change with it). */
+  setSteerMechanism(m: SteerMechanism): void;
   /** Put the steering rack ahead of or behind the axle (flipRackSide). */
   setRackSide(ahead: boolean): void;
   /** Coilover or pushrod / pullrod + rocker for the active design. */
@@ -1416,6 +1438,17 @@ export const useApp = create<AppState>((set, get) => ({
       points: { ...geom.points, dmpArm: fields(moved), dmpChassis: fields(chassisMount) },
     };
     set({ geom: next, presetId: 'custom', spring: fittedSpring(next, get().spring) });
+  },
+  setSteerMechanism: (m) => {
+    const s = get();
+    if ((s.geom.steerMechanism ?? 'rack') === m) return;
+    s.updateDesigns('both', (d) => ({ ...d, geom: { ...d.geom, steerMechanism: m } }));
+    // The input's units change: start from typical values (arm: 1 : 1 like ATV handlebars, ±40°).
+    const f = (v: number) => ({ text: String(v), value: v });
+    set({ steer: { ...get().steer, cFactor: f(m === 'arm' ? 360 : 75), cFactorLock: f(0), rackLimit: f(m === 'arm' ? 40 : 30) }, rack: 0 });
+    get().notify(m === 'arm'
+      ? 'Steering arm / plate: the inner tie-rod joints swing about the arm\'s pivot axis (FL_Str_Piv1–2). The steering input is now the arm angle (°): 360 °/rev = 1 : 1 (ATV handlebars), a steering box is about 20 °/rev. Limit ±40°.'
+      : 'Rack: the steering input is rack travel (mm) again (75 mm/rev, ±30 mm).', 'info');
   },
   setRackSide: (ahead) => {
     const geom = get().geom;

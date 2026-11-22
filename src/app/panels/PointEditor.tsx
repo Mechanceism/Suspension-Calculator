@@ -108,7 +108,8 @@ export function GroupMove({ ids }: { ids: PointKey[] }) {
   const damperArm = useApp((s) => s.geom.damperArm);
   const kind = useApp((s) => s.geom.kind);
   const layout = useApp((s) => layoutOf(s.geom));
-  const axisLocked = (i: number) => ids.some((k) => pointAxisLocked(locks, root, k, i as 0 | 1 | 2, damperArm, kind, layout));
+  const steerMech = useApp((s) => s.geom.steerMechanism ?? 'rack');
+  const axisLocked = (i: number) => ids.some((k) => pointAxisLocked(locks, root, k, i as 0 | 1 | 2, damperArm, kind, layout, steerMech));
   const step = useApp((s) => s.nudgeStep);
   const conv = useConversion('mm');
   return (
@@ -138,9 +139,9 @@ const PREFERRED: Partial<Record<PointKey, PointKey[]>> = {
 };
 
 /** Joints this point is connected to (shares a part with), for "move along the line toward…". */
-function neighbors(id: PointKey, damperArm: ArmChoice, kind: SuspensionKind, layout: 'coilover' | 'rocker' = 'coilover'): PointKey[] {
+function neighbors(id: PointKey, damperArm: ArmChoice, kind: SuspensionKind, layout: 'coilover' | 'rocker' = 'coilover', steerMech: 'rack' | 'arm' = 'rack'): PointKey[] {
   const out = new Set<PointKey>(PREFERRED[id] ?? []);
-  for (const d of Object.values(componentDefs(damperArm, kind, layout))) if (d.points.includes(id)) for (const p of d.points) if (p !== id) out.add(p);
+  for (const d of Object.values(componentDefs(damperArm, kind, layout, 'lca', steerMech))) if (d.points.includes(id)) for (const p of d.points) if (p !== id) out.add(p);
   return [...out];
 }
 
@@ -155,7 +156,7 @@ function AlongLine({ id }: { id: PointKey }) {
   const notify = useApp((s) => s.notify);
   const step = useApp((s) => s.nudgeStep);
   const conv = useConversion('mm');
-  const near = useMemo(() => neighbors(id, geom.damperArm, geom.kind, layoutOf(geom)), [id, geom.damperArm, geom.kind]);
+  const near = useMemo(() => neighbors(id, geom.damperArm, geom.kind, layoutOf(geom), geom.steerMechanism), [id, geom.damperArm, geom.kind]);
   const toward = lineMove?.id === id ? lineMove.toward : near[0] ?? POINT_KEYS.find((k) => k !== id)!;
   // Keep the store in sync so the viewport shows the extra arrow for this line.
   useEffect(() => {
@@ -168,7 +169,7 @@ function AlongLine({ id }: { id: PointKey }) {
   const dist = length(sub(q, p));
   const dir = dist > 1e-9 ? normalize(sub(q, p)) : vec3(0, 0, 0);
   const changedAxes = ([0, 1, 2] as const).filter((a) => Math.abs([dir.x, dir.y, dir.z][a]!) > 1e-9);
-  const lockedAxes = changedAxes.filter((a) => pointAxisLocked(locks, root, id, a, geom.damperArm, geom.kind, layoutOf(geom)));
+  const lockedAxes = changedAxes.filter((a) => pointAxisLocked(locks, root, id, a, geom.damperArm, geom.kind, layoutOf(geom), geom.steerMechanism));
   const blocked = lockedAxes.length > 0;
 
   const moveBy = (amount: number) => {
@@ -177,7 +178,7 @@ function AlongLine({ id }: { id: PointKey }) {
     if (!n) return;
     setPointsAxis(changedAxes.map((a) => ({ key: id, axis: a, value: Number([n.x, n.y, n.z][a]!.toFixed(4)) })));
   };
-  const options = [...near, ...activePointKeys(geom.kind, layoutOf(geom)).filter((k) => k !== id && !near.includes(k))];
+  const options = [...near, ...activePointKeys(geom.kind, layoutOf(geom), geom.steerMechanism).filter((k) => k !== id && !near.includes(k))];
 
   return (
     <div className="along-line">
@@ -219,6 +220,7 @@ export function PointEditor({ id }: { id: PointKey }) {
   const damperArm = useApp((s) => s.geom.damperArm);
   const kind = useApp((s) => s.geom.kind);
   const layout = useApp((s) => layoutOf(s.geom));
+  const steerMech = useApp((s) => s.geom.steerMechanism ?? 'rack');
   const setPoint = useApp((s) => s.setPoint);
   const movePoint = useApp((s) => s.movePoint);
   const startMeasure = useApp((s) => s.startMeasure);
@@ -229,7 +231,7 @@ export function PointEditor({ id }: { id: PointKey }) {
       <table className="jm-table">
         <tbody>
           {AXES.map((ax, i) => {
-            const locked = pointAxisLocked(locks, root, id, i as 0 | 1 | 2, damperArm, kind, layout);
+            const locked = pointAxisLocked(locks, root, id, i as 0 | 1 | 2, damperArm, kind, layout, steerMech);
             return (
               <tr key={ax} data-lock-key={lockKeys.point(root, id, i as 0 | 1 | 2)}>
                 <td className="muted">{ax}</td>

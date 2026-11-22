@@ -511,6 +511,7 @@ const DampersStep: StepView = ({ apply }) => {
 };
 
 const SteeringStep: StepView = ({ apply }) => {
+  const armMech = useApp((st) => st.geom.steerMechanism === 'arm');
   const steer = useApp((st) => st.steer);
   const wheelbase = useApp((st) => st.vehicle.wheelbase.value);
   const [turnsMode, setTurnsMode] = useState<'lockToLock' | 'centerToLock'>('lockToLock');
@@ -551,12 +552,12 @@ const SteeringStep: StepView = ({ apply }) => {
       </table>
       {lock ? (
         <p className="small-text">
-          Rack travel <b>±{fmt(lock.rack, 1)} mm</b> · <b>{fmt(cFactor, 1)} mm</b> per steering-wheel turn ·
+          {armMech ? 'Steering-arm angle' : 'Rack travel'} <b>±{fmt(lock.rack, 1)} {armMech ? '°' : 'mm'}</b> · <b>{fmt(cFactor, 1)} {armMech ? '°' : 'mm'}</b> per steering-wheel turn ·
           full lock: inside wheel <b>{fmt(deg(lock.inside), 1)}°</b>, outside <b>{fmt(deg(lock.outside), 1)}°</b> (max steering angle) ·
           overall ratio {fmt((centerTurns * 360) / deg(mean), 1)}:1 · tightest turn about {fmt(wheelbase / 1000 / Math.tan(mean), 1)} m radius
         </p>
       ) : <p className="hint warn-text">The steering geometry can&apos;t turn the wheel that far: check the angle (and the tie-rod points).</p>}
-      <p className="hint">The inside and outside wheels turn by different amounts (Ackermann); the rack travel comes from your steering geometry (tie-rod points).</p>
+      <p className="hint">The inside and outside wheels turn by different amounts (Ackermann); the {armMech ? 'steering-arm angle' : 'rack travel'} comes from your steering geometry (tie-rod points{armMech ? " and the arm's pivot" : ''}). Rack or steering arm / plate: Steering → Mechanism.</p>
       <div className="jm-row"><button className="wide-btn primary" disabled={!lock || !(cFactor > 0)} onClick={go}>Apply and next</button></div>
     </>
   );

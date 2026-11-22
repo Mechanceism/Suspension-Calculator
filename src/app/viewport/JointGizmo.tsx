@@ -64,13 +64,17 @@ function AxisLabel({ text, color }: { text: string; color: string }) {
  * One drag arrow. Along a coordinate axis (`axis`) it moves that coordinate of every id; along a
  * `line` (any direction) it slides one joint along that direction, changing X, Y and Z together.
  */
-function Arrow({ axis, line, origin, ids, locked, frame, sign = 1, onStart }: {
+function Arrow({ axis, line, origin, ids, locked, frame, sign = 1, onStart, onDelta, lockedText }: {
   axis?: 0 | 1 | 2; line?: { dir: THREE.Vector3; label: string }; origin: THREE.Vector3; ids: PointKey[]; locked: boolean;
   /** Drawn inside this object (e.g. the posed chassis): pointer rays are taken into its frame. */
   frame?: RefObject<THREE.Object3D | null>;
   /** −1 when the drawn axis is the design's axis mirrored (a right-hand corner's X in the vehicle view). */
   sign?: number;
-  onStart?: () => void;
+  onStart?: () => boolean | void;
+  /** Drive something other than points: called with the move along the arrow (mm) as it drags. */
+  onDelta?: (delta: number) => void;
+  /** Why it is locked (shown when it is grabbed). */
+  lockedText?: string;
 }) {
   const localRay = (r: THREE.Ray) => (frame?.current ? r.clone().applyMatrix4(frame.current.matrixWorld.clone().invert()) : r);
   const label = line ? line.label : AXES[axis!].label;
@@ -87,6 +91,7 @@ function Arrow({ axis, line, origin, ids, locked, frame, sign = 1, onStart }: {
     const delta = d.pending;
     d.pending = null;
     d.raf = 0;
+    if (onDelta) { onDelta(delta); return; }
     if (line) {
       const k = ids[0]!;
       const v = [dir.x, dir.y, dir.z];
@@ -99,13 +104,13 @@ function Arrow({ axis, line, origin, ids, locked, frame, sign = 1, onStart }: {
 
   const onDown = (e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation();
-    if (locked) { useApp.getState().notify(`${label} is locked for this selection`); return; }
+    if (locked) { useApp.getState().notify(lockedText ?? `${label} is locked for this selection`, lockedText ? 'info' : undefined); return; }
     const t0 = axisParam(localRay(e.ray), origin, dir);
     if (t0 === null) return;
-    onStart?.();
+    if (onStart?.() === false) return;
     (e.target as unknown as Element).setPointerCapture(e.pointerId);
     const s = useApp.getState();
-    const starts = line ? s.geom.points[ids[0]!].map((f) => f.value) : ids.map((k) => s.geom.points[k][axis!].value);
+    const starts = onDelta ? [] : line ? s.geom.points[ids[0]!].map((f) => f.value) : ids.map((k) => s.geom.points[k][axis!].value);
     drag.current = { t0, starts, origin: origin.clone(), pending: null, raf: 0 };
     if (controls) controls.enabled = false;
     s.set('interacting', true);
@@ -259,6 +264,40 @@ export function VehicleMoveGizmo({ ids, at, frame, mirrored, onStart }: { ids: P
       {([0, 1, 2] as const).map((a) => (
         <Arrow key={a} axis={a} origin={origin} ids={ids} frame={frame} sign={a === 0 && mirrored ? -1 : 1} onStart={onStart}
           locked={ids.some((k) => pointAxisLocked(locks, root, k, a, geom.damperArm, geom.kind, layoutOf(geom), geom.steerMechanism ?? 'rack'))} />
+      ))}
+    </group>
+  );
+}
+
+/** X / Y / Z arrows at a point (in `frame`) that drive anything: each axis says whether it is locked (and why) and what a move does. */
+export interface GizmoAxis { locked?: boolean; lockedText?: string; onStart: () => boolean; onDelta: (delta: number) => void }
+
+export function AxisGizmo({ at, frame, axes }: { at: Vec3; frame: RefObject<THREE.Object3D | null>; axes: [GizmoAxis, GizmoAxis, GizmoAxis] }) {
+  const group = useRef<THREE.Group>(null);
+  const origin = useMemo(() => new THREE.Vector3(at.x, at.y, at.z), [at.x, at.y, at.z]);
+  useFrame(({ camera, size }) => {
+    const g = group.current;
+    if (!g) return;
+    const wp = g.getWorldPosition(new THREE.Vector3());
+    let mmPerPx: number;
+    if ((camera as THREE.OrthographicCamera).isOrthographicCamera) {
+      const c = camera as THREE.OrthographicCamera;
+      mmPerPx = (c.top - c.bottom) / c.zoom / size.height;
+    } else {
+      const c = camera as THREE.PerspectiveCamera;
+      mmPerPx = (2 * c.position.distanceTo(wp) * Math.tan(THREE.MathUtils.degToRad(c.fov) / 2)) / size.height;
+    }
+    g.scale.setScalar(SCREEN_PX * mmPerPx);
+  });
+  return (
+    <group ref={group} position={[at.x, at.y, at.z]}>
+      <mesh>
+        <sphereGeometry args={[0.09, 16, 12]} />
+        <meshBasicMaterial color="#ffffff" depthTest={false} />
+      </mesh>
+      {([0, 1, 2] as const).map((a) => (
+        <Arrow key={a} axis={a} origin={origin} ids={[]} frame={frame} locked={!!axes[a].locked} lockedText={axes[a].lockedText}
+          onStart={axes[a].onStart} onDelta={axes[a].onDelta} />
       ))}
     </group>
   );

@@ -114,7 +114,7 @@ Done: File → Setup wizard (and Vehicle → Inputs), eleven steps with a step l
 - ✅ **User-defined linkages:** the *Custom linkage* type: an editor for bodies and joints (ball joints, hinges / bushings, rods) to the frame, the steering rack and the knuckle, with a freedom count and messages; instant and steering axes from the motion; drawn in both views; saved with the project. Still to come: dragging its points in the viewport, a prismatic (sliding) joint, optimizing its points.
 
 ### Vehicle view editing (noted 2026-11-22) ✅
-- **Ackermann lines for every steered corner** (per axle, with the crossing and its target), **draggable**: a line's handle or the crossing turns the steering arms (moves the outer tie-rod joints); a mirrored pair keeps its crossing on the centerline, and a notice names the linked corners that move.
+- **Ackermann lines for every steered corner** (per axle, with the crossing and its target), **draggable**: a line's handle or the crossing turns the steering arms (moves the outer tie-rod joints); click the crossing for X / Y / Z arrows (Y = both outer tie-rod joints up / down, keeping the crossing in top view; Z = forward / back). Only moves that would make a mirrored pair differ are blocked (its crossing's X), and a notice names the linked corners that move.
 - **Select, move and measure in the Vehicle view:** any corner's joints (moves on linked corners are mirrored, with a notice); measure between joints, contact patches, the CG and roll centers across corners.
 - **View menu:** CG, anti-roll bar links and marker labels can be turned off; the markers are labeled.
 

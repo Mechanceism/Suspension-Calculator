@@ -347,7 +347,7 @@ export { isFront };
 export interface AckermannAxle {
   axle: 'front' | 'rear';
   /** Per steered corner: its steering axis at the outer tie-rod joint's height (k) and that joint (t). */
-  lines: { id: CornerId; k: Vec3; t: Vec3 }[];
+  lines: { id: CornerId; k: Vec3; t: Vec3; axis: [Vec3, Vec3] }[];
   /** Where the two lines cross in top view (null: one line, or parallel). */
   cross: { x: number; z: number } | null;
   /** Where they should cross for classic Ackermann: the other axle's center, or midway when both axles steer. */
@@ -365,7 +365,7 @@ export function ackermannAxles(views: Partial<Record<CornerId, VehicleCornerView
     const p = v.state.points, pl = placement(id, wheelbase);
     const lo = p.steerLower, up = p.steerUpper, t = p.trOuter;
     const f = Math.abs(up.y - lo.y) > 1e-9 ? (t.y - lo.y) / (up.y - lo.y) : 0;
-    return { id, k: pl.point(vec3(lo.x + f * (up.x - lo.x), t.y, lo.z + f * (up.z - lo.z))), t: pl.point(t) };
+    return { id, k: pl.point(vec3(lo.x + f * (up.x - lo.x), t.y, lo.z + f * (up.z - lo.z))), t: pl.point(t), axis: [pl.point(lo), pl.point(up)] as [Vec3, Vec3] };
   };
   const frontSteers = settings.FL.steered || settings.FR.steered, rearSteers = settings.RL.steered || settings.RR.steered;
   const out: AckermannAxle[] = [];

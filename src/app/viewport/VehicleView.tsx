@@ -17,7 +17,7 @@ import { CORNER_IDS, placement, poseFns, isLeft, type CornerId } from '../../cor
 import { useApp, FORCE_KEYS, FORCE_META, mergedCorners, rootOf, layoutOf, activePointKeys, POINT_NAMES, type ForceKey, type VisKey, type PointKey } from '../store';
 import { useShallow } from 'zustand/react/shallow';
 import { STATE_KEY } from '../anchors';
-import { VehicleMoveGizmo } from './JointGizmo';
+import { VehicleMoveGizmo, AxisGizmo } from './JointGizmo';
 import { SafeHtml as Html } from './SafeHtml';
 import { pointAxisLocked } from '../locks';
 import type { VehicleModel, VehicleCornerView, AckermannAxle } from '../useVehicle';
@@ -227,12 +227,14 @@ function VehicleScene({ model, arrows }: { model: VehicleModel; arrows: ForceArr
 }
 
 /** A sphere to drag across a horizontal plane in the chassis frame (the plane at its height when grabbed). */
-function GroundHandle({ p, color, r, frame, onStart, onDrag }: {
+function GroundHandle({ p, color, r, frame, onStart, onDrag, onSelect }: {
   p: Vec3; color: string; r: number; frame: RefObject<THREE.Group | null>;
   onStart: () => boolean; onDrag: (at: { x: number; z: number }) => void;
+  /** A click without dragging (e.g. to show its X / Y / Z arrows). */
+  onSelect?: () => void;
 }) {
   const controls = useThree((s) => s.controls) as unknown as { enabled: boolean } | null;
-  const drag = useRef<{ y: number } | null>(null);
+  const drag = useRef<{ y: number; moved: boolean } | null>(null);
   const [hover, setHover] = useState(false);
   const hit = (ray: THREE.Ray, y: number) => {
     const m = frame.current ? frame.current.matrixWorld.clone().invert() : new THREE.Matrix4();
@@ -247,7 +249,7 @@ function GroundHandle({ p, color, r, frame, onStart, onDrag }: {
         e.stopPropagation();
         if (!onStart()) return;
         (e.target as unknown as Element).setPointerCapture(e.pointerId);
-        drag.current = { y: p.y };
+        drag.current = { y: p.y, moved: false };
         if (controls) controls.enabled = false;
         useApp.getState().set('interacting', true);
       }}
@@ -255,15 +257,17 @@ function GroundHandle({ p, color, r, frame, onStart, onDrag }: {
         if (!drag.current) return;
         e.stopPropagation();
         const at = hit(e.ray, drag.current.y);
-        if (at) onDrag(at);
+        if (at && (drag.current.moved || Math.hypot(at.x - p.x, at.z - p.z) > r)) { drag.current.moved = true; onDrag(at); }
       }}
       onPointerUp={(e) => {
         if (!drag.current) return;
         e.stopPropagation();
         (e.target as unknown as Element).releasePointerCapture(e.pointerId);
+        const clicked = !drag.current.moved;
         drag.current = null;
         if (controls) controls.enabled = true;
         useApp.getState().set('interacting', false);
+        if (clicked) onSelect?.();
       }}
       onPointerOver={(e) => { e.stopPropagation(); setHover(true); document.body.style.cursor = 'grab'; }}
       onPointerOut={() => { setHover(false); document.body.style.cursor = ''; }}
@@ -299,7 +303,9 @@ export function ackermannEnds(a: AckermannAxle, L: number) {
  */
 function AckermannLines({ model, frame }: { model: VehicleModel; frame: RefObject<THREE.Group | null> }) {
   const L = model.wheelbase;
-  const start = useRef<{ id: CornerId; root: CornerId; k: Vec3; t: Vec3; design: Vec3 }[]>([]);
+  const start = useRef<{ id: CornerId; root: CornerId; k: Vec3; t: Vec3; axis: [Vec3, Vec3]; design: Vec3 }[]>([]);
+  const crossAt = useRef<{ x: number; z: number }>({ x: 0, z: 0 });
+  const [selected, setSelected] = useState<'front' | 'rear' | null>(null);
   if (!model.ackermannLines.length) return null;
   /** Record where the arms start (design points); false (with a message) when a joint can't move. */
   const begin = (ids: CornerId[], lead = '') => {
@@ -315,7 +321,7 @@ function AckermannLines({ model, frame }: { model: VehicleModel; frame: RefObjec
         return false;
       }
       const p = g.points.trOuter;
-      out.push({ id: l.id, root, k: l.k, t: l.t, design: vec3(p[0].value, p[1].value, p[2].value) });
+      out.push({ id: l.id, root, k: l.k, t: l.t, axis: l.axis, design: vec3(p[0].value, p[1].value, p[2].value) });
     }
     // Corners sharing a design move together, mirrored: say so.
     const shared = CORNER_IDS.filter((c) => out.some((x) => x.root === rootOf(c, s.links) && x.id !== c) && !out.some((x) => x.id === c));
@@ -340,6 +346,27 @@ function AckermannLines({ model, frame }: { model: VehicleModel; frame: RefObjec
       s.setCornerPoint(a.id, 'trOuter', vec3(Number((a.design.x + local.x).toFixed(4)), a.design.y, Number((a.design.z + local.z).toFixed(4))));
     }
   };
+  /**
+   * Raise or lower the crossing: the started outer tie-rod joints move up together, and each arm turns
+   * about its (inclined) steering axis so its line still passes through the crossing in top view.
+   */
+  const lift = (dy: number) => {
+    const s = useApp.getState();
+    const c = crossAt.current;
+    for (const a of start.current) {
+      const [lo, up] = a.axis, y = a.t.y + dy;
+      const f = Math.abs(up.y - lo.y) > 1e-9 ? (y - lo.y) / (up.y - lo.y) : 0;
+      const k = vec3(lo.x + f * (up.x - lo.x), y, lo.z + f * (up.z - lo.z));
+      const len = Math.hypot(a.t.x - a.k.x, a.t.z - a.k.z);
+      let u = { x: c.x - k.x, z: c.z - k.z };
+      const n = Math.hypot(u.x, u.z);
+      if (n < 1 || len < 1e-6) continue;
+      u = { x: u.x / n, z: u.z / n };
+      if (u.x * (a.t.x - a.k.x) + u.z * (a.t.z - a.k.z) < 0) u = { x: -u.x, z: -u.z };
+      const local = placement(a.id, L).dir(vec3(k.x + u.x * len - a.t.x, dy, k.z + u.z * len - a.t.z));
+      s.setCornerPoint(a.id, 'trOuter', vec3(Number((a.design.x + local.x).toFixed(4)), Number((a.design.y + dy).toFixed(4)), Number((a.design.z + local.z).toFixed(4))));
+    }
+  };
   return (
     <group>
       {model.ackermannLines.map((a) => {
@@ -362,13 +389,26 @@ function AckermannLines({ model, frame }: { model: VehicleModel; frame: RefObjec
               );
             })}
             <Joint p={vec3(a.target.x, y, a.target.z)} color="#ffffff" r={9} />
-            {near && a.lines.length === 2 && (
-              <GroundHandle p={vec3(near.x, y, near.z)} color={COLORS.steering} r={16} frame={frame}
-                onStart={() => begin(a.lines.map((l) => l.id), pairLinked
-                  ? `The ${a.axle} left and right are mirrored, so their lines cross on the centerline: the crossing moves along it only (untick “${a.axle === 'front' ? 'Front' : 'Rear'} left / right same dimensions” to move it sideways).`
-                  : '')}
-                onDrag={(at) => aim(pairLinked ? { x: 0, z: at.z } : at)} />
-            )}
+            {near && a.lines.length === 2 && (() => {
+              const ids = a.lines.map((l) => l.id);
+              const sideways = `The ${a.axle} left and right are mirrored, so their lines cross on the centerline: moving the crossing sideways would make them differ. Untick “${a.axle === 'front' ? 'Front' : 'Rear'} left / right same dimensions” (Corner view) to move it sideways.`;
+              const startAt = () => { crossAt.current = { x: near.x, z: near.z }; return begin(ids); };
+              return (
+                <>
+                  <GroundHandle p={vec3(near.x, y, near.z)} color={COLORS.steering} r={16} frame={frame}
+                    onStart={() => begin(ids, pairLinked ? 'Dragging keeps the mirrored crossing on the centerline (forward / back only); click it for up / down arrows.' : '')}
+                    onDrag={(at) => aim(pairLinked ? { x: 0, z: at.z } : at)}
+                    onSelect={() => setSelected(selected === a.axle ? null : a.axle)} />
+                  {selected === a.axle && (
+                    <AxisGizmo at={vec3(near.x, y, near.z)} frame={frame} axes={[
+                      { locked: pairLinked, lockedText: sideways, onStart: startAt, onDelta: (d) => aim({ x: crossAt.current.x + d, z: crossAt.current.z }) },
+                      { onStart: startAt, onDelta: lift },
+                      { onStart: startAt, onDelta: (d) => aim({ x: crossAt.current.x, z: crossAt.current.z + d }) },
+                    ]} />
+                  )}
+                </>
+              );
+            })()}
           </group>
         );
       })}

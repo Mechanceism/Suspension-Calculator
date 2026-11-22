@@ -510,9 +510,9 @@ export function rootOf(id: CornerId, links: CornerLinks): CornerId {
 export const CORNER_NAMES: Record<CornerId, string> = { FL: 'Front left', FR: 'Front right', RL: 'Rear left', RR: 'Rear right' };
 
 /** Vehicle inputs (L6). */
-export const VEHICLE_KEYS = ['mass', 'cgX', 'cgY', 'cgZ', 'wheelbase', 'brakeBias', 'driveSplit', 'rollInertia', 'pitchInertia', 'tireDamping'] as const;
-/** Vehicle inputs only the ride over time (Phase B) uses. */
-export const RIDE_KEYS = ['rollInertia', 'pitchInertia', 'tireDamping'] as const;
+export const VEHICLE_KEYS = ['mass', 'cgX', 'cgY', 'cgZ', 'wheelbase', 'brakeBias', 'driveSplit', 'rollInertia', 'pitchInertia', 'yawInertia', 'tireDamping'] as const;
+/** Vehicle inputs only the ride over time (Phase B) and handling (Phase C) use. */
+export const RIDE_KEYS = ['rollInertia', 'pitchInertia', 'yawInertia', 'tireDamping'] as const;
 export type VehicleKey = (typeof VEHICLE_KEYS)[number];
 export const VEHICLE_META: Record<VehicleKey, { label: string; quantity: Quantity; unit: string; hint?: string }> = {
   mass: { label: 'Total mass (incl. unsprung)', quantity: 'mass', unit: 'kg' },
@@ -524,6 +524,7 @@ export const VEHICLE_META: Record<VehicleKey, { label: string; quantity: Quantit
   driveSplit: { label: 'Drive split (front share)', quantity: 'percent', unit: '%', hint: 'Only used when both axles have powered corners; within an axle the drive is shared equally (open differential)' },
   rollInertia: { label: 'Body roll inertia', quantity: 'ratio', unit: 'kg·m²', hint: 'Sprung body about its CG, around the car\'s long axis (ride over time). About sprung mass × (0.3–0.4 × track)².' },
   pitchInertia: { label: 'Body pitch inertia', quantity: 'ratio', unit: 'kg·m²', hint: 'Sprung body about its CG, around the side-to-side axis (ride over time). About sprung mass × (0.35–0.45 × wheelbase)².' },
+  yawInertia: { label: 'Yaw inertia (whole car)', quantity: 'ratio', unit: 'kg·m²', hint: 'About the CG, around the vertical axis (handling over time). About total mass × (0.45 × wheelbase)².' },
   tireDamping: { label: 'Tire damping', quantity: 'damping', unit: 'N·s/m', hint: 'Vertical damping of each tire (ride over time). Small: rubber and air damp little.' },
 };
 
@@ -816,6 +817,7 @@ export const defaultVehicle = (): Record<VehicleKey, Field> => ({
   driveSplit: field(50, 'percent'),
   rollInertia: field(35, 'ratio'),
   pitchInertia: field(100, 'ratio'),
+  yawInertia: field(140, 'ratio'),
   tireDamping: field(100, 'damping'),
 });
 

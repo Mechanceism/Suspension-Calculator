@@ -55,6 +55,8 @@ export interface TestRunOptions {
   speedLimits?: boolean;
   /** Also drive the test over time (Phase B ride) and check every moment. */
   ride?: boolean;
+  /** Over time, a driver steers along the path (Phase C handling; with `ride`). */
+  handling?: boolean;
 }
 
 export interface TestRun {
@@ -184,7 +186,7 @@ export function runTest(
   });
   let ride: TestRun['ride'];
   if (opts.ride) {
-    const rr = rideOn(p, asm, segments, {});
+    const rr = rideOn(p, asm, segments, { handling: !!opts.handling });
     ride = { frames: rr.frames, metrics: rr.metrics, ...(rr.error ? { error: rr.error } : {}) };
     segs.forEach((sr, i) => {
       // Add what only shows over time (the steady samples already report the rest).
@@ -228,6 +230,8 @@ export interface PlaybackFrame {
   findings: string[];
   /** Ride over time (Phase B): the body pose, each travel (mm) and tire load (N) at this moment. */
   ride?: { pose: ChassisPose; travel: Record<CornerId, number>; tireLoad: Record<CornerId, number> };
+  /** Handling (Phase C): distance off the path (m, + left), sideslip (deg), yaw rate (rad/s), mean steer angle (deg), at full lock. */
+  handling?: { pathError: number; sideslip: number; yawRate: number; steer: number; atLock: boolean; path: { x: number; y: number } };
 }
 
 /**

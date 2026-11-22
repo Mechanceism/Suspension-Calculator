@@ -12,7 +12,7 @@ type Job =
   | { kind: 'corner'; problem: CornerProblem }
   | { kind: 'vehicle'; problem: VehicleProblem }
   | { kind: 'test'; problem: VehicleProblem; segments: SegmentSpec[]; opts: TestRunOptions }
-  | { kind: 'playback'; problem: VehicleProblem; segments: SegmentSpec[]; ride?: boolean }
+  | { kind: 'playback'; problem: VehicleProblem; segments: SegmentSpec[]; ride?: boolean; handling?: boolean }
   | { kind: 'sensitivity'; problem: VehicleProblem; samples: number }
   | { kind: 'tirefit'; samples: TireSample[]; name: string }
   | { kind: 'rates'; problem: VehicleProblem; tests: RateTest[]; vars: RateVar[]; budget: number; mode: 'pass' | 'improve' };
@@ -22,7 +22,7 @@ self.onmessage = (e: MessageEvent<Job>) => {
     const j = e.data;
     if (j.kind === 'playback') {
       const geometries = Object.fromEntries(Object.entries(j.problem.designs).map(([r, d]) => [r, d!.geometry]));
-      self.postMessage({ type: 'done', result: j.ride ? rideRun(j.problem, geometries, j.segments).frames : playbackFrames(j.problem, geometries, j.segments) });
+      self.postMessage({ type: 'done', result: j.ride ? rideRun(j.problem, geometries, j.segments, { handling: !!j.handling }).frames : playbackFrames(j.problem, geometries, j.segments) });
       return;
     }
     if (j.kind === 'tirefit') {

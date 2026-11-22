@@ -38,6 +38,8 @@ interface RunEntry {
   result: TestRun;
   /** Design the run used (stale if it changed). */
   from: DesignRef;
+  /** The test as it was run (its playback frames are reused only for the same test). */
+  test?: TestDesign;
 }
 interface RunStore {
   running: boolean;
@@ -94,12 +96,12 @@ export function startTestRun(test: TestDesign) {
   run.cancel?.();
   const s = useApp.getState();
   const { problem } = buildVehicleProblem(s);
-  const job = runTestJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), { onFail: test.onFail, speedLimits: true, ride: test.ride !== false });
+  const job = runTestJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), { onFail: test.onFail, speedLimits: true, ride: test.ride !== false, handling: test.ride !== false && test.handling !== false });
   const from = designRef(s);
   useRun.setState({ running: true, testId: test.id, error: null, cancel: job.cancel });
   return job.done
     .then((result) => {
-      useRun.setState((r) => ({ running: false, cancel: null, results: { ...r.results, [test.id]: { result, from } } }));
+      useRun.setState((r) => ({ running: false, cancel: null, results: { ...r.results, [test.id]: { result, from, test } } }));
       useApp.getState().set('testView', null);
       return result;
     })
@@ -489,6 +491,12 @@ export function TestsSidebar() {
                   <label className="check-label"><input type="checkbox" checked={test.ride !== false} onChange={(e) => updateTest(test.id, (t) => ({ ...t, ride: e.target.checked }))} /> dynamics (Phase B)</label>
                 </td>
               </tr>
+              <tr title="Over time, a driver steers the car along the path (Phase C): each tire's side force from its slip angle, the car yaws and can slide. Checks how far it runs off the line and its sideslip (spin). Off: the car follows the path exactly.">
+                <td>Handling</td>
+                <td>
+                  <label className="check-label"><input type="checkbox" disabled={test.ride === false} checked={test.ride !== false && test.handling !== false} onChange={(e) => updateTest(test.id, (t) => ({ ...t, handling: e.target.checked }))} /> steered by a driver (Phase C)</label>
+                </td>
+              </tr>
               <tr title="Report: show the failure. Driver lifts: also re-run the failing segment at the fastest speed that passes.">
                 <td>When a segment fails</td>
                 <td>
@@ -666,7 +674,7 @@ export function TestResults() {
                 {sel.state.gravityScale < 0.9999 ? ' · on a grade / bank' : ''}{Object.keys(sel.state.groundOffset).length ? ' · bumps' : ''}
               </p>
               {segRes.steer && (
-                <p className={`small-text${segRes.steer.over ? ' warn-text' : ''}`} title="Steering for the radius: atan(wheelbase ÷ radius) plus the front − rear tire slip angle (more front slip = understeer = more steering). Steady state: yaw and transients come with the handling model (Phase C).">
+                <p className={`small-text${segRes.steer.over ? ' warn-text' : ''}`} title="Steering for the radius: atan(wheelbase ÷ radius) plus the front − rear tire slip angle (more front slip = understeer = more steering). Steady state. Over time with a driver (Handling), the HUD shows the steering actually used.">
                   {segRes.steer.none ? 'Steering: no steered wheels.' : <>
                     Steering: road wheels {fmt(Math.abs(segRes.steer.wheelAngle), 1)}° {segRes.steer.wheelAngle > 0 ? 'left' : 'right'}
                     {Math.abs(segRes.steer.slip) > 0.05 ? ` (${segRes.steer.slip > 0 ? '+' : '−'}${fmt(Math.abs(segRes.steer.slip), 1)}° for the tires' slip: ${segRes.steer.slip > 0 ? 'understeer' : 'oversteer'})` : ''}
@@ -710,8 +718,8 @@ export function TestResults() {
       )}
       <OptimizeSection test={test} onOpenOptimizer={() => openOptimizer(test)} />
       <p className="hint">
-        Grip uses the Magic Formula tire model with generic coefficients (Vehicle → Optimize → Tire grip model). Steady states: what the car does after a tire slides
-        (runs wide, spins) needs the handling model (Phase C).
+        Grip uses the Magic Formula tire model (generic coefficients or a .tir file: Vehicle → Optimize → Tire grip model). Steady states check each moment
+        on the path; over time with a driver (Handling) the car can run wide or spin, and the playback shows the line it actually drove (grey: the path).
       </p>
     </section>
   );

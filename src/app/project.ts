@@ -27,6 +27,7 @@
  *  14  setup wizard status (which values are the user's and which are estimates)
  *  15  wheel offset (ET: the hub point is the mounting face) and rim width per corner design
  *  16  aerodynamics (on / off, generic values, an imported aero model)
+ *  17  handling over time: yaw inertia (vehicle input), "steered by a driver" per test
  */
 import pkg from '../../package.json';
 import { parseValue, type Quantity } from '../core/units/units';
@@ -47,7 +48,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 16;
+export const FORMAT_VERSION = 17;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -287,6 +288,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   14: (f) => ({ ...f, formatVersion: 15 }),
   // 15 → 16: no aero (negligible), as before.
   15: (f) => ({ ...f, formatVersion: 16 }),
+  // 16 → 17: default yaw inertia; tests steered by a driver.
+  16: (f) => ({ ...f, formatVersion: 17 }),
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */
@@ -381,6 +384,7 @@ function readTests(raw: unknown, warnings: string[]): TestDesign[] {
       onFail: t.onFail === 'lift' ? 'lift' : 'report',
       enabled: t.enabled !== false,
       ride: t.ride !== false,
+      handling: t.handling !== false,
     });
   }
   return out;
@@ -645,7 +649,7 @@ export function importProject(data: unknown): ImportResult {
       // Files before format 10 have no ride inputs: they take the defaults quietly.
       const w: string[] = [];
       const r = readRecord(vehicleRaw.fields, VEHICLE_KEYS, (k) => VEHICLE_META[k].quantity, def.vehicle, 'vehicle', w);
-      if (!olderThan4) warnings.push(...w.filter((x) => original >= 10 || !RIDE_KEYS.some((k) => x.startsWith(`vehicle.${k}`))));
+      if (!olderThan4) warnings.push(...w.filter((x) => (original >= 10 || !RIDE_KEYS.some((k) => x.startsWith(`vehicle.${k}`))) && (original >= 17 || !x.startsWith('vehicle.yawInertia'))));
       return r;
     })(),
     autoPreload: typeof vehicleRaw.autoPreload === 'boolean' ? vehicleRaw.autoPreload : def.autoPreload,

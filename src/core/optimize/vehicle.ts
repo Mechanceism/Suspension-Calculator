@@ -68,6 +68,8 @@ export interface RideSpec {
   pitchInertia: number;
   /** Tire vertical damping, N·s/m. */
   tireDamping: number;
+  /** Whole-car yaw inertia about the CG, kg·m² (handling; default ≈ mass × (0.45 × wheelbase)²). */
+  yawInertia?: number;
 }
 
 export interface VehicleDesignIn {

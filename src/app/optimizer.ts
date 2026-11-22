@@ -191,7 +191,7 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
       steered: Object.fromEntries(CORNER_IDS.map((id) => [id, s.settings[id].steered])),
       rackLimit: Math.abs(s.steer.rackLimit.value), cFactor: s.steer.cFactor.value,
     },
-    ride: { rollInertia: Math.max(0.1, v.rollInertia.value), pitchInertia: Math.max(0.1, v.pitchInertia.value), tireDamping: Math.max(0, v.tireDamping.value) },
+    ride: { rollInertia: Math.max(0.1, v.rollInertia.value), pitchInertia: Math.max(0.1, v.pitchInertia.value), yawInertia: Math.max(0.1, v.yawInertia.value), tireDamping: Math.max(0, v.tireDamping.value) },
     mass: v.mass.value, cg: { x: v.cgX.value, height: v.cgY.value, z: v.cgZ.value }, wheelbase: v.wheelbase.value,
     brakeBias: v.brakeBias.value / 100, driveSplit: v.driveSplit.value / 100, autoPreload: s.autoPreload,
     shared: { front: toAxleShared(s.shared.front), rear: toAxleShared(s.shared.rear) },
@@ -269,8 +269,8 @@ export function runTestJob(problem: VehicleProblem, segments: SegmentSpec[], opt
   return { done, cancel: () => worker.terminate() };
 }
 
-/** Compute playback frames in the worker (`ride`: over time, Phase B; otherwise steady states). */
-export function runPlaybackJob(problem: VehicleProblem, segments: SegmentSpec[], ride = false): { done: Promise<PlaybackFrame[]>; cancel(): void } {
+/** Compute playback frames in the worker (`ride`: over time, Phase B, `handling`: steered by a driver, Phase C; otherwise steady states). */
+export function runPlaybackJob(problem: VehicleProblem, segments: SegmentSpec[], ride = false, handling = false): { done: Promise<PlaybackFrame[]>; cancel(): void } {
   const worker = new Worker(new URL('./optimizer.worker.ts', import.meta.url), { type: 'module' });
   const done = new Promise<PlaybackFrame[]>((res, rej) => {
     worker.onmessage = (e: MessageEvent) => {
@@ -280,7 +280,7 @@ export function runPlaybackJob(problem: VehicleProblem, segments: SegmentSpec[],
     };
     worker.onerror = (e) => { worker.terminate(); rej(new Error(e.message || 'Playback worker failed')); };
   });
-  worker.postMessage({ kind: 'playback', problem, segments, ride });
+  worker.postMessage({ kind: 'playback', problem, segments, ride, handling });
   return { done, cancel: () => worker.terminate() };
 }
 

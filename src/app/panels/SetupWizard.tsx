@@ -560,21 +560,23 @@ const InertiaStep: StepView = ({ apply }) => {
   const v = s.vehicle;
   const [roll, setRoll] = useState(v.rollInertia.value);
   const [pitch, setPitch] = useState(v.pitchInertia.value);
+  const [yaw, setYaw] = useState(v.yawInertia.value);
   const estimate = () => {
     const all = mergedCorners(s);
     const unsprung = (['FL', 'FR', 'RL', 'RR'] as const).reduce((a, id) => a + all[id].spring.unsprungMass.value, 0);
     const track = halfTrackOf(designOf('front')) + halfTrackOf(designOf('rear'));
-    const e = estimateInertia(v.mass.value - unsprung, track, v.wheelbase.value);
-    setRoll(Number(e.roll.toFixed(1))); setPitch(Number(e.pitch.toFixed(1)));
+    const e = estimateInertia(v.mass.value - unsprung, track, v.wheelbase.value, v.mass.value);
+    setRoll(Number(e.roll.toFixed(1))); setPitch(Number(e.pitch.toFixed(1))); setYaw(Number(e.yaw.toFixed(0)));
   };
-  const go = () => apply(() => { const st = useApp.getState(); st.setVehicleField('rollInertia', String(roll)); st.setVehicleField('pitchInertia', String(pitch)); });
+  const go = () => apply(() => { const st = useApp.getState(); st.setVehicleField('rollInertia', String(roll)); st.setVehicleField('pitchInertia', String(pitch)); st.setVehicleField('yawInertia', String(yaw)); });
   return (
     <>
-      <p>How hard the body is to roll and pitch (for the ride over time). Rarely measured: the estimate from the weight and size is usually fine.</p>
+      <p>How hard the body is to roll and pitch (for the ride over time) and the whole car to turn (yaw, for handling). Rarely measured: the estimate from the weight and size is usually fine.</p>
       <table className="opt-table">
         <tbody>
           <Row label="Roll inertia (about the sprung CG)"><Num value={roll} unit="kg·m²" q="ratio" onChange={setRoll} /></Row>
           <Row label="Pitch inertia"><Num value={pitch} unit="kg·m²" q="ratio" onChange={setPitch} /></Row>
+          <Row label="Yaw inertia (whole car, about the CG)"><Num value={yaw} unit="kg·m²" q="ratio" onChange={setYaw} /></Row>
         </tbody>
       </table>
       <div className="jm-row"><button className="chip" onClick={estimate}>Estimate from weight and size</button></div>

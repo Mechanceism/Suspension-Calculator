@@ -94,7 +94,7 @@ export const unsprungFromParts = (p: UnsprungParts) =>
  * Body inertias about the sprung CG, kg·m², from the size of the car: radius of gyration ≈ 0.35 × the
  * average track (roll) and ≈ 0.4 × the wheelbase (pitch). Rough: enough to start the ride model.
  */
-export function estimateInertia(sprungMass: number, trackAvg: number, wheelbase: number) {
-  const kr = 0.35 * (trackAvg / 1000), kp = 0.4 * (wheelbase / 1000);
-  return { roll: sprungMass * kr * kr, pitch: sprungMass * kp * kp };
+export function estimateInertia(sprungMass: number, trackAvg: number, wheelbase: number, totalMass = sprungMass) {
+  const kr = 0.35 * (trackAvg / 1000), kp = 0.4 * (wheelbase / 1000), ky = 0.45 * (wheelbase / 1000);
+  return { roll: sprungMass * kr * kr, pitch: sprungMass * kp * kp, yaw: totalMass * ky * ky };
 }

@@ -77,6 +77,8 @@ export interface TestDesign {
   enabled: boolean;
   /** Also drive the test over time (Phase B ride: bumps at speed, transients) and check every moment. */
   ride: boolean;
+  /** Over time, a driver steers the car along the path (Phase C handling: slip angles, yaw, sideslip). */
+  handling: boolean;
 }
 
 export const defaultChecks = () => cloneProfile(PROFILES.default.checks);
@@ -130,7 +132,7 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
   {
     label: 'Autocross sequence',
     make: () => ({
-      name: 'Autocross sequence', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, ride: true,
+      name: 'Autocross sequence', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, ride: true, handling: true,
       segments: [
         newSegment({ name: 'Launch 0–40', distance: f(50, 'distance'), speedStart: f(0, 'speed'), speedEnd: f(40 * MPH, 'speed') }),
         newSegment({ name: 'Brake 40–30', distance: f(15, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(30 * MPH, 'speed') }),
@@ -143,7 +145,7 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
   {
     label: 'Pothole while braking in a turn',
     make: () => ({
-      name: 'Pothole while braking in a turn', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, ride: true,
+      name: 'Pothole while braking in a turn', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, ride: true, handling: true,
       segments: [
         newSegment({ name: 'Braking left turn + pothole', path: 'left', radius: f(45, 'distance'), distance: f(35, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(30 * MPH, 'speed'), features: [{ ...newFeature('pothole', 15), height: f(40, 'length') }] }),
       ],
@@ -152,7 +154,7 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
   {
     label: 'Hills: incline left, lumpy decline right',
     make: () => ({
-      name: 'Hills', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, ride: true,
+      name: 'Hills', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, ride: true, handling: true,
       segments: [
         newSegment({ name: 'Flat straight', distance: f(100, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(40 * MPH, 'speed') }),
         newSegment({ name: 'Bumps + potholes straight', distance: f(60, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(40 * MPH, 'speed'), features: [{ ...newFeature('bump', 15), side: 'left' }, newFeature('pothole', 35)] }),
@@ -169,7 +171,7 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
       const straight = (name: string) => newSegment({ name, bank: f(5, 'angle'), distance: f(150, 'distance'), speedStart: f(75 * MPH, 'speed'), speedEnd: f(85 * MPH, 'speed') });
       const brake = (name: string) => newSegment({ name, bank: f(5, 'angle'), distance: f(60, 'distance'), speedStart: f(85 * MPH, 'speed'), speedEnd: f(75 * MPH, 'speed') });
       return {
-        name: 'Oval: banked turns', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, ride: true,
+        name: 'Oval: banked turns', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, ride: true, handling: true,
         segments: [straight('Front straight'), brake('Brake into turn 1'), turn('Turns 1–2 (24° banking)'), straight('Back straight'), brake('Brake into turn 3'), turn('Turns 3–4 (24° banking)')],
       };
     },
@@ -182,7 +184,7 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
       const turn = (name: string, path: 'left' | 'right') => newSegment({ name, path, radius: f(30, 'distance'), distance: f((Math.PI / 2) * 30, 'distance'), speedStart: f(30 * MPH, 'speed'), speedEnd: f(30 * MPH, 'speed') });
       const seg = (name: string, d: number, v0: number, v1: number, grade = 0) => newSegment({ name, distance: f(d, 'distance'), speedStart: f(v0 * MPH, 'speed'), speedEnd: f(v1 * MPH, 'speed'), grade: f(grade, 'percent') });
       return {
-        name: 'Balanced', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, ride: true,
+        name: 'Balanced', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, ride: true, handling: true,
         segments: [
           seg('Launch 0–50', 80, 0, 50), seg('Brake 50–30', 25, 50, 30), turn('Left turn 1', 'left'),
           seg('Accelerate 30–45', 50, 30, 45), seg('Brake 45–30', 20, 45, 30), turn('Right turn 1', 'right'),
@@ -193,7 +195,7 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
       };
     },
   },
-  { label: 'Empty test', make: () => ({ name: 'New test', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, ride: true, segments: [newSegment()] }) },
+  { label: 'Empty test', make: () => ({ name: 'New test', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, ride: true, handling: true, segments: [newSegment()] }) },
 ];
 
 /**

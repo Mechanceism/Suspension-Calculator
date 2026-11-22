@@ -168,15 +168,20 @@ describe('priority ranks', () => {
     const { runTest } = await import('../src/core');
     const d = defaultDesign();
     const { problem } = buildVehicleProblem(d as AppState);
-    expect(problem.ride).toEqual({ rollInertia: 35, pitchInertia: 100, tireDamping: 100 });
+    expect(problem.ride).toEqual({ rollInertia: 35, pitchInertia: 100, yawInertia: 140, tireDamping: 100 });
     expect(problem.designs.FL?.damping).toEqual({ bump: 1500, rebound: 2500 });
     const geoms = Object.fromEntries(Object.entries(problem.designs).map(([k, v]) => [k, v!.geometry]));
     for (const preset of TEST_PRESETS) {
       const t = { ...preset.make(), id: 'p' };
       expect(t.ride).toBe(true);
-      const r = runTest(problem, geoms, t.segments.map((sg) => segmentSpec(sg, t)), { onFail: 'report', ride: true });
+      expect(t.handling).toBe(true);
+      const r = runTest(problem, geoms, t.segments.map((sg) => segmentSpec(sg, t)), { onFail: 'report', ride: true, handling: true });
       expect(r.ride?.frames.length).toBeGreaterThan(5);
+      expect(r.ride?.frames.every((f) => f.handling && Number.isFinite(f.handling.pathError))).toBe(true);
       expect(r.segments.flatMap((s) => s.findings).filter((f) => f.check === 'noSolution')).toEqual([]);
+      // The default car is driven through every preset: it stays on the line and doesn't spin.
+      expect(r.segments.flatMap((s) => s.findings).filter((f) => f.check === 'pathError' || f.check === 'spin').map((f) => `${t.name}: ${f.text}`)).toEqual([]);
+      expect(r.ride!.metrics!.maxPathError!).toBeLessThan(0.8);
     }
     const old = JSON.parse(JSON.stringify(serializeProject(d, 'Old')));
     old.formatVersion = 9;

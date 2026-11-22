@@ -316,6 +316,27 @@ Two operating modes:
 
 ---
 
+## Aerodynamics ✅ (`src/core/vehicle/aero.ts`)
+Off by default (negligible for slow cars). On: forces on the **body**, never through the tires, at the car's speed V (tests: each moment's speed; Vehicle view: the *Speed* slider) and air density ρ (from altitude and temperature: standard-atmosphere pressure, dry air).
+
+    drag   D = ½ρV²·CdA                         rearward, at the drag height above the ground
+    lift   L_f = ½ρV²·ClA_f,  L_r = ½ρV²·ClA_r   at the front / rear axle (+ = lift, − = downforce)
+
+- **Where they act:** lift / downforce on the body at each axle (so it loads the tires, compresses the springs and pitches the car with the aero balance); drag on the body at its height (rearward: up high it moves load rearward), and the tires must drive against it: drag adds to the drive force needed (or takes from the braking needed) while the car's own acceleration stays what the segment asks.
+- **Generic values** (editable, clearly generic): CdA 0.8 m², downforce areas 0.3 m² front and 0.4 m² rear, drag at 400 mm.
+- **Aero map:** the coefficients can be tables over front and rear ride height (bilinear, held at the map's edges), so rake and ride height change downforce and balance as the body moves (in the steady solve and over time). Ride height = the body reference plane's height above the ground at that axle, absolute (mm) or as the change from the design ride height.
+- **Exchange format** (for a separate aero / CFD tool; File → Import → Aero data, or the Aerodynamics panel), JSON:
+
+      { "format": "suspension-aero", "version": 1, "name": "…",
+        "CdA": 0.9, "ClAf": -0.6, "ClAr": -0.9, "dragHeight": 450,          constants (m², mm), or
+        "rideHeightRef": "absolute" | "change",
+        "map": { "rhFront": [mm…], "rhRear": [mm…],
+                 "CdA": [[…]], "ClAf": [[…]], "ClAr": [[…]] } }               tables [front index][rear index]
+
+  `ClA` with `balance` (front share of the downforce, 0–1) can stand in for ClAf / ClAr. Or CSV with a header row `rhF, rhR, CdA, ClAf, ClAr`, one row per ride-height pair forming a grid (ride heights absolute; drag at 400 mm). The imported model is saved in the project.
+- Readouts: drag, downforce per axle and the aero balance (front share) in the Vehicle results; at 100 km/h in the panel.
+- Tested: downforce adds ½ρV²·ClA to the tire loads, split by axle; at constant speed the driven tires push exactly the drag, and drag up high moves load rearward; the map interpolates bilinearly and holds at its edges; JSON (also `ClA` + `balance`) and CSV grids read, incomplete files are refused with the reason; air density 1.225 kg/m³ at sea level and 15 °C. In the browser: generic values at 144 km/h give 771 N drag and 289 / 385 N downforce (42.9 % front); an imported map raises downforce as the ride height drops.
+
 ## Editing tools: driving dimensions (`src/core/math/dimension.ts`)
 Set dimension (Measure tool) moves one point; the other is fixed. With d = B − A:
 - **Distance:** B′ = A + L·d/|d| (or A′ = B − L·d/|d|).
@@ -366,6 +387,31 @@ The whole car driven through a test as a dynamic system with 7 degrees of freedo
 - **Playback** (25 frames/s) poses the 3D car directly from the simulated body pose and travels (`vehicleAt`), with roll and pitch in the readout; a run with *Ride over time* on keeps its frames, so Play starts at once.
 - **Cost:** about 1 s of computing per 10 s of driving (browser / Node); a three-test Run all with steady states and the ride takes ≈ 5 s.
 - Tested: a smooth straight at constant speed stays at the steady state; turning in, the body rolls and settles at the steady roll and travel for that cornering; a bump moves the wheel and the motion dies out, settling faster with more damping; every built-in test runs over time without going unstable; files before format 10 take the default ride inputs quietly.
+
+## Tests, Phase C: handling over time ✅ (`src/core/tests/handling.ts`)
+With *Handling* on (per test, default on with the ride), a driver steers the car along the path during the ride over time (Phase B) and each tire's side force comes from its own slip angle, so the car can run wide, cut in, slide and spin instead of following the path by definition.
+
+**Planar states** (on top of Phase B's 7): lateral velocity v (+ left), yaw rate r, distance off the path e_y (+ left), heading error to the path e_ψ, and the steering. The forward speed u follows the test's speed profile.
+
+    slip angle      α_i = δ_i − atan2(v + r·a_i, u − r·y_i)            a_i forward, y_i left of the CG (contact patches)
+    side force      F_y,i = MF(α_i, F_z,i, γ_i, p_i) · √(1 − (F_x,i / F_x,peak)²)
+    lateral         v̇ = Σ (F_y,i cos δ_i + F_x,i sin δ_i) / m + g·sin(bank)·cos(grade) − u·r
+    yaw             I_z·ṙ = Σ (a_i·F_y,i^veh − y_i·F_x,i^veh)
+    path            ė_y = u·sin e_ψ + v·cos e_ψ,     ė_ψ = r − u·κ(s)
+
+- **Tires:** each tire's Magic Formula (its own model front / rear), at its load and inclination from the ride model at that moment and its pressure. The braking / drive force (shared as in the steady solve) takes its share of the friction ellipse; a wheel braked past its peak keeps 20 % of its side grip (ABS), a locked one (no ABS) none.
+- **Coupling to the ride:** the lateral acceleration the ride model feels is what the tires give, a_y = ΣF_y / m (road plane; resolved with the bank and grade exactly as in Phase A), and each tire's lateral force in the ride model is its own handling force. So roll, jacking and load transfer follow the real side forces, including the transients of turning in and the front / rear split while the car yaws.
+- **Steering kinematics:** a table of each wheel's steer angle vs rack travel (from the car's own corners, at ride height: Ackermann / anti-Ackermann included). The driver asks for an effective angle (mean steered front − mean steered rear); the rack is found by inverting the table and stops at the rack limit (*full lock*). Without steering data both front wheels take the commanded angle.
+- **Driver (single-point preview):** looks D = max(5 m, u·0.7 s) ahead, predicts where the car will be if it keeps its course, x = e_y + D·sin χ (χ = e_ψ + atan(v/u), the direction of travel to the path) and steers so it would arrive on the path there: e = y_path(D) − x, κ_cmd = 2e/D², δ_cmd = atan(L·κ_cmd) + K·(u²·κ_cmd − g_bank)/g. y_path(D) is the path's own offset D ahead in the frame of its tangent (integrated over the coming segments, so the driver turns in early). K is the understeer the driver has learned: (mean front slip − mean rear slip) ÷ lateral g, averaged over about 1 s while cornering above 0.15 g, limited to −0.05 … 0.15 rad/g, started from the steady state. The steering follows the command with a 0.05 s lag and at most 0.9 rad/s (≈ 50°/s) at the road wheels; the command is limited to a little past full lock. Tuning (preview 0.7 s, lag 0.05 s) on the built-in tests: the most the default car gets off the line is 0.7 m (autocross: curvature changes in a step that no car can follow exactly, so the driver cuts the corner slightly); a shorter preview cuts less but became unstable at oval speeds (0.5 s), a longer one cuts more.
+- **Slow (below 3 m/s):** the tires barely slip; the car follows its steering geometrically (kinematic bicycle: r = u·tan δ / L, no slip at the rear axle) and the side forces are what that motion needs, shared by the yaw balance and the loads.
+- **Start:** from the steady state at t = 0, then 1.5 s of driving held at the first moment (same speed and curve) so the driver and the car settle before the clock starts.
+- **Integration:** two explicit sub-steps (1 ms) per ride step, with the loads and inclinations of the ride step (velocities first, then the path errors). Past ≈ 40° of sideslip the model is held there (the spin check failed long before).
+- **Checks** (pass rules, every 10 ms): *Off the line* (Fail beyond 1 m, a threshold) and *Spin / slide* (sideslip, Fail beyond 12°) count at once; the Drift profile warns instead (2 m, 45°). With the driver, *Steering lock* means the driver needed more than full lock for at least 0.1 s (a moment at full lock catching a slide is fine). Grip: a tire past its peak slip angle counts as sliding (its force can't exceed the peak, so force use alone wouldn't show it), and the axles' grip use comes from the forces they actually give.
+- **Ride measures:** the largest distance off the line and the largest sideslip, added to the tuning score (2 per m, 0.1 per degree).
+- **Playback** places the car on the line it actually drove, heading along its own yaw; the track map draws the driven line colored by result over the path (grey, dashed); the readout shows the distance off the line, sideslip, the road-wheel steer angle and *(full lock)*.
+- **Yaw inertia** (vehicle input, whole car about the CG): default ≈ mass × (0.45 × wheelbase)²; the setup wizard's inertia step estimates it.
+- **Cost:** about the same as the ride alone (a Run all of two presets with steady states, ride and handling: ≈ 4.5 s in the browser).
+- Tested: the steering table inverts and stops at full lock; a steady 30 m turn at 12 m/s is followed with yaw rate u/R, lateral u²/(gR), steering within 0.5° of the steady steering need and < 0.1 m error (< 0.5 m through turn-in and out), and passes; right turns mirror left turns; too fast for the grip (18 m/s) the front slides, the driver goes to full lock and the car runs wide (fails *Off the line*); a rear with much less grip slides out (oversteer / spin, sideslip > 3°); without steered wheels a turn can't be followed; starting from rest through a turn (slow mode) stays on the line; every built-in test is driven by the default car without leaving the line or spinning.
 
 ## Setup wizard: measuring the car ✅ (`src/core/setup/measure.ts`)
 - **Corner-scale CG:** level weights W_FL…W_RR → mass m = ΣW, front share f = (W_FL + W_FR)/m, CG z = −(1 − f)·L behind the front axle, lateral x = [(W_FL − W_FR)·t_F/2 + (W_RL − W_RR)·t_R/2] / m. Height: raise one axle by H at its wheel centers (suspension locked) and weigh the other axle again; it gains ΔW: h = r + L·ΔW / (m·tan θ), sin θ = H/L, r = wheel-center height. Exact for a rigid body pivoting at the grounded wheel centers (tested).

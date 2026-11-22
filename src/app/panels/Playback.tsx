@@ -52,14 +52,15 @@ function applyFrame(f: PlaybackFrame) {
 
 async function computeFrames(test: TestDesign) {
   const s = useApp.getState();
-  usePlayback.setState({ computing: true, error: null, playing: false, testId: test.id, from: { geom: s.geom, corners: s.corners } });
+  usePlayback.setState({ computing: true, error: null, playing: false, testId: test.id, from: { geom: s.geom, corners: s.corners, test } });
   try {
     // The last run already drove the test over time: reuse it while the design is the same.
     const last = useRun.getState().results[test.id];
     const fresh = last && last.from.geom === s.geom && last.from.corners === s.corners && last.from.settings === s.settings && last.from.vehicle === s.vehicle;
-    const reuse = test.ride !== false && fresh && last.result.ride?.frames.length ? last.result.ride.frames : null;
+    const handling = test.ride !== false && test.handling !== false;
+    const reuse = test.ride !== false && fresh && (last.test === undefined || last.test === test) && last.result.ride?.frames.length && !!last.result.ride.frames[0]!.handling === handling ? last.result.ride.frames : null;
     const { problem } = buildVehicleProblem(s);
-    const frames = reuse ?? await runPlaybackJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), test.ride !== false).done;
+    const frames = reuse ?? await runPlaybackJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), test.ride !== false, handling).done;
     usePlayback.setState({ frames, computing: false, t: 0 });
     if (frames[0]) applyFrame(frames[0]);
     return frames;
@@ -85,7 +86,10 @@ function TrackMap({ frames, current }: { frames: PlaybackFrame[]; current: Playb
   const px = (x: number) => W / 2 + (x - box.cx) * k;
   const py = (y: number) => H / 2 - (y - box.cy) * k;
   return (
-    <svg className="track-map" viewBox={`0 0 ${W} ${H}`} aria-label="Track map">
+    <svg className="track-map" viewBox={`0 0 ${W} ${H}`} aria-label="Track map: the line driven, colored by result (grey: the path)">
+      {frames[0]!.handling && (
+        <polyline points={frames.map((f) => `${px(f.handling!.path.x).toFixed(1)},${py(f.handling!.path.y).toFixed(1)}`).join(' ')} fill="none" stroke="#8a93a3" strokeWidth={1} strokeDasharray="3 2" />
+      )}
       {frames.slice(1).map((f, i) => (
         <line key={i} x1={px(frames[i]!.pos.x)} y1={py(frames[i]!.pos.y)} x2={px(f.pos.x)} y2={py(f.pos.y)} stroke={SEV_COLOR[f.severity]} strokeWidth={3} strokeLinecap="round" />
       ))}
@@ -108,9 +112,10 @@ export function PlaybackBar({ test }: { test: TestDesign | null }) {
   const total = frames.length ? frames[frames.length - 1]!.t : 0;
   const cur = frames.length ? frameAt(frames, pb.t) : undefined;
   const stale = useMemo(() => {
-    const f = pb.from as { geom: unknown; corners: unknown } | null;
-    return !!f && pb.testId === test?.id && (f.geom !== geom || f.corners !== corners);
-  }, [pb.from, pb.testId, test?.id, geom, corners]);
+    const f = pb.from as { geom: unknown; corners: unknown; test?: unknown } | null;
+    // The car or the test (segments, options) changed since the frames were computed.
+    return !!f && pb.testId === test?.id && (f.geom !== geom || f.corners !== corners || (f.test !== undefined && f.test !== test));
+  }, [pb.from, pb.testId, test, geom, corners]);
 
   // Animation: advance time; pose the car when the frame changes.
   useEffect(() => {
@@ -187,6 +192,13 @@ export function PlaybackBar({ test }: { test: TestDesign | null }) {
             <b>{cur.segment + 1}. {test.segments[cur.segment]?.name}</b> · {disp.format(cur.speed, 'm/s', 0)} · lateral {fmt(cur.ay, 2)} g · long. {fmt(cur.ax, 2)} g
             {cur.rack ? ` · rack ${fmt(cur.rack, 1)} mm` : ''}
             {cur.ride ? ` · roll ${fmt((cur.ride.pose.roll * 180) / Math.PI, 2)}° · pitch ${fmt((cur.ride.pose.pitch * 180) / Math.PI, 2)}°` : ''}
+            {cur.handling && (
+              <span title="Handling (driver steering): distance off the path (+ = left of it), sideslip angle (where the car points vs where it goes) and the road-wheel steer angle">
+                {' · off line '}<span className={Math.abs(cur.handling.pathError) > 1 ? 'bad-text' : Math.abs(cur.handling.pathError) > 0.5 ? 'warn-text' : ''}>{fmt(cur.handling.pathError, 2)} m</span>
+                {' · sideslip '}<span className={Math.abs(cur.handling.sideslip) > 12 ? 'bad-text' : Math.abs(cur.handling.sideslip) > 6 ? 'warn-text' : ''}>{fmt(cur.handling.sideslip, 1)}°</span>
+                {` · steer ${fmt(cur.handling.steer, 1)}°`}{cur.handling.atLock ? <span className="warn-text"> (full lock)</span> : null}
+              </span>
+            )}
             {' · grip '}{CORNER_IDS.map((id) => (
               <span key={id} className={cur.utilization[id] > 1 ? 'bad-text' : cur.utilization[id] > 0.9 ? 'warn-text' : ''}> {id} {fmt(cur.utilization[id] * 100, 0)}%</span>
             ))}

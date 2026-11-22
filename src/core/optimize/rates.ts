@@ -25,7 +25,7 @@ export interface RateVar {
   label: string;
 }
 
-export interface RateTest { segments: TestSegmentSpec[]; weight: number; onFail: 'report' | 'lift' }
+export interface RateTest { segments: TestSegmentSpec[]; weight: number; onFail: 'report' | 'lift'; /** Driver steering over time (Phase C). */ handling?: boolean }
 
 /** The problem with these rates. */
 export function withRates(p: VehicleProblem, vars: RateVar[], x: number[]): VehicleProblem {
@@ -54,7 +54,7 @@ const geometriesOf = (p: VehicleProblem) => Object.fromEntries(Object.entries(p.
 /** Score of a set of tests (priority-weighted mean of each test's score) with its runs. */
 export function scoreTests(p: VehicleProblem, tests: RateTest[], mode: 'pass' | 'improve' = 'pass'): { score: number; runs: TestRun[] } {
   const geoms = geometriesOf(p);
-  const runs = tests.map((t) => runTest(p, geoms, t.segments, { onFail: t.onFail, speedLimits: false, ride: true }));
+  const runs = tests.map((t) => runTest(p, geoms, t.segments, { onFail: t.onFail, speedLimits: false, ride: true, handling: t.handling }));
   const tw = tests.reduce((a, t) => a + t.weight, 0) || 1;
   const score = runs.reduce((a, r, i) => a + tests[i]!.weight * (r.error ? 1e4 : testScore(r, mode)), 0) / tw;
   return { score, runs };

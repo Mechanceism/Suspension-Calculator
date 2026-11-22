@@ -10,7 +10,7 @@ export type Severity = 'pass' | 'warn' | 'fail';
 
 export type CheckId =
   | 'nearLimit' | 'understeer' | 'oversteer' | 'wheelspin' | 'absActive' | 'lockup' | 'speedNotReached'
-  | 'bumpStop' | 'bottoming' | 'wheelLift' | 'rollover' | 'noSolution' | 'beyondGrip' | 'steerLimit';
+  | 'bumpStop' | 'bottoming' | 'wheelLift' | 'rollover' | 'noSolution' | 'beyondGrip' | 'steerLimit' | 'pathError' | 'spin';
 
 export interface CheckSetting {
   severity: Severity;
@@ -43,6 +43,8 @@ export const CHECK_META: Record<CheckId, CheckMeta> = {
   wheelLift: { label: 'Wheel lift', hint: 'A tire unloads to (almost) nothing.' },
   rollover: { label: 'Rollover', hint: 'Cornering g beyond the rigid rollover threshold (half track ÷ CG height).', fixed: true },
   noSolution: { label: 'No solution', hint: "The car can't settle in this state.", fixed: true },
+  pathError: { label: 'Off the line', hint: 'Driving over time with the driver steering: the car is further than this from the path (runs wide or cuts in).', threshold: { label: 'allowed', unit: 'm' } },
+  spin: { label: 'Spin / slide', hint: 'Driving over time with the driver steering: the car\'s sideslip angle (how far it points away from where it travels) is beyond this.', threshold: { label: 'allowed', unit: '°' } },
   steerLimit: { label: 'Steering lock', hint: 'The turn is tighter than the steering allows: its road-wheel angle (atan(wheelbase ÷ radius), plus the front − rear tire slip angle at speed) needs more rack travel than the rack limit, or no wheel steers.' },
   beyondGrip: { label: 'Beyond the tires', hint: 'The state asks for more total force than all four tires can give: no suspension can pass it. Lower the speed, enlarge the radius, or improve the tires.', fixed: true },
 };
@@ -63,6 +65,8 @@ const base: CheckProfile = {
   noSolution: { severity: 'fail' },
   beyondGrip: { severity: 'fail' },
   steerLimit: { severity: 'fail' },
+  pathError: { severity: 'fail', threshold: 1 },
+  spin: { severity: 'fail', threshold: 12 },
 };
 
 export type BuiltinProfile = 'default' | 'street' | 'track' | 'drift' | 'offroad';
@@ -70,7 +74,7 @@ export const PROFILES: Record<BuiltinProfile, { label: string; checks: CheckProf
   default: { label: 'Default', checks: base },
   street: { label: 'Street (strict)', checks: { ...base, absActive: { severity: 'fail', threshold: 0 }, bumpStop: { severity: 'fail' } } },
   track: { label: 'Track', checks: { ...base, nearLimit: { severity: 'pass', threshold: 0 }, wheelLift: { severity: 'warn' } } },
-  drift: { label: 'Drift', checks: { ...base, oversteer: { severity: 'warn', threshold: 30, threshold2: 10 }, wheelspin: { severity: 'warn', threshold: 30 }, nearLimit: { severity: 'pass', threshold: 0 } } },
+  drift: { label: 'Drift', checks: { ...base, oversteer: { severity: 'warn', threshold: 30, threshold2: 10 }, wheelspin: { severity: 'warn', threshold: 30 }, nearLimit: { severity: 'pass', threshold: 0 }, spin: { severity: 'warn', threshold: 45 }, pathError: { severity: 'warn', threshold: 2 } } },
   offroad: { label: 'Off-road', checks: { ...base, wheelLift: { severity: 'pass' }, bumpStop: { severity: 'pass' } } },
 };
 /** A copy, with any check missing (profiles saved before it existed) taken from the default. */
@@ -101,6 +105,8 @@ export interface StateFacts {
   availableG: number;
   /** Steering the turn needs (turns only). */
   steer?: SteerNeed | null;
+  /** Handling over time (driver steering): distance off the path (m, + = left), sideslip (deg), steering at full lock. */
+  handling?: { pathError: number; sideslip: number; atLock: boolean };
 }
 
 const pct = (x: number) => `${(x * 100).toFixed(0)}%`;
@@ -121,6 +127,12 @@ export function classifyState(f: StateFacts, profile: CheckProfile): Finding[] {
   else if (st?.over) {
     add('steerLimit', `Too tight for the steering: needs ${Math.abs(st.wheelAngle).toFixed(1)}° at the road wheels${Math.abs(st.slip) > 0.05 ? ` (${st.slip > 0 ? '+' : '−'}${Math.abs(st.slip).toFixed(1)}° of it for the tires' slip)` : ''}`
       + `${Number.isFinite(st.rack) ? ` (rack ${Math.abs(st.rack).toFixed(1)} mm, limit ±${st.limit.toFixed(0)} mm)` : ''}; full lock gives ${st.maxAngle.toFixed(1)}°`);
+  }
+  const hd = f.handling;
+  if (hd) {
+    const allowed = profile.pathError?.threshold ?? 1;
+    if (Math.abs(hd.pathError) > allowed) add('pathError', `${Math.abs(hd.pathError).toFixed(2)} m off the line (${hd.pathError > 0 ? 'left' : 'right'} of the path)${hd.atLock ? ', steering at full lock' : ''}`);
+    if (Math.abs(hd.sideslip) > (profile.spin?.threshold ?? 12)) add('spin', `Sideslip ${Math.abs(hd.sideslip).toFixed(1)}°: the car slides sideways / spins`);
   }
   if (!r || !r.converged) { add('noSolution', "The car can't settle in this state"); return out; }
   const g = r.grip;

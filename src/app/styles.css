@@ -544,3 +544,9 @@ input[type='range']:disabled { opacity: 0.4; }
 .playback-slider { flex: 1; min-width: 120px; }
 .playback-hud { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bad-text { color: #ff7b7b; }
+
+/* Test list + priority ranks */
+.rank-select { font-size: 11px; padding: 0 2px; color: #ffd166; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; }
+.presets summary { cursor: pointer; color: var(--muted); margin: 6px 0 4px; }
+.presets .wide-btn { margin-bottom: 4px; }
+.test-head { margin-top: 10px; }

@@ -36,8 +36,7 @@ export const QUANTITY_LABELS: Record<DisplayQuantity, string> = {
 };
 
 export const PRESETS: Record<'metric' | 'imperial', Record<DisplayQuantity, string>> = {
-  // Speed defaults to mph in both (user preference); km/h and m/s are available in Custom.
-  metric: { length: 'mm', distance: 'm', speed: 'mph', mass: 'kg', force: 'N', pressure: 'kPa', torque: 'N·m', damping: 'N·s/m', temperature: '°C', angle: '°', area: 'cm²' },
+  metric: { length: 'mm', distance: 'm', speed: 'km/h', mass: 'kg', force: 'N', pressure: 'kPa', torque: 'N·m', damping: 'N·s/m', temperature: '°C', angle: '°', area: 'cm²' },
   imperial: { length: 'in', distance: 'ft', speed: 'mph', mass: 'lb', force: 'lbf', pressure: 'psi', torque: 'lbf·ft', damping: 'lbf·s/in', temperature: '°F', angle: '°', area: 'in²' },
 };
 

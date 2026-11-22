@@ -198,9 +198,10 @@ function SegmentList({ test, selected, onSelect }: { test: TestDesign; selected:
           <span className="seg-num">{i + 1}</span>
           <span className="seg-text">
             <b>{seg.name}</b>
-            <span className="muted small-text">{segmentSummary(seg, disp)}{seg.checks ? ' · own rules' : ''}{seg.weight.value !== 1 ? ` · weight ${seg.weight.value}` : ''}</span>
+            <span className="muted small-text">{segmentSummary(seg, disp)}{seg.checks ? ' · own rules' : ''}</span>
           </span>
           <span className="seg-tools" onClick={(e) => e.stopPropagation()}>
+            <RankSelect rank={seg.rank} n={test.segments.length} onChange={(r) => updateSegment(test.id, seg.id, (x) => ({ ...x, rank: r }))} />
             <button className="icon-btn" disabled={i === 0} onClick={() => move(i, i - 1)} title="Move up">↑</button>
             <button className="icon-btn" disabled={i === test.segments.length - 1} onClick={() => move(i, i + 1)} title="Move down">↓</button>
             <button className="icon-btn" title="Duplicate" onClick={() => updateTest(test.id, (t) => ({ ...t, segments: [...t.segments.slice(0, i + 1), { ...structuredClone(seg), id: newTestId('seg'), name: `${seg.name} (copy)` }, ...t.segments.slice(i + 1)] }))}>⧉</button>
@@ -269,10 +270,9 @@ function SegmentEditor({ test, seg, index }: { test: TestDesign; seg: TestSegmen
           <tr className="seg-layer"><td colSpan={4}>Road</td></tr>
           <RoadEditor seg={seg} upd={upd} />
           <tr className="seg-layer"><td colSpan={4}>Importance</td></tr>
-          <tr title="How much this segment counts within the test when optimizing (1 = normal)">
-            <td>Weight</td>
-            <td><ValueInput field={seg.weight} unit="" width={56} onCommit={(t) => upd((s) => ({ ...s, weight: parse(t, 'ratio', s.weight) }))} /></td>
-            <td /><td />
+          <tr title="Priority within the test when optimizing (P1 = most important; equal = same priority). Separate from the run order.">
+            <td>Priority</td>
+            <td colSpan={3}><RankSelect rank={seg.rank} n={test.segments.length} onChange={(r) => upd((s) => ({ ...s, rank: r }))} /></td>
           </tr>
           <tr>
             <td>Pass rules</td>
@@ -292,6 +292,65 @@ function SegmentEditor({ test, seg, index }: { test: TestDesign; seg: TestSegmen
   );
 }
 
+/** Priority rank picker: P1 = most important (shared ranks = equal priority). */
+function RankSelect({ rank, n, onChange }: { rank: number; n: number; onChange: (r: number) => void }) {
+  const max = Math.max(n, rank);
+  return (
+    <select className="rank-select" value={rank} onChange={(e) => onChange(Number(e.target.value))} onClick={(e) => e.stopPropagation()}
+      title="Priority when optimizing: P1 = most important; equal ranks = equal priority. Not the order.">
+      {Array.from({ length: max }, (_, i) => <option key={i + 1} value={i + 1}>P{i + 1}</option>)}
+    </select>
+  );
+}
+
+/** The tests as a plain list (like the segments): select, drag or up/down to reorder, priority, duplicate, delete. */
+function TestList({ tests, activeId }: { tests: TestDesign[]; activeId: string | null }) {
+  const set = useApp((s) => s.set);
+  const [drag, setDrag] = useState<number | null>(null);
+  const move = (from: number, to: number) => useApp.getState().updateTests((ts) => {
+    if (to < 0 || to >= ts.length || from === to) return ts;
+    const a = [...ts];
+    const [x] = a.splice(from, 1);
+    a.splice(to, 0, x!);
+    return a;
+  });
+  if (!tests.length) return <p className="muted small-text">No tests yet.</p>;
+  return (
+    <ol className="seg-list test-list">
+      {tests.map((t, i) => (
+        <li
+          key={t.id}
+          className={`${t.id === activeId ? 'sel' : ''}${drag === i ? ' dragging' : ''}`}
+          draggable
+          onDragStart={() => setDrag(i)}
+          onDragOver={(e) => { e.preventDefault(); }}
+          onDrop={() => { if (drag !== null) move(drag, i); setDrag(null); }}
+          onDragEnd={() => setDrag(null)}
+          onClick={() => set('activeTestId', t.id)}
+        >
+          <span className="drag-handle" title="Drag to reorder">⋮⋮</span>
+          <span className="seg-num">{i + 1}</span>
+          <span className="seg-text">
+            <b>{t.name}</b>
+            <span className="muted small-text">{t.segments.length} segment{t.segments.length === 1 ? '' : 's'} · {t.profile === 'custom' ? 'custom rules' : PROFILES[t.profile as BuiltinProfile]?.label ?? t.profile.replace('user:', '')}</span>
+          </span>
+          <span className="seg-tools" onClick={(e) => e.stopPropagation()}>
+            <RankSelect rank={t.rank} n={tests.length} onChange={(r) => updateTest(t.id, (x) => ({ ...x, rank: r }))} />
+            <button className="icon-btn" disabled={i === 0} onClick={() => move(i, i - 1)} title="Move up">↑</button>
+            <button className="icon-btn" disabled={i === tests.length - 1} onClick={() => move(i, i + 1)} title="Move down">↓</button>
+            <button className="icon-btn" title="Duplicate" onClick={() => {
+              const copy = { ...structuredClone(t), id: newTestId('test'), name: `${t.name} (copy)` };
+              useApp.getState().updateTests((ts) => [...ts.slice(0, i + 1), copy, ...ts.slice(i + 1)]);
+              set('activeTestId', copy.id);
+            }}>⧉</button>
+            <button className="icon-btn" title="Delete this test" onClick={() => { if (confirm(`Delete test “${t.name}”?`)) useApp.getState().updateTests((ts) => ts.filter((x) => x.id !== t.id)); }}>✕</button>
+          </span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 export function TestsSidebar() {
   const tests = useApp((s) => s.tests);
   const test = useActiveTest();
@@ -300,78 +359,78 @@ export function TestsSidebar() {
   const [segPreset, setSegPreset] = useState(0);
   const [selSeg, setSelSeg] = useState<string | null>(null);
 
-  const addTest = (i: number) => {
-    const t = { ...TEST_PRESETS[i]!.make(), id: newTestId('test') };
+  const addTest = (make: () => Omit<TestDesign, 'id'>) => {
+    const t = { ...make(), id: newTestId('test') };
     useApp.getState().updateTests((ts) => [...ts, t]);
     set('activeTestId', t.id);
   };
+  const empty = TEST_PRESETS.find((p) => p.label === 'Empty test')!;
+  const presets = TEST_PRESETS.filter((p) => p !== empty);
+  const selIndex = test ? test.segments.findIndex((s) => s.id === selSeg) : -1;
+  const sel = test ? (selIndex >= 0 ? test.segments[selIndex] : test.segments[0]) : undefined;
 
-  if (!test) {
-    return (
-      <div className="inspector tests-sidebar">
-        <p className="hint">
-          A test is a chain of segments. Each segment combines a <b>speed</b> change over a distance, a <b>path</b> (straight or a
-          left / right turn) and the <b>road</b> (grade, bank, bumps, potholes). Start from a preset:
-        </p>
-        {TEST_PRESETS.map((p, i) => <button key={p.label} className="wide-btn" onClick={() => addTest(i)}>{p.label}</button>)}
-      </div>
-    );
-  }
-  const selIndex = test.segments.findIndex((s) => s.id === selSeg);
-  const sel = selIndex >= 0 ? test.segments[selIndex] : test.segments[0];
   return (
     <div className="inspector tests-sidebar">
+      <h3 className="subhead">Tests (in order)</h3>
+      <TestList tests={tests} activeId={test?.id ?? null} />
       <div className="jm-row">
-        <select value={test.id} onChange={(e) => set('activeTestId', e.target.value)} title="Test">
-          {tests.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-        </select>
-        <select value="" onChange={(e) => { if (e.target.value !== '') addTest(Number(e.target.value)); }} title="New test">
-          <option value="">+ New test…</option>
-          {TEST_PRESETS.map((p, i) => <option key={p.label} value={i}>{p.label}</option>)}
-        </select>
-        <button className="icon-btn" title="Delete this test" onClick={() => { if (confirm(`Delete test “${test.name}”?`)) useApp.getState().updateTests((ts) => ts.filter((t) => t.id !== test.id)); }}>🗑</button>
+        <button className="chip on" onClick={() => addTest(empty.make)}>+ New test</button>
       </div>
-      <table className="opt-table">
-        <tbody>
-          <tr><td>Name</td><td><input className="value-input wide-text" value={test.name} onChange={(e) => updateTest(test.id, (t) => ({ ...t, name: e.target.value }))} /></td></tr>
-          <tr title="How much this test counts when optimizing several tests (e.g. 80 for paved-road tests, 20 for rough-road tests)">
-            <td>Priority</td>
-            <td className="nowrap"><ValueInput field={test.priority} unit="%" width={48} onCommit={(t) => updateTest(test.id, (x) => ({ ...x, priority: parse(t, 'percent', x.priority) }))} /> %</td>
-          </tr>
-          <tr title="Report: show the failure. Driver lifts: also re-run the failing segment at the fastest speed that passes.">
-            <td>When a segment fails</td>
-            <td>
-              <button className={`chip${test.onFail === 'report' ? ' on' : ''}`} onClick={() => updateTest(test.id, (t) => ({ ...t, onFail: 'report' }))}>Report</button>
-              <button className={`chip${test.onFail === 'lift' ? ' on' : ''}`} onClick={() => updateTest(test.id, (t) => ({ ...t, onFail: 'lift' }))}>Driver lifts</button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <PassRules test={test} />
-      <h3 className="subhead">Segments (in order)</h3>
-      <SegmentList test={test} selected={sel?.id ?? null} onSelect={setSelSeg} />
-      <div className="jm-row">
-        <select value={segPreset} onChange={(e) => setSegPreset(Number(e.target.value))}>
-          {SEGMENT_PRESETS.map((p, i) => <option key={p.label} value={i}>{p.label}</option>)}
-        </select>
-        <button className="chip on" onClick={() => {
-          const seg = newSegment(SEGMENT_PRESETS[segPreset]!.make());
-          updateTest(test.id, (t) => ({ ...t, segments: [...t.segments, seg] }));
-          setSelSeg(seg.id);
-        }}>+ Add segment</button>
-      </div>
-      <div className="jm-row">
-        {!run.running
-          ? <button className="wide-btn primary" onClick={() => void startTestRun(test)}>▶ Run test</button>
-          : <button className="wide-btn" onClick={() => { run.cancel?.(); useRun.setState({ running: false, cancel: null }); }}>■ Stop</button>}
-      </div>
-      {run.running && <p className="muted small-text">Running…</p>}
-      {run.error && <p className="hint warn-text">Test failed to run: {run.error}</p>}
-      {sel && <SegmentEditor test={test} seg={sel} index={Math.max(0, selIndex)} />}
-      <p className="hint">
-        Combine in one segment (e.g. braking in a left turn on a decline with a pothole), chain segments for a sequence.
-        Steady states (Phase A): each segment is checked at a few speeds across its range; order and transients come with the time-based Phase B.
-      </p>
+      <details className="presets" open={!tests.length}>
+        <summary>Presets</summary>
+        {presets.map((p) => <button key={p.label} className="wide-btn" onClick={() => addTest(p.make)}>{p.label}</button>)}
+      </details>
+      {!test ? (
+        <p className="hint">
+          A test is a chain of segments. Each segment combines a <b>speed</b> change over a distance, a <b>path</b> (straight or a
+          left / right turn) and the <b>road</b> (grade, bank, rough surface, bumps, potholes).
+        </p>
+      ) : (
+        <>
+          <div className="locks-head test-head">Editing: {test.name}</div>
+          <table className="opt-table">
+            <tbody>
+              <tr><td>Name</td><td><input className="value-input wide-text" value={test.name} onChange={(e) => updateTest(test.id, (t) => ({ ...t, name: e.target.value }))} /></td></tr>
+              <tr title="Priority among the tests when optimizing them together (P1 = most important). Not the list order.">
+                <td>Priority</td>
+                <td><RankSelect rank={test.rank} n={tests.length} onChange={(r) => updateTest(test.id, (t) => ({ ...t, rank: r }))} /></td>
+              </tr>
+              <tr title="Report: show the failure. Driver lifts: also re-run the failing segment at the fastest speed that passes.">
+                <td>When a segment fails</td>
+                <td>
+                  <button className={`chip${test.onFail === 'report' ? ' on' : ''}`} onClick={() => updateTest(test.id, (t) => ({ ...t, onFail: 'report' }))}>Report</button>
+                  <button className={`chip${test.onFail === 'lift' ? ' on' : ''}`} onClick={() => updateTest(test.id, (t) => ({ ...t, onFail: 'lift' }))}>Driver lifts</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <PassRules test={test} />
+          <h3 className="subhead">Segments (in order)</h3>
+          <SegmentList test={test} selected={sel?.id ?? null} onSelect={setSelSeg} />
+          <div className="jm-row">
+            <select value={segPreset} onChange={(e) => setSegPreset(Number(e.target.value))}>
+              {SEGMENT_PRESETS.map((p, i) => <option key={p.label} value={i}>{p.label}</option>)}
+            </select>
+            <button className="chip on" onClick={() => {
+              const seg = newSegment(SEGMENT_PRESETS[segPreset]!.make());
+              updateTest(test.id, (t) => ({ ...t, segments: [...t.segments, seg] }));
+              setSelSeg(seg.id);
+            }}>+ Add segment</button>
+          </div>
+          <div className="jm-row">
+            {!run.running
+              ? <button className="wide-btn primary" onClick={() => void startTestRun(test)}>▶ Run test</button>
+              : <button className="wide-btn" onClick={() => { run.cancel?.(); useRun.setState({ running: false, cancel: null }); }}>■ Stop</button>}
+          </div>
+          {run.running && <p className="muted small-text">Running…</p>}
+          {run.error && <p className="hint warn-text">Test failed to run: {run.error}</p>}
+          {sel && <SegmentEditor test={test} seg={sel} index={Math.max(0, selIndex)} />}
+          <p className="hint">
+            Order = the sequence the car drives; priority (P1…) = how much it counts when optimizing. Combine in one segment
+            (e.g. braking in a left turn on a decline with a pothole), chain segments for a sequence. Steady states (Phase A).
+          </p>
+        </>
+      )}
     </div>
   );
 }

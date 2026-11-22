@@ -95,3 +95,39 @@ describe('road surface in tests', () => {
     expect(importProject(old).design.tests[0]!.segments[3]!.rough.on).toBe(true);
   });
 });
+
+describe('priority ranks', () => {
+  it('ranks weigh n + 1 − rank; equal ranks weigh the same', async () => {
+    const { rankWeight, statesForTests } = await import('../src/app/tests');
+    expect(rankWeight(1, 2)).toBe(2);
+    expect(rankWeight(2, 2)).toBe(1);
+    expect(rankWeight(1, 4)).toBe(rankWeight(1, 4));
+    const a = { ...TEST_PRESETS[3]!.make(), id: 'a', rank: 1 };
+    const b = { ...TEST_PRESETS[3]!.make(), id: 'b', rank: 2 };
+    const st = statesForTests([a, b], 'all');
+    const wa = st.filter((s) => s.name.startsWith(a.name) && st.indexOf(s) < st.length / 2).reduce((x, s) => x + (s.weight ?? 0), 0);
+    const wb = st.slice(st.length / 2).reduce((x, s) => x + (s.weight ?? 0), 0);
+    expect(wa / wb).toBeCloseTo(2, 6);
+  });
+
+  it('older files: priority % and segment weights become ranks (largest = P1)', () => {
+    const d = defaultDesign();
+    const t1 = { ...TEST_PRESETS[0]!.make(), id: 't1' };
+    const t2 = { ...TEST_PRESETS[3]!.make(), id: 't2' };
+    d.tests = [t1, t2];
+    const f = JSON.parse(JSON.stringify(serializeProject(d, 'Old')));
+    for (const t of f.tests) delete t.rank;
+    f.tests[0].priority = { text: '20', value: 20 };
+    f.tests[1].priority = { text: '80', value: 80 };
+    f.tests[0].segments.forEach((sg: Record<string, unknown>, i: number) => { delete sg.rank; sg.weight = { text: String(i === 2 ? 3 : 1), value: i === 2 ? 3 : 1 }; });
+    const r = importProject(f).design.tests;
+    expect(r.map((t) => t.rank)).toEqual([2, 1]);
+    expect(r[0]!.segments.map((s) => s.rank)).toEqual([2, 2, 1, 2, 2]);
+  });
+
+  it('metric shows km/h, imperial mph', async () => {
+    const { PRESETS } = await import('../src/app/units');
+    expect(PRESETS.metric.speed).toBe('km/h');
+    expect(PRESETS.imperial.speed).toBe('mph');
+  });
+});

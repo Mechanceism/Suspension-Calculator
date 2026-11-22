@@ -258,10 +258,22 @@ function readTests(raw: unknown, warnings: string[]): TestDesign[] {
   const out: TestDesign[] = [];
   const fieldOr = (x: unknown, q: Quantity, d: Field, where: string): Field =>
     (isObj(x) && typeof x.text === 'string' && x.text.trim() === '' ? { text: '', value: NaN } : readField(x, q, d, where, warnings));
-  for (const t of raw) {
+  // Older files had priority % per test and a weight per segment: they become ranks (largest = 1).
+  const valueOf = (x: unknown) => (isObj(x) && typeof x.value === 'number' ? x.value : null);
+  const rankOf = (explicit: unknown, legacy: (number | null)[], i: number) => {
+    if (typeof explicit === 'number' && explicit >= 1) return Math.round(explicit);
+    const v = legacy[i];
+    if (v === null || v === undefined) return 1;
+    const uniq = [...new Set(legacy.filter((x): x is number => x !== null))].sort((a, b) => b - a);
+    return uniq.indexOf(v) + 1;
+  };
+  const testLegacy = raw.map((t) => (isObj(t) ? valueOf(t.priority) : null));
+  for (const [ti, t] of raw.entries()) {
     if (!isObj(t) || !Array.isArray(t.segments)) { warnings.push('a test could not be read, dropped'); continue; }
     const name = typeof t.name === 'string' ? t.name : 'Test';
-    const segments = t.segments.filter(isObj).map((sr) => {
+    const segRaw = t.segments.filter(isObj);
+    const segLegacy = segRaw.map((sr) => valueOf(sr.weight));
+    const segments = segRaw.map((sr, si) => {
       const d = newSegment();
       const where = (k: string) => `test "${name}" ${k}`;
       const bumpsRaw = isObj(sr.bumps) ? sr.bumps : {};
@@ -301,7 +313,7 @@ function readTests(raw: unknown, warnings: string[]): TestDesign[] {
             side: fr.side === 'left' || fr.side === 'right' ? fr.side : 'both',
           } as TestSegment['features'][number];
         }),
-        weight: fieldOr(sr.weight, 'ratio', d.weight, where('weight')),
+        rank: rankOf(sr.rank, segLegacy, si),
         checks: isObj(sr.checks) ? readChecks(sr.checks) : null,
         profile: typeof sr.profile === 'string' ? sr.profile : null,
       } as TestSegment;
@@ -312,7 +324,7 @@ function readTests(raw: unknown, warnings: string[]): TestDesign[] {
     out.push({
       id: typeof t.id === 'string' ? t.id : newTestId('test'), name, segments, checks,
       profile: typeof t.profile === 'string' ? t.profile : isObj(t.checks) ? 'custom' : 'default',
-      priority: fieldOr(t.priority, 'percent', { text: '100', value: 100 }, `test "${name}" priority`),
+      rank: rankOf(t.rank, testLegacy, ti),
       onFail: t.onFail === 'lift' ? 'lift' : 'report',
     });
   }

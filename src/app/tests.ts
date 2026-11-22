@@ -36,8 +36,8 @@ export interface TestSegment {
   rough: { on: boolean; seed: number; maxHeight: Field; scale: Field; coverage: Field };
   /** Placed bumps / potholes along the segment. */
   features: RoadFeatureDesign[];
-  /** Weight of this segment within its test (optimizer), default 1. */
-  weight: Field;
+  /** Priority rank within its test (1 = most important; equal ranks = equal priority). Not the run order. */
+  rank: number;
   /** Check override for this segment (null = the test's checks). */
   checks: CheckProfile | null;
   /** Profile name of the override ('custom' when edited). */
@@ -69,8 +69,8 @@ export interface TestDesign {
   /** What counts as a pass (severity + thresholds per check) and the profile it came from ('custom' when edited). */
   checks: CheckProfile;
   profile: string;
-  /** Priority among tests for the optimizer, % (e.g. 80 paved, 20 rough). */
-  priority: Field;
+  /** Priority rank among tests (1 = most important; equal ranks = equal priority). Not the list order. */
+  rank: number;
   /** On a failing segment: report it, or let the driver lift to the speed that passes. */
   onFail: 'report' | 'lift';
 }
@@ -96,7 +96,7 @@ export function newSegment(over: Partial<Omit<TestSegment, 'id'>> = {}): TestSeg
     grade: f(0, 'percent'), bank: f(0, 'angle'),
     bumps: Object.fromEntries(CORNER_IDS.map((id) => [id, f(0, 'length')])) as Record<CornerId, Field>,
     lumpy: false,
-    weight: f(1, 'ratio'), checks: null, profile: null,
+    rank: 1, checks: null, profile: null,
     rough: { on: false, seed: 1, maxHeight: f(30, 'length'), scale: f(1.5, 'distance'), coverage: f(60, 'percent') },
     features: [],
     ...over,
@@ -125,7 +125,7 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
   {
     label: 'Autocross sequence',
     make: () => ({
-      name: 'Autocross sequence', checks: defaultChecks(), profile: 'default', priority: f(100, 'percent'), onFail: 'report',
+      name: 'Autocross sequence', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report',
       segments: [
         newSegment({ name: 'Launch 0–40', distance: f(50, 'distance'), speedStart: f(0, 'speed'), speedEnd: f(40 * MPH, 'speed') }),
         newSegment({ name: 'Brake 40–30', distance: f(15, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(30 * MPH, 'speed') }),
@@ -138,7 +138,7 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
   {
     label: 'Pothole while braking in a turn',
     make: () => ({
-      name: 'Pothole while braking in a turn', checks: defaultChecks(), profile: 'default', priority: f(100, 'percent'), onFail: 'report',
+      name: 'Pothole while braking in a turn', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report',
       segments: [
         newSegment({ name: 'Braking left turn + pothole', path: 'left', radius: f(45, 'distance'), distance: f(35, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(30 * MPH, 'speed'), features: [{ ...newFeature('pothole', 15), height: f(40, 'length') }] }),
       ],
@@ -147,7 +147,7 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
   {
     label: 'Hills: incline left, lumpy decline right',
     make: () => ({
-      name: 'Hills', checks: defaultChecks(), profile: 'default', priority: f(100, 'percent'), onFail: 'report',
+      name: 'Hills', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report',
       segments: [
         newSegment({ name: 'Flat straight', distance: f(100, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(40 * MPH, 'speed') }),
         newSegment({ name: 'Bumps + potholes straight', distance: f(60, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(40 * MPH, 'speed'), features: [{ ...newFeature('bump', 15), side: 'left' }, newFeature('pothole', 35)] }),
@@ -156,14 +156,20 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
       ],
     }),
   },
-  { label: 'Empty test', make: () => ({ name: 'New test', checks: defaultChecks(), profile: 'default', priority: f(100, 'percent'), onFail: 'report', segments: [newSegment()] }) },
+  { label: 'Empty test', make: () => ({ name: 'New test', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', segments: [newSegment()] }) },
 ];
+
+/**
+ * Optimizer weight of a priority rank among n items: n + 1 − rank (rank 1 of 2 → 2, rank 2 → 1, so 2 : 1).
+ * Equal ranks weigh the same.
+ */
+export const rankWeight = (rank: number, n: number) => Math.max(1, n + 1 - Math.min(Math.max(1, Math.round(rank)), n));
 
 /** Core spec of a segment, with the checks that apply to it. */
 export function segmentSpec(s: TestSegment, test?: TestDesign): TestSegmentSpec {
   return {
     checks: s.checks ?? test?.checks,
-    weight: Number.isFinite(s.weight.value) ? Math.max(0, s.weight.value) : 1,
+    weight: rankWeight(s.rank, test?.segments.length ?? 1),
     name: s.name,
     distance: Math.max(s.distance.value, 0.01),
     v0: Math.max(0, s.speedStart.value),
@@ -189,15 +195,16 @@ export function roadSpecOf(s: TestSegment): RoadSpec | undefined {
 
 /**
  * Load cases for the optimizer from tests: every segment's speed samples, each with weight
- * (test priority × segment weight, normalized) and the segment's pass rules.
- * `source`: a test id, or 'all' for every test with a priority above 0.
+ * (test priority × segment priority, from their ranks) and the segment's pass rules.
+ * `source`: a test id, or 'all' for every test (weighted by its priority rank).
  */
 export function statesForTests(tests: TestDesign[], source: string, dims?: CarDims): RoadState[] {
-  const chosen = source === 'all' ? tests.filter((t) => t.priority.value > 0) : tests.filter((t) => t.id === source);
-  const totalPriority = chosen.reduce((a, t) => a + Math.max(0, source === 'all' ? t.priority.value : 100), 0) || 1;
+  const chosen = source === 'all' ? tests : tests.filter((t) => t.id === source);
+  const tw = (t: TestDesign) => (source === 'all' ? rankWeight(t.rank, tests.length) : 1);
+  const totalPriority = chosen.reduce((a, t) => a + tw(t), 0) || 1;
   const out: RoadState[] = [];
   for (const t of chosen) {
-    const tp = Math.max(0, source === 'all' ? t.priority.value : 100) / totalPriority;
+    const tp = tw(t) / totalPriority;
     const specs = t.segments.map((sg) => segmentSpec(sg, t));
     const segTotal = specs.reduce((a, sp) => a + (sp.weight ?? 1), 0) || 1;
     specs.forEach((sp, i) => {

@@ -642,7 +642,7 @@ export const pickDesign = (s: DesignState): DesignState => ({
 export const DEFAULT_LINKS: CornerLinks = { frontPair: true, rearPair: true, rearFromFront: true };
 export const DEFAULT_SETTINGS: Record<CornerId, CornerSettings> = {
   FL: { steered: true, powered: false, brake: 'outboard', drive: 'chassis', abs: true, diff: 'open' }, FR: { steered: true, powered: false, brake: 'outboard', drive: 'chassis', abs: true, diff: 'open' },
-  RL: { steered: false, powered: false, brake: 'outboard', drive: 'chassis', abs: true, diff: 'open' }, RR: { steered: false, powered: false, brake: 'outboard', drive: 'chassis', abs: true, diff: 'open' },
+  RL: { steered: false, powered: true, brake: 'outboard', drive: 'chassis', abs: true, diff: 'open' }, RR: { steered: false, powered: true, brake: 'outboard', drive: 'chassis', abs: true, diff: 'open' },
 };
 export const defaultShared = (): SharedDesign => ({
   antiRollBar: 'none',

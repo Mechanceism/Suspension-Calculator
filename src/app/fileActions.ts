@@ -11,6 +11,13 @@ import { saveLayout, getLayout, touchLayout } from './library';
 import { resetHistory } from './history';
 import { exportSettingsFile, applySettingsFile } from './settingsFile';
 import { newTestId } from './tests';
+import { create } from 'zustand';
+
+/** An import waiting for the user's answer (it replaces something). */
+export const usePendingImport = create<{ file: File | null; part: Part | 'settings' }>(() => ({ file: null, part: 'all' }));
+/** Run after the next successful save (Save as dialog → then import). */
+let afterSave: (() => void) | null = null;
+export const setAfterSave = (fn: (() => void) | null) => { afterSave = fn; };
 
 export type Part = 'all' | 'model' | 'tests';
 
@@ -58,6 +65,9 @@ export function saveAs(name: string): void {
   s.markSaved(name, snap.model, snap.tests);
   s.set('saveAsOpen', false);
   s.notify(`Saved “${name}” (model and tests).`);
+  const next = afterSave;
+  afterSave = null;
+  next?.();
 }
 
 export function save(): void {
@@ -113,23 +123,25 @@ export function exportParts(part: Part): void {
   s.notify(`Exported ${part === 'all' ? 'model and tests' : 'the model'} to “${f}” (file format v${file.formatVersion}, app ${file.appVersion}).`);
 }
 
-/** Import model and tests, the model only (keeps the current tests), or the tests only (added to the current ones). */
-export async function importParts(file: File, part: Part, dirty: { model: boolean; tests: boolean }): Promise<void> {
+/**
+ * Import model and tests, the model only (keeps the current tests), or the tests only (replace the
+ * current tests). The user has already agreed to replace them (import prompt).
+ */
+export async function importParts(file: File, part: Part): Promise<void> {
   const s = useApp.getState();
   try {
     const data = JSON.parse(await file.text()) as unknown;
     if (part === 'tests') {
       const r = importTests(data);
       if (!r.tests.length) { s.notify(`No tests in ${file.name}.`, 'warn'); return; }
-      const names = new Set(s.tests.map((t) => t.name));
-      const clash = r.tests.filter((t) => names.has(t.name));
-      const replace = clash.length > 0 && window.confirm(`${clash.length} test(s) have the same name as existing ones (${clash.map((t) => t.name).join(', ')}).\nOK = replace them, Cancel = keep both (renamed).`);
-      const incoming = r.tests.map((t) => ({ ...t, id: newTestId('test'), name: !replace && names.has(t.name) ? `${t.name} (imported)` : t.name }));
-      s.updateTests((ts) => [...(replace ? ts.filter((t) => !clash.some((c) => c.name === t.name)) : ts), ...incoming]);
-      s.notify(r.warnings.length ? `Imported ${incoming.length} test(s) with notes:\n${r.warnings.join('\n')}` : `Imported ${incoming.length} test(s).`, r.warnings.length ? 'warn' : 'info');
+      const incoming = r.tests.map((t) => ({ ...t, id: newTestId('test') }));
+      s.updateTests(() => incoming);
+      s.set('activeTestId', incoming[0]?.id ?? null);
+      // Imported tests count as unsaved until saved / exported.
+      s.markSaved(s.fileName, undefined, '');
+      s.notify(r.warnings.length ? `Imported ${incoming.length} test(s) with notes:\n${r.warnings.join('\n')}` : `Imported ${incoming.length} test(s), replacing the current tests.`, r.warnings.length ? 'warn' : 'info');
       return;
     }
-    if (!confirmDiscard(dirty, { model: true, tests: part === 'all' })) return;
     const r = importProject(data);
     const keepTests = part === 'model';
     const design = keepTests ? { ...r.design, tests: s.tests } : r.design;

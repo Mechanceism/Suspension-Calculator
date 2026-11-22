@@ -55,7 +55,7 @@ Calculating and visualizing come first. **Later:** export to modeling software (
 
 ### Tests: decisions (noted 2026-11-22)
 - **Rough roads:** each segment can have a seeded random road surface (height map): seed, max height, scale (bump size / spacing, i.e. how many), coverage (smooth vs. rough patches). A preview shows the map with the four wheel paths and the height profile under each wheel. Single bumps / potholes stay available as positioned features (position and length within the segment). Phase A playback samples the map at each wheel; Phase B uses it dynamically.
-- **Weights:** a priority per test and a weight per segment inside a test.
+- **Priorities:** a priority rank per test and per segment (P1 = most important, equal ranks allowed), separate from the run order; weight = n + 1 − rank.
 - **Improve after passing:** if nothing fails, maximize the priority-weighted average (grip reserve, passing speed); if something fails, the failing segments get extra weight until they pass.
 - **Pass / Warning / Fail** ("passing fail" = Warning: reported, the test still passes). Every check has a user-selectable severity and, where it makes sense, a threshold, editable in the Tests workspace:
   near the grip limit (Warning, reserve %), understeer (Fail, allowed % over), oversteer / drift (Fail; allowed % over with front reserve to catch it), wheelspin (Fail, allowed % over), ABS active (**Warning**, allowed shortfall %), lock-up (Fail), speed not reached (Fail), bump-stop contact (Warning), bottoming / topping out (Fail), wheel lift (Warning), rollover (always Fail), no solution (always Fail).

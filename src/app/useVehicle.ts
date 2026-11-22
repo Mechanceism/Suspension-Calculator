@@ -77,7 +77,7 @@ export interface VehicleModel {
 }
 
 const pickVehicleInputs = (s: DesignState) => ({
-  geom: s.geom, spring: s.spring, damper: s.damper, bumpStop: s.bumpStop, tireModel: s.tireModel, tire: s.tire,
+  geom: s.geom, spring: s.spring, damper: s.damper, bumpStop: s.bumpStop, damperMode: s.damperMode, tireModel: s.tireModel, tire: s.tire,
   volumeChange: s.volumeChange, tireSizeText: s.tireSizeText, corners: s.corners, links: s.links,
   settings: s.settings, activeCorner: s.activeCorner, vehicle: s.vehicle, autoPreload: s.autoPreload,
   droop: s.droop, bump: s.bump, shared: s.shared,

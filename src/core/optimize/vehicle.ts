@@ -20,9 +20,10 @@ import { DEFAULT_MF, type MFCoeffs } from '../tire/magicFormula';
 import { CornerTable } from '../vehicle/cornerTable';
 import {
   CORNER_IDS, isFront, placement, poseFns, solveVehicle, staticCornerLoads, designGroundY,
-  type AxleShared, type BrakeMount, type CornerId, type DriveMount, type VehicleCorner, type VehicleResult, type ChassisPose, type DiffType, type VehicleInput,
+  type AxleShared, type BrakeMount, type CornerId, type DriveMount, type VehicleCorner, type VehicleResult, type ChassisPose, type DiffType, type VehicleInput, type DamperSpec,
 } from '../vehicle/vehicle';
-import { boundedLeastSquares, type LsqResult } from './leastSquares';
+import { type LsqResult } from './leastSquares';
+import { multiStartLeastSquares, latinHypercube, rng, sensitivity, type Sensitivity } from './search';
 import type { RoadState } from '../tests/segments';
 import { checkResiduals } from '../tests/checks';
 import {
@@ -76,8 +77,8 @@ export interface VehicleDesignIn {
   freeLength: number;
   bumpStop?: { length: number; rate: number };
   unsprungMass: number;
-  /** Damper rates at the damper, N·s/m (ride model). */
-  damping?: { bump: number; rebound: number };
+  /** Damper at the damper (ride model). */
+  damping?: DamperSpec;
 }
 
 export interface VehicleProblem {
@@ -117,6 +118,8 @@ export interface VehicleProblem {
   tireGrip?: MFCoeffs;
   keepClose?: number;
   maxIterations?: number;
+  /** Gradient runs: 1 = from the current design only; more = also from the best DOE samples (wider search). */
+  starts?: number;
   /** Corner-table samples per evaluation (fewer = faster). */
   tableSamples?: number;
 }
@@ -408,7 +411,8 @@ export function reportVehicle(p: VehicleProblem, x: number[]): VehicleReport {
   };
 }
 
-export function optimizeVehicle(p: VehicleProblem, onIteration?: (info: ProgressInfo) => boolean | void): VehicleOptimizeResult {
+/** The vehicle optimizer's objective: residuals of the goals, holds, keep-close and packaging at x. */
+function vehicleObjective(p: VehicleProblem) {
   const goals = p.goals.filter((g) => g.weight > 0);
   const x0 = p.variables.map((v) => variableValue(p.designs[v.root]!.geometry, v));
   const lo = p.variables.map((v) => Math.min(v.lo, v.hi));
@@ -433,12 +437,49 @@ export function optimizeVehicle(p: VehicleProblem, onIteration?: (info: Progress
     r.push(...packagingResiduals(p, geoms, e));
     return r;
   };
+  return { goals, x0, lo, hi, residuals, guesses };
+}
 
-  const lsq = boundedLeastSquares(residuals, x0, lo, hi, {
+export function optimizeVehicle(p: VehicleProblem, onIteration?: (info: ProgressInfo) => boolean | void): VehicleOptimizeResult {
+  const { x0, lo, hi, residuals } = vehicleObjective(p);
+  const lsq = multiStartLeastSquares(residuals, x0, lo, hi, {
     maxIterations: p.maxIterations ?? 40, step: 0.02, relTol: 1e-6,
     onIteration: onIteration ? (i) => onIteration({ iteration: i.iteration, cost: i.cost, cost0: i.cost0, evaluations: i.evaluations, x: i.x }) : undefined,
-  });
+  }, { starts: p.starts ?? 1 });
   return { lsq, ...reportVehicle(p, lsq.x) };
+}
+
+export interface VehicleSensitivity {
+  /** Effects on the optimizer's total miss (lower = better), and on each goal's value. */
+  cost: Sensitivity;
+  goals: { kind: VehicleGoalKind; s: Sensitivity }[];
+  samples: number;
+}
+
+/**
+ * What matters most (DOE): Latin-hypercube samples over the free ranges, then a linear fit with the
+ * strongest pairwise interactions of the total miss and of each goal's value (search.ts § sensitivity).
+ */
+export function vehicleSensitivity(p: VehicleProblem, samples: number, onSample?: (k: number, n: number) => boolean | void): VehicleSensitivity | null {
+  const { goals, lo, hi, residuals, guesses } = vehicleObjective(p);
+  const n = Math.max(8, Math.round(samples));
+  const us = latinHypercube(n, lo.length, rng(23));
+  const costs: number[] = [];
+  const values: number[][] = goals.map(() => []);
+  for (let k = 0; k < us.length; k++) {
+    const x = us[k]!.map((u, i) => lo[i]! + u * (hi[i]! - lo[i]!));
+    const r = residuals(x);
+    costs.push(r ? 0.5 * r.reduce((a, v) => a + v * v, 0) : NaN);
+    const e = r ? evaluateVehicle(p, geometriesFor(p, x), guesses) : null;
+    goals.forEach((g, j) => values[j]!.push(e ? vehicleGoalValue(g.kind, p, e) ?? NaN : NaN));
+    if (onSample?.(k + 1, us.length) === false) return null;
+  }
+  const cost = sensitivity(us, costs);
+  if (!cost) return null;
+  return {
+    cost, samples: cost.samples,
+    goals: goals.map((g, j) => ({ kind: g.kind, s: sensitivity(us, values[j]!) })).filter((x): x is { kind: VehicleGoalKind; s: Sensitivity } => !!x.s),
+  };
 }
 
 /**

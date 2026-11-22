@@ -606,3 +606,12 @@ input[type='range']:disabled { opacity: 0.4; }
 .tire-legend i { display: inline-block; width: 12px; height: 2px; vertical-align: middle; margin-right: 4px; }
 .tire-legend i.dash { background: repeating-linear-gradient(90deg, #ffd166 0 3px, transparent 3px 5px); }
 .tire-advanced summary { cursor: pointer; color: var(--muted); margin: 6px 0 4px; }
+
+/* What matters most (DOE sensitivity) */
+.sens-table td:first-child { white-space: nowrap; }
+.sens-bar-cell { width: 45%; }
+.sens-bar { display: inline-block; height: 8px; border-radius: 2px; vertical-align: middle; }
+.sens-bar.worse { background: var(--bad); }
+.sens-bar.better { background: var(--ok); }
+.rate-tuning .check-label { margin-right: 10px; }
+.damper-plot { margin: 4px 0 6px; }

@@ -52,13 +52,38 @@ export interface VehicleCorner {
   drive?: DriveMount;
   /** Anti-lock brakes (default true). Without ABS a tire braked past its grip locks and slides. */
   abs?: boolean;
-  /** Damper rates at the damper (coaxial with the spring), N·s/m: bump = compression, rebound = extension. */
-  damper?: { bump: number; rebound: number };
+  /** Damper at the damper (coaxial with the spring): bump = compression, rebound = extension. */
+  damper?: DamperSpec;
   /** Fast vertical tire force (N) from the wheel-center height above the ground h0 (mm) and tilt (a lookup table). */
   tireForceAt?: (h0: number, tilt: number) => number;
 }
 
 export type DiffType = 'open' | 'locked' | 'lsd';
+
+/**
+ * Damper force curve, N·s/m and m/s. Linear: F = c·v. Two-stage (digressive when the high-speed rate is
+ * lower): F = c_low·v up to the knee speed, then c_low·v_knee + c_high·(v − v_knee). Bump = compression
+ * (the damper shortens), rebound = extension.
+ */
+export interface DamperSpec {
+  bump: number;
+  rebound: number;
+  bumpHigh?: number;
+  reboundHigh?: number;
+  bumpKnee?: number;
+  reboundKnee?: number;
+}
+
+/** Damper force (N) at shaft speed v (m/s, + = extending): the sign of v (it resists the motion). */
+export function damperForce(d: DamperSpec, v: number): number {
+  const ext = v > 0;
+  const c = ext ? d.rebound : d.bump;
+  const ch = ext ? d.reboundHigh : d.bumpHigh;
+  const knee = ext ? d.reboundKnee : d.bumpKnee;
+  const s = Math.abs(v);
+  const f = ch === undefined || knee === undefined || !(knee > 0) || s <= knee ? c * s : c * knee + ch * (s - knee);
+  return Math.sign(v) * f;
+}
 
 /** Anti-roll bar between the two corners of an axle. */
 export type AntiRollBar =

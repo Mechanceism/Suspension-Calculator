@@ -18,8 +18,11 @@ import type { DoubleWishboneGeometry } from '../core/suspension/doubleWishbone';
 import { variableValue } from '../core/optimize/corner';
 import type { VehicleProblem } from '../core/optimize/vehicle';
 import type { CornerId } from '../core/vehicle/vehicle';
-import { useApp, mergedCorners, OPT_DEFAULT_RANGE, POINT_KEYS, type Field } from './store';
-import { buildVehicleProblem, runVehicleOptimizer, runTestJob, designRoots, vehVarKey, pointKeyOf } from './optimizer';
+import { useApp, mergedCorners, OPT_DEFAULT_RANGE, POINT_KEYS, CORNER_NAMES, type Field, type RateUpdate, type AppState, type DamperKey } from './store';
+import { buildVehicleProblem, runVehicleOptimizer, runTestJob, runRatesJob, designRoots, vehVarKey, pointKeyOf } from './optimizer';
+import { testScore as coreTestScore, isUnfixable as coreUnfixable } from '../core/tests/score';
+import type { RateVar, RateTest, RateProgress } from '../core/optimize/rates';
+import { lockKeys } from './locks';
 import { rankWeight, segmentSpec, type TestDesign } from './tests';
 import { pointAxisLocked } from './locks';
 import { startTestRun, useRun } from './panels/TestsPanels';
@@ -43,9 +46,26 @@ export const WIDEN_STEPS = [1, 2, 3, 4, 5, 10, 20, 50, 100, 1000];
 /** Choices for the maximum widening (0 = no limit). */
 export const WIDEN_CHOICES = [1, 2, 3, 4, 5, 10, 0];
 
+/** Springs / dampers / bars tuned on the ride (Bayesian optimization). */
+export interface RateSettings {
+  springs: boolean;
+  dampers: boolean;
+  bars: boolean;
+  /** Search range: current value ÷ spread … × spread. */
+  spread: number;
+  /** Tests per tuning (each runs every test in scope, steady and over time). */
+  budget: number;
+  /** Also tune them inside Optimize until it passes / Improve (when geometry alone stops helping). */
+  withLoop: boolean;
+}
+const DEFAULT_RATES: RateSettings = { springs: true, dampers: true, bars: false, spread: 2.5, budget: 30, withLoop: true };
+
 interface LoopState {
   running: boolean;
-  mode: 'pass' | 'improve' | 'explore' | null;
+  mode: 'pass' | 'improve' | 'explore' | 'rates' | null;
+  rates: RateSettings;
+  /** Rate tuning progress. */
+  rateProgress: RateProgress | null;
   scope: Scope;
   /** Maximum range widening (× the user's ranges; 0 = no limit). */
   maxWiden: number;
@@ -62,9 +82,18 @@ interface LoopState {
 const loadWiden = (): number => {
   try { const v = Number(localStorage.getItem('susp.maxWiden')); return WIDEN_CHOICES.includes(v) && localStorage.getItem('susp.maxWiden') !== null ? v : 5; } catch { return 5; }
 };
+const loadRates = (): RateSettings => {
+  try { return { ...DEFAULT_RATES, ...(JSON.parse(localStorage.getItem('susp.rates') ?? '{}') as Partial<RateSettings>) }; } catch { return { ...DEFAULT_RATES }; }
+};
 export const useLoop = create<LoopState>(() => ({
   running: false, mode: null, scope: 'test', maxWiden: loadWiden(), widen: 1, round: 0, log: [], outcome: null, explanation: [], exploration: null, cancel: null,
+  rates: loadRates(), rateProgress: null,
 }));
+export function setRateSettings(patch: Partial<RateSettings>) {
+  const rates = { ...useLoop.getState().rates, ...patch };
+  useLoop.setState({ rates });
+  try { localStorage.setItem('susp.rates', JSON.stringify(rates)); } catch { /* private mode */ }
+}
 export function setMaxWiden(v: number) {
   useLoop.setState({ maxWiden: v });
   try { localStorage.setItem('susp.maxWiden', String(v)); } catch { /* private mode */ }
@@ -72,22 +101,132 @@ export function setMaxWiden(v: number) {
 export const widenLabel = (v: number) => (v === 0 ? 'No limit' : v === 1 ? 'My ranges only' : `Up to ×${v}`);
 
 const log = (line: string) => useLoop.setState((s) => ({ log: [...s.log, line] }));
-const UNFIXABLE = new Set(['beyondGrip', 'rollover', 'noSolution', 'steerLimit']);
-const unfixable = (f: { check: string; text: string }) => UNFIXABLE.has(f.check) || (f.check === 'speedNotReached' && /No (powered|braked) wheels/.test(f.text));
-/** A failure the optimizer can't fix by moving suspension points. */
-export const isUnfixable = unfixable;
+const unfixable = coreUnfixable;
+/** A failure the optimizer can't fix by moving suspension points or changing rates. */
+export const isUnfixable = coreUnfixable;
 
 /** A note when geometry could only gain a little (typical with the placeholder tire model). */
 const smallGain = (a: number, b: number): string[] => (a > 0 && (a - b) / a < 0.02
-  ? ['Only a small gain was possible from moving suspension points. With the placeholder tire model, cornering and braking grip is set mostly by the tires, the weight and the CG; geometry matters more for travel, bump stops, wheel lift and inclination, and will matter more with the official tire model (camber thrust).']
+  ? ['Only a small gain was possible. In a steady turn the grip is set mostly by the tires, the weight and the CG; geometry changes it through load transfer and the wheels\' lean (camber thrust), and matters more for travel, bump stops and wheel lift.']
   : []);
 
-/** Lower is better: fixable Fail findings dominate, then grip use over the limit, then (improve) average grip use. */
-export function testScore(r: TestRun, mode: 'pass' | 'improve' | 'explore'): number {
-  const fails = r.segments.flatMap((s) => s.findings).filter((f) => f.severity === 'fail' && !unfixable(f)).length;
-  const over = r.states.reduce((a, s) => a + Math.max(0, (s.grip?.maxUtilization ?? 1) - 1), 0);
-  const avg = r.states.reduce((a, s) => a + (s.grip?.maxUtilization ?? 1), 0) / Math.max(r.states.length, 1);
-  return mode === 'improve' ? 100 * fails + 10 * over + avg : 100 * fails + 10 * over + 0.01 * avg;
+/** Lower is better: fixable Fail findings dominate, then grip use over the limit, then (improve) average grip use, plus the ride measures. */
+export const testScore = (r: TestRun, mode: 'pass' | 'improve' | 'explore'): number => coreTestScore(r, mode);
+
+/** The springs, dampers and bars to tune (locked values left out), with their search ranges. */
+export function rateVars(s: AppState, settings: RateSettings): RateVar[] {
+  const all = mergedCorners(s);
+  const out: RateVar[] = [];
+  const k = Math.max(1.05, settings.spread);
+  const range = (v: number) => ({ lo: Math.max(1e-3, v / k), hi: v * k });
+  for (const { root, corners } of designRoots(s)) {
+    const d = all[root];
+    const name = corners.length > 1 ? corners.join('/') : CORNER_NAMES[root];
+    const locked = (group: 'spring' | 'damper', key: string) => !!s.locks[lockKeys.field(root, group, key)];
+    if (settings.springs && !locked('spring', 'springRate')) {
+      const v = d.spring.springRate.value;
+      if (v > 0) out.push({ kind: 'spring', root, ...range(v), value: v, label: `${name} spring rate` });
+    }
+    if (settings.dampers) {
+      const keys: [RateVar['kind'], DamperKey, string][] = [['bump', 'bumpDamping', 'bump'], ['rebound', 'reboundDamping', 'rebound']];
+      if (d.damperMode === 'twoStage') keys.push(['bumpHigh', 'bumpDampingHigh', 'bump, high speed'], ['reboundHigh', 'reboundDampingHigh', 'rebound, high speed']);
+      for (const [kind, key, label] of keys) {
+        if (locked('damper', key)) continue;
+        const v = Math.max(d.damper[key].value, 100);
+        out.push({ kind, root, ...range(v), value: v, label: `${name} damping, ${label}` });
+      }
+    }
+  }
+  if (settings.bars) {
+    for (const axle of ['front', 'rear'] as const) {
+      const a = s.shared[axle];
+      if (a.antiRollBar === 'wheelRate' && a.arbRate.value > 0) out.push({ kind: 'arb', axle, ...range(a.arbRate.value), value: a.arbRate.value, label: `${axle} anti-roll bar (N/mm at the wheel)` });
+      if (a.antiRollBar === 'torsionBar' && a.barRate.value > 0) {
+        // N·m/deg → N·mm/rad, as the problem uses.
+        const v = a.barRate.value * 1000 * (180 / Math.PI);
+        out.push({ kind: 'arb', axle, ...range(v), value: v, label: `${axle} anti-roll bar` });
+      }
+    }
+  }
+  return out;
+}
+
+/** Store updates for tuned rates. */
+function rateUpdates(s: AppState, vars: RateVar[], x: number[]): RateUpdate[] {
+  const keyOf: Record<Exclude<RateVar['kind'], 'arb' | 'spring'>, DamperKey> = { bump: 'bumpDamping', rebound: 'reboundDamping', bumpHigh: 'bumpDampingHigh', reboundHigh: 'reboundDampingHigh' };
+  return vars.map((v, i): RateUpdate => {
+    const val = x[i]!;
+    if (v.kind === 'arb') {
+      const torsion = s.shared[v.axle!].antiRollBar === 'torsionBar';
+      return { axle: v.axle, section: 'shared', key: torsion ? 'barRate' : 'arbRate', value: torsion ? val / 1000 / (180 / Math.PI) : val };
+    }
+    if (v.kind === 'spring') return { root: v.root, section: 'spring', key: 'springRate', value: val };
+    return { root: v.root, section: 'damper', key: keyOf[v.kind], value: val };
+  });
+}
+
+const fmtRate = (v: RateVar, x: number) => (v.kind === 'spring' ? `${x.toFixed(1)} N/mm` : v.kind === 'arb' ? x.toFixed(1) : `${Math.round(x)} N·s/m`);
+
+/**
+ * Tune springs / dampers / bars on the tests in scope (steady states + ride over time) by Bayesian
+ * optimization in the worker; applies the best rates when they score better (one undo step).
+ * Inside the optimize loop (`inLoop`), it uses the loop's running state and cancel.
+ */
+export async function tuneSpringsDampers(scope: Scope, active: TestDesign | null, mode: 'pass' | 'improve' = 'pass', inLoop?: { setCancel: (fn: (() => void) | null) => void }): Promise<{ improved: boolean; before: number; after: number } | null> {
+  if (!inLoop && useLoop.getState().running) return null;
+  const tests = testsInScope(scope, active);
+  const s = useApp.getState();
+  const settings = useLoop.getState().rates;
+  const vars = rateVars(s, settings);
+  if (!tests.length || !vars.length) {
+    log(!tests.length ? 'Springs & dampers: no tests to tune on.' : 'Springs & dampers: nothing to tune (tick springs / dampers / bars, or unlock them).');
+    return null;
+  }
+  const rateTests: RateTest[] = tests.map((t) => ({
+    segments: t.segments.map((sg) => segmentSpec(sg, t)), weight: tests.length > 1 ? rankWeight(t.rank, tests.length) : 1, onFail: t.onFail,
+  }));
+  const { problem } = buildVehicleProblem(s);
+  let last: RateProgress | null = null;
+  let stopped = false;
+  if (!inLoop) useLoop.setState({ running: true, mode: 'rates', scope, log: [], outcome: null, explanation: [], exploration: null, rateProgress: null });
+  log(`Springs & dampers: tuning ${vars.length} rate(s) on ${tests.length} test(s) over time, ${settings.budget} tries…`);
+  const job = runRatesJob(problem, rateTests, vars, settings.budget, mode, (info) => { last = info; useLoop.setState({ rateProgress: info }); });
+  const stop = () => { stopped = true; job.stop(); };
+  if (inLoop) inLoop.setCancel(stop); else useLoop.setState({ cancel: stop });
+  try {
+    let x: number[], before: number, after: number;
+    try {
+      const r = await job.done;
+      ({ x, before, after } = r);
+    } catch (e) {
+      if (!stopped) throw e;
+      const l = last as RateProgress | null;
+      if (!l) { log('Springs & dampers: stopped before the first result.'); if (!inLoop) useLoop.setState({ outcome: 'stopped' }); return null; }
+      // Stopped: keep the best found so far.
+      x = l.bestX; after = l.best; before = Infinity;
+      log('Springs & dampers: stopped; using the best rates found so far.');
+    }
+    const improved = after < before * 0.999 || (before === Infinity && x.some((v, i) => Math.abs(v - vars[i]!.value) > 1e-6));
+    if (improved) {
+      useApp.getState().applyRateValues(rateUpdates(useApp.getState(), vars, x));
+      const changes = vars.map((v, i) => `${v.label} ${fmtRate(v, v.value)} → ${fmtRate(v, x[i]!)}`).filter((_, i) => Math.abs(x[i]! - vars[i]!.value) / Math.max(vars[i]!.value, 1e-9) > 0.01);
+      log(`Springs & dampers: score ${Number.isFinite(before) ? before.toFixed(2) : '…'} → ${after.toFixed(2)}. ${changes.join('; ')}`);
+    } else {
+      log(`Springs & dampers: no better rates found (score ${before.toFixed(2)}); kept yours.`);
+    }
+    if (!inLoop) {
+      for (const t of tests) { const fresh = useApp.getState().tests.find((q) => q.id === t.id); if (fresh) await startTestRun(fresh); }
+      useLoop.setState({ outcome: stopped ? 'stopped' : improved ? 'improved' : 'stuck', explanation: improved ? [] : ['Your current springs and dampers already scored best among the rates tried. Widen the search range or try more tests.'] });
+    }
+    return { improved, before, after };
+  } catch (e) {
+    if (!inLoop) useLoop.setState({ outcome: 'error', explanation: [e instanceof Error ? e.message : String(e)] });
+    else throw e;
+    return null;
+  } finally {
+    if (!inLoop) useLoop.setState({ running: false, cancel: null, rateProgress: null });
+    else { inLoop.setCancel(null); useLoop.setState({ rateProgress: null }); }
+  }
 }
 
 /** Free every unlocked coordinate of every design (±25 mm) when nothing is free yet; asks first. */
@@ -198,18 +337,38 @@ export async function optimizeTests(scope: Scope, active: TestDesign | null, mod
   const isStopped = () => stopped;
   useLoop.setState({ running: true, mode, scope, widen: 1, round: 0, log: [], outcome: null, explanation: [], exploration: null, cancel: () => { stopped = true; currentCancel?.(); useRun.getState().cancel?.(); } });
   try {
-    let set = await runSet(tests, mode, isStopped);
-    if (!set) { useLoop.setState({ outcome: 'stopped' }); return; }
+    const first = await runSet(tests, mode, isStopped);
+    if (!first) { useLoop.setState({ outcome: 'stopped' }); return; }
+    let set: SetRun = first;
     const startScore = set.score;
     log(`Start: ${describe(set)} (score ${set.score.toFixed(2)})`);
     let slow = 0;
     let lastAtLimit: string[] = [];
+    let ratesTried = false;
+    const rates = useLoop.getState().rates;
+    // Springs / dampers on the ride, when geometry alone stops helping (once per stall).
+    const tryRates = async (): Promise<boolean> => {
+      if (!rates.withLoop || ratesTried || !rateVars(useApp.getState(), rates).length) return false;
+      ratesTried = true;
+      const r = await tuneSpringsDampers(scope, active, mode, { setCancel: (fn) => { currentCancel = fn; } });
+      if (stopped || !r?.improved) return false;
+      const next = await runSet(tests, mode, isStopped);
+      if (!next) return false;
+      log(`After springs & dampers: ${describe(next)} · score ${set.score.toFixed(2)} → ${next.score.toFixed(2)}`);
+      set = next;
+      return true;
+    };
     for (let round = 1; round <= MAX_ROUNDS; round++) {
       if (stopped) { useLoop.setState({ outcome: 'stopped' }); return; }
       if (mode === 'pass' && set.passed) { useLoop.setState({ outcome: 'passed' }); log(set.runs.length > 1 ? 'Every test passes.' : 'The test passes.'); return; }
       if (mode === 'pass' && set.runs.every(({ run }) => run.segments.every((s) => s.passed || s.impossible || s.findings.filter((f) => f.severity === 'fail').every(unfixable)))) {
         useLoop.setState({ outcome: 'stuck', explanation: ['The remaining failures can\'t be fixed by moving suspension points (no powered / braked wheels, more than the tires can give, too tight for the steering, or rollover). Change the corner or steering settings, the test, or the tires.'] });
         return;
+      }
+      // Failing only over time (bumps at speed, transients): springs and dampers first.
+      if (mode === 'pass' && !ratesTried && set.runs.every(({ run }) => run.segments.every((sg) => sg.passed || sg.rideFail || sg.findings.filter((f) => f.severity === 'fail').every(unfixable)))) {
+        if (await tryRates()) { ratesTried = false; continue; }
+        if (stopped) { useLoop.setState({ outcome: 'stopped' }); return; }
       }
       const k = steps[wi]!;
       useLoop.setState({ round, widen: k });
@@ -246,6 +405,8 @@ export async function optimizeTests(scope: Scope, active: TestDesign | null, mod
           log(`No more progress: widening the ranges to ×${steps[wi]}.`);
           continue;
         }
+        if (await tryRates()) { slow = 0; continue; }
+        if (stopped) { useLoop.setState({ outcome: 'stopped' }); return; }
         if (mode === 'improve') { log('Stopped improving.'); break; }
         break;
       }

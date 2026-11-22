@@ -33,6 +33,7 @@ import { ValueInput } from './ValueInput';
 import { Section, FieldRows, fmt } from './FieldRows';
 import { useDisplay } from '../units';
 import { TireGripFields } from './TireGripPanel';
+import { SearchSelect, SensitivityReport } from './SearchTools';
 
 const AXES = ['X', 'Y', 'Z'] as const;
 
@@ -448,6 +449,10 @@ export function OptimizePanel() {
               <td>Prefer small changes</td>
               <td><ValueInput field={setup.keepClose} unit="" width={52} onCommit={(t) => setField('keepClose', 'ratio', t)} /></td>
             </tr>
+            <tr>
+              <td>Search</td>
+              <td><SearchSelect value={setup.starts} onChange={(n) => update((o) => ({ ...o, starts: n }))} /></td>
+            </tr>
           </tbody>
         </table>
       </Section>
@@ -611,6 +616,10 @@ export function VehicleOptimizePanel() {
               <td>Prefer small changes</td>
               <td><ValueInput field={o.keepClose} unit="" width={52} onCommit={(t) => setField('keepClose', t)} /></td>
             </tr>
+            <tr>
+              <td>Search</td>
+              <td><SearchSelect value={o.starts} onChange={(n) => update((v) => ({ ...v, starts: n }))} /></td>
+            </tr>
           </tbody>
         </table>
       </Section>
@@ -628,6 +637,9 @@ export function VehicleOptimizePanel() {
           </div>
         )}
       />
+      <Section title="What matters most" open={false}>
+        <SensitivityReport build={() => buildVehicleProblem(useApp.getState())} current={geometryKey} what="the optimizer's miss" />
+      </Section>
       <Section title="Run">
         <RunArea
           useRun={useVehicleRun} blockers={built.blockers} meta={VEHICLE_GOAL_META} current={geometryKey}

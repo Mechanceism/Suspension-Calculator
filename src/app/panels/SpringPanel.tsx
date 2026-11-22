@@ -1,9 +1,11 @@
-import { useApp, SPRING_KEYS, SPRING_META, DAMPER_KEYS, DAMPER_META, rootOf, type ArmChoice, type SpringKey } from '../store';
+import { useApp, SPRING_KEYS, SPRING_META, DAMPER_KEYS, DAMPER_META, DAMPER_TWO_STAGE_KEYS, rootOf, type ArmChoice, type SpringKey } from '../store';
 import { lockKeys } from '../locks';
 import type { Model } from '../useModel';
 import { FieldRows, fmt } from './FieldRows';
 import { useState } from 'react';
 import { dampingRatio, dampingForRatio } from '../../core/suspension/spring';
+import { damperForce } from '../../core/vehicle/vehicle';
+import { damperOf } from '../optimizer';
 
 /** Spring layout, rate, free length (+ fit) and the corner-load inputs it carries. */
 export function SpringFields({ keys = SPRING_KEYS }: { keys?: readonly SpringKey[] }) {
@@ -44,6 +46,7 @@ export function DamperFields({ model }: { model: Model }) {
   const damper = useApp((s) => s.damper);
   const setDamperField = useApp((s) => s.setDamperField);
   const bumpStop = useApp((s) => s.bumpStop);
+  const damperMode = useApp((s) => s.damperMode);
   const set = useApp((s) => s.set);
   const lim = model.damperLimits;
   const root = useApp((s) => rootOf(s.activeCorner, s.links));
@@ -54,10 +57,17 @@ export function DamperFields({ model }: { model: Model }) {
   };
   return (
     <>
-      <FieldRows rows={DAMPER_KEYS.filter((k) => bumpStop || !k.startsWith('bumpStop')).map((k) => ({
-        label: DAMPER_META[k].label, field: damper[k], unit: DAMPER_META[k].unit, onCommit: (t: string) => setDamperField(k, t),
+      <div className="jm-row" title="Linear: one rate per direction. Two-stage: a low-speed rate up to a knee shaft speed, then a high-speed rate (most road and race dampers are digressive: softer past the knee).">
+        <span className="muted">Damper curve</span>
+        <button className={`chip${damperMode === 'linear' ? ' on' : ''}`} onClick={() => set('damperMode', 'linear')}>Linear</button>
+        <button className={`chip${damperMode === 'twoStage' ? ' on' : ''}`} onClick={() => set('damperMode', 'twoStage')}>Two-stage</button>
+      </div>
+      <FieldRows rows={DAMPER_KEYS.filter((k) => (bumpStop || !k.startsWith('bumpStop')) && (damperMode === 'twoStage' || !(DAMPER_TWO_STAGE_KEYS as readonly string[]).includes(k))).map((k) => ({
+        label: k === 'bumpDamping' && damperMode === 'twoStage' ? 'Bump, low speed' : k === 'reboundDamping' && damperMode === 'twoStage' ? 'Rebound, low speed' : DAMPER_META[k].label,
+        field: damper[k], unit: DAMPER_META[k].unit, onCommit: (t: string) => setDamperField(k, t),
         lockKey: lockKeys.field(root, 'damper', k),
       }))} />
+      <DamperCurve />
       <DampingFit model={model} />
       <label className="check-row">
         <input type="checkbox" checked={bumpStop} onChange={() => set('bumpStop', !bumpStop)} />
@@ -115,5 +125,28 @@ function DampingFit({ model }: { model: Model }) {
         <button className="chip on" onClick={fit} title="Set the bump / rebound damper rates for these damping ratios at the static position">Set damper rates</button>
       </div>
     </div>
+  );
+}
+
+/** Damper force vs shaft speed, bump (left, compression) and rebound (right). */
+function DamperCurve() {
+  const damper = useApp((s) => s.damper);
+  const damperMode = useApp((s) => s.damperMode);
+  const spec = damperOf({ damper, damperMode });
+  const vMax = 0.5;
+  const W = 260, H = 110, cx = W / 2, pad = 14;
+  const fMax = Math.max(1, ...[-vMax, vMax].map((v) => Math.abs(damperForce(spec, v))));
+  const px = (v: number) => cx + (v / vMax) * (W / 2 - pad);
+  const py = (f: number) => H / 2 - (f / fMax) * (H / 2 - pad);
+  const pts = Array.from({ length: 81 }, (_, i) => -vMax + (2 * vMax * i) / 80).map((v) => `${px(v).toFixed(1)},${py(damperForce(spec, v)).toFixed(1)}`).join(' ');
+  return (
+    <svg className="tire-plot damper-plot" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Damper force vs shaft speed">
+      <line x1={pad} x2={W - pad} y1={H / 2} y2={H / 2} className="grid-line" />
+      <line x1={cx} x2={cx} y1={pad / 2} y2={H - pad / 2} className="grid-line" />
+      <polyline points={pts} fill="none" stroke="#ffd166" strokeWidth={1.6} />
+      <text x={pad} y={H - 3} className="axis-text">bump −{vMax} m/s</text>
+      <text x={W - pad} y={H - 3} className="axis-text" textAnchor="end">rebound +{vMax} m/s</text>
+      <text x={cx + 4} y={pad} className="axis-text">{Math.round(fMax)} N</text>
+    </svg>
   );
 }

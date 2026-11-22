@@ -182,8 +182,44 @@ describe('priority ranks', () => {
     old.formatVersion = 9;
     for (const k of ['rollInertia', 'pitchInertia', 'tireDamping']) delete old.vehicle.fields[k];
     const back = importProject(old);
-    expect(back.warnings).toEqual(['Upgraded from file format 9 to 10.']);
+    expect(back.warnings).toEqual(['Upgraded from file format 9 to 10.', 'Upgraded from file format 10 to 11.']);
     expect(back.design.vehicle.rollInertia.value).toBe(35);
+  });
+
+  it('rate tuning: which rates (locks respected, two-stage high-speed rates), and applying them to the designs', async () => {
+    const { useApp } = await import('../src/app/store');
+    const { rateVars } = await import('../src/app/testOptimize');
+    const d = defaultDesign();
+    useApp.setState({ ...d });
+    const settings = { springs: true, dampers: true, bars: false, spread: 2, budget: 10, withLoop: true };
+    const vars = rateVars(useApp.getState(), settings);
+    expect(vars.map((v) => v.kind)).toEqual(['spring', 'bump', 'rebound']);
+    expect(vars[0]!.lo).toBeCloseTo(vars[0]!.value / 2, 9);
+    useApp.setState({ damperMode: 'twoStage', locks: { 'FL.spring.springRate': true } });
+    expect(rateVars(useApp.getState(), settings).map((v) => v.kind)).toEqual(['bump', 'rebound', 'bumpHigh', 'reboundHigh']);
+    useApp.getState().applyRateValues([
+      { root: 'FL', section: 'damper', key: 'bumpDamping', value: 2100 },
+      { axle: 'front', section: 'shared', key: 'arbRate', value: 12.5 },
+    ]);
+    expect(useApp.getState().damper.bumpDamping.value).toBe(2100);
+    expect(useApp.getState().shared.front.arbRate.value).toBe(12.5);
+  });
+
+  it('what matters most: a DOE over the free coordinates ranks their effects', async () => {
+    const { vehicleSensitivity } = await import('../src/core');
+    const d = defaultDesign();
+    d.vehicleOptimizer = {
+      ...d.vehicleOptimizer,
+      ranges: { 'FL.ucaOut.y': { lo: { text: '', value: d.geom.points.ucaOut[1].value - 20 }, hi: { text: '', value: d.geom.points.ucaOut[1].value + 20 } } },
+      goals: { ...d.vehicleOptimizer.goals, grip: { ...d.vehicleOptimizer.goals.grip, on: true } },
+      lateralG: { text: '0.8', value: 0.8 },
+    };
+    const { problem } = buildVehicleProblem(d as AppState);
+    expect(problem.variables.length).toBeGreaterThan(0);
+    const r = vehicleSensitivity({ ...problem, variables: problem.variables.slice(0, 1) }, 8)!;
+    expect(r.samples).toBe(8);
+    expect(r.cost.effects).toHaveLength(1);
+    expect(r.goals[0]!.kind).toBe('grip');
   });
 
   it('metric shows km/h, imperial mph', async () => {

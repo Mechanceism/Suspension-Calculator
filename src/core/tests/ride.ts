@@ -22,7 +22,7 @@ import { assembleVehicle, vehicleInputOf, type VehicleProblem, type AssembledVeh
 import type { DoubleWishboneGeometry } from '../suspension/doubleWishbone';
 import {
   CORNER_IDS, isFront, placement, poseFns, forceSetup, solveVehicle, tireForcesFor, bodyResidual, cornerWork, cornerResult,
-  capacities, gripSummary, sprungProperties, NO_SHARED,
+  capacities, gripSummary, sprungProperties, NO_SHARED, damperForce,
   type CornerId, type ChassisPose, type CornerResult, type CornerStatus, type VehicleCorner, type VehicleResult, type TireCaps,
 } from '../vehicle/vehicle';
 import { solveLinear } from '../math/linalg';
@@ -57,13 +57,43 @@ export interface RideRun {
   frames: PlaybackFrame[];
   /** Findings over time per segment (first time each one happens). */
   findings: Finding[][];
+  /** Smooth measures of how well the car rode (for tuning springs and dampers). */
+  metrics: RideMeasures;
   error?: string;
 }
 
+export interface RideMeasures {
+  /** Time a wheel was off the ground, s (summed over the four wheels). */
+  liftTime: number;
+  /** Time a suspension was on its bump stop, s (summed over the four). */
+  bumpStopTime: number;
+  /** Tire-load variation: RMS of each tire's load around its 0.5 s running mean ÷ its static load. Grip lost to bouncing. */
+  loadVariation: number;
+  /** RMS of the body's vertical acceleration, m/s² (comfort). */
+  heaveAccRms: number;
+  /** Time driven, s. */
+  duration: number;
+}
+
+const NO_METRICS: RideMeasures = { liftTime: 0, bumpStopTime: 0, loadVariation: 0, heaveAccRms: 0, duration: 0 };
+
 const DEFAULT_RIDE = { rollInertia: 35, pitchInertia: 100, tireDamping: 100 };
+
+/** Tire tables already built, by tire (profile + force model): reused across runs (optimizers run many). */
+const TABLES = new Map<string, (h0: number, tilt: number) => number>();
 
 /** Vertical tire force vs wheel-center height above the ground and tilt, tabulated once per tire. */
 function tireTable(c: VehicleCorner): (h0: number, tilt: number) => number {
+  const key = JSON.stringify([c.tire.profile, c.tire.model]);
+  const hit = TABLES.get(key);
+  if (hit) return hit;
+  const fn = buildTireTable(c);
+  if (TABLES.size > 32) TABLES.delete(TABLES.keys().next().value!);
+  TABLES.set(key, fn);
+  return fn;
+}
+
+function buildTireTable(c: VehicleCorner): (h0: number, tilt: number) => number {
   const R = c.tire.profile.radius;
   const hLo = R - 90, hHi = R + 2, dh = 0.5;
   const tLo = -0.2, tHi = 0.2, dtl = 0.025;
@@ -101,7 +131,7 @@ export function rideRun(
   p: VehicleProblem, geometries: Partial<Record<CornerId, DoubleWishboneGeometry>>, segments: TestSegmentSpec[], o: RideOptions = {},
 ): RideRun {
   const asm = assembleVehicle(p, geometries);
-  if (!asm) return { frames: [], findings: segments.map(() => []), error: 'The suspension geometry cannot be assembled.' };
+  if (!asm) return { frames: [], findings: segments.map(() => []), metrics: { ...NO_METRICS }, error: 'The suspension geometry cannot be assembled.' };
   return rideOn(p, asm, segments, o);
 }
 
@@ -129,7 +159,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
   const checkDt = o.checkEvery ?? 0.01;
   const gripTime = o.gripTime ?? 0.1;
   const INSTANT = new Set(['wheelLift', 'bumpStop', 'bottoming', 'rollover', 'noSolution', 'steerLimit']);
-  if (!(total > 0)) return { frames, findings };
+  if (!(total > 0)) return { frames, findings, metrics: { ...NO_METRICS } };
 
   // The road and accelerations at time t.
   const kinAt = (i: number, tt: number) => {
@@ -167,6 +197,9 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
   let loads = Object.fromEntries(CORNER_IDS.map((id) => [id, steady.corners[id].tireLoad])) as Record<CornerId, number>;
   let caps: Record<CornerId, TireCaps> | null = null;
   let groundPrev = { ...k0.ground };
+  const staticLoad = { ...loads };
+  const loadMean = { ...loads };
+  let liftTime = 0, bumpStopTime = 0, loadVarSum = 0, accSum = 0, metricCount = 0, lastMetricT = 0;
   const status: Record<CornerId, CornerStatus> = { FL: 'ok', FR: 'ok', RL: 'ok', RR: 'ok' };
 
   /** Accelerations, corner results and body forces at state (x, v). */
@@ -211,8 +244,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       const cw = tireExtra ? cornerWork(c, input, pose, f[id], shared, q(k), qo, tireExtra) : cw0;
       const dL = Number.isFinite(s.dL) ? s.dL : 0;
       const Ldot = dL * vs[3 + k]!;
-      const cd = c.damper ? (Ldot < 0 ? c.damper.bump : c.damper.rebound) : 0;
-      Q[3 + k] = cw.work - cd * dL * Ldot;
+      Q[3 + k] = cw.work - (c.damper ? dL * damperForce(c.damper, Ldot) : 0);
       res[id] = cornerResult(c, input, f[id], q(k), status[id], cw);
       const cols: (readonly [number, number, number] | undefined)[] = [J[0], J[1], J[2], undefined, undefined, undefined, undefined];
       cols[3 + k] = [dwc.x, dwc.y, dwc.z];
@@ -286,6 +318,18 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       const isFrame = !(t + 1e-9 < nextFrame && n < nSteps);
       const isCheck = isFrame || t + 1e-9 >= nextCheck;
       if (!isCheck) continue;
+      // Ride measures, accumulated at each check.
+      const dtm = t - lastMetricT;
+      lastMetricT = t;
+      for (const id of CORNER_IDS) {
+        const fz = now.res[id].tireLoad;
+        if (fz < 25) liftTime += dtm;
+        if (now.res[id].onBumpStop) bumpStopTime += dtm;
+        loadMean[id] += (fz - loadMean[id]) * Math.min(1, dtm / 0.5);
+        loadVarSum += ((fz - loadMean[id]) / Math.max(staticLoad[id], 1)) ** 2;
+      }
+      accSum += (now.acc[0] ?? 0) ** 2;
+      metricCount++;
       nextCheck = t + checkDt;
       if (isFrame) nextFrame = t + frameDt;
       // Check this moment (and record a frame).
@@ -344,5 +388,11 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     }
     t0 += T;
   });
-  return { frames, findings };
+  const nAcc = Math.max(1, metricCount);
+  const metrics: RideMeasures = {
+    liftTime, bumpStopTime, duration: total,
+    loadVariation: Math.sqrt(loadVarSum / Math.max(1, metricCount * 4)),
+    heaveAccRms: Math.sqrt(accSum / nAcc),
+  };
+  return { frames, findings, metrics };
 }

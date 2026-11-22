@@ -21,6 +21,7 @@
  *   9  tire grip model = Magic Formula coefficients (the contact-patch model keeps its fields for the
  *      contact-area goal); a format-8 friction coefficient μ ≠ 1 scales the peak μ's
  *  10  ride over time (Phase B): body roll and pitch inertia, tire damping (vehicle inputs)
+ *  11  two-stage dampers (mode, high-speed rates, knees), optimizer search settings
  */
 import pkg from '../../package.json';
 import { parseValue, type Quantity } from '../core/units/units';
@@ -32,14 +33,14 @@ import {
   defaultDesign, mergedCorners, rootOf, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META, SPRING_KEYS, SPRING_META,
   DAMPER_KEYS, DAMPER_META, STEER_KEYS, STEER_META, TIRE_KEYS, TIRE_META, VEHICLE_KEYS, VEHICLE_META,
   DEFAULT_LINKS, DEFAULT_SETTINGS, SHARED_META, defaultShared, defaultOptimizerSetup, defaultVehicleOptimizerSetup, defaultGrip, GRIP_KEYS, GRIP_META,
-  defaultTireGrip, MF_KEYS, MF_META, RIDE_KEYS,
+  defaultTireGrip, MF_KEYS, MF_META, RIDE_KEYS, DAMPER_TWO_STAGE_KEYS,
   type VehicleOptimizerSetup, type HeldDimension, newDimId,
   type OptimizerSetup,
   type DesignState, type CornerDesign, type Field, type CornerLinks, type CornerSettings, type SharedDesign, type Axle,
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 10;
+export const FORMAT_VERSION = 11;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -54,7 +55,7 @@ export interface CornerJson {
   scalars: Record<string, FieldJson>;
   damperArm: 'lca' | 'uca';
   spring: Record<string, FieldJson>;
-  damper: { fields: Record<string, FieldJson>; bumpStop: boolean };
+  damper: { fields: Record<string, FieldJson>; bumpStop: boolean; mode?: 'linear' | 'twoStage' };
   tire: { model: DesignState['tireModel']; volumeChange: boolean; sizeText: string; fields: Record<string, FieldJson> };
 }
 
@@ -84,7 +85,7 @@ export interface ProjectFile {
   vehicleOptimizer: {
     ranges: Record<string, { lo: FieldJson; hi: FieldJson }>;
     goals: Record<string, { on: boolean; target: FieldJson; weight: FieldJson }>;
-    lateralG: FieldJson; brakingG: FieldJson; accelG: FieldJson; keepClose: FieldJson; caseSource?: string;
+    lateralG: FieldJson; brakingG: FieldJson; accelG: FieldJson; keepClose: FieldJson; caseSource?: string; starts?: number;
   };
   /** Contact-patch pressure model (contact-area goal). */
   grip: Record<string, FieldJson>;
@@ -117,7 +118,7 @@ function cornerToJson(id: CornerId, c: CornerDesign): CornerJson {
     scalars: Object.fromEntries(SCALAR_KEYS.map((k) => [cornerParam(id, SCALAR_META[k].name), fj(c.geom.scalars[k])])),
     damperArm: c.geom.damperArm,
     spring: mapFields(SPRING_KEYS, c.spring),
-    damper: { fields: mapFields(DAMPER_KEYS, c.damper), bumpStop: c.bumpStop },
+    damper: { fields: mapFields(DAMPER_KEYS, c.damper), bumpStop: c.bumpStop, mode: c.damperMode },
     tire: { model: c.tireModel, volumeChange: c.volumeChange, sizeText: c.tireSizeText, fields: mapFields(TIRE_KEYS, c.tire) },
   };
 }
@@ -151,6 +152,7 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
       ranges: Object.fromEntries(Object.entries(o!.ranges).map(([k, r]) => [k, { lo: fj(r.lo), hi: fj(r.hi) }])),
       goals: Object.fromEntries(Object.entries(o!.goals).map(([k, g]) => [k, { on: g.on, target: fj(g.target), weight: fj(g.weight) }])),
       rollAngle: fj(o!.rollAngle), rackCheck: fj(o!.rackCheck), keepClose: fj(o!.keepClose), rollLoadFactor: fj(o!.rollLoadFactor),
+      ...(o!.starts && o!.starts > 1 ? { starts: o!.starts } : {}),
     }])),
     vehicleOptimizer: {
       ranges: Object.fromEntries(Object.entries(d.vehicleOptimizer.ranges).map(([k, r]) => [k, { lo: fj(r.lo), hi: fj(r.hi) }])),
@@ -158,6 +160,7 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
       lateralG: fj(d.vehicleOptimizer.lateralG), brakingG: fj(d.vehicleOptimizer.brakingG),
       accelG: fj(d.vehicleOptimizer.accelG), keepClose: fj(d.vehicleOptimizer.keepClose),
       ...(d.vehicleOptimizer.caseSource ? { caseSource: d.vehicleOptimizer.caseSource } : {}),
+      ...(d.vehicleOptimizer.starts && d.vehicleOptimizer.starts > 1 ? { starts: d.vehicleOptimizer.starts } : {}),
     },
     grip: mapFields(GRIP_KEYS, d.grip),
     tireGrip: mapFields(MF_KEYS, d.tireGrip),
@@ -253,6 +256,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   },
   // 9 → 10: ride inputs (body inertias, tire damping) take their defaults.
   9: (f) => ({ ...f, formatVersion: 10 }),
+  // 10 → 11: linear dampers (two-stage inputs take the generic defaults), local search.
+  10: (f) => ({ ...f, formatVersion: 11 }),
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */
@@ -400,7 +405,7 @@ function readVehicleOptimizer(raw: unknown, warnings: string[]): VehicleOptimize
   };
   const { ranges, goals } = readRangesGoals(raw, d.goals, valid, rf);
   const opt = (k: 'lateralG' | 'brakingG' | 'accelG' | 'keepClose') => (raw[k] ? rf(raw[k], 'ratio', d[k], k) : d[k]);
-  return { ranges, goals, lateralG: opt('lateralG'), brakingG: opt('brakingG'), accelG: opt('accelG'), keepClose: opt('keepClose'), ...(typeof raw.caseSource === 'string' ? { caseSource: raw.caseSource } : {}) };
+  return { ranges, goals, lateralG: opt('lateralG'), brakingG: opt('brakingG'), accelG: opt('accelG'), keepClose: opt('keepClose'), ...(typeof raw.caseSource === 'string' ? { caseSource: raw.caseSource } : {}), ...(typeof raw.starts === 'number' && raw.starts > 1 ? { starts: Math.min(16, Math.round(raw.starts)) } : {}) };
 }
 
 const AXIS_KEYS = ['x', 'y', 'z'];
@@ -433,6 +438,7 @@ function readOptimizer(raw: unknown, warnings: string[]): Partial<Record<CornerI
       rackCheck: o.rackCheck ? rf(o.rackCheck, 'length', d.rackCheck, 'rack check') : d.rackCheck,
       keepClose: o.keepClose ? rf(o.keepClose, 'ratio', d.keepClose, 'keep close') : d.keepClose,
       rollLoadFactor: o.rollLoadFactor ? rf(o.rollLoadFactor, 'ratio', d.rollLoadFactor, 'roll load factor') : d.rollLoadFactor,
+      ...(typeof o.starts === 'number' && o.starts > 1 ? { starts: Math.min(16, Math.round(o.starts)) } : {}),
     };
   }
   return out;
@@ -499,8 +505,15 @@ function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: str
     geom: { points, scalars, damperArm: c.damperArm === 'uca' ? 'uca' : 'lca' },
     spring: readRecord(c.spring, SPRING_KEYS, (k) => SPRING_META[k].quantity, def.spring, `${id}.spring`, w),
     // Damping rates are new in format 8: older files take the defaults quietly.
-    damper: readRecord(damperRaw.fields, DAMPER_KEYS, (k) => DAMPER_META[k].quantity, def.damper, `${id}.damper`, original < 8 ? [] : w),
+    damper: (() => {
+      // Format 11 added the two-stage damper inputs: older files take the defaults quietly.
+      const dw: string[] = [];
+      const r = readRecord(damperRaw.fields, DAMPER_KEYS, (k) => DAMPER_META[k].quantity, def.damper, `${id}.damper`, dw);
+      if (original >= 8) w.push(...dw.filter((x) => original >= 11 || !DAMPER_TWO_STAGE_KEYS.some((k) => x.startsWith(`${id}.damper.${k}`))));
+      return r;
+    })(),
     bumpStop: typeof damperRaw.bumpStop === 'boolean' ? damperRaw.bumpStop : def.bumpStop,
+    damperMode: damperRaw.mode === 'twoStage' ? 'twoStage' : 'linear',
     tireModel: model,
     tire: readRecord(tireRaw.fields, TIRE_KEYS, (k) => TIRE_META[k].quantity, def.tire, `${id}.tire`, w),
     volumeChange: typeof tireRaw.volumeChange === 'boolean' ? tireRaw.volumeChange : def.volumeChange,

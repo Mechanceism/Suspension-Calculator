@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { assembleVehicle, solveCase, rideRun, type VehicleProblem, type TireForceModel, type SegmentSpec } from '../src/core';
+import { assembleVehicle, solveCase, rideRun, damperForce, type VehicleProblem, type TireForceModel, type SegmentSpec } from '../src/core';
+import { defaultDesign } from '../src/app/store';
+import { serializeProject, importProject } from '../src/app/project';
+import { damperOf } from '../src/app/optimizer';
 import { SAMPLE_LAYOUTS, SAMPLE_SPRING } from '../src/examples/sampleLayouts';
 
 const geom = SAMPLE_LAYOUTS.find((l) => l.id === 'C')!.geometry;
@@ -62,4 +65,42 @@ describe('ride over time (Phase B)', () => {
     rideRun(base(), { FL: geom }, [{ ...straight(150), road: { rough: { seed: 3, maxHeight: 20, scale: 1.5, coverage: 0.7 }, features: [] } }]);
     expect(performance.now() - t0).toBeLessThan(8000);
   });
+
+  it('two-stage dampers: low-speed rate up to the knee, high-speed rate past it; linear when the rates match', () => {
+    const d = { bump: 1500, rebound: 2500, bumpHigh: 750, reboundHigh: 1250, bumpKnee: 0.1, reboundKnee: 0.1 };
+    expect(damperForce(d, 0.05)).toBeCloseTo(125, 9);
+    expect(damperForce(d, 0.3)).toBeCloseTo(2500 * 0.1 + 1250 * 0.2, 9);
+    expect(damperForce(d, -0.3)).toBeCloseTo(-(1500 * 0.1 + 750 * 0.2), 9);
+    expect(damperForce({ bump: 1500, rebound: 2500 }, -0.3)).toBeCloseTo(-450, 9);
+    // A digressive damper eases the hit of a sharp bump at speed.
+    const sharp: SegmentSpec = { ...straight(20, 20), road: { rough: null, features: [{ kind: 'bump', at: 5, length: 0.3, height: 25, side: 'both' }] } };
+    const peak = (dd: typeof d | { bump: number; rebound: number }) => Math.max(...rideRun(base({}, { ...des(), damping: dd }), { FL: geom }, [sharp], { hz: 400 }).frames.map((f) => f.ride!.tireLoad.FL));
+    expect(peak(d)).toBeLessThan(peak({ bump: 1500, rebound: 2500 }));
+  });
+
+  it('the damper mode and two-stage inputs save with the project; older files stay linear', () => {
+    const d = defaultDesign();
+    d.damperMode = 'twoStage';
+    const back = importProject(JSON.parse(JSON.stringify(serializeProject(d, 'D')))).design;
+    expect(back.damperMode).toBe('twoStage');
+    expect(damperOf(back)).toEqual({ bump: 1500, rebound: 2500, bumpHigh: 750, reboundHigh: 1250, bumpKnee: 0.1, reboundKnee: 0.1 });
+    expect(damperOf(defaultDesign())).toEqual({ bump: 1500, rebound: 2500 });
+  });
+
+  it('tuning springs and dampers on the ride (Bayesian optimization) improves on dampers that are far too soft', async () => {
+    const { tuneRates, scoreTests } = await import('../src/core');
+    const p = base({}, des(150, 250));
+    const bumpy: SegmentSpec = { ...straight(12, 15), road: { rough: { seed: 4, maxHeight: 25, scale: 1.2, coverage: 0.8 }, features: [] } };
+    const tests = [{ segments: [bumpy], weight: 1, onFail: 'report' as const }];
+    const vars = [
+      { kind: 'bump' as const, root: 'FL' as const, lo: 100, hi: 6000, value: 150, label: 'bump' },
+      { kind: 'rebound' as const, root: 'FL' as const, lo: 100, hi: 8000, value: 250, label: 'rebound' },
+    ];
+    const r = tuneRates(p, tests, vars, { budget: 7, seed: 3 });
+    expect(r.evaluations).toBe(7);
+    expect(r.after).toBeLessThan(r.before * 0.9);
+    // Stiffer damping than the soft start was found.
+    expect(r.x[0]! + r.x[1]!).toBeGreaterThan(400);
+    expect(scoreTests(p, tests).score).toBeCloseTo(r.before, 6);
+  }, 400_000);
 });

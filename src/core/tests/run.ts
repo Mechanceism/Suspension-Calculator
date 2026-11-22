@@ -10,7 +10,7 @@ import { CORNER_IDS, type CornerId, type ChassisPose, type CornerStatus, type Gr
 import { segmentStates, segmentLatG, roadEffective, G, type RoadState, type SegmentSpec, type CarDims } from './segments';
 import { wheelHeights } from './road';
 import { steerForTurn, type SteerNeed } from './steer';
-import { rideOn } from './ride';
+import { rideOn, type RideMeasures } from './ride';
 import { classifyState, worstSeverity, PROFILES, type CheckProfile, type Finding, type Severity } from './checks';
 
 export interface StateResult {
@@ -65,7 +65,7 @@ export interface TestRun {
   /** Assembly failed (geometry can't be built). */
   error?: string;
   /** The ride over time (Phase B) when asked for: frames for playback. */
-  ride?: { frames: PlaybackFrame[]; error?: string };
+  ride?: { frames: PlaybackFrame[]; metrics?: RideMeasures; error?: string };
 }
 
 /** Segment physics plus the checks that decide its pass / fail. */
@@ -185,7 +185,7 @@ export function runTest(
   let ride: TestRun['ride'];
   if (opts.ride) {
     const rr = rideOn(p, asm, segments, {});
-    ride = { frames: rr.frames, ...(rr.error ? { error: rr.error } : {}) };
+    ride = { frames: rr.frames, metrics: rr.metrics, ...(rr.error ? { error: rr.error } : {}) };
     segs.forEach((sr, i) => {
       // Add what only shows over time (the steady samples already report the rest).
       const steadyKeys = new Set(sr.findings.map((f) => `${f.check}|${(f.corners ?? []).join(',')}`));

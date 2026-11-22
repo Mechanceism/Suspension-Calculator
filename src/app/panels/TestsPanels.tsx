@@ -23,7 +23,8 @@ import { RoadEditor } from './RoadEditor';
 import { PlaybackBar, SegmentMap } from './Playback';
 import { Section, fmt } from './FieldRows';
 import { useDisplay } from '../units';
-import { useLoop, optimizeTests, exploreRanges, acceptExploration, setMaxWiden, isUnfixable, WIDEN_CHOICES, widenLabel } from '../testOptimize';
+import { useLoop, optimizeTests, exploreRanges, acceptExploration, setMaxWiden, isUnfixable, WIDEN_CHOICES, widenLabel, tuneSpringsDampers, setRateSettings, rateVars } from '../testOptimize';
+import { SearchSelect, SensitivityReport } from './SearchTools';
 import { VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META } from '../../core/optimize/vehicle';
 
 const parse = (text: string, q: Quantity, prev: Field): Field => {
@@ -786,6 +787,10 @@ function OptimizeSection({ test, onOpenOptimizer }: { test: TestDesign; onOpenOp
           {WIDEN_CHOICES.map((v) => <option key={v} value={v}>{widenLabel(v)}</option>)}
         </select>
       </div>
+      <div className="jm-row" title="Geometry rounds: local from your design, or wide (several starts from a design of experiments, keeping the best)">
+        <span className="muted">Search</span>
+        <SearchSelect value={vo.starts} onChange={(n) => useApp.getState().updateVehicleOptimizer((o) => ({ ...o, starts: n }))} />
+      </div>
       <p className="small-text">
         Free coordinates: <b>{free || 'none yet (you\'ll be asked to free all available)'}</b>
         {goals.length ? <> · other goals kept: <b>{goals.join(', ')}</b></> : ' · no other goals'}
@@ -801,10 +806,13 @@ function OptimizeSection({ test, onOpenOptimizer }: { test: TestDesign; onOpenOp
       {failing && !fixable && (
         <p className="hint warn-text">These failures can't be fixed by moving suspension points (no powered / braked wheels, more than the tires can give, or too tight for the steering): change the corner or steering settings, the test, or the tires.</p>
       )}
+      <RateTuning test={test} busy={busy} />
       {loop.running && (
         <div className="jm-row">
-          <span className="run-line"><span className="spinner" /> {loop.mode === 'explore' ? `Exploring (ranges ×${loop.widen})…` : `Round ${loop.round}${loop.widen > 1 ? ` · ranges ×${loop.widen}` : ''}…`}</span>
-          <button className="chip" onClick={() => loop.cancel?.()}>■ Stop</button>
+          <span className="run-line"><span className="spinner" /> {loop.rateProgress
+            ? `Springs & dampers: try ${loop.rateProgress.evaluation} of ${loop.rateProgress.budget} · best score ${fmt(loop.rateProgress.best, 2)}`
+            : loop.mode === 'explore' ? `Exploring (ranges ×${loop.widen})…` : `Round ${loop.round}${loop.widen > 1 ? ` · ranges ×${loop.widen}` : ''}…`}</span>
+          <button className="chip" onClick={() => loop.cancel?.()} title="Stop (rate tuning keeps the best found so far)">■ Stop</button>
         </div>
       )}
       {loop.log.length > 0 && <ol className="loop-log">{loop.log.map((l, i) => <li key={i} className="small-text">{l}</li>)}</ol>}
@@ -836,6 +844,53 @@ function OptimizeSection({ test, onOpenOptimizer }: { test: TestDesign; onOpenOp
           </div>
         </div>
       )}
+      <details className="tire-advanced">
+        <summary>What matters most for {many ? 'these tests' : 'this test'}</summary>
+        <SensitivityReport
+          build={() => buildVehicleProblem(useApp.getState(), { caseSource: many ? 'all' : test.id })}
+          current={useApp.getState().geom} what="the miss on the tests' pass rules"
+        />
+      </details>
     </Section>
+  );
+}
+
+/** Springs, dampers and anti-roll bars tuned on the ride over time (Bayesian optimization). */
+function RateTuning({ test, busy }: { test: TestDesign; busy: boolean }) {
+  const loop = useLoop();
+  const r = loop.rates;
+  const n = rateVars(useApp.getState(), r).length;
+  const rideOff = loop.scope === 'test' ? test.ride === false : false;
+  return (
+    <details className="tire-advanced rate-tuning" open>
+      <summary>Springs &amp; dampers (ride over time)</summary>
+      <div className="jm-row" title="What to tune. Locked values (Locks tab) stay as they are.">
+        <label className="check-label"><input type="checkbox" checked={r.springs} onChange={(e) => setRateSettings({ springs: e.target.checked })} /> springs</label>
+        <label className="check-label"><input type="checkbox" checked={r.dampers} onChange={(e) => setRateSettings({ dampers: e.target.checked })} /> dampers</label>
+        <label className="check-label"><input type="checkbox" checked={r.bars} onChange={(e) => setRateSettings({ bars: e.target.checked })} /> anti-roll bars</label>
+      </div>
+      <div className="jm-row">
+        <span className="muted" title="Each rate is searched from its value ÷ this to × this">Range ÷/×</span>
+        <select value={r.spread} onChange={(e) => setRateSettings({ spread: Number(e.target.value) })}>
+          {[1.5, 2, 2.5, 4].map((v) => <option key={v} value={v}>{v}</option>)}
+        </select>
+        <span className="muted" title="Each try runs every test in scope, steady and over time">Tries</span>
+        <select value={r.budget} onChange={(e) => setRateSettings({ budget: Number(e.target.value) })}>
+          {[15, 30, 60, 100].map((v) => <option key={v} value={v}>{v}</option>)}
+        </select>
+      </div>
+      <label className="check-label small-text" title="When the geometry rounds stop helping, or the remaining failures only show over time, tune the rates too">
+        <input type="checkbox" checked={r.withLoop} onChange={(e) => setRateSettings({ withLoop: e.target.checked })} /> also inside Optimize until it passes / Improve
+      </label>
+      {!loop.running && (
+        <div className="jm-row">
+          <button className="wide-btn" disabled={busy || !n || rideOff} onClick={() => void tuneSpringsDampers(loop.scope, test)}
+            title="Bayesian optimization: each try runs the tests with candidate rates; a model of the results picks the next try. Your current rates are the first try, so it never ends worse.">
+            ▶ Tune {n} rate{n === 1 ? '' : 's'}
+          </button>
+        </div>
+      )}
+      {rideOff && <p className="hint">Turn on Ride over time for this test to tune on it.</p>}
+    </details>
   );
 }

@@ -21,8 +21,11 @@ export function BusyIndicator() {
   let label: string | null = null;
   let stop: (() => void) | null = null;
   let where: 'tests' | 'vehicle' | 'corner' = 'tests';
-  if (loop.running) {
-    label = loop.mode === 'explore'
+  if (loop.running && loop.rateProgress) {
+    label = `Tuning springs & dampers · try ${loop.rateProgress.evaluation} of ${loop.rateProgress.budget}`;
+    stop = () => loop.cancel?.();
+  } else if (loop.running) {
+    label = loop.mode === 'rates' ? 'Tuning springs & dampers' : loop.mode === 'explore'
       ? `Exploring wider ranges (×${loop.widen})`
       : `${loop.mode === 'improve' ? 'Improving' : 'Optimizing'} ${loop.scope === 'all' ? 'all enabled tests' : 'the test'} · round ${loop.round}${loop.widen > 1 ? ` · ranges ×${loop.widen}` : ''}`;
     stop = () => loop.cancel?.();

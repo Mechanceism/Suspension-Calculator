@@ -13,17 +13,19 @@ import {
 import type { GripModel } from '../core/tire/grip';
 import type { MFCoeffs } from '../core/tire/magicFormula';
 import type { TireForceModel } from '../core/tire/model';
-import { CORNER_IDS, tirePressure, type AxleShared, type CornerId } from '../core/vehicle/vehicle';
+import { CORNER_IDS, tirePressure, type AxleShared, type CornerId, type DamperSpec } from '../core/vehicle/vehicle';
 import { vec3 } from '../core/math/vec3';
 import {
   POINT_KEYS, rootOf, toGeometry, toProfile, toForceModel, mergedCorners, vehicleStaticLoads, defaultOptimizerSetup, GRIP_KEYS, MF_KEYS,
-  type AppState, type PointKey, type OptimizerSetup, type SharedDesign, type GripKey, type MFKey, type Field,
+  type AppState, type PointKey, type OptimizerSetup, type SharedDesign, type GripKey, type MFKey, type Field, type DamperKey, type DamperMode,
 } from './store';
 import { STATE_KEY } from './anchors';
 import { lockKeys, pointAxisLocked } from './locks';
 import { toSpec } from './heldDimensions';
 import type { SegmentSpec } from '../core/tests/segments';
 import type { TestRun, TestRunOptions, PlaybackFrame } from '../core/tests/run';
+import type { VehicleSensitivity } from '../core/optimize/vehicle';
+import type { RateVar, RateTest, RateProgress, RateResult } from '../core/optimize/rates';
 import { statesForTests } from './tests';
 
 const AXES = ['x', 'y', 'z'] as const;
@@ -107,7 +109,7 @@ export function buildProblem(s: AppState): BuiltProblem<CornerProblem> {
   const problem: CornerProblem = {
     geometry, droop: -Math.abs(s.droop), bump: Math.abs(s.bump), samples: 9,
     rackPositions: rack > 0 && s.settings[s.activeCorner].steered ? [-rack, rack] : [],
-    rollAngle: o.rollAngle.value, goals, variables, holds: holdsFor(s, root), keepClose: Math.max(0, o.keepClose.value),
+    rollAngle: o.rollAngle.value, goals, variables, holds: holdsFor(s, root), keepClose: Math.max(0, o.keepClose.value), starts: o.starts ?? 1,
     tire: model ? { profile: toProfile(s.geom), model, staticLoad, rollLoadFactor: o.rollLoadFactor.value, grip: gripModelOf(s.grip), tireGrip: tireGripOf(s.tireGrip), pressure: tirePressure(model) } : undefined,
   };
   const blockers: string[] = [];
@@ -124,6 +126,15 @@ export function designRoots(s: Pick<AppState, 'links'>): { root: CornerId; corne
   return roots.map((root) => ({ root, corners: CORNER_IDS.filter((id) => rootOf(id, s.links) === root) }));
 }
 
+/** A design's damper for the ride model (high-speed rates and knees only for two-stage dampers). */
+export function damperOf(d: { damper: Record<DamperKey, Field>; damperMode: DamperMode }): DamperSpec {
+  const v = (k: DamperKey) => Math.max(0, d.damper[k].value);
+  const base = { bump: v('bumpDamping'), rebound: v('reboundDamping') };
+  return d.damperMode === 'twoStage'
+    ? { ...base, bumpHigh: v('bumpDampingHigh'), reboundHigh: v('reboundDampingHigh'), bumpKnee: v('bumpKnee'), reboundKnee: v('reboundKnee') }
+    : base;
+}
+
 /** `caseSource` overrides the optimizer's load-case source (a test id or 'all'), e.g. for the Tests optimize loop. */
 export function buildVehicleProblem(s: AppState, over: { caseSource?: string } = {}): BuiltProblem<VehicleProblem> {
   const o = { ...s.vehicleOptimizer, ...(over.caseSource ? { caseSource: over.caseSource } : {}) };
@@ -135,7 +146,7 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
     designs[root] = {
       geometry: toGeometry(d.geom), profile: toProfile(d.geom), model: toForceModel(d.tireModel, d.tire, d.volumeChange) ?? RIGID_TIRE,
       springRate: d.spring.springRate.value, freeLength: d.spring.freeLength.value, unsprungMass: d.spring.unsprungMass.value,
-      damping: { bump: Math.max(0, d.damper.bumpDamping.value), rebound: Math.max(0, d.damper.reboundDamping.value) },
+      damping: damperOf(d),
       bumpStop: d.bumpStop ? { length: d.damper.bumpStopLength.value, rate: d.damper.bumpStopRate.value } : undefined,
     };
   }
@@ -171,7 +182,7 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
     cases: { lateralG: Math.max(0, o.lateralG.value), brakingG: Math.max(0, o.brakingG.value), accelG: Math.max(0, o.accelG.value) },
     states: o.caseSource && (o.caseSource === 'all' || s.tests.some((x) => x.id === o.caseSource))
       ? statesForTests(s.tests, o.caseSource, { wheelbase: v.wheelbase.value, halfTrack: Math.abs(toGeometry(all[rootOf('FL', s.links)].geom).wheel.center.x) }) : undefined,
-    goals, variables, holds, grip: gripModelOf(s.grip), tireGrip: tireGripOf(s.tireGrip), keepClose: Math.max(0, o.keepClose.value),
+    goals, variables, holds, grip: gripModelOf(s.grip), tireGrip: tireGripOf(s.tireGrip), keepClose: Math.max(0, o.keepClose.value), starts: o.starts ?? 1,
   };
   const blockers: string[] = [];
   if (!goals.length) blockers.push('Turn on at least one goal.');
@@ -254,3 +265,28 @@ export function runPlaybackJob(problem: VehicleProblem, segments: SegmentSpec[],
   worker.postMessage({ kind: 'playback', problem, segments, ride });
   return { done, cancel: () => worker.terminate() };
 }
+
+/** A worker job with progress messages; stop() ends it (the caller keeps the last progress). */
+function progressJob<R, P>(msg: unknown, onProgress: (p: P) => void): { done: Promise<R>; stop(): void } {
+  const worker = new Worker(new URL('./optimizer.worker.ts', import.meta.url), { type: 'module' });
+  let finish: (r: R) => void = () => {};
+  let fail: (e: unknown) => void = () => {};
+  const done = new Promise<R>((res, rej) => { finish = res; fail = rej; });
+  worker.onmessage = (e: MessageEvent) => {
+    const m = e.data as { type: 'progress'; info: P } | { type: 'done'; result: R } | { type: 'error'; message: string };
+    if (m.type === 'progress') { onProgress(m.info); return; }
+    worker.terminate();
+    if (m.type === 'error') fail(new Error(m.message)); else finish(m.result);
+  };
+  worker.onerror = (e) => { worker.terminate(); fail(new Error(e.message || 'Worker failed')); };
+  worker.postMessage(msg);
+  return { done, stop: () => { worker.terminate(); fail(new Error('stopped')); } };
+}
+
+/** What matters most (DOE sensitivity) for a vehicle problem, in the worker. */
+export const runSensitivityJob = (problem: VehicleProblem, samples: number, onProgress: (p: { sample: number; of: number }) => void) =>
+  progressJob<VehicleSensitivity | null, { sample: number; of: number }>({ kind: 'sensitivity', problem, samples }, onProgress);
+
+/** Tune springs / dampers / bars on the ride (Bayesian optimization), in the worker. */
+export const runRatesJob = (problem: VehicleProblem, tests: RateTest[], vars: RateVar[], budget: number, mode: 'pass' | 'improve', onProgress: (p: RateProgress) => void) =>
+  progressJob<RateResult, RateProgress>({ kind: 'rates', problem, tests, vars, budget, mode }, onProgress);

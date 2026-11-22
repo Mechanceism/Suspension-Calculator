@@ -86,7 +86,11 @@ export const sprungLoad = (f: Record<SpringKey, Field>, loadFactor: number) =>
   Math.max(0, (f.cornerLoad.value - f.unsprungMass.value * G) * loadFactor);
 
 /** Damper stroke and bump stop (docs/MATH.md § L5). */
-export const DAMPER_KEYS = ['maxLength', 'minLength', 'bumpStopLength', 'bumpStopRate', 'bumpDamping', 'reboundDamping'] as const;
+export const DAMPER_KEYS = ['maxLength', 'minLength', 'bumpStopLength', 'bumpStopRate', 'bumpDamping', 'reboundDamping', 'bumpDampingHigh', 'reboundDampingHigh', 'bumpKnee', 'reboundKnee'] as const;
+/** Damper inputs only the two-stage damper uses. */
+export const DAMPER_TWO_STAGE_KEYS = ['bumpDampingHigh', 'reboundDampingHigh', 'bumpKnee', 'reboundKnee'] as const;
+/** Damper force curve: one rate per direction (linear), or two-stage (low-speed rate up to a knee, then a high-speed rate). */
+export type DamperMode = 'linear' | 'twoStage';
 export type DamperKey = (typeof DAMPER_KEYS)[number];
 export const DAMPER_META: Record<DamperKey, { label: string; quantity: Quantity; unit: string }> = {
   maxLength: { label: 'Damper fully extended', quantity: 'length', unit: 'mm' },
@@ -95,6 +99,10 @@ export const DAMPER_META: Record<DamperKey, { label: string; quantity: Quantity;
   bumpStopRate: { label: 'Bump stop rate', quantity: 'rate', unit: 'N/mm' },
   bumpDamping: { label: 'Damping, bump (compression)', quantity: 'damping', unit: 'N·s/m' },
   reboundDamping: { label: 'Damping, rebound (extension)', quantity: 'damping', unit: 'N·s/m' },
+  bumpDampingHigh: { label: 'Bump, high speed (past the knee)', quantity: 'damping', unit: 'N·s/m' },
+  reboundDampingHigh: { label: 'Rebound, high speed (past the knee)', quantity: 'damping', unit: 'N·s/m' },
+  bumpKnee: { label: 'Bump knee (shaft speed)', quantity: 'ratio', unit: 'm/s' },
+  reboundKnee: { label: 'Rebound knee (shaft speed)', quantity: 'ratio', unit: 'm/s' },
 };
 
 /** Steering system and tire-force inputs (docs/MATH.md § Steering). */
@@ -246,6 +254,8 @@ export interface AppState extends DesignState {
   spring: Record<SpringKey, Field>;
   damper: Record<DamperKey, Field>;
   bumpStop: boolean;
+  /** Damper force curve (linear or two-stage). */
+  damperMode: DamperMode;
   steer: Record<SteerKey, Field>;
 
   selection: Selection;
@@ -319,6 +329,8 @@ export interface AppState extends DesignState {
   resetTireGrip(): void;
   /** Write vehicle-optimized coordinates into each corner design (Undo keeps the previous geometry). */
   applyVehicleOptimized(updates: { root: CornerId; key: PointKey; axis: 0 | 1 | 2; value: number }[]): void;
+  /** Set spring / damper rates of designs and anti-roll bar rates of axles (rate tuning). One undo step. */
+  applyRateValues(updates: RateUpdate[]): void;
   undoVehicleOptimized(): void;
   vehOptUndo: Partial<Record<CornerId, EditableGeometry>> | null;
   /** Hold a dimension (replaces one with the same points and measure). */
@@ -386,6 +398,8 @@ export interface CornerDesign {
   spring: Record<SpringKey, Field>;
   damper: Record<DamperKey, Field>;
   bumpStop: boolean;
+  /** Damper force curve (linear or two-stage). */
+  damperMode: DamperMode;
   tireModel: TireModelKind;
   tire: Record<TireKey, Field>;
   volumeChange: boolean;
@@ -502,9 +516,14 @@ export interface OptimizerSetup {
   keepClose: Field;
   /** Outside-wheel load in roll, × static corner load (contact-area / grip goals). */
   rollLoadFactor: Field;
+  /** Gradient runs (1 = local from the current design; more = wide search from the best DOE samples too). */
+  starts?: number;
 }
 
 /** Whole-vehicle optimizer setup. */
+/** One rate change from the rate tuner. */
+export interface RateUpdate { root?: CornerId; axle?: Axle; section: 'spring' | 'damper' | 'shared'; key: string; value: number }
+
 export interface VehicleOptimizerSetup {
   /** Free coordinates, key `${root}.${PointKey}.${x|y|z}` → allowed range (absolute, mm). */
   ranges: Record<string, { lo: Field; hi: Field }>;
@@ -516,6 +535,8 @@ export interface VehicleOptimizerSetup {
   keepClose: Field;
   /** Load cases: the fixed ones above, or a test's segments (test id). */
   caseSource?: string;
+  /** Gradient runs (1 = local from the current design; more = wide search from the best DOE samples too). */
+  starts?: number;
 }
 
 export function defaultVehicleOptimizerSetup(): VehicleOptimizerSetup {
@@ -598,6 +619,8 @@ export interface DesignState {
   spring: Record<SpringKey, Field>;
   damper: Record<DamperKey, Field>;
   bumpStop: boolean;
+  /** Damper force curve (linear or two-stage). */
+  damperMode: DamperMode;
   steer: Record<SteerKey, Field>;
   tireModel: TireModelKind;
   tire: Record<TireKey, Field>;
@@ -647,7 +670,7 @@ export interface HeldDimension {
 
 /** The working (active corner) fields as a CornerDesign. */
 export const workingDesign = (s: CornerDesign): CornerDesign => ({
-  geom: s.geom, spring: s.spring, damper: s.damper, bumpStop: s.bumpStop, tireModel: s.tireModel,
+  geom: s.geom, spring: s.spring, damper: s.damper, bumpStop: s.bumpStop, damperMode: s.damperMode, tireModel: s.tireModel,
   tire: s.tire, volumeChange: s.volumeChange, tireSizeText: s.tireSizeText,
 });
 
@@ -677,7 +700,7 @@ export function vehicleStaticLoads(
 
 /** The design part of the app state (what a file saves). */
 export const pickDesign = (s: DesignState): DesignState => ({
-  presetId: s.presetId, geom: s.geom, spring: s.spring, damper: s.damper, bumpStop: s.bumpStop, steer: s.steer,
+  presetId: s.presetId, geom: s.geom, spring: s.spring, damper: s.damper, bumpStop: s.bumpStop, damperMode: s.damperMode, steer: s.steer,
   tireModel: s.tireModel, tire: s.tire, volumeChange: s.volumeChange, tireSizeText: s.tireSizeText,
   droop: s.droop, bump: s.bump, driver: s.driver,
   corners: s.corners, links: s.links, settings: s.settings, activeCorner: s.activeCorner,
@@ -725,8 +748,14 @@ export function defaultDesign(presetId = 'C'): DesignState {
       springRate: field(SAMPLE_SPRING.rate, 'rate'),
       freeLength: field(SAMPLE_SPRING.freeLength),
     },
-    damper: { maxLength: field(430), minLength: field(330), bumpStopLength: field(345), bumpStopRate: field(400, 'rate'), bumpDamping: field(1500, 'damping'), reboundDamping: field(2500, 'damping') },
+    damper: {
+      maxLength: field(430), minLength: field(330), bumpStopLength: field(345), bumpStopRate: field(400, 'rate'),
+      bumpDamping: field(1500, 'damping'), reboundDamping: field(2500, 'damping'),
+      // Generic two-stage (digressive) curve: half the rate past a 0.1 m/s knee.
+      bumpDampingHigh: field(750, 'damping'), reboundDampingHigh: field(1250, 'damping'), bumpKnee: field(0.1, 'ratio'), reboundKnee: field(0.1, 'ratio'),
+    },
     bumpStop: true,
+    damperMode: 'linear',
     tireModel: 'gas',
     tire: Object.fromEntries(TIRE_KEYS.map((k) => [k, field(TIRE_META[k].initial, TIRE_META[k].quantity)])) as Record<TireKey, Field>,
     volumeChange: true,
@@ -901,6 +930,33 @@ export const useApp = create<AppState>((set, get) => ({
     set({ dimensions: [...rest, { ...d, id: newDimId() }] });
   },
   removeDimension: (id) => set({ dimensions: get().dimensions.filter((d) => d.id !== id), dimViolations: get().dimViolations.filter((v) => v !== id) }),
+  applyRateValues: (updates) => {
+    const s = get();
+    const merged = mergedCorners(s);
+    const activeRoot = rootOf(s.activeCorner, s.links);
+    const corners = { ...s.corners };
+    let spring = s.spring, damper = s.damper;
+    const shared = { front: { ...s.shared.front }, rear: { ...s.shared.rear } };
+    for (const u of updates) {
+      if (u.section === 'shared' && u.axle) {
+        const k = u.key as SharedFieldKey;
+        shared[u.axle] = { ...shared[u.axle], [k]: field(Number(u.value.toFixed(3)), SHARED_META[k].quantity) };
+        continue;
+      }
+      if (!u.root) continue;
+      const v = Number(u.value.toFixed(1));
+      if (u.root === activeRoot) {
+        if (u.section === 'spring') spring = { ...spring, [u.key]: field(v, 'rate') };
+        else damper = { ...damper, [u.key]: field(v, 'damping') };
+      } else {
+        const d = corners[u.root] ?? merged[u.root];
+        corners[u.root] = u.section === 'spring'
+          ? { ...d, spring: { ...d.spring, [u.key]: field(v, 'rate') } }
+          : { ...d, damper: { ...d.damper, [u.key]: field(v, 'damping') } };
+      }
+    }
+    set({ corners, spring, damper, shared, presetId: 'custom' });
+  },
   applyVehicleOptimized: (updates) => {
     const s = get();
     const merged = mergedCorners(s);

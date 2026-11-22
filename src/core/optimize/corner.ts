@@ -17,7 +17,8 @@ import type { TireProfile } from '../tire/geometry';
 import { DoubleWishbone, type CornerState, type DoubleWishboneGeometry } from '../suspension/doubleWishbone';
 import { characteristics, deg, rad, type Characteristics } from '../suspension/characteristics';
 import { armMetrics } from '../suspension/armGeometry';
-import { boundedLeastSquares, type LsqResult } from './leastSquares';
+import { type LsqResult } from './leastSquares';
+import { multiStartLeastSquares } from './search';
 import { dimensionValue, type DimensionSpec } from '../suspension/dimensions';
 
 export type HardpointId =
@@ -90,6 +91,8 @@ export interface CornerProblem {
   /** Tire, static corner load and grip model, for the contact-area and grip goals. */
   tire?: { profile: TireProfile; model: TireForceModel; staticLoad: number; rollLoadFactor: number; grip?: GripModel; tireGrip?: MFCoeffs; pressure?: number };
   maxIterations?: number;
+  /** Gradient runs: 1 = from the current design only; more = also from the best DOE samples (wider search). */
+  starts?: number;
 }
 
 const AXES = ['x', 'y', 'z'] as const;
@@ -383,9 +386,9 @@ export function optimizeCorner(p: CornerProblem, onIteration?: (info: ProgressIn
     return r;
   };
 
-  const lsq = boundedLeastSquares(residuals, x0, lo, hi, {
+  const lsq = multiStartLeastSquares(residuals, x0, lo, hi, {
     maxIterations: p.maxIterations ?? 60, step: 0.01, relTol: 1e-7,
     onIteration: onIteration ? (i) => onIteration({ iteration: i.iteration, cost: i.cost, cost0: i.cost0, evaluations: i.evaluations, x: i.x }) : undefined,
-  });
+  }, { starts: p.starts ?? 1 });
   return { lsq, ...reportCorner(p, lsq.x) };
 }

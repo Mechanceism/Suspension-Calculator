@@ -354,7 +354,8 @@ The whole car driven through a test as a dynamic system with 7 degrees of freedo
     M(x)·ẍ = Q(x, ẋ, t)
 
 - **Generalized forces Q** reuse the steady solve: tire forces at the contacts, weight and the steady inertia (segment accelerations) of every mass give the body's net vertical force and roll / pitch moments about the origin (`bodyResidual`) and, by virtual work along each travel, the corner's force (`cornerWork`: tire, spring, bump stop, anti-roll bar / heave spring, jacking). Springs, bump stops, bars and dampers are internal: they only act along the travels.
-- **Dampers** (coaxial with the spring): −c·(dL/dq)²·q̇ along the travel, c = bump rate while the damper shortens, rebound rate while it extends (N·s/m at the damper, from the corner's Damper inputs).
+- **Dampers** (coaxial with the spring): the damper force F(L̇) acts along the travel as −(dL/dq)·F(L̇), L̇ = (dL/dq)·q̇. **Linear** (default): F = c·L̇, c = bump rate while the damper shortens, rebound rate while it extends. **Two-stage** (digressive when the high-speed rate is lower, as most road and race dampers): F = c_low·v up to the knee shaft speed v_k, then c_low·v_k + c_high·(v − v_k), per direction. Generic two-stage defaults: half the low-speed rate past a 0.1 m/s knee.
+- **Ride measures** (for tuning): wheel-lift time (Σ over wheels, s), bump-stop time (s), tire-load variation (RMS of each tire's load around its 0.5 s running mean ÷ its static load: grip lost to bouncing) and the body's vertical acceleration RMS (m/s², comfort).
 - **Tire:** vertical force from the tire model at the road height under each wheel (tabulated once per tire over wheel-center height and tilt for speed), plus tire damping c_t·(ġ − ẏ_wc) while in contact; a wheel off the ground carries nothing. Lateral, braking and drive forces are shared as in the steady solve (yaw balance front / rear, equal grip use within an axle, brake bias, drive split, differential) from the latest tire loads.
 - **Mass matrix M** from the kinetic energy: the sprung mass at its CG and its roll / pitch inertia about it (*Body roll / pitch inertia*), plus each unsprung mass moving with the body and along its wheel path (velocity Jacobians of the CG and wheel centers: ∂p/∂h = ŷ, ∂p/∂φ = ẑ × r, ∂p/∂θ = x̂ × r, ∂wc/∂q = the wheel-center path). Small angles; no gyroscopic terms.
 - **Road input at speed:** front wheels at the car's position s, rear wheels a wheelbase behind, left / right at ± half track, on the rough surface and placed bumps / potholes (plus held bumps).
@@ -435,15 +436,24 @@ Same solver; every evaluation rebuilds the corners from the candidate hardpoints
 
 Because load sensitivity rewards evenly loaded tires, the grip goal also cares how load transfer is split. Front/rear differences (LLTD) need separate front and rear designs (untick *Rear same dimensions as front*). Tested: identical front and rear give LLTD ≈ the weight split (50.4 %); moving the four UCA pivot heights reaches a 55 % target within the ranges in ~2 s; one evaluation (two cases, two designs) takes ~0.1 s.
 
+### Optimizer strategies ✅ (`src/core/optimize/search.ts`, `rates.ts`; decided 2026-11-22)
+Matched to how expensive one evaluation is:
+- **Geometry on steady states** (many variables, cheap): bounded Levenberg–Marquardt (gradient). **Search: wide** runs it from the current design and from the best of a Latin-hypercube DOE (8 samples per start, at least 12; each range cut into n strata, one sample per stratum, shuffled per variable) and keeps the lowest miss: less likely to stop at a nearby, merely good design. Corner and vehicle optimizers and the Tests loop.
+- **What matters most** (DOE + small response surface): Latin-hypercube samples over the free ranges (at least 2 per coordinate + 8), then least squares of the miss (and each goal) on the coded variables (−1…+1): main effects = change across each whole range; pairwise products of the four strongest give the interactions (main effects then come from that fuller fit). R² says how much of the spread the fit explains.
+- **Springs, dampers and anti-roll bars on the ride** (few variables, ~0.5–5 s per test): **Bayesian optimization**. A Gaussian process (Matérn 5/2 kernel, length scale by maximum likelihood over a grid, standardized costs) models the score from every try; the next try maximizes the expected improvement (1500 random candidates + perturbations of the best five, then a short local polish). First tries: the current rates, then a Latin hypercube. Rates are searched on a log scale between value ÷ spread and value × spread. Score per test (tests/score.ts): 100 · fixable Fail findings + 10 · Σ grip use over 100 % (+ average grip use when improving) + 10 · wheel-lift time + 5 · bump-stop time + 20 · load variation + 0.2 · heave acceleration RMS; several tests: priority-weighted mean. The best rates are applied only when they score better (one undo step).
+- **Tests loop**: geometry rounds (gradient, widening ranges as before); springs / dampers are tuned when the remaining failures only show over time, or when geometry stops helping (once per stall), then geometry continues.
+- **Genetic algorithm**: not used (thousands of evaluations); a candidate later for grip-vs-comfort trade-off curves.
+- Tested: Latin-hypercube strata, multi-start finding the deeper of two valleys a single run misses, sensitivity recovering known effects and an interaction (R² > 0.99), Bayesian optimization beating as many random tries on a 2-D function, tuning far-too-soft dampers on a rough road improving the score.
+
 ### Possible next steps for the optimizer
-- **Ranges for other values**: spring rate and length, tire pressure, static camber/toe, and **derived-dimension ranges** (e.g. arm length between A and B), not only hardpoint coordinates.
+- **Ranges for other values**: tire pressure, static camber/toe, and **derived-dimension ranges** (e.g. arm length between A and B), not only hardpoint coordinates and rates.
 - **Ghost preview** of the optimized geometry in the viewport before applying.
 - **Tire data**: fit μ_ref, n and β (or a full Pacejka-style model with camber thrust) from measured data, per tire.
 - **Per-tire grip model** (different tires front and rear) instead of one shared model.
 - **Steady-state cornering balance**: find the lateral g where the front or rear axle saturates (friction limit) and maximize it, instead of a fixed g.
 - **Combined cases**: braking in a turn, a weighted mix of cases, and a track-specific case list.
-- **Multi-start / global search** for problems with several local optima (the solver is local).
-- Optimize anti-roll bar rate and spring rates along with geometry.
+- Spring and bar rates in the steady geometry stage too (today they are tuned on the ride).
+- Damper knees and dyno curves as tuning variables; clicker positions when a damper's settings are known.
 
 ## L7: Optimizer objectives and requirements
 

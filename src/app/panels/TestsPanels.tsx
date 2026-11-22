@@ -25,6 +25,7 @@ import { Section, fmt } from './FieldRows';
 import { useDisplay } from '../units';
 import { useLoop, optimizeTests, exploreRanges, acceptExploration, setMaxWiden, isUnfixable, WIDEN_CHOICES, widenLabel, tuneSpringsDampers, setRateSettings, rateVars } from '../testOptimize';
 import { SearchSelect, SensitivityReport } from './SearchTools';
+import { EstimatedNote } from './SetupWizard';
 import { VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META } from '../../core/optimize/vehicle';
 
 const parse = (text: string, q: Quantity, prev: Field): Field => {
@@ -611,6 +612,7 @@ export function TestResults() {
         <span className={`status ${r.severity === 'fail' ? 'status-not-converged' : r.severity === 'warn' ? 'status-singular' : 'status-converged'}`}>{status}</span>
       </h2>
       <AllTests />
+      <EstimatedNote />
       {stale && <p className="hint warn-text">The design changed since this run: run again.</p>}
       <table className="corner-table test-table">
         <thead><tr><th>#</th><th>Segment</th><th title="Worst tire grip use">Grip</th><th /></tr></thead>

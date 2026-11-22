@@ -8,6 +8,7 @@ import { UnitsMenu } from './panels/UnitsMenu';
 import { TestsSidebar, TestResults, TestViewBar } from './panels/TestsPanels';
 import { HelpOverlay } from './panels/HelpOverlay';
 import { BusyIndicator } from './panels/BusyIndicator';
+import { SetupWizard } from './panels/SetupWizard';
 import { initHistory, undo, redo, useHistory } from './history';
 import { initHeldDimensions } from './heldDimensions';
 import { save, useDirty } from './fileActions';
@@ -101,6 +102,7 @@ export function App() {
         <button className="menu-btn help-btn" onClick={() => setHelp(true)} title="Keyboard & mouse help (?)">?</button>
       </header>
       {help && <HelpOverlay onClose={() => setHelp(false)} />}
+      <SetupWizard />
       <Notice />
       {workspace === 'corner' ? (
         <>

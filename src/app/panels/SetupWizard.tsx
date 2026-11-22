@@ -1,0 +1,535 @@
+/**
+ * Setup wizard: walks through entering the car, easy values first, hard ones last. Each step can be
+ * applied (the user's values) or skipped with "Use an estimate" (the current values stay and are marked
+ * as estimates, so results can say what they rest on). Measurement helpers: the corner-scale CG
+ * calculator, the unsprung-weight sum, the spring-rate-from-a-weight tool and the inertia estimate.
+ */
+import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { create } from 'zustand';
+import { parseValue, type Quantity } from '../../core/units/units';
+import { parseTireSize } from '../../core/tire/size';
+import { tireRate } from '../../core/tire/model';
+import { DoubleWishbone } from '../../core/suspension/doubleWishbone';
+import { springLength, dampingForRatio } from '../../core/suspension/spring';
+import { cgFromScales, springFromWeight, unsprungFromParts, estimateInertia, G, type CornerKg, type UnsprungParts } from '../../core/setup/measure';
+import {
+  useApp, mergedCorners, rootOf, toGeometry, toProfile, toForceModel, vehicleStaticLoads, SETUP_STEPS, SETUP_LABELS,
+  type SetupStep, type CornerDesign, type TireAxle, type Field,
+} from '../store';
+import { importTireFile } from '../tireActions';
+import { switchWorkspace } from '../viewport/SafeHtml';
+import { ValueInput } from './ValueInput';
+import { fmt } from './FieldRows';
+import { useDisplay } from '../units';
+
+export const useWizard = create<{ open: boolean; step: number }>(() => ({ open: false, step: 0 }));
+export const openWizard = (step?: SetupStep) => useWizard.setState({ open: true, step: step ? SETUP_STEPS.indexOf(step) : 0 });
+
+const f = (v: number): Field => ({ text: String(Number(v.toFixed(4))), value: v });
+
+/** A number input in base units (typed plain numbers follow the display unit). */
+function Num({ value, unit, q, onChange, width = 70 }: { value: number; unit: string; q: Quantity; onChange: (v: number) => void; width?: number }) {
+  const disp = useDisplay();
+  return (
+    <span className="nowrap">
+      <ValueInput field={f(value)} unit={unit} width={width} onCommit={(t) => { const r = parseValue(t, q); if (r.ok) onChange(r.value); }} />
+      {' '}<span className="unit">{disp.conv(unit).unit}</span>
+    </span>
+  );
+}
+
+const Row = ({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) => (
+  <tr title={hint}><td>{label}</td><td>{children}</td></tr>
+);
+
+/** Design of an axle (front = FL's, rear = RL's). */
+const designOf = (axle: 'front' | 'rear') => {
+  const s = useApp.getState();
+  return mergedCorners(s)[rootOf(axle === 'front' ? 'FL' : 'RL', s.links)];
+};
+
+/** Spring travel per wheel travel of a design at ride height (1 when it can't be found). */
+function motionRatio(d: CornerDesign): number {
+  try {
+    const c = new DoubleWishbone(toGeometry(d.geom));
+    const a = springLength(c.solve({ travel: -1 })), b = springLength(c.solve({ travel: 1 }));
+    return a !== null && b !== null ? Math.abs(b - a) / 2 || 1 : 1;
+  } catch { return 1; }
+}
+
+// ---------------------------------------------------------------- steps
+
+interface StepProps { apply: (fn: () => void) => void }
+type StepView = (p: StepProps) => ReactNode;
+
+const TypeStep: StepView = ({ apply }) => {
+  const links = useApp((s) => s.links);
+  const setLink = useApp((s) => s.setLink);
+  return (
+    <>
+      <p>Each corner&apos;s suspension type. Double wishbone (short / long arm) is available now; MacPherson strut and multilink come later.</p>
+      <table className="opt-table">
+        <tbody>
+          {(['FL', 'FR', 'RL', 'RR'] as const).map((id) => (
+            <Row key={id} label={id}>
+              <select value="dw" disabled={false} onChange={() => {}}>
+                <option value="dw">Double wishbone</option>
+                <option value="mac" disabled>MacPherson strut (planned)</option>
+                <option value="ml" disabled>Multilink (planned)</option>
+              </select>
+            </Row>
+          ))}
+        </tbody>
+      </table>
+      <label className="check-row"><input type="checkbox" checked={links.frontPair && links.rearPair} onChange={(e) => { setLink('frontPair', e.target.checked); setLink('rearPair', e.target.checked); }} /> Left and right are mirror images</label>
+      <label className="check-row"><input type="checkbox" checked={links.rearFromFront} onChange={(e) => setLink('rearFromFront', e.target.checked)} /> The rear uses the same dimensions as the front</label>
+      <div className="jm-row"><button className="wide-btn primary" onClick={() => apply(() => {})}>That&apos;s my car: next</button></div>
+    </>
+  );
+};
+
+const TiresStep: StepView = ({ apply }) => {
+  const front = designOf('front'), rear = designOf('rear');
+  const [sizeF, setSizeF] = useState(front.tireSizeText || '');
+  const [sizeR, setSizeR] = useState(rear.tireSizeText || '');
+  const [same, setSame] = useState((front.tireSizeText || '') === (rear.tireSizeText || ''));
+  const [pF, setPF] = useState(front.tire.pressure.value);
+  const [pR, setPR] = useState(rear.tire.pressure.value);
+  const okF = !!parseTireSize(sizeF), okR = same || !!parseTireSize(sizeR);
+  const go = () => apply(() => {
+    const s = useApp.getState();
+    const set = (axle: TireAxle, text: string, p: number) => {
+      const size = parseTireSize(text)!;
+      s.applyTireDims(axle, { outerDiameter: size.outerDiameter, width: size.sectionWidth, rimDiameter: size.rimDiameter });
+      useApp.getState().updateDesigns(axle, (d) => ({ ...d, tireSizeText: text, tire: { ...d.tire, pressure: f(p) } }));
+    };
+    if (same) set('both', sizeF, pF);
+    else { set('front', sizeF, pF); set('rear', sizeR, pR); }
+  });
+  return (
+    <>
+      <p>The size printed on the tire sidewall (225/45R17, 31x10.50R15, 20.5x7.0-13…) and the pressure you run.</p>
+      <table className="opt-table">
+        <tbody>
+          <Row label={same ? 'Tire size' : 'Front tire size'}><input className={`value-input wide-text${sizeF && !okF ? ' invalid' : ''}`} value={sizeF} onChange={(e) => setSizeF(e.target.value)} placeholder="225/45R17" /></Row>
+          {!same && <Row label="Rear tire size"><input className={`value-input wide-text${sizeR && !okR ? ' invalid' : ''}`} value={sizeR} onChange={(e) => setSizeR(e.target.value)} /></Row>}
+          <Row label={same ? 'Pressure' : 'Front pressure'}><Num value={pF} unit="kPa" q="pressure" onChange={setPF} /></Row>
+          {!same && <Row label="Rear pressure"><Num value={pR} unit="kPa" q="pressure" onChange={setPR} /></Row>}
+        </tbody>
+      </table>
+      <label className="check-row"><input type="checkbox" checked={same} onChange={(e) => setSame(e.target.checked)} /> Same tires front and rear</label>
+      {!okF && sizeF && <p className="hint warn-text">Unrecognized size (try 225/45R17, 31x10.50R15 or 20.5x7.0-13).</p>}
+      <div className="jm-row"><button className="wide-btn primary" disabled={!okF || !okR} onClick={go}>Apply and next</button></div>
+    </>
+  );
+};
+
+const SizeStep: StepView = ({ apply }) => {
+  const s = useApp.getState();
+  const front = designOf('front'), rear = designOf('rear');
+  const halfF = Math.abs(front.geom.points.wheelCenter[0].value), halfR = Math.abs(rear.geom.points.wheelCenter[0].value);
+  const [wb, setWb] = useState(s.vehicle.wheelbase.value);
+  const [mode, setMode] = useState<'track' | 'width'>('track');
+  const [tF, setTF] = useState(2 * halfF);
+  const [tR, setTR] = useState(2 * halfR);
+  const tireW = (d: CornerDesign) => d.geom.scalars.tireWidth.value;
+  const trackOf = (v: number, d: CornerDesign) => (mode === 'width' ? v - tireW(d) : v);
+  const linked = s.links.rearFromFront;
+  const go = () => apply(() => {
+    const st = useApp.getState();
+    st.setVehicleField('wheelbase', String(wb));
+    const shift = (axle: 'front' | 'rear', newTrack: number, half: number) => {
+      const dx = newTrack / 2 - half;
+      if (Math.abs(dx) < 1e-6) return;
+      // Move the whole corner sideways (chassis pivots too): its geometry keeps its shape.
+      useApp.getState().updateDesigns(axle, (d) => ({
+        ...d,
+        geom: { ...d.geom, points: Object.fromEntries(Object.entries(d.geom.points).map(([k, p]) => [k, [f(p[0].value + dx), p[1], p[2]]])) as typeof d.geom.points },
+      }));
+    };
+    shift('front', trackOf(tF, front), halfF);
+    if (!linked) shift('rear', trackOf(tR, rear), halfR);
+  });
+  return (
+    <>
+      <p>Wheelbase: front wheel center to rear wheel center. Track: center of the left tire to center of the right tire (or measure the overall width outside the tires; the tire width is taken off).</p>
+      <div className="jm-row">
+        <button className={`chip${mode === 'track' ? ' on' : ''}`} onClick={() => setMode('track')}>I measured the track</button>
+        <button className={`chip${mode === 'width' ? ' on' : ''}`} onClick={() => setMode('width')}>I measured the overall width</button>
+      </div>
+      <table className="opt-table">
+        <tbody>
+          <Row label="Wheelbase"><Num value={wb} unit="mm" q="length" onChange={setWb} /></Row>
+          <Row label={mode === 'track' ? 'Front track' : 'Front overall width'}><Num value={tF} unit="mm" q="length" onChange={setTF} /></Row>
+          {!linked && <Row label={mode === 'track' ? 'Rear track' : 'Rear overall width'}><Num value={tR} unit="mm" q="length" onChange={setTR} /></Row>}
+        </tbody>
+      </table>
+      {mode === 'width' && <p className="small-text muted">Track: front {fmt(trackOf(tF, front), 0)} mm{!linked ? `, rear ${fmt(trackOf(tR, rear), 0)} mm` : ''}.</p>}
+      {linked && <p className="hint">The rear uses the front&apos;s dimensions (step 1), so it gets the front track.</p>}
+      <p className="hint">Changing the track moves each corner sideways as a whole (its arms keep their lengths and angles).</p>
+      <div className="jm-row"><button className="wide-btn primary" onClick={go}>Apply and next</button></div>
+    </>
+  );
+};
+
+const WeightStep: StepView = ({ apply }) => {
+  const s = useApp.getState();
+  const v = s.vehicle;
+  const L = v.wheelbase.value;
+  const tF = 2 * Math.abs(designOf('front').geom.points.wheelCenter[0].value);
+  const tR = 2 * Math.abs(designOf('rear').geom.points.wheelCenter[0].value);
+  const [mass, setMass] = useState(v.mass.value);
+  const [frontPct, setFrontPct] = useState(100 * (1 + v.cgZ.value / L));
+  const [leftPct, setLeftPct] = useState(50 + (100 * v.cgX.value) / ((tF + tR) / 2));
+  const [height, setHeight] = useState(v.cgY.value);
+  const [calc, setCalc] = useState(false);
+  const share = mass / 4;
+  const [kg, setKg] = useState<CornerKg>({ FL: share, FR: share, RL: share, RR: share });
+  const [lift, setLift] = useState<{ axle: 'front' | 'rear'; height: number; groundAxleKg: number }>({ axle: 'front', height: 0, groundAxleKg: 0 });
+  const [wcH, setWcH] = useState(designOf('front').geom.scalars.tireDiameter.value / 2);
+  const cg = calc ? cgFromScales(kg, L, tF, tR, lift.height > 0 && lift.groundAxleKg > 0 ? { ...lift, wheelCenterHeight: wcH } : undefined) : null;
+  const go = () => apply(() => {
+    const st = useApp.getState();
+    const m = cg ? cg.mass : mass;
+    const z = cg ? cg.z : -(1 - frontPct / 100) * L;
+    const x = cg ? cg.x : (leftPct / 100 - 0.5) * ((tF + tR) / 2);
+    const h = cg?.height ?? height;
+    st.setVehicleField('mass', String(Number(m.toFixed(2))));
+    st.setVehicleField('cgZ', String(Number(z.toFixed(1))));
+    st.setVehicleField('cgX', String(Number(x.toFixed(1))));
+    st.setVehicleField('cgY', String(Number(h.toFixed(1))));
+  });
+  return (
+    <>
+      <p>The car&apos;s weight as driven (with driver and fuel) and where its center of gravity is.</p>
+      <div className="jm-row">
+        <button className={`chip${!calc ? ' on' : ''}`} onClick={() => setCalc(false)}>I know the values</button>
+        <button className={`chip${calc ? ' on' : ''}`} onClick={() => setCalc(true)}>Calculate from corner scales</button>
+      </div>
+      {!calc ? (
+        <table className="opt-table">
+          <tbody>
+            <Row label="Total weight"><Num value={mass} unit="kg" q="mass" onChange={setMass} /></Row>
+            <Row label="Weight on the front" hint="Front axle share of the weight"><Num value={frontPct} unit="%" q="percent" onChange={setFrontPct} /></Row>
+            <Row label="Weight on the left"><Num value={leftPct} unit="%" q="percent" onChange={setLeftPct} /></Row>
+            <Row label="CG height above the ground"><Num value={height} unit="mm" q="length" onChange={setHeight} /></Row>
+          </tbody>
+        </table>
+      ) : (
+        <>
+          <p className="small-text">1. On level ground, one scale under each tire:</p>
+          <table className="opt-table"><tbody>
+            {(['FL', 'FR', 'RL', 'RR'] as const).map((id) => (
+              <Row key={id} label={id}><Num value={kg[id]} unit="kg" q="mass" onChange={(x) => setKg((k) => ({ ...k, [id]: x }))} /></Row>
+            ))}
+          </tbody></table>
+          <p className="small-text">2. For the CG height: lock the suspension (rigid links in place of the dampers), raise one axle and weigh the other again.</p>
+          <table className="opt-table"><tbody>
+            <Row label="Raised axle">
+              <select value={lift.axle} onChange={(e) => setLift((l) => ({ ...l, axle: e.target.value as 'front' | 'rear' }))}><option value="front">front</option><option value="rear">rear</option></select>
+            </Row>
+            <Row label="Raised by (at the wheel centers)"><Num value={lift.height} unit="mm" q="length" onChange={(x) => setLift((l) => ({ ...l, height: x }))} /></Row>
+            <Row label={`${lift.axle === 'front' ? 'Rear' : 'Front'} axle weight then (both scales)`}><Num value={lift.groundAxleKg} unit="kg" q="mass" onChange={(x) => setLift((l) => ({ ...l, groundAxleKg: x }))} /></Row>
+            <Row label="Wheel-center height (loaded radius)"><Num value={wcH} unit="mm" q="length" onChange={setWcH} /></Row>
+          </tbody></table>
+          {cg && (
+            <p className="small-text">
+              <b>{fmt(cg.mass, 1)} kg</b> · {fmt(cg.front * 100, 1)} % front · {fmt(cg.left * 100, 1)} % left · CG {fmt(-cg.z, 0)} mm behind the front axle
+              {cg.height !== null ? <>, <b>{fmt(cg.height, 0)} mm high</b></> : ' (height: step 2)'}
+            </p>
+          )}
+        </>
+      )}
+      <div className="jm-row"><button className="wide-btn primary" onClick={go} disabled={calc && !cg}>Apply and next</button></div>
+    </>
+  );
+};
+
+const PARTS: [keyof UnsprungParts, string, string][] = [
+  ['wheelTire', 'Wheel and tire', ''], ['hubUpright', 'Hub, bearing and upright', ''], ['brake', 'Brake (rotor and caliper)', ''],
+  ['arms', 'Control arms and tie rod', 'Half counts: one end is on the body'], ['springDamper', 'Spring and damper', 'Half counts'],
+  ['halfshaft', 'Halfshaft', 'Half counts (driven corners)'], ['other', 'Other wheel-end parts', ''],
+];
+
+const UnsprungStep: StepView = ({ apply }) => {
+  const blank = (d: CornerDesign): UnsprungParts => ({ wheelTire: 0, hubUpright: 0, brake: 0, arms: 0, springDamper: 0, halfshaft: 0, other: d.spring.unsprungMass.value });
+  const [parts, setParts] = useState({ front: blank(designOf('front')), rear: blank(designOf('rear')) });
+  const linked = useApp.getState().links.rearFromFront;
+  const axles: ('front' | 'rear')[] = linked ? ['front'] : ['front', 'rear'];
+  const go = () => apply(() => {
+    for (const a of axles) useApp.getState().updateDesigns(linked ? 'both' : a, (d) => ({ ...d, spring: { ...d.spring, unsprungMass: f(unsprungFromParts(parts[a])) } }));
+  });
+  return (
+    <>
+      <p>What moves with each wheel (per corner). Weigh the parts, or enter the total under &quot;Other&quot;.</p>
+      <table className="opt-table">
+        <thead><tr><th /><th>{linked ? 'Each corner' : 'Front'}</th>{!linked && <th>Rear</th>}</tr></thead>
+        <tbody>
+          {PARTS.map(([k, label, hint]) => (
+            <tr key={k} title={hint}>
+              <td>{label}</td>
+              {axles.map((a) => <td key={a}><Num value={parts[a][k]} unit="kg" q="mass" width={56} onChange={(x) => setParts((p) => ({ ...p, [a]: { ...p[a], [k]: x } }))} /></td>)}
+            </tr>
+          ))}
+          <tr><td><b>Unsprung per corner</b></td>{axles.map((a) => <td key={a}><b>{fmt(unsprungFromParts(parts[a]), 1)} kg</b></td>)}</tr>
+        </tbody>
+      </table>
+      <div className="jm-row"><button className="wide-btn primary" onClick={go}>Apply and next</button></div>
+    </>
+  );
+};
+
+const PointsStep: StepView = ({ apply }) => (
+  <>
+    <p>
+      The suspension points (hardpoints) of each corner: chassis pivots, ball joints, tie-rod ends, coilover mounts, wheel center, in
+      the corner&apos;s frame (X outboard, Y up, Z forward). Measure them from the car or CAD, then type them into the point table.
+    </p>
+    <p className="hint">Tip: <b>Measure</b> (M) and the <b>Set dimension</b> panel help check lengths and angles against the car. Until then the sample layout&apos;s points are used.</p>
+    <div className="jm-row">
+      <button className="wide-btn" onClick={() => { useWizard.setState({ open: false }); switchWorkspace('corner'); useApp.getState().set('leftTab', 'table'); }}>Open the point table (Corner → Inputs)</button>
+    </div>
+    <div className="jm-row"><button className="wide-btn primary" onClick={() => apply(() => {})}>My points are entered: next</button></div>
+  </>
+);
+
+const SpringsStep: StepView = ({ apply }) => {
+  const s = useApp.getState();
+  const linked = s.links.rearFromFront;
+  const axles: ('front' | 'rear')[] = linked ? ['front'] : ['front', 'rear'];
+  const loads = useMemo(() => vehicleStaticLoads(s.vehicle, mergedCorners(s), s.links), [s]);
+  const info = (a: 'front' | 'rear') => {
+    const d = designOf(a);
+    const model = toForceModel(d.tireModel, d.tire, d.volumeChange);
+    const load = loads[a === 'front' ? 'FL' : 'RL'];
+    return { d, mr: motionRatio(d), kt: model ? tireRate(model, toProfile(d.geom), 0, load) : undefined };
+  };
+  const [mode, setMode] = useState<'know' | 'measure'>('know');
+  const [rate, setRate] = useState({ front: designOf('front').spring.springRate.value, rear: designOf('rear').spring.springRate.value });
+  const [meas, setMeas] = useState({ front: { kg: 50, drop: 0 }, rear: { kg: 50, drop: 0 } });
+  const result = (a: 'front' | 'rear') => { const i = info(a); return springFromWeight(meas[a].kg, meas[a].drop, i.mr, i.kt); };
+  const go = () => apply(() => {
+    const st = useApp.getState();
+    for (const a of axles) {
+      const k = mode === 'know' ? rate[a] : result(a)?.springRate;
+      if (k && k > 0) st.updateDesigns(linked ? 'both' : a, (d) => ({ ...d, spring: { ...d.spring, springRate: f(k) } }));
+    }
+    // Keep the design ride height: free lengths follow the springs.
+    st.set('autoPreload', true);
+  });
+  return (
+    <>
+      <p>The spring rate (stamped on the spring or on its label), or measure it on the car.</p>
+      <div className="jm-row">
+        <button className={`chip${mode === 'know' ? ' on' : ''}`} onClick={() => setMode('know')}>I know the rate</button>
+        <button className={`chip${mode === 'measure' ? ' on' : ''}`} onClick={() => setMode('measure')}>Measure it with a weight</button>
+      </div>
+      <table className="opt-table">
+        <tbody>
+          {axles.map((a) => mode === 'know' ? (
+            <Row key={a} label={linked ? 'Spring rate' : `${a === 'front' ? 'Front' : 'Rear'} spring rate`}><Num value={rate[a]} unit="N/mm" q="rate" onChange={(x) => setRate((r) => ({ ...r, [a]: x }))} /></Row>
+          ) : (
+            <tr key={a}>
+              <td>{linked ? 'Corner' : a === 'front' ? 'Front corner' : 'Rear corner'}</td>
+              <td>
+                add <Num value={meas[a].kg} unit="kg" q="mass" width={50} onChange={(x) => setMeas((m) => ({ ...m, [a]: { ...m[a], kg: x } }))} />
+                {' '}body drops <Num value={meas[a].drop} unit="mm" q="length" width={50} onChange={(x) => setMeas((m) => ({ ...m, [a]: { ...m[a], drop: x } }))} />
+                {result(a) && <div className="small-text">→ spring <b>{fmt(result(a)!.springRate, 1)} N/mm</b> (wheel rate {fmt(result(a)!.wheelRate, 1)} N/mm, motion ratio {fmt(info(a).mr, 2)}{info(a).kt ? `, tire ${fmt(info(a).kt!, 0)} N/mm taken out` : ''})</div>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {mode === 'measure' && <p className="hint">Put the weight right over the wheel (e.g. on the fender above it) and measure how much the body drops at that wheel. Use a weight of at least a quarter of the corner&apos;s load. The motion ratio comes from your suspension points (step 6).</p>}
+      <div className="jm-row"><button className="wide-btn primary" onClick={go}>Apply and next</button></div>
+    </>
+  );
+};
+
+const DampersStep: StepView = ({ apply }) => {
+  const s = useApp.getState();
+  const linked = s.links.rearFromFront;
+  const axles: ('front' | 'rear')[] = linked ? ['front'] : ['front', 'rear'];
+  const [mode, setMode] = useState<'ratio' | 'rates'>('ratio');
+  const [ratio, setRatio] = useState({ bump: 0.3, rebound: 0.5 });
+  const [rates, setRates] = useState({
+    front: { bump: designOf('front').damper.bumpDamping.value, rebound: designOf('front').damper.reboundDamping.value },
+    rear: { bump: designOf('rear').damper.bumpDamping.value, rebound: designOf('rear').damper.reboundDamping.value },
+  });
+  const [bars, setBars] = useState({ front: s.shared.front.antiRollBar === 'wheelRate' ? s.shared.front.arbRate.value : 0, rear: s.shared.rear.antiRollBar === 'wheelRate' ? s.shared.rear.arbRate.value : 0 });
+  const fromRatio = (a: 'front' | 'rear') => {
+    const d = designOf(a);
+    const mr = motionRatio(d);
+    const loads = vehicleStaticLoads(s.vehicle, mergedCorners(s), s.links);
+    const m = Math.max(1, loads[a === 'front' ? 'FL' : 'RL'] / G - d.spring.unsprungMass.value);
+    const wheelRate = d.spring.springRate.value * mr * mr;
+    return { bump: dampingForRatio(ratio.bump, mr, wheelRate, m), rebound: dampingForRatio(ratio.rebound, mr, wheelRate, m) };
+  };
+  const go = () => apply(() => {
+    const st = useApp.getState();
+    for (const a of axles) {
+      const r = mode === 'ratio' ? fromRatio(a) : rates[a];
+      st.updateDesigns(linked ? 'both' : a, (d) => ({ ...d, damper: { ...d.damper, bumpDamping: f(Math.round(r.bump)), reboundDamping: f(Math.round(r.rebound)) } }));
+    }
+    for (const a of ['front', 'rear'] as const) {
+      if (bars[a] > 0) { st.setShared(a, { antiRollBar: 'wheelRate' }); st.setSharedField(a, 'arbRate', String(bars[a])); }
+      else if (st.shared[a].antiRollBar === 'wheelRate') st.setShared(a, { antiRollBar: 'none' });
+    }
+  });
+  return (
+    <>
+      <p>Damper rates at the damper, bump (compression) and rebound (extension). Without a dyno sheet, generic rates from a damping ratio are a good start.</p>
+      <div className="jm-row">
+        <button className={`chip${mode === 'ratio' ? ' on' : ''}`} onClick={() => setMode('ratio')}>Generic (from damping ratios)</button>
+        <button className={`chip${mode === 'rates' ? ' on' : ''}`} onClick={() => setMode('rates')}>I know the rates</button>
+      </div>
+      <table className="opt-table">
+        <tbody>
+          {mode === 'ratio' ? (
+            <>
+              <Row label="Damping ratio, bump" hint="0.25–0.4 comfort, up to 0.7 for handling"><Num value={ratio.bump} unit="" q="ratio" onChange={(x) => setRatio((r) => ({ ...r, bump: x }))} /></Row>
+              <Row label="Damping ratio, rebound"><Num value={ratio.rebound} unit="" q="ratio" onChange={(x) => setRatio((r) => ({ ...r, rebound: x }))} /></Row>
+              {axles.map((a) => { const r = fromRatio(a); return <Row key={a} label={`→ ${linked ? '' : a + ' '}rates`}><span className="small-text">bump {fmt(r.bump, 0)} · rebound {fmt(r.rebound, 0)} N·s/m</span></Row>; })}
+            </>
+          ) : axles.map((a) => (
+            <Row key={a} label={`${linked ? '' : a === 'front' ? 'Front ' : 'Rear '}bump / rebound`}>
+              <Num value={rates[a].bump} unit="N·s/m" q="damping" width={60} onChange={(x) => setRates((r) => ({ ...r, [a]: { ...r[a], bump: x } }))} />
+              {' '}<Num value={rates[a].rebound} unit="N·s/m" q="damping" width={60} onChange={(x) => setRates((r) => ({ ...r, [a]: { ...r[a], rebound: x } }))} />
+            </Row>
+          ))}
+          <Row label="Front anti-roll bar (rate at the wheel)" hint="0 = none. Torsion-bar geometry can be entered in Vehicle → Inputs"><Num value={bars.front} unit="N/mm" q="rate" onChange={(x) => setBars((b) => ({ ...b, front: x }))} /></Row>
+          <Row label="Rear anti-roll bar (rate at the wheel)"><Num value={bars.rear} unit="N/mm" q="rate" onChange={(x) => setBars((b) => ({ ...b, rear: x }))} /></Row>
+        </tbody>
+      </table>
+      <p className="hint">Two-stage dampers (a knee speed and high-speed rates) can be set in the Corner view&apos;s Inputs → Damper.</p>
+      <div className="jm-row"><button className="wide-btn primary" onClick={go}>Apply and next</button></div>
+    </>
+  );
+};
+
+const SteeringStep: StepView = ({ apply }) => {
+  const steer = useApp((s) => s.steer);
+  const tireFile = useApp((s) => s.tireFile);
+  const [c, setC] = useState(steer.cFactor.value);
+  const [lim, setLim] = useState(steer.rackLimit.value);
+  const input = useRef<HTMLInputElement>(null);
+  const go = () => apply(() => { const st = useApp.getState(); st.setSteerField('cFactor', String(c)); st.setSteerField('rackLimit', String(lim)); });
+  return (
+    <>
+      <p>Steering: how far the rack moves per turn of the steering wheel, and how far it can move each way.</p>
+      <table className="opt-table">
+        <tbody>
+          <Row label="Rack travel per steering-wheel turn" hint="Turn the wheel one full turn and measure the rack (or tie-rod end) movement"><Num value={c} unit="mm" q="length" onChange={setC} /></Row>
+          <Row label="Rack travel limit (each way)"><Num value={lim} unit="mm" q="length" onChange={setLim} /></Row>
+        </tbody>
+      </table>
+      <p>Tire grip: {tireFile ? <b>{tireFile.name}</b> : 'the generic model'}. A fitted model of your tire makes grip results real.</p>
+      <div className="jm-row">
+        <button className="chip" onClick={() => input.current?.click()}>Import .tir</button>
+        <button className="chip" onClick={() => { useWizard.setState({ open: false }); useApp.getState().set('vehicleTab', 'optimize'); switchWorkspace('vehicle'); }}>Fit from measured data (Vehicle → Optimize → Tire grip model)</button>
+        <input ref={input} type="file" accept=".tir,.TIR,.txt" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) void importTireFile(file, 'both'); e.target.value = ''; }} />
+      </div>
+      <div className="jm-row"><button className="wide-btn primary" onClick={go}>Apply and next</button></div>
+    </>
+  );
+};
+
+const InertiaStep: StepView = ({ apply }) => {
+  const s = useApp.getState();
+  const v = s.vehicle;
+  const [roll, setRoll] = useState(v.rollInertia.value);
+  const [pitch, setPitch] = useState(v.pitchInertia.value);
+  const estimate = () => {
+    const all = mergedCorners(s);
+    const unsprung = (['FL', 'FR', 'RL', 'RR'] as const).reduce((a, id) => a + all[id].spring.unsprungMass.value, 0);
+    const track = Math.abs(designOf('front').geom.points.wheelCenter[0].value) + Math.abs(designOf('rear').geom.points.wheelCenter[0].value);
+    const e = estimateInertia(v.mass.value - unsprung, track, v.wheelbase.value);
+    setRoll(Number(e.roll.toFixed(1))); setPitch(Number(e.pitch.toFixed(1)));
+  };
+  const go = () => apply(() => { const st = useApp.getState(); st.setVehicleField('rollInertia', String(roll)); st.setVehicleField('pitchInertia', String(pitch)); });
+  return (
+    <>
+      <p>How hard the body is to roll and pitch (for the ride over time). Rarely measured: the estimate from the weight and size is usually fine.</p>
+      <table className="opt-table">
+        <tbody>
+          <Row label="Roll inertia (about the sprung CG)"><Num value={roll} unit="kg·m²" q="ratio" onChange={setRoll} /></Row>
+          <Row label="Pitch inertia"><Num value={pitch} unit="kg·m²" q="ratio" onChange={setPitch} /></Row>
+        </tbody>
+      </table>
+      <div className="jm-row"><button className="chip" onClick={estimate}>Estimate from weight and size</button></div>
+      <div className="jm-row"><button className="wide-btn primary" onClick={go}>Apply and finish</button></div>
+    </>
+  );
+};
+
+const VIEWS: Record<SetupStep, StepView> = {
+  type: TypeStep, tires: TiresStep, size: SizeStep, weight: WeightStep, unsprung: UnsprungStep,
+  points: PointsStep, springs: SpringsStep, dampers: DampersStep, steering: SteeringStep, inertia: InertiaStep,
+};
+
+/** Results based on estimates say so. */
+export function EstimatedNote() {
+  const status = useApp((s) => s.setupStatus);
+  const est = SETUP_STEPS.filter((k) => status[k] === 'estimated');
+  if (!est.length) return null;
+  return (
+    <p className="hint estimate-note">
+      Based on estimated values: {est.map((k) => SETUP_LABELS[k].toLowerCase()).join(', ')}.{' '}
+      <button className="link-btn" onClick={() => openWizard(est[0])}>Enter them</button>
+    </p>
+  );
+}
+
+export function SetupWizard() {
+  const { open, step } = useWizard();
+  const status = useApp((s) => s.setupStatus);
+  if (!open) return null;
+  const done = step >= SETUP_STEPS.length;
+  const key = SETUP_STEPS[Math.min(step, SETUP_STEPS.length - 1)]!;
+  const View = VIEWS[key];
+  const next = () => useWizard.setState({ step: step + 1 });
+  const apply = (fn: () => void) => { fn(); useApp.getState().setSetupStatus(key, 'entered'); next(); };
+  const estimate = () => { useApp.getState().setSetupStatus(key, 'estimated'); next(); };
+  const close = () => useWizard.setState({ open: false });
+  return (
+    <div className="modal-backdrop" onMouseDown={close}>
+      <div className="modal wizard" role="dialog" aria-label="Setup wizard" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="wizard-steps">
+          {SETUP_STEPS.map((k, i) => (
+            <button key={k} className={`wizard-step${i === step ? ' on' : ''} ${status[k] ?? ''}`} onClick={() => useWizard.setState({ step: i })} title={status[k] === 'estimated' ? 'Estimate' : status[k] === 'entered' ? 'Your values' : 'Not done yet'}>
+              <span className="wizard-num">{status[k] === 'entered' ? '✓' : status[k] === 'estimated' ? '~' : i + 1}</span>{SETUP_LABELS[k]}
+            </button>
+          ))}
+          <button className={`wizard-step${done ? ' on' : ''}`} onClick={() => useWizard.setState({ step: SETUP_STEPS.length })}><span className="wizard-num">✔</span>Summary</button>
+        </div>
+        <div className="wizard-body">
+          {!done ? (
+            <>
+              <h3>{step + 1}. {SETUP_LABELS[key]}</h3>
+              <View key={key} apply={apply} />
+              <div className="modal-actions">
+                <button onClick={close}>Close</button>
+                {step > 0 && <button onClick={() => useWizard.setState({ step: step - 1 })}>Back</button>}
+                <button onClick={estimate} title="Keep the current values and mark them as estimates">Use an estimate</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <h3>Summary</h3>
+              <table className="opt-table"><tbody>
+                {SETUP_STEPS.map((k, i) => (
+                  <tr key={k} className="clickable" onClick={() => useWizard.setState({ step: i })}>
+                    <td>{SETUP_LABELS[k]}</td>
+                    <td className={status[k] === 'entered' ? 'ok-text' : status[k] === 'estimated' ? 'warn-text' : 'muted'}>{status[k] === 'entered' ? 'your values' : status[k] === 'estimated' ? 'estimate' : 'not done'}</td>
+                  </tr>
+                ))}
+              </tbody></table>
+              <p className="hint">Estimates stay marked: results that rest on them say so. Come back any time (File → Setup wizard). Every change can be undone (Ctrl+Z).</p>
+              <div className="modal-actions"><button className="primary" onClick={close}>Done</button></div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

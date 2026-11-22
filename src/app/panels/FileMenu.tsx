@@ -4,6 +4,7 @@ import { listLayouts, removeLayout, hasLayout, type LibraryEntry } from '../libr
 import { useDirtyParts, newLayout, save, saveAs, openLayout, exportParts, importParts, exportSettings, importSettings, usePendingImport, setAfterSave, download, type Part } from '../fileActions';
 import { exportSettingsFile } from '../settingsFile';
 import { importTireFile } from '../tireActions';
+import { openWizard } from './SetupWizard';
 
 const when = (iso: string) => {
   const d = new Date(iso);
@@ -45,6 +46,7 @@ export function FileMenu() {
       {open && (
         <div className="menu" role="menu">
           <button role="menuitem" onClick={run(() => newLayout(parts))}>New (default layout)</button>
+          <button role="menuitem" onClick={run(() => openWizard())} title="Enter your car step by step: easy values first, measuring tools included">Setup wizard</button>
           <button role="menuitem" onClick={run(save)}>Save<kbd>Ctrl+S</kbd></button>
           <button role="menuitem" onClick={run(() => useApp.getState().set('saveAsOpen', true))}>Save as…<kbd>Ctrl+Shift+S</kbd></button>
           <div className="menu-sub" onMouseEnter={() => setRecentsOpen(true)} onMouseLeave={() => setRecentsOpen(false)}>

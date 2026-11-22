@@ -331,6 +331,9 @@ export interface AppState extends DesignState {
   setTireFile(m: TirModel | null, axle?: TireAxle): void;
   /** Rear tires the same as the front again. */
   setRearTireSame(): void;
+  /** Change every design used on an axle ('both' = every design). One undo step. */
+  updateDesigns(axle: TireAxle, fn: (d: CornerDesign) => CornerDesign): void;
+  setSetupStatus(step: SetupStep, status: 'entered' | 'estimated' | null): void;
   /** Grip scale of a loaded file (λμ): side (LMUY) or braking / drive (LMUX). */
   setTireScale(key: 'LMUY' | 'LMUX', value: number, axle?: 'front' | 'rear'): void;
   /** Set the tire size (mm) of the designs used on an axle (both = every design). */
@@ -530,6 +533,14 @@ export interface OptimizerSetup {
 }
 
 /** Whole-vehicle optimizer setup. */
+/** Setup wizard steps, easy to hard. */
+export const SETUP_STEPS = ['type', 'tires', 'size', 'weight', 'unsprung', 'points', 'springs', 'dampers', 'steering', 'inertia'] as const;
+export type SetupStep = (typeof SETUP_STEPS)[number];
+export const SETUP_LABELS: Record<SetupStep, string> = {
+  type: 'Suspension type', tires: 'Wheels and tires', size: 'Track and wheelbase', weight: 'Weight and CG', unsprung: 'Unsprung weight',
+  points: 'Suspension points', springs: 'Springs', dampers: 'Dampers and anti-roll bars', steering: 'Steering and tire grip', inertia: 'Body inertia',
+};
+
 /** Which axle a tire setting is for. */
 export type TireAxle = 'both' | 'front' | 'rear';
 
@@ -666,6 +677,8 @@ export interface DesignState {
   tireFile: TirModel | null;
   /** Rear tires: null = the same as the front, 'simple' = the simple coefficients, or their own file. */
   tireFileRear: TirModel | 'simple' | null;
+  /** Setup wizard: which steps hold the user's own values and which are estimates (results say so). */
+  setupStatus: Partial<Record<SetupStep, 'entered' | 'estimated'>>;
   /** Held dimensions between two points (Measure → set, hold). Kept like CAD sketch dimensions. */
   dimensions: HeldDimension[];
   /** Tests (chains of segments) for the Tests workspace. */
@@ -721,7 +734,7 @@ export const pickDesign = (s: DesignState): DesignState => ({
   droop: s.droop, bump: s.bump, driver: s.driver,
   corners: s.corners, links: s.links, settings: s.settings, activeCorner: s.activeCorner,
   vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode, shared: s.shared, locks: s.locks,
-  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, tireGrip: s.tireGrip, tireFile: s.tireFile, tireFileRear: s.tireFileRear, dimensions: s.dimensions, tests: s.tests,
+  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, tireGrip: s.tireGrip, tireFile: s.tireFile, tireFileRear: s.tireFileRear, setupStatus: s.setupStatus, dimensions: s.dimensions, tests: s.tests,
 });
 
 /** The default layout (File → New). */
@@ -802,6 +815,7 @@ export function defaultDesign(presetId = 'C'): DesignState {
     tireGrip: defaultTireGrip(),
     tireFile: null,
     tireFileRear: null,
+    setupStatus: {},
     dimensions: [],
     tests: [],
   };
@@ -949,6 +963,25 @@ export const useApp = create<AppState>((set, get) => ({
     } else set({ tireFileRear: m ?? 'simple' });
   },
   setRearTireSame: () => set({ tireFileRear: null }),
+  updateDesigns: (axle, fn) => {
+    const s = get();
+    const merged = mergedCorners(s);
+    const activeRoot = rootOf(s.activeCorner, s.links);
+    const roots = new Set(CORNER_IDS.filter((id) => axle === 'both' || (axle === 'front') === (id === 'FL' || id === 'FR')).map((id) => rootOf(id, s.links)));
+    const corners = { ...s.corners };
+    let working: Partial<CornerDesign> = {};
+    for (const root of roots) {
+      const d1 = fn(root === activeRoot ? workingDesign(s) : merged[root]);
+      if (root === activeRoot) working = d1;
+      else corners[root] = d1;
+    }
+    set({ corners, ...working, presetId: 'custom' });
+  },
+  setSetupStatus: (step, status) => {
+    const cur = { ...get().setupStatus };
+    if (status) cur[step] = status; else delete cur[step];
+    set({ setupStatus: cur });
+  },
   setTireScale: (key, value, axle = 'front') => {
     if (!(value > 0)) return;
     const s = get();

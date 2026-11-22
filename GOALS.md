@@ -81,7 +81,7 @@ Calculating and visualizing come first. **Later:** export to modeling software (
 - ✅ **Two-stage dampers:** linear (one rate per direction) by default with generic values; optionally two-stage (low-speed rate, knee, high-speed rate per direction). Later: a damper's dyno curve (force vs shaft speed) and clicker settings.
 - ✅ **Tire data: `.tir` import:** full Magic Formula 6.1 / 6.2 (and 5.2) forces from the published equations (camber stiffness, shifts, pressure, combined slip), the simple model kept for hand editing; the user loads `.tir` files themselves (none are bundled; e.g. the obscured FSAE TTC fit published with the GPL-3.0 MATLAB library teasit/magic-formula-tyre-library), and the loaded model saves with the project. ✅ Also done: a fitting tool for measured data (table of slip angle / ratio, load, camber, pressure and forces → MF 6.1 force coefficients, R² / error, download as `.tir`), different tires front / rear, the tire size from a file's dimensions, and File → Import → Tire (.tir).
 
-### Setup wizard: entering the car's values (noted 2026-11-22)
+### Setup wizard: entering the car's values (noted 2026-11-22) ✅ first version
 Most inputs have to come from the user, and many are hard to find. A **value wizard** walks the user through them, starting with the easy values and leading to the harder ones. Every page allows "I don't know yet: use an estimate"; estimated values stay marked, so the results can say which of them they depend on. Proposed order:
 1. **Suspension type** for each of the four corners.
 2. **Wheels and tires:** wheel and tire sizes.
@@ -91,6 +91,8 @@ Most inputs have to come from the user, and many are hard to find. A **value wiz
 6. **Suspension points:** the hardpoints of each corner (today's Corner view), with the steering rack.
 7. **Springs:** the rate from the spring's label, or a **spring-rate tool**: add a known weight to one corner of the parked car and measure the change in ride height; with the motion ratio from the geometry that gives the wheel rate and the spring rate.
 8. **Harder values:** dampers (generic, then the damper's settings or dyno curve), anti-roll bars, steering ratio and rack travel, tire pressures and tire data (generic, a `.tir` file, or fitted data), body inertias (estimated from the mass and size).
+
+Done: File → Setup wizard (and Vehicle → Inputs), ten steps with a step list and summary; each step *Apply and next* (your values) or *Use an estimate* (marked; Vehicle and Test results show "Based on estimated values: …" with a link back). Tools: corner-scale CG calculator (level + one axle lifted), unsprung-weight sum, spring rate from an added weight (tire and motion ratio taken out), generic damper rates from damping ratios, body-inertia estimate, tire `.tir` import. Still to come: other suspension types (the type page lists them as planned), entering the points through the wizard itself (it opens the point table), and the phone companion app.
 
 **Future: phone companion app.** A separate app that runs on a phone and uses its sensors and cameras, with a physical touch point (probe) on the phone, so the user can touch points on the suspension and capture their real 3D positions to send to this tool.
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { Num, UnitLabel } from './UnitText';
+import { openWizard, EstimatedNote } from './SetupWizard';
 import { useConversion, toDisplay, fromDisplay } from '../units';
 import type { GripSummary, SlipState } from '../../core/vehicle/vehicle';
 import { LocksPanel } from './LocksPanel';
@@ -152,6 +153,9 @@ export function VehicleInputs({ model }: { model: VehicleModel | null }) {
   const total = loads ? CORNER_IDS.reduce((a, id) => a + loads[id], 0) : 0;
   return (
     <div className="inspector">
+      <div className="jm-row">
+        <button className="wide-btn" onClick={() => openWizard()} title="Enter your car step by step: easy values first, measuring tools included (corner-scale CG, spring rate from a weight)">Setup wizard</button>
+      </div>
       <Section title="Vehicle">
         <FieldRows rows={VEHICLE_KEYS.map((k) => ({
           label: VEHICLE_META[k].label, field: vehicle[k], unit: VEHICLE_META[k].unit, hint: VEHICLE_META[k].hint,
@@ -254,6 +258,7 @@ export function VehicleResults({ model }: { model: VehicleModel | null }) {
         Vehicle results
         <span className={`status ${r.converged ? 'status-converged' : 'status-not-converged'}`}>{r.converged ? 'Settled' : 'Not converged'}</span>
       </h2>
+      <EstimatedNote />
       {r.grip && <GripSection grip={r.grip} />}
       <Section title="Body">
         <FieldRows rows={[

@@ -24,6 +24,7 @@
  *  11  two-stage dampers (mode, high-speed rates, knees), optimizer search settings
  *  12  tire model from a .tir file (its coefficients), when one is loaded
  *  13  rear tires: same as the front, simple, or their own .tir model
+ *  14  setup wizard status (which values are the user's and which are estimates)
  */
 import pkg from '../../package.json';
 import { parseValue, type Quantity } from '../core/units/units';
@@ -36,14 +37,14 @@ import {
   defaultDesign, mergedCorners, rootOf, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META, SPRING_KEYS, SPRING_META,
   DAMPER_KEYS, DAMPER_META, STEER_KEYS, STEER_META, TIRE_KEYS, TIRE_META, VEHICLE_KEYS, VEHICLE_META,
   DEFAULT_LINKS, DEFAULT_SETTINGS, SHARED_META, defaultShared, defaultOptimizerSetup, defaultVehicleOptimizerSetup, defaultGrip, GRIP_KEYS, GRIP_META,
-  defaultTireGrip, MF_KEYS, MF_META, RIDE_KEYS, DAMPER_TWO_STAGE_KEYS,
+  defaultTireGrip, MF_KEYS, MF_META, RIDE_KEYS, DAMPER_TWO_STAGE_KEYS, SETUP_STEPS,
   type VehicleOptimizerSetup, type HeldDimension, newDimId,
   type OptimizerSetup,
   type DesignState, type CornerDesign, type Field, type CornerLinks, type CornerSettings, type SharedDesign, type Axle,
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 13;
+export const FORMAT_VERSION = 14;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -96,6 +97,8 @@ export interface ProjectFile {
   tireGrip?: Record<string, FieldJson>;
   /** Tire model loaded from a .tir file (format 12): its coefficients, by name. */
   tireFile?: { name: string; fittyp: number; version: '6.1' | '5.2'; fnomin: number; nompres: number; p: Record<string, number> } | null;
+  /** Setup wizard status per step (format 14). */
+  setupStatus?: Record<string, 'entered' | 'estimated'>;
   /** Rear tires (format 13): null = same as the front, 'simple', or their own .tir model. */
   tireFileRear?: { name: string; fittyp: number; version: '6.1' | '5.2'; fnomin: number; nompres: number; p: Record<string, number> } | 'simple' | null;
   /** Tests (chains of segments). */
@@ -173,6 +176,7 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
     tireGrip: mapFields(MF_KEYS, d.tireGrip),
     tireFile: d.tireFile ? tirJson(d.tireFile) : null,
     tireFileRear: d.tireFileRear === 'simple' ? 'simple' : d.tireFileRear ? tirJson(d.tireFileRear) : null,
+    setupStatus: { ...d.setupStatus },
     ...(include.tests ? { tests: JSON.parse(JSON.stringify(d.tests)) as unknown[] } : {}),
     dimensions: d.dimensions.map((x) => ({
       root: x.root, a: cornerParam(x.root, POINT_NAMES[x.a]), b: cornerParam(x.root, POINT_NAMES[x.b]),
@@ -271,6 +275,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   11: (f) => ({ ...f, formatVersion: 12 }),
   // 12 → 13: rear tires the same as the front.
   12: (f) => ({ ...f, formatVersion: 13 }),
+  // 13 → 14: no setup wizard status yet.
+  13: (f) => ({ ...f, formatVersion: 14 }),
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */
@@ -639,6 +645,8 @@ export function importProject(data: unknown): ImportResult {
     tireGrip: isObj(f.tireGrip) ? readRecord(f.tireGrip, MF_KEYS, (k) => MF_META[k].quantity, defaultTireGrip(), 'tire grip', []) : defaultTireGrip(),
     tireFile: readTireFile(f.tireFile, warnings),
     tireFileRear: f.tireFileRear === 'simple' ? 'simple' : readTireFile(f.tireFileRear, warnings),
+    setupStatus: Object.fromEntries(Object.entries(isObj(f.setupStatus) ? f.setupStatus : {})
+      .filter(([k, v]) => (SETUP_STEPS as readonly string[]).includes(k) && (v === 'entered' || v === 'estimated'))) as DesignState['setupStatus'],
     dimensions: readDimensions(f.dimensions, warnings),
     tests: readTests(f.tests, warnings),
   };

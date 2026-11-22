@@ -366,6 +366,14 @@ The whole car driven through a test as a dynamic system with 7 degrees of freedo
 - **Cost:** about 1 s of computing per 10 s of driving (browser / Node); a three-test Run all with steady states and the ride takes ≈ 5 s.
 - Tested: a smooth straight at constant speed stays at the steady state; turning in, the body rolls and settles at the steady roll and travel for that cornering; a bump moves the wheel and the motion dies out, settling faster with more damping; every built-in test runs over time without going unstable; files before format 10 take the default ride inputs quietly.
 
+## Setup wizard: measuring the car ✅ (`src/core/setup/measure.ts`)
+- **Corner-scale CG:** level weights W_FL…W_RR → mass m = ΣW, front share f = (W_FL + W_FR)/m, CG z = −(1 − f)·L behind the front axle, lateral x = [(W_FL − W_FR)·t_F/2 + (W_RL − W_RR)·t_R/2] / m. Height: raise one axle by H at its wheel centers (suspension locked) and weigh the other axle again; it gains ΔW: h = r + L·ΔW / (m·tan θ), sin θ = H/L, r = wheel-center height. Exact for a rigid body pivoting at the grounded wheel centers (tested).
+- **Spring rate from an added weight** over one wheel: ride rate k_ride = m·g / Δh (body drop at that wheel); the tire is in series, 1/k_wheel = 1/k_ride − 1/k_tire (k_tire from the tire model at the static load); spring rate = k_wheel / MR², MR = spring travel per wheel travel from the geometry. Approximate (the rest of the car shares a little of the load).
+- **Unsprung mass** per corner = wheel + tire + hub / bearing / upright + brake + other + ½·(arms + spring / damper + halfshaft).
+- **Body inertias** (estimate): radius of gyration 0.35 × average track (roll) and 0.4 × wheelbase (pitch), times the sprung mass.
+- **Track change** moves each corner sideways as a whole (every point of its design by Δ = new half track − wheel-center X), so arm lengths and angles stay.
+- **Generic dampers** from damping ratios: c = ζ·2·√(k_wheel·m_corner) / MR² (bump 0.3, rebound 0.5 by default).
+
 ## L7: Optimizer — corner, first version ✅ (`src/core/optimize/`)
 
 **What moves.** Free variables are single hardpoint coordinates, each with its own range (min/max, absolute mm). Everything else stays where it is, so locked values are respected by never becoming variables: a locked coordinate, point or part is simply skipped. Locked **derived** dimensions (arm length, pivot-axis inclination / plan angle) are held by stiff penalty residuals (tolerance 0.001 mm / 0.001°). Static camber and toe are set by the design spin axis, so moving points never changes them.

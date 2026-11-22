@@ -30,6 +30,7 @@ export * from './math/dimension';
 export * from './suspension/dimensions';
 export * from './suspension/derived';
 export * from './suspension/coilover';
+export * from './suspension/solidAxle';
 export * from './tests/segments';
 export * from './tests/run';
 export * from './tests/checks';

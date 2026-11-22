@@ -10,7 +10,7 @@ export type Severity = 'pass' | 'warn' | 'fail';
 
 export type CheckId =
   | 'nearLimit' | 'understeer' | 'oversteer' | 'wheelspin' | 'absActive' | 'lockup' | 'speedNotReached'
-  | 'bumpStop' | 'bottoming' | 'wheelLift' | 'rollover' | 'noSolution' | 'beyondGrip' | 'steerLimit' | 'pathError' | 'spin';
+  | 'bumpStop' | 'bottoming' | 'wheelLift' | 'rollover' | 'noSolution' | 'beyondGrip' | 'steerLimit' | 'pathError' | 'spin' | 'brakeLimit';
 
 export interface CheckSetting {
   severity: Severity;
@@ -43,6 +43,7 @@ export const CHECK_META: Record<CheckId, CheckMeta> = {
   wheelLift: { label: 'Wheel lift', hint: 'A tire unloads to (almost) nothing.' },
   rollover: { label: 'Rollover', hint: 'Cornering g beyond the rigid rollover threshold (half track ÷ CG height).', fixed: true },
   noSolution: { label: 'No solution', hint: "The car can't settle in this state.", fixed: true },
+  brakeLimit: { label: 'Brakes too weak', hint: 'With the brake hydraulics modeled: the braking asked needs more pedal force than the driver applies (line pressure, pistons, pads, rotors). Bigger pistons / rotors, a smaller master cylinder, a booster or more pedal ratio help.' },
   pathError: { label: 'Off the line', hint: 'Driving over time with the driver steering: the car is further than this from the path (runs wide or cuts in).', threshold: { label: 'allowed', unit: 'm' } },
   spin: { label: 'Spin / slide', hint: 'Driving over time with the driver steering: the car\'s sideslip angle (how far it points away from where it travels) is beyond this.', threshold: { label: 'allowed', unit: '°' } },
   steerLimit: { label: 'Steering lock', hint: 'The turn is tighter than the steering allows: its road-wheel angle (atan(wheelbase ÷ radius), plus the front − rear tire slip angle at speed) needs more rack travel than the rack limit, or no wheel steers.' },
@@ -66,6 +67,7 @@ const base: CheckProfile = {
   beyondGrip: { severity: 'fail' },
   steerLimit: { severity: 'fail' },
   pathError: { severity: 'fail', threshold: 1 },
+  brakeLimit: { severity: 'fail' },
   spin: { severity: 'fail', threshold: 12 },
 };
 
@@ -138,6 +140,7 @@ export function classifyState(f: StateFacts, profile: CheckProfile): Finding[] {
   const g = r.grip;
   if (r.unmet.accel) add('speedNotReached', 'No powered wheels: the car cannot accelerate (or hold speed uphill)');
   if (r.unmet.brake) add('speedNotReached', 'No braked wheels: the car cannot slow down');
+  if (r.unmet.brakeCapacity && r.brakePedal) add('brakeLimit', `The brakes can't make this braking: it needs ${Number.isFinite(r.brakePedal.needed) ? r.brakePedal.needed.toFixed(0) : '∞'} N of pedal force, the most is ${r.brakePedal.max.toFixed(0)} N`);
   if (Math.abs(f.lateralG) > f.rolloverG) add('rollover', `Cornering ${Math.abs(f.lateralG).toFixed(2)} g is beyond the rollover threshold (${f.rolloverG.toFixed(2)} g)`);
   if (g) {
     const reserve = (profile.nearLimit.threshold ?? 10) / 100;

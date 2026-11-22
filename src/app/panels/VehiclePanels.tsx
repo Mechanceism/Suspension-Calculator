@@ -3,7 +3,8 @@ import { useEffect, useRef } from 'react';
 import { Num, UnitLabel } from './UnitText';
 import { openWizard, EstimatedNote } from './SetupWizard';
 import { AeroPanel } from './AeroPanel';
-import { useConversion, toDisplay, fromDisplay } from '../units';
+import { brakesOf } from '../optimizer';
+import { useConversion, toDisplay, fromDisplay, useDisplay } from '../units';
 import type { GripSummary, SlipState } from '../../core/vehicle/vehicle';
 import { LocksPanel } from './LocksPanel';
 import { VehicleOptimizePanel } from './OptimizePanel';
@@ -12,6 +13,7 @@ import { deg } from '../../core/suspension/characteristics';
 import {
   useApp, VEHICLE_KEYS, VEHICLE_META, CORNER_NAMES, SHARED_META, rootOf,
   type CornerLinks, type DiffType, type Axle, type SharedDesign,
+  BRAKE_KEYS, BRAKE_META,
 } from '../store';
 import type { BrakeMount } from '../../core/vehicle/vehicle';
 import { ValueInput } from './ValueInput';
@@ -168,6 +170,9 @@ export function VehicleInputs({ model }: { model: VehicleModel | null }) {
       <Section title="Aerodynamics" open={false} extra={<AeroBadge />}>
         <AeroPanel />
       </Section>
+      <Section title="Brake system" open={false} extra={<span className="muted small-text">{useApp.getState().brakes.on ? 'hydraulics' : 'off'}</span>}>
+        <BrakePanel />
+      </Section>
       <Section title="Static corner weights (from CG)">
         {loads && (
           <>
@@ -311,6 +316,7 @@ export function VehicleResults({ model }: { model: VehicleModel | null }) {
       <Section title="Braking & acceleration">
         <FieldRows rows={[
           { label: 'Load moved onto the front axle', value: fmt(model.frontLoadGain, 0), unit: 'N', hint: 'Front axle load minus its static load (negative = moved to the rear)' },
+          ...(r.brakePedal ? [{ label: 'Pedal force this braking needs', value: `${fmt(r.brakePedal.needed, 0)} of ${fmt(r.brakePedal.max, 0)}`, unit: 'N', hint: 'Brake hydraulics: more than the most = the brakes are too weak for this braking' }] : []),
           { label: 'Anti-dive, braking (front)', value: fmt(model.antiDive, 1), unit: '%', hint: 'tan θ · (wheelbase / CG height) · front brake share; θ from the side-view IC (contact patch for outboard brakes, wheel center for inboard)' },
           { label: 'Anti-lift, braking (rear)', value: fmt(model.antiLift, 1), unit: '%' },
           { label: 'Anti-squat, accelerating (rear)', value: fmt(model.antiSquat, 1), unit: '%', hint: 'Powered rear corners: θ from the wheel center (chassis diff) or contact patch (hub motor), × rear drive share' },
@@ -440,6 +446,42 @@ function SpeedControl() {
         <input type="range" min={0} max={90} step={0.5} value={speed} onChange={(e) => { set('rideView', null); set('vehicleSpeed', Number(e.target.value)); }} onDoubleClick={() => set('vehicleSpeed', 0)} />
       </label>
     </div>
+  );
+}
+
+/** Brake hydraulics: off (brakes always strong enough) or pedal → master cylinders → calipers → rotors. */
+function BrakePanel() {
+  const b = useApp((s) => s.brakes);
+  const setB = useApp((s) => s.setBrakes);
+  const setF = useApp((s) => s.setBrakeField);
+  const disp = useDisplay();
+  const st = useApp.getState();
+  const brk = brakesOf(st);
+  const keys = BRAKE_KEYS.filter((k) => b.dualMc || k !== 'balanceFront');
+  const mass = st.vehicle.mass.value;
+  return (
+    <>
+      <div className="jm-row" title="Off: the brakes can always make the braking asked (only grip limits it). On: from the pedal through the master cylinders, calipers and rotors, the braking is limited to what they make at the most pedal force.">
+        <button className={`chip${!b.on ? ' on' : ''}`} onClick={() => setB({ on: false })}>Off (always strong enough)</button>
+        <button className={`chip${b.on ? ' on' : ''}`} onClick={() => setB({ on: true })}>Model the hydraulics</button>
+      </div>
+      {b.on && (
+        <>
+          <label className="check-row"><input type="checkbox" checked={b.dualMc} onChange={(e) => setB({ dualMc: e.target.checked })} /> Two master cylinders on a balance bar (else one tandem master cylinder)</label>
+          <FieldRows rows={keys.map((k) => ({ label: BRAKE_META[k].label, field: b[k], unit: BRAKE_META[k].unit, hint: BRAKE_META[k].hint, onCommit: (t: string) => setF(k, t) }))} />
+          <label className="check-row" title="Use the front / rear split the hydraulics make as the brake bias (instead of the Brake bias input)"><input type="checkbox" checked={b.useBias} onChange={(e) => setB({ useBias: e.target.checked })} /> Brake bias from the hydraulics</label>
+          {brk && (
+            <FieldRows rows={[
+              { label: 'Line pressure at full pedal, front / rear', value: `${disp.format(brk.capacity.pressure.front, 'kPa', 0)} / ${disp.format(brk.capacity.pressure.rear, 'kPa', 0)}`, unit: '' },
+              { label: 'Brake torque per wheel, front / rear', value: `${fmt(brk.capacity.torque.front, 0)} / ${fmt(brk.capacity.torque.rear, 0)}`, unit: 'N·m' },
+              { label: 'Most braking force, front / rear axle', value: `${disp.format(brk.capacity.axleForce.front, 'N', 0)} / ${disp.format(brk.capacity.axleForce.rear, 'N', 0)}`, unit: '', hint: 'At the tires, at the most pedal force (grip may limit it sooner)' },
+              { label: 'Most braking the brakes can make', value: fmt((brk.capacity.axleForce.front + brk.capacity.axleForce.rear) / (mass * 9.80665), 2), unit: 'g', hint: 'With the hydraulic split; the brake bias in use may reach less' },
+              { label: 'Hydraulic bias (front share)', value: fmt(brk.capacity.bias * 100, 1), unit: '%' },
+            ]} />
+          )}
+        </>
+      )}
+    </>
   );
 }
 

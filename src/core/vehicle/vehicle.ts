@@ -12,6 +12,7 @@
  * automatically. Then the whole car must balance: vertical force, roll moment and pitch moment.
  * Lateral tire forces are shared in proportion to each tire's vertical load.
  */
+import { pedalForceNeeded } from './brakes';
 import { type Vec3, vec3, add, sub, cross } from '../math/vec3';
 import { illinois } from '../math/roots';
 import { solveLinear } from '../math/linalg';
@@ -147,6 +148,11 @@ export interface VehicleInput {
    * result reports grip use, slip angles and slip ratios. Without it, lateral force follows tire load.
    */
   tireGrip?: TireGrip;
+  /**
+   * Brake hydraulics: the most braking force each axle's brakes make at the most pedal force (N, at the
+   * tires) and that pedal force (N). Omit = the brakes are always strong enough.
+   */
+  brakeLimit?: { front: number; rear: number; maxPedal: number };
   /** Aerodynamics at the car's speed (drag on the body, lift / downforce at each axle). Omit = none. */
   aero?: AeroInput;
   /** Differential per axle for chassis-driven corners (default open). */
@@ -270,10 +276,13 @@ export interface VehicleResult {
   /**
    * Velocity changes only come from the tires: acceleration needs powered wheels, braking needs braked
    * wheels. When asked for one without the other, it is left out of the solve and flagged here.
+   * brakeCapacity: the brakes (hydraulics) can't make the braking asked even at full pedal force.
    */
-  unmet: { accel: boolean; brake: boolean };
+  unmet: { accel: boolean; brake: boolean; brakeCapacity?: boolean };
   /** Aero forces at the solved pose, N (drag rearward; lift + up, − = downforce). */
   aero?: { drag: number; liftF: number; liftR: number };
+  /** Brake hydraulics given: the pedal force this braking needs and the most the driver applies, N. */
+  brakePedal?: { needed: number; max: number };
 }
 
 export function sprungProperties(input: VehicleInput) {
@@ -524,7 +533,9 @@ export interface ForceSetup {
   /** Front share of the cornering force (yaw balance). */
   frontLatShare: number;
   notes: string[];
-  unmet: { accel: boolean; brake: boolean };
+  unmet: { accel: boolean; brake: boolean; brakeCapacity?: boolean };
+  /** Pedal force the braking needs (with brake hydraulics), N. */
+  brakePedal?: { needed: number; max: number };
 }
 
 export function forceSetup(input: VehicleInput): ForceSetup {
@@ -542,7 +553,7 @@ export function forceSetup(input: VehicleInput): ForceSetup {
   const powered = input.corners.filter((c) => (c.drive ?? 'none') !== 'none');
   const braked = input.corners.filter((c) => (c.brake ?? 'outboard') !== 'none');
   let accelG = Math.max(0, tireNet);
-  const unmet = { accel: false, brake: false };
+  const unmet: ForceSetup['unmet'] = { accel: false, brake: false };
   if (accelG > 1e-9 && powered.length === 0) {
     notes.push('No powered corners: the car cannot accelerate (mark corners as Powered).');
     accelG = 0;
@@ -570,7 +581,19 @@ export function forceSetup(input: VehicleInput): ForceSetup {
   // Cornering force: front/rear shares come from the CG position (yaw balance), not from the tires.
   const L = input.wheelbase;
   const frontLatShare = L > 0 ? Math.min(1, Math.max(0, (L + input.cg.z) / L)) : 0.5;
-  return { gs, W, latTotal, brakeTotal, driveTotal, aZ, driveShares, frontLatShare, notes, unmet };
+  // Brake hydraulics: the pedal force this braking needs (the bias splits it front / rear).
+  let brakePedal: ForceSetup['brakePedal'];
+  if (input.brakeLimit && brakeTotal > 0) {
+    const bias = Math.min(1, Math.max(0, input.brakeBias ?? 0.6));
+    const L = input.brakeLimit;
+    const needed = pedalForceNeeded({ front: brakeTotal * bias, rear: brakeTotal * (1 - bias) }, L, L.maxPedal);
+    brakePedal = { needed, max: L.maxPedal };
+    if (needed > L.maxPedal * (1 + 1e-6)) {
+      unmet.brakeCapacity = true;
+      notes.push(`The brakes can't make this braking: it needs ${Number.isFinite(needed) ? needed.toFixed(0) : '∞'} N of pedal force (most ${L.maxPedal.toFixed(0)} N).`);
+    }
+  }
+  return { gs, W, latTotal, brakeTotal, driveTotal, aZ, driveShares, frontLatShare, notes, unmet, ...(brakePedal ? { brakePedal } : {}) };
 }
 
 /**
@@ -669,7 +692,7 @@ export function vehicleAt(input: VehicleInput, pose: ChassisPose, travel: Record
   }
   const out: VehicleResult = {
     pose, corners, converged: true, iterations: 0, residual: bodyResidual(input, sp, fs, pose, corners),
-    sprungMass: sp.mass, sprungCg: sp.cg, notes: fs.notes, unmet: fs.unmet,
+    sprungMass: sp.mass, sprungCg: sp.cg, notes: fs.notes, unmet: fs.unmet, ...(fs.brakePedal ? { brakePedal: fs.brakePedal } : {}),
   };
   if (input.tireGrip && caps) out.grip = gripSummary(input, out, caps, fs.frontLatShare, fs.latTotal);
   return out;
@@ -757,7 +780,7 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
   }
   const out: VehicleResult = {
     pose, corners: cur.corners, converged: norm(cur.res) < 1e-5, iterations: it, residual: cur.res,
-    sprungMass: sp.mass, sprungCg: sp.cg, notes, unmet,
+    sprungMass: sp.mass, sprungCg: sp.cg, notes, unmet, ...(fs.brakePedal ? { brakePedal: fs.brakePedal } : {}),
   };
   if (input.tireGrip) out.grip = gripSummary(input, out, capacities(input, cur.corners, latSign), frontLatShare, latTotal);
   const aero = aeroAt(input, pose);

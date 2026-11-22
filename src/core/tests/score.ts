@@ -10,7 +10,7 @@ import type { TestRun } from './run';
 import type { RideMeasures } from './ride';
 import type { Finding } from './checks';
 
-const UNFIXABLE = new Set(['beyondGrip', 'rollover', 'noSolution', 'steerLimit']);
+const UNFIXABLE = new Set(['beyondGrip', 'rollover', 'noSolution', 'steerLimit', 'brakeLimit']);
 
 /** A failure no change of suspension points, springs or dampers can fix. */
 export const isUnfixable = (f: Pick<Finding, 'check' | 'text'>) =>

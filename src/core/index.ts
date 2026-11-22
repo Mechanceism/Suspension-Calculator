@@ -39,3 +39,4 @@ export * from './tests/ride';
 export * from './tests/score';
 export * from './tests/handling';
 export * from './vehicle/aero';
+export * from './vehicle/brakes';

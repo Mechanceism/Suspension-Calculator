@@ -2,6 +2,7 @@
  * App side of the optimizers: turns the setups (free coordinates + ranges, goals, locks) into a
  * CornerProblem or a VehicleProblem, and runs them in a Web Worker so the UI stays responsive.
  */
+import { brakeCapacity, type BrakeSystem, type BrakeCapacity } from '../core/vehicle/brakes';
 import {
   GOAL_KINDS, GOAL_META, reportCorner, variableValue,
   type CornerProblem, type CornerReport, type HardpointId, type ProgressInfo, type Variable, type Hold,
@@ -21,6 +22,7 @@ import { vec3 } from '../core/math/vec3';
 import { layoutOf,
   POINT_KEYS, rootOf, toGeometry, toProfile, toForceModel, mergedCorners, vehicleStaticLoads, defaultOptimizerSetup, GRIP_KEYS, MF_KEYS,
   type AppState, type PointKey, type OptimizerSetup, type SharedDesign, type GripKey, type MFKey, type Field, type DamperKey, type DamperMode,
+  type BrakeKey,
 } from './store';
 import { STATE_KEY } from './anchors';
 import { lockKeys, pointAxisLocked } from './locks';
@@ -58,6 +60,21 @@ export const RIGID_TIRE: TireForceModel = { kind: 'stiffness', rate: 1e5 };
 
 /** Magic Formula coefficients from their fields. */
 /** Aerodynamics for the solver (undefined when off): the imported model or the generic values, and the air density. */
+/** The brake system from the inputs (front / rear tire radii from the designs on each axle). */
+export function brakesOf(s: Pick<AppState, 'brakes'> & Parameters<typeof mergedCorners>[0]): { system: BrakeSystem; capacity: BrakeCapacity } | null {
+  const b = s.brakes;
+  if (!b?.on) return null;
+  const v = (k: BrakeKey) => b[k].value;
+  const system: BrakeSystem = {
+    maxPedalForce: v('maxPedalForce'), pedalRatio: v('pedalRatio'), boost: v('boost'), dualMc: b.dualMc, balanceFront: v('balanceFront') / 100,
+    front: { mcBore: v('mcBoreF'), pistonDiameter: v('pistonDiaF'), pistonsPerSide: v('pistonsF'), padMu: v('padMuF'), rotorRadius: v('rotorRF') },
+    rear: { mcBore: v('mcBoreR'), pistonDiameter: v('pistonDiaR'), pistonsPerSide: v('pistonsR'), padMu: v('padMuR'), rotorRadius: v('rotorRR') },
+  };
+  const all = mergedCorners(s);
+  const r = (id: CornerId) => all[rootOf(id, s.links)].geom.scalars.tireDiameter.value / 2;
+  return { system, capacity: brakeCapacity(system, { front: r('FL'), rear: r('RL') }) };
+}
+
 export function aeroOf(s: Pick<AppState, 'aero'>): { model: AeroModel; rho: number } | undefined {
   const a = s.aero;
   if (!a?.on) return undefined;
@@ -155,6 +172,11 @@ export function damperOf(d: { damper: Record<DamperKey, Field>; damperMode: Damp
 
 /** `caseSource` overrides the optimizer's load-case source (a test id or 'all'), e.g. for the Tests optimize loop. */
 export function buildVehicleProblem(s: AppState, over: { caseSource?: string } = {}): BuiltProblem<VehicleProblem> {
+  const brakes = brakesOf(s);
+  const brk = brakes ? {
+    limit: { front: brakes.capacity.axleForce.front, rear: brakes.capacity.axleForce.rear, maxPedal: brakes.system.maxPedalForce },
+    useBias: s.brakes.useBias && Number.isFinite(brakes.capacity.bias) ? brakes.capacity.bias : undefined,
+  } : null;
   const o = { ...s.vehicleOptimizer, ...(over.caseSource ? { caseSource: over.caseSource } : {}) };
   const all = mergedCorners(s);
   const roots = designRoots(s).map((r) => r.root);
@@ -193,7 +215,8 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
     },
     ride: { rollInertia: Math.max(0.1, v.rollInertia.value), pitchInertia: Math.max(0.1, v.pitchInertia.value), yawInertia: Math.max(0.1, v.yawInertia.value), tireDamping: Math.max(0, v.tireDamping.value) },
     mass: v.mass.value, cg: { x: v.cgX.value, height: v.cgY.value, z: v.cgZ.value }, wheelbase: v.wheelbase.value,
-    brakeBias: v.brakeBias.value / 100, driveSplit: v.driveSplit.value / 100, autoPreload: s.autoPreload,
+    brakeBias: brk?.useBias ?? v.brakeBias.value / 100, driveSplit: v.driveSplit.value / 100, autoPreload: s.autoPreload,
+    ...(brk ? { brakeLimit: brk.limit } : {}),
     shared: { front: toAxleShared(s.shared.front), rear: toAxleShared(s.shared.rear) },
     dropLinks: { front: dl(s.shared.front), rear: dl(s.shared.rear) },
     droop: Math.abs(s.droop), bump: Math.abs(s.bump),

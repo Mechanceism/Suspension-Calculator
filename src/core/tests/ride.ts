@@ -432,7 +432,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       // Check this moment (and record a frame).
       const result: VehicleResult = {
         pose: now.pose, corners: now.res, converged: true, iterations: 0, residual: [0, 0, 0],
-        sprungMass: sp.mass, sprungCg: sp.cg, notes: fs.notes, unmet: fs.unmet,
+        sprungMass: sp.mass, sprungCg: sp.cg, notes: fs.notes, unmet: fs.unmet, ...(fs.brakePedal ? { brakePedal: fs.brakePedal } : {}),
       };
       result.grip = gripSummary(input, result, caps, fs.frontLatShare, fs.latTotal);
       if (H && hf && kin.v >= KINEMATIC_SPEED) {

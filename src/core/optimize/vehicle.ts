@@ -124,6 +124,8 @@ export interface VehicleProblem {
   tireGrip?: TireGrip;
   /** The rear tires' grip model when they differ from the front (default: the same). */
   tireGripRear?: TireGrip;
+  /** Brake hydraulics: the most braking force per axle (N, at the tires) at the most pedal force (N). */
+  brakeLimit?: { front: number; rear: number; maxPedal: number };
   keepClose?: number;
   maxIterations?: number;
   /** Gradient runs: 1 = from the current design only; more = also from the best DOE samples (wider search). */
@@ -245,6 +247,7 @@ export const vehicleInputOf = (p: VehicleProblem, asm: AssembledVehicle, c: Omit
   corners: asm.corners, totalMass: p.mass, cg: asm.cg, wheelbase: p.wheelbase, groundY: asm.groundY,
   lateralG: c.lateralG, brakingG: c.brakingG, brakeBias: p.brakeBias, accelG: c.accelG, driveSplit: p.driveSplit, shared: p.shared,
   gravityScale: c.gravityScale, groundOffset: c.groundOffset, tireGrip: p.tireGrip ?? DEFAULT_MF, diff: p.diff,
+  ...(p.brakeLimit ? { brakeLimit: p.brakeLimit } : {}),
 });
 
 /** Solve one load case on an assembled car. null = didn't converge. */

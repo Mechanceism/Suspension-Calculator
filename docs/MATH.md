@@ -364,6 +364,21 @@ Two operating modes:
 
 ---
 
+## Brakes: hydraulics ✅ (`src/core/vehicle/brakes.ts`)
+Off by default (the brakes can always make the braking asked; only grip limits it). On (Vehicle → Inputs → *Brake system*): the most braking force the brakes make, from the pedal to the tire, independent of grip.
+
+    master cylinder force   F_mc = F_pedal · pedal ratio · booster gain · (balance-bar share with two master cylinders)
+    line pressure           p = F_mc / (π/4 · bore²)
+    friction per caliper    F_f = 2 · μ_pad · p · A_pistons        (A = one side's piston area; two pads)
+    torque, tire force      T = F_f · r_eff,   F_tire = T / r_tire  (per wheel; r_tire from each axle's tire)
+
+- One tandem master cylinder: both circuits get the same pressure. Two on a balance bar: the pedal force splits front : rear.
+- **Hydraulic bias** = F_front / (F_front + F_rear). It can be used as the brake bias (*Brake bias from the hydraulics*).
+- **Pedal force needed** for a braking case: everything is linear in the pedal force, so per axle it is (demand ÷ capacity) × the most pedal force; the larger axle sets it. More than the most pedal force → the new pass rule **Brakes too weak** (Fail by default; no suspension change can fix it).
+- Defaults: 500 N pedal, 4 : 1, no booster, 3/4" master cylinder, 2 × 32 mm pistons per side front, 1 × 28 mm rear, μ 0.45, 100 / 90 mm effective radius. That gives 7.0 MPa, 7.8 / 2.7 kN per axle, 3.6 g of brake capacity on the default car and a 74 % hydraulic bias; a 1.2 g stop needs 262 N of pedal.
+- Tested: the hand-calculated pressure, torque and tire force; the balance-bar split; linear pedal force; a 1.2 g stop beyond weak brakes fails *Brakes too weak* and is fine with strong ones; the axle that needs more pedal sets the pedal force.
+- Still to come: brake fade (rotor temperature over a test, μ vs temperature).
+
 ## Aerodynamics ✅ (`src/core/vehicle/aero.ts`)
 Off by default (negligible for slow cars). On: forces on the **body**, never through the tires, at the car's speed V (tests: each moment's speed; Vehicle view: the *Speed* slider) and air density ρ (from altitude and temperature: standard-atmosphere pressure, dry air).
 

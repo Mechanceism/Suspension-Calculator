@@ -104,7 +104,7 @@ Done: File → Setup wizard (and Vehicle → Inputs), eleven steps with a step l
 - **Future: basic car profiles:** starting points for whole cars (e.g. a trophy truck with long-arm MacPhersons, an FSAE car, a kart, a road car) that set every corner's type, points, springs, tires and the vehicle inputs at once.
 - ✅ **Pushrod / pullrod with a rocker:** rocker on a chassis pivot, pushrod from an arm or the knuckle, spring from the rocker to the chassis (motion ratio from the linkage). Still to come: anti-roll bars on the rockers, a rocker-ratio editor.
 - ✅ **Steering without a rack:** steering arm / plate on a pivot axis (ATV plate on the column, steering box pitman / idler arm with a center link), input in degrees, arm torque; variable ratio (geared cam / variable-ratio rack: the ratio at full lock). Still to come: a full center-link model (pitman + idler + drag link as separate bodies), a measured ratio curve.
-- **Maximum brake force:** from pedal force, pedal ratio, master-cylinder bore, caliper piston area, pad μ, rotor radius and tire radius (most braking g per axle; the bias from the hydraulics).
+- ✅ **Maximum brake force:** brake hydraulics from pedal force, pedal ratio, booster, master cylinders (tandem or a balance bar), caliper pistons, pad μ, rotor radius and tire radius: line pressure, torque, most braking force per axle and g, hydraulic bias (optionally used as the bias), pedal force needed, the *Brakes too weak* pass rule.
 - **Towing, static:** hitch point, tongue weight and the trailer's pull on the hitch in cornering and braking (with / without trailer brakes).
 
 **Large (after the medium ones):**

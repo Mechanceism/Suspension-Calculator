@@ -512,6 +512,8 @@ export interface AppState extends DesignState {
   setSetupStatus(step: SetupStep, status: 'entered' | 'estimated' | null): void;
   setAeroField(key: AeroKey, text: string): void;
   setAero(patch: Partial<Pick<AeroSettings, 'on' | 'file'>>): void;
+  setBrakeField(key: BrakeKey, text: string): void;
+  setBrakes(patch: Partial<Pick<BrakeSettings, 'on' | 'dualMc' | 'useBias'>>): void;
   /** Grip scale of a loaded file (λμ): side (LMUY) or braking / drive (LMUX). */
   setTireScale(key: 'LMUY' | 'LMUX', value: number, axle?: 'front' | 'rear'): void;
   /** Set the tire size (mm) of the designs used on an axle (both = every design). */
@@ -723,6 +725,38 @@ export interface OptimizerSetup {
 }
 
 /** Whole-vehicle optimizer setup. */
+/** Brake hydraulics inputs (docs/MATH.md § Brakes). */
+export const BRAKE_KEYS = ['maxPedalForce', 'pedalRatio', 'boost', 'balanceFront', 'mcBoreF', 'mcBoreR', 'pistonDiaF', 'pistonsF', 'pistonDiaR', 'pistonsR', 'padMuF', 'padMuR', 'rotorRF', 'rotorRR'] as const;
+export type BrakeKey = (typeof BRAKE_KEYS)[number];
+export const BRAKE_META: Record<BrakeKey, { label: string; quantity: Quantity; unit: string; initial: number; hint?: string }> = {
+  maxPedalForce: { label: 'Most pedal force', quantity: 'force', unit: 'N', initial: 500, hint: 'What the driver pushes in a hard stop (≈ 400–800 N; a race driver up to ~1000 N)' },
+  pedalRatio: { label: 'Pedal ratio', quantity: 'ratio', unit: ':1', initial: 4, hint: 'Pedal lever: foot to pivot ÷ master-cylinder pushrod to pivot' },
+  boost: { label: 'Booster gain', quantity: 'ratio', unit: '×', initial: 1, hint: '1 = no booster; road cars ≈ 3–6' },
+  balanceFront: { label: 'Balance bar, front share', quantity: 'ratio', unit: '%', initial: 50, hint: 'Two master cylinders on a balance bar: the share of the pedal force to the front one' },
+  mcBoreF: { label: 'Master cylinder bore, front', quantity: 'length', unit: 'mm', initial: 19.05, hint: '3/4" = 19.05 mm, 5/8" = 15.9 mm, 7/8" = 22.2 mm. Smaller = more pressure, more pedal travel' },
+  mcBoreR: { label: 'Master cylinder bore, rear', quantity: 'length', unit: 'mm', initial: 19.05 },
+  pistonDiaF: { label: 'Caliper piston diameter, front', quantity: 'length', unit: 'mm', initial: 32 },
+  pistonsF: { label: 'Pistons per side, front', quantity: 'ratio', unit: '', initial: 2, hint: 'Opposed caliper: pistons on one side; floating caliper: its pistons' },
+  pistonDiaR: { label: 'Caliper piston diameter, rear', quantity: 'length', unit: 'mm', initial: 28 },
+  pistonsR: { label: 'Pistons per side, rear', quantity: 'ratio', unit: '', initial: 1 },
+  padMuF: { label: 'Pad friction μ, front', quantity: 'ratio', unit: '', initial: 0.45, hint: 'Street pads ≈ 0.35–0.45, race pads ≈ 0.45–0.6 (hot)' },
+  padMuR: { label: 'Pad friction μ, rear', quantity: 'ratio', unit: '', initial: 0.45 },
+  rotorRF: { label: 'Effective rotor radius, front', quantity: 'length', unit: 'mm', initial: 100, hint: 'Rotor center to the middle of the pad' },
+  rotorRR: { label: 'Effective rotor radius, rear', quantity: 'length', unit: 'mm', initial: 90 },
+};
+export interface BrakeSettings extends Record<BrakeKey, Field> {
+  /** Model the brake hydraulics (off = the brakes are always strong enough). */
+  on: boolean;
+  /** Two master cylinders on a balance bar (else one tandem master cylinder). */
+  dualMc: boolean;
+  /** Use the hydraulics' front / rear split as the brake bias. */
+  useBias: boolean;
+}
+export const defaultBrakes = (): BrakeSettings => ({
+  ...(Object.fromEntries(BRAKE_KEYS.map((k) => [k, field(BRAKE_META[k].initial, BRAKE_META[k].quantity)])) as Record<BrakeKey, Field>),
+  on: false, dualMc: false, useBias: false,
+});
+
 export const AERO_KEYS = ['CdA', 'downF', 'downR', 'dragHeight', 'altitude', 'temperature'] as const;
 export type AeroKey = (typeof AERO_KEYS)[number];
 export const AERO_META: Record<AeroKey, { label: string; quantity: Quantity; unit: string; hint: string }> = {
@@ -890,6 +924,8 @@ export interface DesignState {
   tireFileRear: TirModel | 'simple' | null;
   /** Aerodynamics (off = negligible). Generic values, or characteristics imported from a file (e.g. CFD). */
   aero: AeroSettings;
+  /** Brake hydraulics (off = the brakes are always strong enough). */
+  brakes: BrakeSettings;
   /** Setup wizard: which steps hold the user's own values and which are estimates (results say so). */
   setupStatus: Partial<Record<SetupStep, 'entered' | 'estimated'>>;
   /** Held dimensions between two points (Measure → set, hold). Kept like CAD sketch dimensions. */
@@ -947,7 +983,7 @@ export const pickDesign = (s: DesignState): DesignState => ({
   droop: s.droop, bump: s.bump, driver: s.driver,
   corners: s.corners, links: s.links, settings: s.settings, activeCorner: s.activeCorner,
   vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode, shared: s.shared, locks: s.locks,
-  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, tireGrip: s.tireGrip, tireFile: s.tireFile, tireFileRear: s.tireFileRear, setupStatus: s.setupStatus, aero: s.aero, dimensions: s.dimensions, tests: s.tests,
+  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, tireGrip: s.tireGrip, tireFile: s.tireFile, tireFileRear: s.tireFileRear, setupStatus: s.setupStatus, aero: s.aero, brakes: s.brakes, dimensions: s.dimensions, tests: s.tests,
 });
 
 /** The default layout (File → New). */
@@ -1031,6 +1067,7 @@ export function defaultDesign(presetId = 'C'): DesignState {
     tireFileRear: null,
     setupStatus: {},
     aero: defaultAero(),
+    brakes: defaultBrakes(),
     dimensions: [],
     tests: [],
   };
@@ -1197,6 +1234,11 @@ export const useApp = create<AppState>((set, get) => ({
     set({ aero: { ...a, [key]: parseField(text, AERO_META[key].quantity, a[key]) } });
   },
   setAero: (patch) => set({ aero: { ...get().aero, ...patch } }),
+  setBrakeField: (key, text) => {
+    const b = get().brakes;
+    set({ brakes: { ...b, [key]: parseField(text, BRAKE_META[key].quantity, b[key]) } });
+  },
+  setBrakes: (patch) => set({ brakes: { ...get().brakes, ...patch } }),
   setSetupStatus: (step, status) => {
     const cur = { ...get().setupStatus };
     if (status) cur[step] = status; else delete cur[step];

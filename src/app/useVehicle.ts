@@ -3,6 +3,7 @@
  * equilibrium, and derives the results shown in the Vehicle view.
  */
 import { rollStiffness, ackermannLinesCross } from '../core/suspension/derived';
+import { brakesOf } from './optimizer';
 import { useMemo, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import {
@@ -107,6 +108,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
   const tireFile = useApp((st) => st.tireFile);
   const tireFileRear = useApp((st) => st.tireFileRear);
   const aeroSettings = useApp((st) => st.aero);
+  const brakeSettings = useApp((st) => st.brakes);
   const speed = useApp((st) => st.vehicleSpeed);
   // Grade and bank fold into what the tires must supply (see core/tests/segments.ts).
   const road = roadEffective(lateralGKin, longitudinalG, Math.atan(roadGrade / 100), (roadBank * Math.PI) / 180);
@@ -200,7 +202,8 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
             : { kind: 'none' },
         heaveSpring: a.heaveSpring === 'wheelRate' ? { kind: 'wheelRate', rate: a.heaveRate.value } : { kind: 'none' },
       });
-      const bias = v.brakeBias.value / 100;
+      const brk = brakesOf({ ...s, brakes: brakeSettings } as never);
+      const bias = brk && brakeSettings.useBias && Number.isFinite(brk.capacity.bias) ? brk.capacity.bias : v.brakeBias.value / 100;
       const vin = {
         corners, totalMass: v.mass.value, cg, wheelbase, groundY, lateralG, brakingG, brakeBias: bias,
         accelG, driveSplit: v.driveSplit.value / 100,
@@ -208,6 +211,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         gravityScale: road.gravityScale, groundOffset: wheelBumps, tireGrip: tireGripFor({ tireGrip: gripFields, tireFile, tireFileRear }, 'front'),
         diff: { front: s.settings.FL.diff, rear: s.settings.RL.diff },
         ...(aeroOf({ aero: aeroSettings }) && speed > 0 ? { aero: { ...aeroOf({ aero: aeroSettings })!, speed } } : {}),
+        ...(brk ? { brakeLimit: { front: brk.capacity.axleForce.front, rear: brk.capacity.axleForce.rear, maxPedal: brk.system.maxPedalForce } } : {}),
       };
       // Playback of the ride over time poses the car directly (body motion and travels from the simulation).
       const res = rideView ? vehicleAt(vin, rideView.pose, rideView.travel) : solveVehicle(vin, { guess: lastPose.current });
@@ -321,7 +325,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
     } catch (e) {
       return { ...empty, error: e instanceof Error ? e.message : String(e) };
     }
-  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, rack, lateralG, brakingG, accelG, road.gravityScale, wheelBumps, gripFields, rideView, tireFile, tireFileRear, aeroSettings, speed]);
+  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, rack, lateralG, brakingG, accelG, road.gravityScale, wheelBumps, gripFields, rideView, tireFile, tireFileRear, aeroSettings, brakeSettings, speed]);
 
   return result;
 }

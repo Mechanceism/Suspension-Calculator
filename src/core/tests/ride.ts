@@ -335,6 +335,12 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     addMass(sp.mass, [Jc[0], Jc[1], Jc[2]]);
     M[1]![1]! += ride.rollInertia;
     M[2]![2]! += ride.pitchInertia;
+    // A rigid corner (no suspension) has no travel: its row and column drop out (q stays 0).
+    CORNER_IDS.forEach((id, k) => {
+      if (!byId[id].rigid) return;
+      for (let j = 0; j < 7; j++) { M[3 + k]![j] = 0; M[j]![3 + k] = 0; }
+      M[3 + k]![3 + k] = 1; Q[3 + k] = 0;
+    });
     const acc = solveLinear(M, Q) ?? new Array<number>(7).fill(0);
     return { acc, res, pose };
   };

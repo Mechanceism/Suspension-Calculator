@@ -56,6 +56,8 @@ export interface VehicleCorner {
   abs?: boolean;
   /** Damper at the damper (coaxial with the spring): bump = compression, rebound = extension. */
   damper?: DamperSpec;
+  /** No suspension: the corner's travel is held at 0 (only the tire is compliant). */
+  rigid?: boolean;
   /** Fast vertical tire force (N) from the wheel-center height above the ground h0 (mm) and tilt (a lookup table). */
   tireForceAt?: (h0: number, tilt: number) => number;
 }
@@ -694,7 +696,7 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
       const cl = byId[l];
       const cr = byId[r];
       const axle = axleOf(l);
-      if (cl && cr && isCoupled(axle)) {
+      if (cl && cr && isCoupled(axle) && !cl.rigid && !cr.rigid) {
         const [rl, rr] = settleAxle([cl, cr], input, pose, [f[l], f[r]], axle, [cornerGuess[l], cornerGuess[r]]);
         corners[l] = rl; corners[r] = rr;
         continue;
@@ -703,7 +705,7 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
         if (!c) continue;
         const fc = f[c.id];
         const work = (q: number) => cornerWork(c, input, pose, fc, { partner: undefined, axle: NO_SHARED }, q, 0).work;
-        const { q, status } = settle1(work, c.table.lo, c.table.hi, cornerGuess[c.id]);
+        const { q, status } = c.rigid ? { q: 0, status: 'ok' as CornerStatus } : settle1(work, c.table.lo, c.table.hi, cornerGuess[c.id]);
         corners[c.id] = cornerResult(c, input, fc, q, status, cornerWork(c, input, pose, fc, { partner: undefined, axle: NO_SHARED }, q, 0));
       }
     }

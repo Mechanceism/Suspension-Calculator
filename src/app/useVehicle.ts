@@ -175,11 +175,12 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
           if (byRack.size > 24) byRack.delete(byRack.keys().next().value!);
         }
         const mu = d.spring.unsprungMass.value;
-        const freeLength = s.autoPreload
+        const rigid = b.corner.kind === 'rigid';
+        const freeLength = s.autoPreload && !rigid
           ? fitFreeLength(b.corner, d.spring.springRate.value, Math.max(0, staticLoads[id] - mu * G))
           : d.spring.freeLength.value;
         corners.push({
-          id, table, unsprungMass: mu, tire: { profile: b.profile, model: b.model, ...(tireFileRear && !isFront(id) ? { grip: tireGripFor({ tireGrip: gripFields, tireFile, tireFileRear }, 'rear') } : {}) }, brake: s.settings[id].brake, abs: s.settings[id].abs,
+          id, table, unsprungMass: mu, ...(rigid ? { rigid: true } : {}), tire: { profile: b.profile, model: b.model, ...(tireFileRear && !isFront(id) ? { grip: tireGripFor({ tireGrip: gripFields, tireFile, tireFileRear }, 'rear') } : {}) }, brake: s.settings[id].brake, abs: s.settings[id].abs,
           drive: s.settings[id].powered ? s.settings[id].drive : 'none',
           spring: {
             rate: d.spring.springRate.value, freeLength,

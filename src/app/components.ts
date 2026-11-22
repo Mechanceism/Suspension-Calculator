@@ -32,6 +32,18 @@ export function componentDefs(damperArm: ArmChoice, kind: SuspensionKind = 'doub
       spring: { id: 'spring', label: 'Strut (spring / damper, top mount)', points: ['dmpChassis', 'dmpArm'], parents: ['chassis'] },
     };
   }
+  if (kind === 'rigid') {
+    return {
+      chassis: { id: 'chassis', label: 'Chassis / frame (kingpin mounts)', points: ['ucaOut', 'lcaOut'], parents: [] },
+      uca: { id: 'uca', label: 'Upper arm (none)', points: [], parents: ['chassis'], absent: true },
+      lca: { id: 'lca', label: 'Lower arm (none)', points: [], parents: ['chassis'], absent: true },
+      rack: { id: 'rack', label: 'Steering rack', points: ['trInner'], parents: ['chassis'] },
+      tieRod: { id: 'tieRod', label: 'Tie rod', points: ['trInner', 'trOuter'], parents: ['rack'] },
+      upright: { id: 'upright', label: 'Spindle / knuckle (on the kingpin)', points: ['ucaOut', 'lcaOut', 'trOuter', 'wheelCenter'], parents: ['chassis', 'tieRod'] },
+      wheel: { id: 'wheel', label: 'Wheel & tire', points: ['wheelCenter'], parents: ['upright'] },
+      spring: { id: 'spring', label: 'Spring (none)', points: [], parents: ['chassis'], absent: true },
+    };
+  }
   if (kind === 'multilink') {
     return {
       chassis: { id: 'chassis', label: 'Chassis / frame', points: ['ucaFwd', 'ucaAft', 'lcaFwd', 'lcaAft', 'dmpChassis'], parents: [] },
@@ -84,6 +96,7 @@ export const POINT_LABELS: Record<PointKey, string> = {
 
 const KIND_LABELS: Partial<Record<SuspensionKind, Partial<Record<PointKey, string>>>> = {
   macpherson: { dmpChassis: 'Strut top mount', dmpArm: 'Strut lower point (on the upright)' },
+  rigid: { ucaOut: 'Kingpin top', lcaOut: 'Kingpin bottom' },
   multilink: {
     ucaFwd: 'Upper front link, chassis', ucaOut: 'Upper front link, upright end', ucaAft: 'Upper rear link, chassis',
     lcaFwd: 'Lower front link, chassis', lcaOut: 'Lower front link, upright end', lcaAft: 'Lower rear link, chassis',

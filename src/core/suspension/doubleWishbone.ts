@@ -23,6 +23,11 @@
  *   A double wishbone is the special case where each pair of links meets at one ball joint. The
  *   steering axis is virtual: through the points where each pair of links passes closest.
  *
+ * No suspension (rigid; bodies: chassis, a "carrier" that only takes the travel input as a vertical shift,
+ *   rack, upright): the upright turns on a fixed kingpin (UCA_Out top, LCA_Out bottom) for steering:
+ *   revolute 5 · tie rod 1 = 6. Travel lifts the whole corner straight up (no camber or toe change); the
+ *   vehicle and ride models hold a rigid corner's travel at 0, so only the tire is compliant.
+ *
  * Pivot axes are NOT assumed parallel to Z and ball joints are NOT assumed centered between pivots.
  * Steering jacking is not a separate formula: moving the rack rotates the upright about the
  * UBJ–LBJ line and the solve produces the height change directly.
@@ -37,10 +42,10 @@ import {
 } from '../solver/system';
 
 /** Suspension type of a corner. */
-export type SuspensionKind = 'doubleWishbone' | 'macpherson' | 'multilink';
-export const SUSPENSION_KINDS: SuspensionKind[] = ['doubleWishbone', 'macpherson', 'multilink'];
+export type SuspensionKind = 'doubleWishbone' | 'macpherson' | 'multilink' | 'rigid';
+export const SUSPENSION_KINDS: SuspensionKind[] = ['doubleWishbone', 'macpherson', 'multilink', 'rigid'];
 export const SUSPENSION_LABELS: Record<SuspensionKind, string> = {
-  doubleWishbone: 'Double wishbone (SLA)', macpherson: 'MacPherson strut', multilink: 'Multilink (5 links)',
+  doubleWishbone: 'Double wishbone (SLA)', macpherson: 'MacPherson strut', multilink: 'Multilink (5 links)', rigid: 'No suspension (rigid, e.g. a kart)',
 };
 
 export interface ArmPoints {
@@ -169,6 +174,11 @@ export class DoubleWishbone {
     this.spinAxisDesign = normalize(geometry.wheel.spinAxis);
     this.kind = kindOf(geometry);
     this.bodies = this.kind === 'doubleWishbone' ? ['uca', 'lca', 'upright'] : this.kind === 'macpherson' ? ['lca', 'upright'] : ['upright'];
+    if (this.kind === 'rigid') {
+      if (dist(geometry.uca.out, geometry.lca.out) < 1e-6) throw new Error('Degenerate geometry: kingpin top and bottom coincide');
+      if (dist(geometry.tieRod.inner, geometry.tieRod.outer) < 1e-6) throw new Error('Degenerate geometry: tie rod coincide');
+      return;
+    }
     const g = geometry;
     const pairs: [string, Vec3, Vec3][] = [['tie rod', g.tieRod.inner, g.tieRod.outer], ['LCA pivots', g.lca.fwd, g.lca.aft]];
     if (this.kind === 'doubleWishbone') pairs.push(['UCA pivots', g.uca.fwd, g.uca.aft], ['ball joints', g.uca.out, g.lca.out]);
@@ -238,6 +248,12 @@ export class DoubleWishbone {
       rotation: sys.designPoses().rack!.rotation,
     };
     start.chassis = sys.designPoses().chassis!;
+    if (this.kind === 'rigid') {
+      // The whole corner shifts up by the travel; the rack goes with it (nothing moves relative to the frame).
+      const up = { x: 0, y: full.travel, z: 0 };
+      start.carrier = { position: add(sys.getBody('carrier').origin, up), rotation: sys.designPoses().carrier!.rotation };
+      start.rack = { ...start.rack, position: add(start.rack.position, up) };
+    }
     const result = sys.solve(start);
     const ctx = new PoseContext(result.poses);
     const spinAxis = normalize(ctx.direction('upright', this.spinAxisDesign));
@@ -319,6 +335,10 @@ export class DoubleWishbone {
       sys.add(revolute(sys, 'LCA pivot', 'chassis', 'lca', g.lca.fwd, g.lca.aft));
       sys.add(coincident('LCA ball joint', sys.attach('lca', g.lca.out), sys.attach('upright', g.lca.out)));
       sys.add(pointOnLine(sys, 'strut through the top mount', 'upright', st.lower, st.top, st.top));
+    } else if (this.kind === 'rigid') {
+      sys.addBody('carrier', { x: 0, y: 0, z: 0 }, { fixed: true });
+      sys.addBody('upright', uprOrigin, { size: Math.max(dist(g.uca.out, g.lca.out) / 2, 1) });
+      sys.add(revolute(sys, 'kingpin', 'carrier', 'upright', g.lca.out, g.uca.out));
     } else {
       sys.addBody('upright', uprOrigin, { size: Math.max(dist(g.uca.out, g.lca.out) / 2, 1) });
       for (const l of multiLinks(g)) {
@@ -332,7 +352,7 @@ export class DoubleWishbone {
     const wheelCenter = sys.attach('upright', g.wheel.center);
     const spin = this.spinAxisDesign;
     const radius = g.wheel.radius;
-    switch (inputs.driver) {
+    if (this.kind !== 'rigid') switch (inputs.driver) {
       case 'wheelCenter':
         sys.add(coordinate('travel (wheel center)', wheelCenter, Y_AXIS, g.wheel.center.y + inputs.travel));
         break;

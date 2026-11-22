@@ -225,8 +225,9 @@ export function toGeometry(e: EditableGeometry): DoubleWishboneGeometry {
       radius: s.tireDiameter.value / 2,
       width: mountedTireWidth(s),
     },
-    // MacPherson: the damper is the strut (its lower point is on the upright); multilink: on the upright.
-    damper: { chassis: p('dmpChassis'), arm: kind === 'doubleWishbone' ? e.damperArm : 'upright', armPoint: p('dmpArm') },
+    // MacPherson: the damper is the strut (its lower point is on the upright); multilink: on the upright;
+    // no suspension: no spring or damper.
+    ...(kind === 'rigid' ? {} : { damper: { chassis: p('dmpChassis'), arm: kind === 'doubleWishbone' ? e.damperArm : 'upright', armPoint: p('dmpArm') } }),
   };
 }
 
@@ -254,6 +255,7 @@ export function flipRackSide(e: EditableGeometry): EditableGeometry {
 /** Hardpoints a suspension type uses, in table order. */
 export function activePointKeys(kind: SuspensionKind): PointKey[] {
   if (kind === 'macpherson') return ['lcaFwd', 'lcaAft', 'lcaOut', 'dmpChassis', 'dmpArm', 'trInner', 'trOuter', 'wheelCenter'];
+  if (kind === 'rigid') return ['ucaOut', 'lcaOut', 'trInner', 'trOuter', 'wheelCenter'];
   if (kind === 'multilink') return ['ucaFwd', 'ucaOut', 'ucaAft', 'ucaOut2', 'lcaFwd', 'lcaOut', 'lcaAft', 'lcaOut2', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm'];
   return ['ucaFwd', 'ucaAft', 'ucaOut', 'lcaFwd', 'lcaAft', 'lcaOut', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm'];
 }
@@ -1390,7 +1392,7 @@ export const useApp = create<AppState>((set, get) => ({
       return;
     }
     set({ geom: next, presetId: 'custom', spring: fittedSpring(next, get().spring), selection: null });
-    get().notify(`${SUSPENSION_LABELS[kind]}: ${kind === 'macpherson' ? 'a strut was placed from the upright (top mount above the upper ball joint); adjust its points.' : kind === 'multilink' ? `each link now ends at its own point on the upright (moved 35 mm along the link: the same motion at ride height, nearly the same through travel); move them to shape the motion.${geom.kind === 'doubleWishbone' || !geom.kind ? ' The coilover now mounts on the upright (a multilink has no arm body), so check its motion ratio.' : ''}` : 'the links rejoin at one ball joint per arm.'}`, 'info');
+    get().notify(`${SUSPENSION_LABELS[kind]}: ${kind === 'rigid' ? 'the wheel turns on a fixed kingpin through the ball joints\' positions; no spring or travel (only the tire gives).' : kind === 'macpherson' ? 'a strut was placed from the upright (top mount above the upper ball joint); adjust its points.' : kind === 'multilink' ? `each link now ends at its own point on the upright (moved 35 mm along the link: the same motion at ride height, nearly the same through travel); move them to shape the motion.${geom.kind === 'doubleWishbone' || !geom.kind ? ' The coilover now mounts on the upright (a multilink has no arm body), so check its motion ratio.' : ''}` : 'the links rejoin at one ball joint per arm.'}`, 'info');
   },
   fitSpring: () => {
     const s = get();

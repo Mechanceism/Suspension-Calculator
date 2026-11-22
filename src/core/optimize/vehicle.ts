@@ -201,9 +201,9 @@ export function assembleVehicle(p: VehicleProblem, geometries: Partial<Record<Co
       try { table = new CornerTable(built.get(root)!, 0, range, n, dl ? { body: 'lca', point: dl } : undefined); } catch { return null; }
       tables.set(key, table);
     }
-    const freeLength = p.autoPreload ? fitFreeLength(built.get(root)!, d.springRate, Math.max(0, loads[id] - d.unsprungMass * G)) : d.freeLength;
+    const freeLength = p.autoPreload && d.geometry.kind !== 'rigid' ? fitFreeLength(built.get(root)!, d.springRate, Math.max(0, loads[id] - d.unsprungMass * G)) : d.freeLength;
     corners.push({
-      id, table, unsprungMass: d.unsprungMass, tire: { profile: d.profile, model: d.model, ...(p.tireGripRear && !isFront(id) ? { grip: p.tireGripRear } : {}) },
+      id, table, unsprungMass: d.unsprungMass, ...(d.geometry.kind === 'rigid' ? { rigid: true } : {}), tire: { profile: d.profile, model: d.model, ...(p.tireGripRear && !isFront(id) ? { grip: p.tireGripRear } : {}) },
       brake: p.settings[id].brake, drive: p.settings[id].drive, abs: p.settings[id].abs ?? true,
       spring: { rate: d.springRate, freeLength, ...(d.bumpStop ? { bumpStopLength: d.bumpStop.length, bumpStopRate: d.bumpStop.rate } : {}) },
       ...(d.damping ? { damper: d.damping } : {}),

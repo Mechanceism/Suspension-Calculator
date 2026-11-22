@@ -213,3 +213,50 @@ describe('coilover on the knuckle (double wishbone)', () => {
     expect(Math.abs(springLength(onArm.solve({ travel: 1 }))! - springLength(onArm.solve({ travel: -1 }))!) / 2).toBeLessThan(mr);
   });
 });
+
+describe('no suspension (rigid)', () => {
+  const kart: DoubleWishboneGeometry = { ...C, kind: 'rigid', damper: undefined };
+  it('steers on the kingpin; travel only lifts the corner (no camber or toe change)', () => {
+    const c = new DoubleWishbone(kart);
+    const s0 = c.solve({}), up = c.solve({ travel: 20 }), st = c.solve({ rack: 10 });
+    expect(up.solve.status).toBe('converged');
+    expect(up.points.wheelCenter.y - s0.points.wheelCenter.y).toBeCloseTo(20, 6);
+    expect(characteristics(up).camber).toBeCloseTo(characteristics(s0).camber, 9);
+    expect(characteristics(up).toe).toBeCloseTo(characteristics(s0).toe, 9);
+    expect(Math.abs(characteristics(st).toe - characteristics(s0).toe)).toBeGreaterThan(0.01);
+    // The kingpin stays put while steering.
+    expect(length(sub(st.points.ucaOut, s0.points.ucaOut))).toBeLessThan(1e-6);
+    expect(characteristics(s0).rollCenterHeight).toBeNull();
+  });
+
+  it('a car with no suspension settles on its tires, corners and drives a test', async () => {
+    const { assembleVehicle, solveCase, rideRun, DEFAULT_MF } = await import('../src/core');
+    const { SAMPLE_SPRING } = await import('../src/examples/sampleLayouts');
+    const gas = { kind: 'gas' as const, volumeChange: true, volumeFactor: 1, conditions: { setPressure: 83, setAltitude: 0, setTemperature: 20, operatingAltitude: 0, operatingTemperature: 20 } };
+    const profile = { radius: 260, width: 205, shoulderRadius: 25, rimRadius: 165 };
+    const p = {
+      designs: { FL: { geometry: kart, profile, model: gas, springRate: SAMPLE_SPRING.rate, freeLength: SAMPLE_SPRING.freeLength, unsprungMass: 8 } }, roots: { FL: 'FL', FR: 'FL', RL: 'FL', RR: 'FL' } as const,
+      settings: { FL: { brake: 'none', drive: 'none' }, FR: { brake: 'none', drive: 'none' }, RL: { brake: 'outboard', drive: 'chassis' }, RR: { brake: 'outboard', drive: 'chassis' } } as const,
+      mass: 160, cg: { x: 0, height: 250, z: -0.6 * 1050 }, wheelbase: 1050, brakeBias: 0, driveSplit: 0, autoPreload: true,
+      shared: { front: { antiRollBar: { kind: 'none' as const }, heaveSpring: { kind: 'none' as const } }, rear: { antiRollBar: { kind: 'none' as const }, heaveSpring: { kind: 'none' as const } } },
+      dropLinks: { front: null, rear: null }, droop: 30, bump: 30, cases: { lateralG: 0, brakingG: 0, accelG: 0 }, goals: [], variables: [],
+      steering: { steered: { FL: true, FR: true }, rackLimit: 30, cFactor: 75 },
+      ride: { rollInertia: 10, pitchInertia: 20, tireDamping: 100 }, tireGrip: DEFAULT_MF,
+    };
+    const asm = assembleVehicle(p as never, { FL: kart })!;
+    const rest = solveCase(p as never, asm, { name: 'r', kind: 'state', g: 0, lateralG: 0, brakingG: 0, accelG: 0 })!.result;
+    expect(rest.converged).toBe(true);
+    for (const id of ['FL', 'FR', 'RL', 'RR'] as const) { expect(rest.corners[id].travel).toBe(0); expect(rest.corners[id].status).toBe('ok'); }
+    const turn = solveCase(p as never, asm, { name: 't', kind: 'state', g: 0.8, lateralG: 0.8, brakingG: 0, accelG: 0 })!.result;
+    expect(turn.converged).toBe(true);
+    // Body roll only from the tires: small.
+    expect(Math.abs(turn.pose.roll * 180 / Math.PI)).toBeLessThan(1);
+    const r = rideRun(p as never, { FL: kart }, [
+      { distance: 10, v0: 10, v1: 10, path: 'straight', radius: 0, grade: 0, bank: 0 },
+      { distance: 30, v0: 10, v1: 10, path: 'left', radius: 15, grade: 0, bank: 0 },
+    ], { handling: true });
+    expect(r.error).toBeUndefined();
+    expect(r.frames.every((f) => Object.values(f.ride!.travel).every((q) => Math.abs(q) < 1e-9))).toBe(true);
+    expect(r.findings.flat().filter((f) => f.check === 'noSolution')).toEqual([]);
+  });
+});

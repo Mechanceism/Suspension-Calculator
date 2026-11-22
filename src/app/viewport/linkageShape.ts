@@ -26,6 +26,14 @@ export function linkageShape(p: CornerPoints, kind: SuspensionKind): LinkageShap
       upright: [p.lcaOut, lower, p.trOuter, p.lcaOut], axis: [p.steerLower, p.steerUpper],
     };
   }
+  if (kind === 'rigid') {
+    // The kingpin is held by the frame: short brackets inboard from each end.
+    const br = (q: Vec3): [Vec3, Vec3] => [{ x: q.x - 120, y: q.y, z: q.z }, q];
+    return {
+      ucaTri: null, lcaTri: null, uca: [br(p.ucaOut)], lca: [br(p.lcaOut)],
+      upright: [p.ucaOut, p.lcaOut, p.trOuter, p.ucaOut], axis: [p.lcaOut, p.ucaOut],
+    };
+  }
   if (kind === 'multilink') {
     const u2 = p.ucaOut2 ?? p.ucaOut, l2 = p.lcaOut2 ?? p.lcaOut;
     return {

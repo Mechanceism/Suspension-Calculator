@@ -86,7 +86,7 @@ export function characteristics(state: CornerState): Characteristics {
   // Instant axis: from two planes the upright's motion is confined to, or from its five links.
   let ucaPlane: Plane | null = null;
   let instantAxis: Line | null = null;
-  if (state.kind === 'multilink') {
+  if (state.kind === 'rigid') { /* no suspension motion: no instant axis */ } else if (state.kind === 'multilink') {
     // Planes through the two (virtual) steering pivots, normal to their velocities: for a double
     // wishbone these are exactly the arm planes. Points on the steering axis don't move when the
     // upright turns about it, so this is the suspension's axis without the bump-steer part.

@@ -21,7 +21,7 @@ export function SpringFields({ keys = SPRING_KEYS }: { keys?: readonly SpringKey
       <div className="row">
         <span className="muted">Layout</span>
         <select value="coilover" disabled title="Pushrod / rocker layouts are planned">
-          <option value="coilover">{kind === 'macpherson' ? 'Strut (upright → top mount)' : kind === 'multilink' ? 'Coilover, upright → chassis' : 'Coilover, arm → chassis'}</option>
+          <option value="coilover">{kind === 'rigid' ? 'None (no suspension)' : kind === 'macpherson' ? 'Strut (upright → top mount)' : kind === 'multilink' ? 'Coilover, upright → chassis' : 'Coilover, arm → chassis'}</option>
         </select>
       </div>
       {kind === 'doubleWishbone' && (

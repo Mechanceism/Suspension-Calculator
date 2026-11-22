@@ -153,6 +153,13 @@ Observations:
 
 ---
 
+### More variables ✅ (`src/core/suspension/derived.ts`, 2026-11-22)
+- **Caster gain, KPI gain** (°/mm of bump), **track change / scrub** (half-track change per mm of bump, + = contact moves outboard) and **roll-center migration** (RC height change per mm of heave): central differences at the current travel (±0.5 mm). KPI and mechanical trail are also plotted through travel.
+- **Roll camber** (outside wheel, camber change to the ground per degree of body roll): Δγ/Δφ = 1 + (dγ/dz) · half track, with dγ/dz in rad/mm. Rolling by φ moves the outside wheel into bump by ≈ φ · half track and tilts it with the body by φ. 1 = the wheel leans with the body, 0 = it stays upright to the ground (like a solid axle), < 0 = it leans into the turn. Double wishbone sample C: 0.70.
+- **Ackermann %** = (δ_inside − δ_outside) / (δ_inside,ideal − δ_outside) × 100, with the ideal from cot δ_o − cot δ_i = track / wheelbase. The two wheels come from the corner and its mirror image at ± rack travel, the track is between the steering axes at the ground, and the wheelbase is the vehicle input. 100 % = ideal Ackermann, 0 % = parallel steer, < 0 = anti-Ackermann. Shown at the current steering position and at full lock, and plotted against steering-wheel angle.
+- **Roll stiffness** per axle (vehicle, from the solved cornering state) = load moved through the springs (total − F_y · h_RC / track) × track ÷ body roll, in N·m/°. It counts the springs, anti-roll bar and heave spring, in series with the tires. The front share and the **roll gradient** (body roll per g) are shown too. Checked against wheel rate (in series with the tire) × track² / 2: within 10 % on the default car (325 vs 318 N·m/°).
+
+
 ## L3: Tire Geometry (Slice Method) ✅
 
 Purpose: for a given wheel pose and ground plane, compute **contact-patch area, patch centroid, and displaced volume** without case splits (no special rectangle vs. ellipse handling).

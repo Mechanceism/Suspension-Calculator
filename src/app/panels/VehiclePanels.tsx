@@ -296,6 +296,10 @@ export function VehicleResults({ model }: { model: VehicleModel | null }) {
           { label: 'Rear, through links (roll center)', value: fmt(t.rear.geometric, 0), unit: 'N' },
           { label: 'Rear, through springs (body roll)', value: fmt(t.rear.elastic, 0), unit: 'N' },
           { label: 'Front share (LLTD)', value: Math.abs(t.front.total + t.rear.total) < 1 ? '—' : fmt(100 * t.lltdFront, 1), unit: '%', hint: 'Front axle share of the total lateral load transfer' },
+          { label: 'Roll stiffness, front', value: fmt(model.rollStiffness.front, 0), unit: 'N·m/°', hint: 'Load moved through the springs (springs, anti-roll bar, heave spring) × track ÷ body roll, at this cornering. — without cornering' },
+          { label: 'Roll stiffness, rear', value: fmt(model.rollStiffness.rear, 0), unit: 'N·m/°' },
+          { label: 'Roll stiffness, front share', value: fmt(100 * model.rollStiffness.front / (model.rollStiffness.front + model.rollStiffness.rear), 1), unit: '%' },
+          { label: 'Roll gradient', value: fmt(model.rollGradient, 2), unit: '°/g', hint: 'Body roll per g of cornering (this state)' },
         ]} />
       </Section>
       <Section title="Braking & acceleration">

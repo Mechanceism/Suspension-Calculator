@@ -2,6 +2,7 @@
  * Vehicle view model (L6): builds all four corners from their (linked) designs, solves the whole-car
  * equilibrium, and derives the results shown in the Vehicle view.
  */
+import { rollStiffness } from '../core/suspension/derived';
 import { useMemo, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import {
@@ -61,6 +62,9 @@ export interface VehicleModel {
   rollCenters: { front: { x: number; y: number; h: number } | null; rear: { x: number; y: number; h: number } | null };
   rideHeight: { front: number; rear: number };
   transfer: { front: AxleTransfer; rear: AxleTransfer; lltdFront: number };
+  /** Roll stiffness per axle from this cornering state, N·m/deg (NaN without cornering), and roll per g. */
+  rollStiffness: { front: number; rear: number };
+  rollGradient: number;
   /** Longitudinal (braking) load transfer onto the front axle vs. static, N. */
   frontLoadGain: number;
   /** Classic geometric anti-dive (front) and anti-lift (rear) under braking, % (side-view IC, brake mount, bias). */
@@ -137,6 +141,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
       error: setup.error, result: null, corners: {}, staticLoads: { FL: 0, FR: 0, RL: 0, RR: 0 }, groundY: 0,
       rollCenters: { front: null, rear: null }, rideHeight: { front: NaN, rear: NaN },
       transfer: { front: { total: 0, geometric: 0, elastic: 0 }, rear: { total: 0, geometric: 0, elastic: 0 }, lltdFront: NaN },
+      rollStiffness: { front: NaN, rear: NaN }, rollGradient: NaN,
       rolloverG: NaN, sprungCgWorld: null, wheelbase, accel: { lateral: 0, longitudinal: 0 }, frontLoadGain: NaN, antiDive: NaN, antiLift: NaN, antiSquat: NaN, antiLiftAccel: NaN,
     };
     if (!setup.all || !setup.built) return empty;
@@ -279,6 +284,10 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         result: res, corners: views, staticLoads, groundY, rollCenters,
         rideHeight: { front: ride(0), rear: ride(-wheelbase) },
         transfer: { front, rear, lltdFront: front.total + rear.total !== 0 ? front.total / (front.total + rear.total) : NaN },
+        rollStiffness: Math.abs(lateralG) > 0.02
+          ? { front: rollStiffness(front.elastic, trackF, (res.pose.roll * 180) / Math.PI), rear: rollStiffness(rear.elastic, trackR, (res.pose.roll * 180) / Math.PI) }
+          : { front: NaN, rear: NaN },
+        rollGradient: Math.abs(lateralG) > 0.02 ? Math.abs((res.pose.roll * 180) / Math.PI / lateralG) : NaN,
         rolloverG: (0.5 * (trackF + trackR)) / (2 * v.cgY.value),
         frontLoadGain: res.corners.FL.tireLoad + res.corners.FR.tireLoad - frontStatic,
         antiDive: antiOf(['FL', 'FR'], bias, 1),

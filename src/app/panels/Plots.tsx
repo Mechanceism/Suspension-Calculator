@@ -76,6 +76,8 @@ export function Plots({ model }: { model: Model }) {
     { title: 'Roll center height', unit: 'mm', get: (s) => s.chars.rollCenterHeight ?? NaN, digits: 1 },
     { title: 'Half track change', unit: 'mm', get: (s) => s.chars.halfTrack - baseTrack, digits: 2 },
     { title: 'Caster', unit: '°', get: (s) => deg(s.chars.caster), digits: 2 },
+    { title: 'KPI', unit: '°', get: (s) => deg(s.chars.kpi), digits: 2 },
+    { title: 'Mechanical trail', unit: 'mm', get: (s) => s.chars.mechanicalTrail, digits: 1 },
     { title: 'Scrub radius', unit: 'mm', get: (s) => s.chars.scrubRadius, digits: 1 },
   ];
   if (model.sweep.some((s) => s.spring)) {
@@ -96,6 +98,7 @@ export function Plots({ model }: { model: Model }) {
   const steerSeries: { title: string; unit: string; get: (s: SteerSample) => number; digits?: number; now?: number }[] = [
     { title: 'Road-wheel angle', unit: '°', get: (s) => deg(s.roadWheelAngle), digits: 2, now: cur?.steering ? deg(cur.steering.roadWheelAngle) : undefined },
     { title: 'Camber vs steer', unit: '°', get: (s) => deg(s.camber), digits: 3 },
+    { title: 'Ackermann (with the mirrored corner)', unit: '%', get: (s) => s.ackermann, digits: 0 },
     { title: 'Steering jacking (body rise)', unit: 'mm', get: (s) => s.jacking, digits: 2 },
     { title: 'Self-centering wheel torque (vertical load)', unit: 'N·m', get: (s) => s.centeringTorque, digits: 2 },
   ];

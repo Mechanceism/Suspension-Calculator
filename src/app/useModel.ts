@@ -9,6 +9,7 @@
 import { useMemo, useRef } from 'react';
 import { useApp, toGeometry, toProfile, toForceModel, sprungLoad, vehicleStaticLoads, mergedCorners } from './store';
 import { DoubleWishbone, type CornerState } from '../core/suspension/doubleWishbone';
+import { rollCamber, ackermann } from '../core/suspension/derived';
 import { characteristics, deg, type Characteristics } from '../core/suspension/characteristics';
 import { loadCorner, type LoadedCorner } from '../core/suspension/loaded';
 import {
@@ -78,6 +79,8 @@ export interface SteerSample {
   jacking: number;
   /** Steering-wheel torque from the vertical load alone (self-centering), N·m. */
   centeringTorque: number;
+  /** Ackermann % with the mirrored corner at this rack travel (NaN near straight ahead). */
+  ackermann: number;
 }
 
 export interface Current extends Omit<Sample, 'spring'> {
@@ -90,6 +93,15 @@ export interface Current extends Omit<Sample, 'spring'> {
   camberGain: number;
   /** toe change, deg per mm of travel */
   bumpSteer: number;
+  /** Caster and KPI change, deg per mm of travel. */
+  casterGain: number;
+  kpiGain: number;
+  /** Half-track change (scrub), mm per mm of travel (+ = contact moves outboard in bump). */
+  trackChange: number;
+  /** Roll-center height change, mm per mm of travel (mirrored corner). */
+  rcMigration: number;
+  /** Outside wheel's camber change to the ground per degree of body roll (deg/deg; 1 = leans with the body). */
+  rollCamber: number;
   spring: SpringInfo | null;
 }
 
@@ -316,12 +328,18 @@ export function useModel(): Model {
       travel, state, chars, loaded, spring: springInfo, steering, loadFactor: effFactor, tireLoad: effTireLoad,
       camberGain: (deg(plus.camber) - deg(minus.camber)) / (2 * h),
       bumpSteer: (deg(plus.toe) - deg(minus.toe)) / (2 * h),
+      casterGain: (deg(plus.caster) - deg(minus.caster)) / (2 * h),
+      kpiGain: (deg(plus.kpi) - deg(minus.kpi)) / (2 * h),
+      trackChange: (plus.halfTrack - minus.halfTrack) / (2 * h),
+      rcMigration: plus.rollCenterHeight !== null && minus.rollCenterHeight !== null ? (plus.rollCenterHeight - minus.rollCenterHeight) / (2 * h) : NaN,
+      rollCamber: rollCamber((deg(plus.camber) - deg(minus.camber)) / (2 * h), chars.halfTrack),
     };
   }, [live, sweep, sliderTravel, rack, driver, mode, factor, spec, ws, droop, bump, tireSetup, spring, steer, cFactor, damperLimits, interacting]);
 
   // Steering sweep across the rack range at the current arm position.
   const armKey = current && built.corner ? Math.round(lowerArmAngle(built.corner.geometry, current.state) * 1e5) : 0;
   const rackLimit = steer.rackLimit.value;
+  const wheelbase = useApp((s) => s.vehicle.wheelbase.value);
   const curTireLoad = Math.round(current?.tireLoad ?? spring.cornerLoad.value);
   const steerSweep = useMemo<SteerSample[]>(() => {
     const corner = built.corner;
@@ -334,6 +352,10 @@ export function useModel(): Model {
     const mid = corner.solve({ driver: 'lowerArmAngle', armAngle, rack: 0 }, states[(n - 1) / 2]!.poses);
     const h0 = headingAngle(mid.spinAxis);
     const y0 = mid.points.contact.y;
+    // Ackermann with the mirrored corner: this wheel at rack r, its mirror image at −r (yaw + = left).
+    const yaw = states.map((st) => headingAngle(st.spinAxis) - h0);
+    const g0 = characteristics(mid).steeringAxisAtGround;
+    const steerTrack = 2 * Math.abs(g0 ? g0.x : mid.points.contact.x);
     return states.map((st, i) => {
       const c = characteristics(st);
       const l = steeringLoads(st, c.contactPoint, { vertical: curTireLoad, lateral: 0, longitudinal: 0, pneumaticTrail: 0 }, corner.rackAxis, cFactor);
@@ -341,9 +363,10 @@ export function useModel(): Model {
         rack: racks[i]!, steeringWheelAngle: (racks[i]! / cFactor) * 360,
         roadWheelAngle: headingAngle(st.spinAxis) - h0, camber: c.camber,
         jacking: y0 - st.points.contact.y, centeringTorque: l.steeringWheelTorque,
+        ackermann: ackermann(yaw[i]!, -yaw[n - 1 - i]!, wheelbase, steerTrack).percent,
       };
     });
-  }, [built, armKey, rackLimit, cFactor, curTireLoad, interacting]);
+  }, [built, armKey, rackLimit, cFactor, curTireLoad, interacting, wheelbase]);
   if (!interacting) lastSteerSweep.current = steerSweep;
 
   return { error: live.error, corner: live.corner, sweep, current, steerSweep, damperLimits };

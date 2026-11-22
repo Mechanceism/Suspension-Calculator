@@ -25,11 +25,17 @@ export function SteeringReadout({ model }: { model: Model }) {
   const st = model.current?.steering;
   if (!st) return null;
   const l = st.loads;
+  // Ackermann: at this steering position (nearest sample), and at full lock.
+  const sw = model.steerSweep;
+  const here = sw.reduce<(typeof sw)[number] | null>((b, q) => (!b || Math.abs(q.steeringWheelAngle - st.steeringWheelAngle) < Math.abs(b.steeringWheelAngle - st.steeringWheelAngle) ? q : b), null);
+  const lock = sw.at(-1);
   return (
     <FieldRows rows={[
       { label: 'Steering-wheel angle', value: fmt(st.steeringWheelAngle, 1), unit: '°' },
       { label: 'Road-wheel angle', value: fmt(deg(st.roadWheelAngle), 2), unit: '°', hint: '+ = front of wheel toward outboard (left turn for FL)' },
       { label: 'Steering ratio', value: fmt(st.ratio, 2), unit: ':1', hint: 'steering-wheel deg per road-wheel deg, at this position' },
+      { label: 'Ackermann (here)', value: fmt(here?.ackermann, 0), unit: '%', hint: 'With the mirrored corner and the vehicle wheelbase: (inside − outside angle) ÷ (ideal inside − outside) × 100. 100 = ideal Ackermann, 0 = parallel, < 0 = anti-Ackermann. — near straight ahead' },
+      { label: 'Ackermann (full lock)', value: fmt(lock?.ackermann, 0), unit: '%' },
       { label: 'Steering arm (effective)', value: fmt(Math.abs(l.steeringArm), 1), unit: 'mm', hint: 'tie-rod lever about the steering axis' },
       { label: 'Torque about steering axis', value: fmt(l.axisTorque / 1000, 2), unit: 'N·m', hint: '+ = turns the front of the wheel outboard' },
       { label: 'Tie-rod force', value: fmt(l.tieRodForce, 0), unit: 'N', hint: '+ = tension' },

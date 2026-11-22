@@ -28,6 +28,7 @@ export * from './optimize/search';
 export * from './optimize/rates';
 export * from './math/dimension';
 export * from './suspension/dimensions';
+export * from './suspension/derived';
 export * from './tests/segments';
 export * from './tests/run';
 export * from './tests/checks';

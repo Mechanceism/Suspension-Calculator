@@ -236,6 +236,7 @@ function ChassisSection() {
           : [{ label: SPRING_META.cornerLoad.label, value: vehicleLoad.toFixed(0), unit: 'N', hint: 'Static weight on this corner from the vehicle mass and CG' }]),
         { label: SPRING_META.unsprungMass.label, field: spring.unsprungMass, unit: SPRING_META.unsprungMass.unit, onCommit: (t: string) => setSpringField('unsprungMass', t), lockKey: lockKeys.field(root, 'spring', 'unsprungMass') },
       ]} />
+      <BushingFields />
       <FieldRows rows={[
         { label: 'Droop travel', field: derivedField(droop, 1), unit: 'mm', onCommit: (t) => set('droop', Math.max(1, Math.abs(Number(t) || droop))) },
         { label: 'Bump travel', field: derivedField(bump, 1), unit: 'mm', onCommit: (t) => set('bump', Math.max(1, Math.abs(Number(t) || bump))) },
@@ -426,5 +427,18 @@ function PointsInspector({ ids }: { ids: PointKey[] }) {
       <Section title="Move together"><GroupMove ids={ids} /></Section>
       <Section title="Points"><PointsTable points={ids} /></Section>
     </div>
+  );
+}
+
+/** Arm pivot bushings: their stiffness sets the compliance steer and camber (Results). */
+function BushingFields() {
+  const b = useApp((s) => s.geom.bushing);
+  const setBushing = useApp((s) => s.setBushing);
+  const radial = b?.radial ?? { text: '5000', value: 5000 }, axial = b?.axial ?? { text: '1500', value: 1500 };
+  return (
+    <FieldRows rows={[
+      { label: 'Arm bushings, radial', field: radial, unit: 'N/mm', hint: 'Stiffness of each arm pivot bushing across its axis (typical rubber ≈ 2000–10000 N/mm; spherical bearings: very high). Used for the compliance steer / camber results.', onCommit: (t: string) => setBushing('radial', t) },
+      { label: 'Arm bushings, axial', field: axial, unit: 'N/mm', hint: 'Along the pivot axis (usually softer than radial).', onCommit: (t: string) => setBushing('axial', t) },
+    ]} />
   );
 }

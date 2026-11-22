@@ -120,6 +120,11 @@ export interface Current extends Omit<Sample, 'spring'> {
   rcMigration: number;
   /** Outside wheel's camber change to the ground per degree of body roll (deg/deg; 1 = leans with the body). */
   rollCamber: number;
+  /** Outside wheel's KPI and caster change to the ground per degree of body roll (°/°). */
+  rollKpi: number;
+  rollCaster: number;
+  /** Compliance (arm bushings): toe / camber change per kN of side force (tire pushed inboard) and per kN of braking, °/kN. */
+  compliance: { lateral: { toe: number; camber: number }; braking: { toe: number; camber: number } } | null;
   spring: SpringInfo | null;
 }
 
@@ -208,7 +213,7 @@ export function useModel(): Model {
   const sweepLoader = useMemo(() => makeLoader(staticLoad), [tireSetup, staticLoad]);
   const lastEquilibrium = useRef<number | undefined>(undefined);
   // While dragging, slow extras reuse their last values so the drag stays responsive.
-  const lastSlow = useRef<{ wheelRate: number; tireRate: number; steering: SteeringInfo | null }>({ wheelRate: NaN, tireRate: Infinity, steering: null });
+  const lastSlow = useRef<{ wheelRate: number; tireRate: number; steering: SteeringInfo | null; compliance?: Current['compliance'] }>({ wheelRate: NaN, tireRate: Infinity, steering: null });
   const lastSteerSweep = useRef<SteerSample[]>([]);
 
   const kinematicSweep = useMemo(() => {
@@ -364,6 +369,13 @@ export function useModel(): Model {
       trackChange: (plus.halfTrack - minus.halfTrack) / (2 * h),
       rcMigration: plus.rollCenterHeight !== null && minus.rollCenterHeight !== null ? (plus.rollCenterHeight - minus.rollCenterHeight) / (2 * h) : NaN,
       rollCamber: rollCamber(rollCamberGain ?? (deg(plus.camber) - deg(minus.camber)) / (2 * h), chars.halfTrack),
+      // Body roll tips the outside wheel's axis outward by the roll (KPI falls by it); its bump changes both.
+      rollKpi: -1 + ((deg(plus.kpi) - deg(minus.kpi)) / (2 * h)) * (Math.PI / 180) * chars.halfTrack,
+      rollCaster: ((deg(plus.caster) - deg(minus.caster)) / (2 * h)) * (Math.PI / 180) * chars.halfTrack,
+      compliance: interacting ? lastSlow.current.compliance ?? null : (() => {
+        const b = useApp.getState().geom.bushing;
+        try { const r = corner.compliance(state, { radial: b?.radial.value ?? 5000, axial: b?.axial.value ?? 1500 }); lastSlow.current.compliance = r; return r; } catch { return null; }
+      })(),
     };
   }, [live, sweep, sliderTravel, rack, driver, mode, factor, spec, ws, droop, bump, tireSetup, spring, steer, cFactor, damperLimits, interacting]);
 

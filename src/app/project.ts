@@ -60,7 +60,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 31;
+export const FORMAT_VERSION = 32;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -77,6 +77,8 @@ export interface CornerJson {
   springLayout?: 'coilover' | 'rocker';
   pushrodOn?: 'lca' | 'uca' | 'upright';
   steerMechanism?: 'rack' | 'arm' | 'centerLink';
+  /** Arm pivot bushings (format 32), N/mm. */
+  bushing?: { radial: FieldJson; axial: FieldJson };
   /** Solid axle: steered (format 28). */
   steeredAxle?: boolean;
   /** Custom linkage (format 27; mm). */
@@ -162,6 +164,7 @@ function cornerToJson(id: CornerId, c: CornerDesign): CornerJson {
     damperArm: c.geom.damperArm,
     springLayout: layoutOf(c.geom), pushrodOn: c.geom.pushrodOn ?? 'lca', steerMechanism: c.geom.steerMechanism ?? 'rack',
     ...(c.geom.steeredAxle ? { steeredAxle: true } : {}),
+    ...(c.geom.bushing ? { bushing: { radial: fj(c.geom.bushing.radial), axial: fj(c.geom.bushing.axial) } } : {}),
     ...(c.geom.custom ? { custom: JSON.parse(JSON.stringify(c.geom.custom)) as unknown } : {}),
     spring: mapFields(SPRING_KEYS, c.spring),
     damper: { fields: mapFields(DAMPER_KEYS, c.damper), bumpStop: c.bumpStop, mode: c.damperMode },
@@ -353,6 +356,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   29: (f) => ({ ...f, formatVersion: 30 }),
   // 30 → 31: center-link steering points (filled in on read).
   30: (f) => ({ ...f, formatVersion: 31 }),
+  // 31 → 32: arm bushings at their typical stiffness (absent = typical).
+  31: (f) => ({ ...f, formatVersion: 32 }),
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */
@@ -677,6 +682,7 @@ function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: str
       points: withLinkDefaults(withPivotDefaults(rockerMissing ? withRockerDefaults(points) : points, pivotMissing), linkMissing), scalars,
       steerMechanism: c.steerMechanism === 'arm' || c.steerMechanism === 'centerLink' ? c.steerMechanism : 'rack',
       ...(c.steeredAxle === true ? { steeredAxle: true } : {}),
+      ...(isObj(c.bushing) ? { bushing: { radial: readField(c.bushing.radial, 'rate', { text: '5000', value: 5000 }, `${id}.bushing.radial`, w), axial: readField(c.bushing.axial, 'rate', { text: '1500', value: 1500 }, `${id}.bushing.axial`, w) } } : {}),
       springLayout: c.springLayout === 'rocker' ? 'rocker' : 'coilover',
       pushrodOn: c.pushrodOn === 'uca' || c.pushrodOn === 'upright' ? c.pushrodOn : 'lca',
       damperArm: c.damperArm === 'uca' || c.damperArm === 'upright' ? c.damperArm : 'lca', kind: (SUSPENSION_KINDS as string[]).includes(c.type as string) ? c.type as SuspensionKind : 'doubleWishbone',

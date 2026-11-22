@@ -52,6 +52,7 @@ import {
 import { mulVec, transpose, fromAxisAngle } from '../math/mat3';
 import { TwistBeam, type TwistBeamGeometry } from './twistBeam';
 import { centerLinkPose, type CenterLinkGeometry } from './steering';
+import { complianceOf, DEFAULT_BUSHING, type Bushing, type BushingStiffness, type ComplianceResult } from './compliance';
 import { buildCustom, customOrigin, customProblems, movingBodies, screwBetween, type CustomLinkage, type CustomJoint } from './customLinkage';
 import { SolidAxle, axleCharacteristics, mirroredLinks, type SolidAxleGeometry, type AxleState, type AxleCharacteristics } from './solidAxle';
 import {
@@ -553,6 +554,29 @@ export class DoubleWishbone {
     return out;
   }
 
+  /** Bushing mode (compliance): the frame pivots are recorded as bushings instead of rigid hinges. */
+  private bushingMode = false;
+  private bushingList: Bushing[] = [];
+  private pivot(sys: ConstraintSystem, name: string, body: string, p1: Vec3, p2: Vec3) {
+    if (this.bushingMode) { this.bushingList.push({ name, body, p1, p2 }); return; }
+    sys.add(revolute(sys, name, 'chassis', body, p1, p2));
+  }
+
+  /**
+   * Compliance steer and camber at a solved state: toe and camber change (deg) per kN of side force pushing
+   * the tire inboard (an outside wheel in a turn) and per kN of braking force, with the arms' frame pivots as
+   * rubber bushings (radial / axial N/mm). Solid axles and custom linkages: null (not modeled yet).
+   */
+  compliance(state: CornerState, stiff: BushingStiffness = DEFAULT_BUSHING): { lateral: ComplianceResult; braking: ComplianceResult } | null {
+    if (this.solidAxle || this.kind === 'custom' || this.kind === 'rigid') return null;
+    this.bushingMode = true; this.bushingList = [];
+    try {
+      const { sys } = this.build(state.inputs);
+      const r = complianceOf(sys, this.bushingList, state.poses, stiff, state.points.contact, state.spinAxis, [vec3(-1000, 0, 0), vec3(0, 0, -1000)]);
+      return r ? { lateral: r[0]!, braking: r[1]! } : null;
+    } finally { this.bushingMode = false; this.bushingList = []; }
+  }
+
   private build(inputs: Required<CornerInputs>) {
     const g = this.geometry;
     const sys = new ConstraintSystem();
@@ -565,8 +589,8 @@ export class DoubleWishbone {
       sys.addBody('uca', ucaOrigin, { size: Math.max(dist(ucaOrigin, g.uca.out), 1) });
       sys.addBody('lca', lcaOrigin, { size: Math.max(dist(lcaOrigin, g.lca.out), 1) });
       sys.addBody('upright', uprOrigin, { size: Math.max(dist(g.uca.out, g.lca.out) / 2, 1) });
-      sys.add(revolute(sys, 'UCA pivot', 'chassis', 'uca', g.uca.fwd, g.uca.aft));
-      sys.add(revolute(sys, 'LCA pivot', 'chassis', 'lca', g.lca.fwd, g.lca.aft));
+      this.pivot(sys, 'UCA pivot', 'uca', g.uca.fwd, g.uca.aft);
+      this.pivot(sys, 'LCA pivot', 'lca', g.lca.fwd, g.lca.aft);
       sys.add(coincident('UCA ball joint', sys.attach('uca', g.uca.out), sys.attach('upright', g.uca.out)));
       sys.add(coincident('LCA ball joint', sys.attach('lca', g.lca.out), sys.attach('upright', g.lca.out)));
     } else if (this.kind === 'macpherson') {
@@ -574,7 +598,7 @@ export class DoubleWishbone {
       const lcaOrigin = this.originOf('lca');
       sys.addBody('lca', lcaOrigin, { size: Math.max(dist(lcaOrigin, g.lca.out), 1) });
       sys.addBody('upright', uprOrigin, { size: Math.max(dist(st.top, g.lca.out) / 2, 1) });
-      sys.add(revolute(sys, 'LCA pivot', 'chassis', 'lca', g.lca.fwd, g.lca.aft));
+      this.pivot(sys, 'LCA pivot', 'lca', g.lca.fwd, g.lca.aft);
       sys.add(coincident('LCA ball joint', sys.attach('lca', g.lca.out), sys.attach('upright', g.lca.out)));
       sys.add(pointOnLine(sys, 'strut through the top mount', 'upright', st.lower, st.top, st.top));
     } else if (this.kind === 'custom') {
@@ -583,12 +607,12 @@ export class DoubleWishbone {
     } else if (this.kind === 'twistBeam') {
       // The arm carries the hub: it is the upright here.
       sys.addBody('upright', uprOrigin, { size: Math.max(dist(g.lca.fwd, g.wheel.center) / 2, 1) });
-      sys.add(revolute(sys, 'arm pivot (bushing line)', 'chassis', 'upright', g.lca.fwd, add(g.lca.fwd, scale(X_AXIS, 100))));
+      this.pivot(sys, 'arm pivot (bushing line)', 'upright', g.lca.fwd, add(g.lca.fwd, scale(X_AXIS, 100)));
     } else if (this.kind === 'singleArm') {
       const lcaOrigin = this.originOf('lca');
       sys.addBody('lca', lcaOrigin, { size: Math.max(dist(lcaOrigin, g.lca.out), 1) });
       sys.addBody('upright', uprOrigin, { size: Math.max(dist(g.uca.out, g.lca.out) / 2, 1) });
-      sys.add(revolute(sys, 'arm pivot', 'chassis', 'lca', g.lca.fwd, g.lca.aft));
+      this.pivot(sys, 'arm pivot', 'lca', g.lca.fwd, g.lca.aft);
       sys.add(revolute(sys, 'kingpin', 'lca', 'upright', g.lca.out, g.uca.out));
     } else if (this.kind === 'rigid') {
       sys.addBody('carrier', { x: 0, y: 0, z: 0 }, { fixed: true });

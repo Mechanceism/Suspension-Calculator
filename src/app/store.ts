@@ -191,6 +191,8 @@ export interface EditableGeometry {
   scalars: Record<ScalarKey, Field>;
   /** Which arm the coilover's lower mount is attached to. */
   damperArm: ArmChoice;
+  /** Arm pivot bushings (compliance steer / camber), radial and axial N/mm; absent = typical rubber (5000 / 1500). */
+  bushing?: { radial: Field; axial: Field };
   /** Solid axle: steered (kingpins UCA_Out2 / LCA_Out2 on the axle, knuckle arm TR_Out, drag link from TR_In). */
   steeredAxle?: boolean;
   /** Custom linkage: its bodies and joints (mm; kept when switching to another type and back). */
@@ -700,6 +702,8 @@ export interface AppState extends DesignState {
   setPushrodOn(on: ArmChoice): void;
   /** Set a point of any corner's design (the active one or another), mm in that corner's own frame. */
   setCornerPoint(id: CornerId, key: PointKey, v: Vec3): void;
+  /** Arm pivot bushing stiffness (N/mm). */
+  setBushing(which: 'radial' | 'axial', text: string): void;
   /** Solid axle: steered or not (turning it on places kingpins, a knuckle arm and a drag link from the hub). */
   setSteeredAxle(on: boolean): void;
   /** Custom linkage: replace its bodies and joints (one undo step). */
@@ -1745,6 +1749,13 @@ export const useApp = create<AppState>((set, get) => ({
       : 'Coilover: from the pushrod\'s lower end up to where the rocker pivot was.', 'info');
   },
   setCustom: (c) => set({ geom: { ...get().geom, custom: c }, presetId: 'custom' }),
+  setBushing: (which, text) => {
+    const g = get().geom;
+    const b = g.bushing ?? { radial: field(5000, 'rate'), axial: field(1500, 'rate') };
+    const f = parseField(text, 'rate', b[which]);
+    if (!(f.value > 0)) { get().notify('Bushing stiffness must be above 0.', 'warn'); return; }
+    set({ geom: { ...g, bushing: { ...b, [which]: f } }, presetId: 'custom' });
+  },
   setSteeredAxle: (on) => {
     const s = get();
     const geom = s.geom;

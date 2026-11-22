@@ -17,7 +17,7 @@ import {
   VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, evaluateVehicle, vehicleGoalValue,
   type VehicleGoalKind, type VehicleGoalMeta,
 } from '../../core/optimize/vehicle';
-import {
+import { layoutOf,
   useApp, rootOf, defaultOptimizerSetup, defaultVehicleOptimizerSetup, mergedCorners,
   POINT_KEYS, POINT_NAMES, activeParam, activePointKeys, OPT_DEFAULT_RANGE, GRIP_KEYS, GRIP_META,
   type Field, type OptimizerSetup, type PointKey, type GoalSetting, type CornerDesign,
@@ -91,8 +91,9 @@ interface CoordSpec {
   key: (k: PointKey, axis: 0 | 1 | 2) => string;
   value: (k: PointKey, axis: 0 | 1 | 2) => number;
   locked: (k: PointKey, axis: 0 | 1 | 2) => boolean;
-  /** Suspension type of the design (its points; labels). */
+  /** Suspension type and spring layout of the design (its points; labels). */
   kind: SuspensionKind;
+  layout: 'coilover' | 'rocker';
 }
 
 /** Point grid with X/Y/Z toggles (locked ones show 🔒). */
@@ -100,9 +101,9 @@ function CoordPicker({ spec, ranges, onToggle }: { spec: CoordSpec; ranges: Reco
   return (
     <table className="opt-table">
       <tbody>
-        {activePointKeys(spec.kind).map((k) => (
+        {activePointKeys(spec.kind, spec.layout).map((k) => (
           <tr key={k}>
-            <td><button className="link-btn" title={`${activeParam(POINT_NAMES[k])} — highlight in the view`} onClick={() => highlight(k)}>{pointLabel(k, spec.kind)}</button></td>
+            <td><button className="link-btn" title={`${activeParam(POINT_NAMES[k])} — highlight in the view`} onClick={() => highlight(k)}>{pointLabel(k, spec.kind, spec.layout)}</button></td>
             {([0, 1, 2] as const).map((a) => {
               const locked = spec.locked(k, a);
               const on = !!ranges[spec.key(k, a)];
@@ -357,7 +358,7 @@ function CornerPresets() {
   const preset = (points: [PointKey, 0 | 1 | 2][], on: GoalKind[]) => update((o) => {
     const ranges: OptimizerSetup['ranges'] = {};
     for (const [k, a] of points) {
-      if (pointAxisLocked(locks, root, k, a, geom.damperArm, geom.kind)) continue;
+      if (pointAxisLocked(locks, root, k, a, geom.damperArm, geom.kind, layoutOf(geom))) continue;
       const v = geom.points[k][a].value;
       ranges[varKey(k, a)] = { lo: numField(v - OPT_DEFAULT_RANGE), hi: numField(v + OPT_DEFAULT_RANGE) };
     }
@@ -414,8 +415,8 @@ export function OptimizePanel() {
   const spec: CoordSpec = {
     key: varKey,
     value: (k, a) => geom.points[k][a].value,
-    locked: (k, a) => pointAxisLocked(locks, root, k, a, geom.damperArm, geom.kind),
-    kind: geom.kind,
+    locked: (k, a) => pointAxisLocked(locks, root, k, a, geom.damperArm, geom.kind, layoutOf(geom)),
+    kind: geom.kind, layout: layoutOf(geom),
   };
   const entries: RangeEntry[] = Object.keys(setup.ranges).map((key) => ({ key, v: parseVarKey(key) })).filter((e) => e.v)
     .sort((a, b) => POINT_KEYS.indexOf(a.v!.k) - POINT_KEYS.indexOf(b.v!.k) || a.key.localeCompare(b.key))
@@ -492,7 +493,7 @@ function VehiclePresets() {
     for (const { root } of designRoots(s)) {
       const g = all[root].geom;
       for (const [k, a] of points) {
-        if (pointAxisLocked(s.locks, root, k, a, g.damperArm, g.kind)) continue;
+        if (pointAxisLocked(s.locks, root, k, a, g.damperArm, g.kind, layoutOf(g))) continue;
         const v = g.points[k][a].value;
         ranges[vehVarKey(root, k, a)] = { lo: numField(v - OPT_DEFAULT_RANGE), hi: numField(v + OPT_DEFAULT_RANGE) };
       }
@@ -559,8 +560,8 @@ export function VehicleOptimizePanel() {
   const spec: CoordSpec = {
     key: (k, a) => vehVarKey(picked, k, a),
     value: (k, a) => g.points[k][a].value,
-    locked: (k, a) => pointAxisLocked(locks, picked, k, a, g.damperArm, g.kind),
-    kind: g.kind,
+    locked: (k, a) => pointAxisLocked(locks, picked, k, a, g.damperArm, g.kind, layoutOf(g)),
+    kind: g.kind, layout: layoutOf(g),
   };
   const entries: RangeEntry[] = Object.keys(o.ranges).map((key) => ({ key, v: parseVehVarKey(key) })).filter((e) => e.v)
     .sort((a, b) => a.v!.root.localeCompare(b.v!.root) || POINT_KEYS.indexOf(a.v!.k) - POINT_KEYS.indexOf(b.v!.k) || a.key.localeCompare(b.key))
@@ -570,7 +571,7 @@ export function VehicleOptimizePanel() {
       return {
         key, k: v!.k, axis: v!.axis, label: `${v!.root} ${POINT_LABELS[v!.k]} ${AXES[v!.axis]}`,
         now: d.geom.points[v!.k][v!.axis].value,
-        locked: !live || pointAxisLocked(locks, v!.root, v!.k, v!.axis, d.geom.damperArm, d.geom.kind),
+        locked: !live || pointAxisLocked(locks, v!.root, v!.k, v!.axis, d.geom.damperArm, d.geom.kind, layoutOf(d.geom)),
         lo: o.ranges[key]!.lo, hi: o.ranges[key]!.hi,
       };
     });

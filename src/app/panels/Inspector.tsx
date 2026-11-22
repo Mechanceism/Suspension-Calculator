@@ -2,7 +2,7 @@
  * Inspector: the editable variables of whatever is selected (click a part or joint in the viewport),
  * plus its 1st and 2nd family so related settings are one click away.
  */
-import { useApp, POINT_NAMES, activeParam, SPRING_META, vehicleStaticLoads, mergedCorners, rootOf, type ComponentId, type PointKey } from '../store';
+import { layoutOf, useApp, POINT_NAMES, activeParam, SPRING_META, vehicleStaticLoads, mergedCorners, rootOf, type ComponentId, type PointKey } from '../store';
 import { lockKeys, pointAxisLocked } from '../locks';
 import { toGeometry } from '../store';
 import { componentDefs, family, ownersOf, pointLabel } from '../components';
@@ -15,9 +15,11 @@ import type { Vec3 } from '../../core/math/vec3';
 function useDefs() {
   const arm = useApp((s) => s.geom.damperArm);
   const kind = useApp((s) => s.geom.kind);
-  return componentDefs(arm, kind);
+  const layout = useApp((s) => layoutOf(s.geom));
+  const pushrodOn = useApp((s) => s.geom.pushrodOn ?? 'lca');
+  return componentDefs(arm, kind, layout, pushrodOn);
 }
-const labelOf = (k: PointKey) => pointLabel(k, useApp.getState().geom.kind);
+const labelOf = (k: PointKey) => { const g = useApp.getState().geom; return pointLabel(k, g.kind, layoutOf(g)); };
 import { armMetrics } from '../../core/suspension/armGeometry';
 import { deg } from '../../core/suspension/characteristics';
 import { distance } from '../../core/math/vec3';
@@ -76,7 +78,7 @@ function PointsTable({ points }: { points: PointKey[] }) {
             </td>
             {([0, 1, 2] as const).map((i) => (
               <td key={i} data-lock-key={lockKeys.point(root, k, i)}>
-                <ValueInput field={geom.points[k][i]} unit="mm" onCommit={(t) => setPoint(k, i, t)} locked={pointAxisLocked(locks, root, k, i, geom.damperArm, geom.kind)} />
+                <ValueInput field={geom.points[k][i]} unit="mm" onCommit={(t) => setPoint(k, i, t)} locked={pointAxisLocked(locks, root, k, i, geom.damperArm, geom.kind, layoutOf(geom))} />
               </td>
             ))}
             <td><LockButton keys={([0, 1, 2] as const).map((i) => lockKeys.point(root, k, i))} title="Lock / unlock X, Y and Z of this point" /></td>
@@ -133,7 +135,7 @@ function CoiloverPlacement() {
   const c = coiloverGeometry(d.chassis, d.armPoint, arm);
   const put = (moves: { key: 'dmpChassis' | 'dmpArm'; p: Vec3 }[]) => {
     const updates = moves.flatMap(({ key, p }) => ([0, 1, 2] as const).map((axis) => ({ key, axis, value: [p.x, p.y, p.z][axis]! })));
-    const blocked = updates.filter((u) => Math.abs(u.value - geom.points[u.key][u.axis].value) > 1e-9 && pointAxisLocked(locks, root, u.key, u.axis, geom.damperArm, geom.kind));
+    const blocked = updates.filter((u) => Math.abs(u.value - geom.points[u.key][u.axis].value) > 1e-9 && pointAxisLocked(locks, root, u.key, u.axis, geom.damperArm, geom.kind, layoutOf(geom)));
     if (blocked.length) { notify(`${blocked.map((u) => `${labelOf(u.key)} ${'XYZ'[u.axis]}`).join(', ')} locked: unlock to move the ${kind === 'macpherson' ? 'strut' : 'coilover'}.`, 'warn'); return; }
     setPointsAxis(updates);
   };

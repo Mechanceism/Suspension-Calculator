@@ -8,6 +8,7 @@ import { vec3, type Vec3 } from '../core/math/vec3';
 import { DoubleWishbone, spinAxisFromCamberToe, SUSPENSION_LABELS, virtualPivot, type DoubleWishboneGeometry, type TravelDriver, type SuspensionKind } from '../core/suspension/doubleWishbone';
 import { SAMPLE_LAYOUTS, SAMPLE_SPRING, PRESET_LAYOUTS } from '../examples/sampleLayouts';
 import { fitFreeLength } from '../core/suspension/spring';
+import { rockerFromCoilover } from '../core/suspension/coilover';
 import { CORNER_IDS, staticCornerLoads, type CornerId, type BrakeMount, type ChassisPose } from '../core/vehicle/vehicle';
 import { setArmLength, setPivotInclination, setPivotPlanAngle, setArmFrontViewAngle, transferArmPoint } from '../core/suspension/armGeometry';
 import { add, sub } from '../core/math/vec3';
@@ -31,7 +32,10 @@ export interface Field {
 }
 
 /** Hardpoints of every suspension type (each type uses some of them: activePointKeys). */
-export const POINT_KEYS = ['ucaFwd', 'ucaAft', 'ucaOut', 'lcaFwd', 'lcaAft', 'lcaOut', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm', 'ucaOut2', 'lcaOut2'] as const;
+export const POINT_KEYS = ['ucaFwd', 'ucaAft', 'ucaOut', 'lcaFwd', 'lcaAft', 'lcaOut', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm', 'ucaOut2', 'lcaOut2', 'rkrPiv1', 'rkrPiv2', 'prArm', 'prRkr'] as const;
+/** Spring layout: a coilover between the frame and an arm / the knuckle, or a pushrod / pullrod and rocker. */
+export type SpringLayout = 'coilover' | 'rocker';
+const ROCKER_KEYS = ['rkrPiv1', 'rkrPiv2', 'prArm', 'prRkr'] as const;
 export type PointKey = (typeof POINT_KEYS)[number];
 
 /** Parameter names follow GOALS.md § Parameter Naming. */
@@ -41,6 +45,7 @@ export const POINT_NAMES: Record<PointKey, string> = {
   trInner: 'FL_TR_In', trOuter: 'FL_TR_Out', wheelCenter: 'FL_Hub_Ctr',
   dmpChassis: 'FL_Dmp_Chs', dmpArm: 'FL_Dmp_Arm',
   ucaOut2: 'FL_UCA_Out2', lcaOut2: 'FL_LCA_Out2',
+  rkrPiv1: 'FL_Rkr_Piv1', rkrPiv2: 'FL_Rkr_Piv2', prArm: 'FL_PR_Arm', prRkr: 'FL_PR_Rkr',
 };
 
 /** Parameter name of a hardpoint or scalar for a corner (FL_UCA_Fwd → RR_UCA_Fwd). */
@@ -160,6 +165,10 @@ export interface EditableGeometry {
   points: Record<PointKey, [Field, Field, Field]>;
   /** Suspension type (default double wishbone). */
   kind: SuspensionKind;
+  /** Coilover, or pushrod / pullrod + rocker (then dmpArm is the spring's end on the rocker). */
+  springLayout?: SpringLayout;
+  /** Rocker layout: what the pushrod's lower end is on. */
+  pushrodOn?: ArmChoice;
   scalars: Record<ScalarKey, Field>;
   /** Which arm the coilover's lower mount is attached to. */
   damperArm: ArmChoice;
@@ -189,7 +198,10 @@ export function editableFromLayout(id: string): EditableGeometry {
       dmpArm: fields(g.damper?.armPoint ?? vec3(480, 45, 30)),
       ucaOut2: fields(g.uca.out2 ?? g.uca.out),
       lcaOut2: fields(g.lca.out2 ?? g.lca.out),
+      ...rockerDefaults(g.damper?.chassis ?? vec3(300, 380, 30), g.damper?.armPoint ?? vec3(480, 45, 30), g.rocker),
     },
+    springLayout: g.rocker ? 'rocker' : 'coilover',
+    pushrodOn: g.rocker?.pushrodBody === 'uca' || g.rocker?.pushrodBody === 'upright' ? g.rocker.pushrodBody : 'lca',
     kind: g.kind ?? 'doubleWishbone',
     damperArm: g.damper?.arm === 'uca' || g.damper?.arm === 'upright' ? g.damper.arm : 'lca',
     scalars: {
@@ -204,6 +216,16 @@ export function editableFromLayout(id: string): EditableGeometry {
     },
   };
 }
+
+/** Rocker points: the given rocker, or a working one built from the coilover (rockerFromCoilover). */
+function rockerDefaults(chassis: Vec3, lower: Vec3, r?: DoubleWishboneGeometry['rocker']): Record<(typeof ROCKER_KEYS)[number], [Field, Field, Field]> {
+  const lay = r ?? rockerFromCoilover(chassis, lower, 'lca').rocker;
+  return { rkrPiv1: fields(lay.pivot1), rkrPiv2: fields(lay.pivot2), prArm: fields(lay.pushrodLower), prRkr: fields(lay.pushrodUpper) };
+}
+
+/** Rocker layouts are for types with an arm or knuckle to push from. */
+export const rockerAllowed = (kind: SuspensionKind) => kind !== 'macpherson' && kind !== 'rigid';
+export const layoutOf = (e: Pick<EditableGeometry, 'kind' | 'springLayout'>): SpringLayout => (e.springLayout === 'rocker' && rockerAllowed(e.kind ?? 'doubleWishbone') ? 'rocker' : 'coilover');
 
 export function toGeometry(e: EditableGeometry): DoubleWishboneGeometry {
   const p = (k: PointKey) => vec3(e.points[k][0].value, e.points[k][1].value, e.points[k][2].value);
@@ -228,7 +250,12 @@ export function toGeometry(e: EditableGeometry): DoubleWishboneGeometry {
     // MacPherson: the damper is the strut (its lower point is on the upright); multilink: on the upright;
     // no suspension: no spring or damper.
     // Single arm: on the arm (lca) or the knuckle.
-    ...(kind === 'rigid' ? {} : { damper: { chassis: p('dmpChassis'), arm: kind === 'doubleWishbone' ? e.damperArm : kind === 'singleArm' ? (e.damperArm === 'upright' ? 'upright' : 'lca') : 'upright', armPoint: p('dmpArm') } }),
+    ...(kind === 'rigid' ? {} : layoutOf(e) === 'rocker'
+      ? {
+        damper: { chassis: p('dmpChassis'), arm: 'rocker' as const, armPoint: p('dmpArm') },
+        rocker: { pivot1: p('rkrPiv1'), pivot2: p('rkrPiv2'), pushrodBody: e.pushrodOn ?? 'lca', pushrodLower: p('prArm'), pushrodUpper: p('prRkr') },
+      }
+      : { damper: { chassis: p('dmpChassis'), arm: kind === 'doubleWishbone' ? e.damperArm : kind === 'singleArm' ? (e.damperArm === 'upright' ? 'upright' : 'lca') : 'upright', armPoint: p('dmpArm') } }),
   };
 }
 
@@ -253,8 +280,12 @@ export function flipRackSide(e: EditableGeometry): EditableGeometry {
   return { ...e, points: { ...e.points, trOuter: fields(out2), trInner: fields(in2) } };
 }
 
-/** Hardpoints a suspension type uses, in table order. */
-export function activePointKeys(kind: SuspensionKind): PointKey[] {
+/** Hardpoints a suspension type (and spring layout) uses, in table order. */
+export function activePointKeys(kind: SuspensionKind, layout: SpringLayout = 'coilover'): PointKey[] {
+  const base = kindPointKeys(kind);
+  return layout === 'rocker' && rockerAllowed(kind) ? [...base, ...ROCKER_KEYS] : base;
+}
+function kindPointKeys(kind: SuspensionKind): PointKey[] {
   if (kind === 'macpherson') return ['lcaFwd', 'lcaAft', 'lcaOut', 'dmpChassis', 'dmpArm', 'trInner', 'trOuter', 'wheelCenter'];
   if (kind === 'rigid') return ['ucaOut', 'lcaOut', 'trInner', 'trOuter', 'wheelCenter'];
   if (kind === 'singleArm') return ['lcaFwd', 'lcaAft', 'lcaOut', 'ucaOut', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm'];
@@ -508,6 +539,10 @@ export interface AppState extends DesignState {
   setDamperArm(arm: ArmChoice): void;
   /** Put the steering rack ahead of or behind the axle (flipRackSide). */
   setRackSide(ahead: boolean): void;
+  /** Coilover or pushrod / pullrod + rocker for the active design. */
+  setSpringLayout(layout: SpringLayout): void;
+  /** Rocker layout: move the pushrod's lower end to an arm or the knuckle. */
+  setPushrodOn(on: ArmChoice): void;
   /** Change the active design's suspension type (convertGeometry). */
   setSuspensionKind(kind: SuspensionKind): void;
   /** Set the free length so the static corner load sits at the design position (travel 0). */
@@ -1391,6 +1426,41 @@ export const useApp = create<AppState>((set, get) => ({
       set({ geom: next, presetId: 'custom' });
       get().notify(`Rack ${ahead ? 'ahead of' : 'behind'} the axle: the steering arm was mirrored through the steering axis (same Ackermann line); the rack now moves the other way for the same turn.`, 'info');
     } catch (err) { get().notify(`Can't move the rack: ${err instanceof Error ? err.message : String(err)}`, 'error'); }
+  },
+  setSpringLayout: (layout) => {
+    const geom = get().geom;
+    if (layoutOf(geom) === layout) return;
+    if (layout === 'rocker' && !rockerAllowed(geom.kind ?? 'doubleWishbone')) { get().notify('A pushrod and rocker needs an arm or knuckle to push from (not a MacPherson strut or a rigid corner).', 'warn'); return; }
+    const p = (k: PointKey) => vec3(geom.points[k][0].value, geom.points[k][1].value, geom.points[k][2].value);
+    let next: EditableGeometry;
+    if (layout === 'rocker') {
+      // Pushrod from where the coilover's lower mount was, to a rocker near its top; the spring on the rocker.
+      const body = (geom.kind ?? 'doubleWishbone') === 'doubleWishbone' ? geom.damperArm : geom.damperArm === 'upright' ? 'upright' : 'lca';
+      const lay = rockerFromCoilover(p('dmpChassis'), p('dmpArm'), body);
+      next = {
+        ...geom, springLayout: 'rocker', pushrodOn: body,
+        points: { ...geom.points, rkrPiv1: fields(lay.rocker.pivot1), rkrPiv2: fields(lay.rocker.pivot2), prArm: fields(lay.rocker.pushrodLower), prRkr: fields(lay.rocker.pushrodUpper), dmpChassis: fields(lay.damper.chassis), dmpArm: fields(lay.damper.armPoint) },
+      };
+    } else {
+      // Back to a coilover: from the pushrod's lower end up to the rocker pivot.
+      const lo = p('prArm'), a = p('rkrPiv1'), b = p('rkrPiv2');
+      next = { ...geom, springLayout: 'coilover', damperArm: geom.pushrodOn ?? 'lca', points: { ...geom.points, dmpArm: fields(lo), dmpChassis: fields(vec3((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2)) } };
+    }
+    try { new DoubleWishbone(toGeometry(next)).design(); } catch (err) { get().notify(`Can't switch the spring layout: ${err instanceof Error ? err.message : String(err)}`, 'error'); return; }
+    set({ geom: next, presetId: 'custom', spring: fittedSpring(next, get().spring) });
+    get().notify(layout === 'rocker'
+      ? 'Pushrod + rocker: the pushrod starts at the old coilover mount and runs to a rocker near its top (levers square to their links, 60 / 50 mm); the spring keeps its length on the rocker. Move the points to shape the motion ratio.'
+      : 'Coilover: from the pushrod\'s lower end up to where the rocker pivot was.', 'info');
+  },
+  setPushrodOn: (on) => {
+    const geom = get().geom;
+    if ((geom.pushrodOn ?? 'lca') === on) return;
+    const g = toGeometry(geom);
+    const lo = g.rocker?.pushrodLower;
+    if (!lo) return;
+    const from = geom.pushrodOn ?? 'lca';
+    const moved = from !== 'upright' && on !== 'upright' ? transferArmPoint(lo, g[from as 'uca' | 'lca'], g[on]) : lo;
+    set({ geom: { ...geom, pushrodOn: on, points: { ...geom.points, prArm: fields(moved) } }, presetId: 'custom' });
   },
   setSuspensionKind: (kind) => {
     const geom = get().geom;

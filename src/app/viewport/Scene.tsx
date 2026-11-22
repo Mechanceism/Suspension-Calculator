@@ -8,7 +8,7 @@ import type { CornerPoints, CornerState } from '../../core/suspension/doubleWish
 import type { Characteristics } from '../../core/suspension/characteristics';
 import type { LoadedCorner } from '../../core/suspension/loaded';
 import { anyAxisLocked } from '../locks';
-import { useApp, mountedTireWidth, POINT_NAMES, forCorner, selectedPoints, rootOf, type AnchorId, type ComponentId, type PointKey } from '../store';
+import { layoutOf, useApp, mountedTireWidth, POINT_NAMES, forCorner, selectedPoints, rootOf, type AnchorId, type ComponentId, type PointKey } from '../store';
 import type { Model, Sample, Current } from '../useModel';
 import { STATE_KEY, anchorPosition } from '../anchors';
 import { Joint, Seg, Polyline, Tri, Wheel, Label, PatchMesh, Coilover, HitLink } from './primitives';
@@ -72,7 +72,7 @@ function usePickComponent(id: ComponentId) {
         e.stopPropagation();
         // Shift / Ctrl / Cmd adds the part's points to a multi-selection.
         const n = e.nativeEvent;
-        if (n.shiftKey || n.ctrlKey || n.metaKey) { const g = useApp.getState().geom; useApp.getState().toggleSelectPoints(componentDefs(g.damperArm, g.kind)[id].points); }
+        if (n.shiftKey || n.ctrlKey || n.metaKey) { const g = useApp.getState().geom; useApp.getState().toggleSelectPoints(componentDefs(g.damperArm, g.kind, layoutOf(g), g.pushrodOn ?? 'lca')[id].points); }
         else select({ kind: 'component', id });
       },
       onPointerOver: (e: ThreeEvent<PointerEvent>) => { e.stopPropagation(); setHover(true); document.body.style.cursor = 'pointer'; },
@@ -158,6 +158,18 @@ function Linkage({ state, faint = false }: { state: CornerState; faint?: boolean
           <>
             <Coilover a={p.damperChassis!} b={p.damperArm!} color={e === 2 ? COLORS.select : COLORS.spring} />
             <HitLink a={p.damperChassis!} b={p.damperArm!} radius={30} />
+            {p.rockerPivot1 && p.rockerPivot2 && p.pushrodUpper && p.pushrodLower && (() => {
+              const c = scale(add(p.rockerPivot1!, p.rockerPivot2!), 0.5);
+              return (
+                <>
+                  <Tri a={c} b={p.pushrodUpper!} c={p.damperArm!} color={COLORS.spring} opacity={0.3 + e * 0.1} />
+                  <Polyline pts={[c, p.pushrodUpper!, p.damperArm!, c]} color={e === 2 ? COLORS.select : COLORS.spring} width={em(3, e)} />
+                  <Seg a={p.rockerPivot1!} b={p.rockerPivot2!} color={COLORS.chassis} width={em(3, e)} />
+                  <Seg a={p.pushrodLower!} b={p.pushrodUpper!} color={e === 2 ? COLORS.select : COLORS.tieRod} width={em(3, e)} />
+                  <HitLink a={p.pushrodLower!} b={p.pushrodUpper!} radius={14} />
+                </>
+              );
+            })()}
           </>
         )}</Part>
       )}
@@ -174,7 +186,7 @@ function PickJoint({ id, p, color, r = 7 }: { id: AnchorId; p: Vec3; color: stri
   const measure = useApp((s) => s.measure);
   const [hover, setHover] = useState(false);
   const isPoint = id in STATE_KEY;
-  const locked = useApp((s) => isPoint && anyAxisLocked(s.locks, rootOf(s.activeCorner, s.links), id as PointKey, s.geom.damperArm, s.geom.kind));
+  const locked = useApp((s) => isPoint && anyAxisLocked(s.locks, rootOf(s.activeCorner, s.links), id as PointKey, s.geom.damperArm, s.geom.kind, layoutOf(s.geom)));
   const selected = (selection?.kind === 'point' && selection.id === id)
     || (selection?.kind === 'points' && selection.ids.includes(id as PointKey))
     || measure.includes(id);
@@ -211,6 +223,10 @@ function Joints({ state, cur }: { state: CornerState; cur: Current }) {
       {vis.tieRod && <PickJoint id="trInner" p={p.trInner} color={COLORS.chassis} />}
       {vis.spring && p.damperChassis && <PickJoint id="dmpChassis" p={p.damperChassis} color={COLORS.chassis} />}
       {vis.spring && p.damperArm && <PickJoint id="dmpArm" p={p.damperArm} color={COLORS.spring} />}
+      {vis.spring && p.rockerPivot1 && <PickJoint id="rkrPiv1" p={p.rockerPivot1} color={COLORS.chassis} />}
+      {vis.spring && p.rockerPivot2 && <PickJoint id="rkrPiv2" p={p.rockerPivot2} color={COLORS.chassis} />}
+      {vis.spring && p.pushrodLower && <PickJoint id="prArm" p={p.pushrodLower} color={COLORS.tieRod} />}
+      {vis.spring && p.pushrodUpper && <PickJoint id="prRkr" p={p.pushrodUpper} color={COLORS.spring} />}
       {(vis.tieRod || vis.upright) && <PickJoint id="trOuter" p={p.trOuter} color={COLORS.tieRod} />}
       {vis.wheel && <PickJoint id="wheelCenter" p={p.wheelCenter} color={COLORS.upright} r={6} />}
       {vis.wheel && <PickJoint id="contact" p={p.contact} color={COLORS.wheel} r={6} />}
@@ -342,6 +358,8 @@ export function Scene({ model }: { model: Model }) {
   const simpleTire = useApp((s) => s.simpleTire);
   const damperArm = useApp((s) => s.geom.damperArm);
   const kind = useApp((s) => s.geom.kind);
+  const layout = useApp((s) => layoutOf(s.geom));
+  const pushrodOn = useApp((s) => s.geom.pushrodOn ?? 'lca');
   const rimRadius = useApp((s) => s.geom.scalars.rimDiameter.value / 2);
   const selection = useApp((s) => s.selection);
   const measureMode = useApp((s) => s.measureMode);
@@ -386,7 +404,7 @@ export function Scene({ model }: { model: Model }) {
       {ghosts && <Ghosts sweep={model.sweep} radius={radius} />}
       {vis.labels && <Labels state={state} />}
       {!measureMode && selection && (
-        <MoveGizmo ids={selectedPoints(selection, (c) => componentDefs(damperArm, kind)[c].points)} cur={cur} />
+        <MoveGizmo ids={selectedPoints(selection, (c) => componentDefs(damperArm, kind, layout, pushrodOn)[c].points)} cur={cur} />
       )}
       {measureMode && <MeasureOverlay cur={cur} />}
       {vis.dimensions && <DimensionsOverlay cur={cur} />}

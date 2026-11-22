@@ -1,4 +1,4 @@
-import { useApp, SPRING_KEYS, SPRING_META, DAMPER_KEYS, DAMPER_META, DAMPER_TWO_STAGE_KEYS, rootOf, type ArmChoice, type SpringKey } from '../store';
+import { useApp, layoutOf, rockerAllowed, type SpringLayout, SPRING_KEYS, SPRING_META, DAMPER_KEYS, DAMPER_META, DAMPER_TWO_STAGE_KEYS, rootOf, type ArmChoice, type SpringKey } from '../store';
 import { lockKeys } from '../locks';
 import type { Model } from '../useModel';
 import { FieldRows, fmt } from './FieldRows';
@@ -12,19 +12,34 @@ export function SpringFields({ keys = SPRING_KEYS }: { keys?: readonly SpringKey
   const spring = useApp((s) => s.spring);
   const setSpringField = useApp((s) => s.setSpringField);
   const damperArm = useApp((s) => s.geom.damperArm);
-  const kind = useApp((s) => s.geom.kind);
+  const kind = useApp((s) => s.geom.kind ?? 'doubleWishbone');
+  const layout = useApp((s) => layoutOf(s.geom));
+  const pushrodOn = useApp((s) => s.geom.pushrodOn ?? 'lca');
+  const setSpringLayout = useApp((s) => s.setSpringLayout);
+  const setPushrodOn = useApp((s) => s.setPushrodOn);
   const setDamperArm = useApp((s) => s.setDamperArm);
   const fitSpring = useApp((s) => s.fitSpring);
   const root = useApp((s) => rootOf(s.activeCorner, s.links));
   return (
     <>
-      <div className="row">
+      <div className="row" title="A coilover straight from the arm / knuckle to the frame, or a pushrod (pullrod) to a rocker on the frame with the spring on the rocker (the motion ratio then comes from the linkage)">
         <span className="muted">Layout</span>
-        <select value="coilover" disabled title="Pushrod / rocker layouts are planned">
+        <select value={layout} disabled={!rockerAllowed(kind)} onChange={(e) => setSpringLayout(e.target.value as SpringLayout)}>
           <option value="coilover">{kind === 'rigid' ? 'None (no suspension)' : kind === 'macpherson' ? 'Strut (upright → top mount)' : kind === 'multilink' ? 'Coilover, upright → chassis' : 'Coilover, arm → chassis'}</option>
+          {rockerAllowed(kind) && <option value="rocker">Pushrod / pullrod + rocker</option>}
         </select>
       </div>
-      {(kind === 'doubleWishbone' || kind === 'singleArm') && (
+      {layout === 'rocker' && (
+        <div className="row" title="What the pushrod's lower end is fixed to (moving it keeps its spot on the arm)">
+          <span className="muted">Pushrod lower end on</span>
+          <select value={pushrodOn} onChange={(e) => setPushrodOn(e.target.value as ArmChoice)}>
+            {kind !== 'multilink' && <option value="lca">{kind === 'singleArm' ? 'The arm' : 'Lower control arm'}</option>}
+            {kind === 'doubleWishbone' && <option value="uca">Upper control arm</option>}
+            <option value="upright">Upright / knuckle</option>
+          </select>
+        </div>
+      )}
+      {layout === 'coilover' && (kind === 'doubleWishbone' || kind === 'singleArm') && (
         <div className="row">
           <span className="muted">Lower mount on</span>
           <select value={kind === 'singleArm' && damperArm === 'uca' ? 'lca' : damperArm} onChange={(e) => setDamperArm(e.target.value as ArmChoice)}>

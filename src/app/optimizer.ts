@@ -18,7 +18,7 @@ import type { TireSample, TireFitResult } from '../core/tire/fit';
 import type { TireForceModel } from '../core/tire/model';
 import { CORNER_IDS, tirePressure, type AxleShared, type CornerId, type DamperSpec } from '../core/vehicle/vehicle';
 import { vec3 } from '../core/math/vec3';
-import {
+import { layoutOf,
   POINT_KEYS, rootOf, toGeometry, toProfile, toForceModel, mergedCorners, vehicleStaticLoads, defaultOptimizerSetup, GRIP_KEYS, MF_KEYS,
   type AppState, type PointKey, type OptimizerSetup, type SharedDesign, type GripKey, type MFKey, type Field, type DamperKey, type DamperMode,
 } from './store';
@@ -115,7 +115,7 @@ export function buildProblem(s: AppState): BuiltProblem<CornerProblem> {
   for (const [key, r] of Object.entries(o.ranges)) {
     const v = parseVarKey(key);
     if (!v) continue;
-    if (pointAxisLocked(s.locks, root, v.k, v.axis, s.geom.damperArm, s.geom.kind)) { skippedLocked.push(key); continue; }
+    if (pointAxisLocked(s.locks, root, v.k, v.axis, s.geom.damperArm, s.geom.kind, layoutOf(s.geom))) { skippedLocked.push(key); continue; }
     variables.push({ point: STATE_KEY[v.k] as HardpointId, axis: v.axis, lo: r.lo.value, hi: r.hi.value });
   }
   const goals = GOAL_KINDS.filter((k) => o.goals[k].on).map((k) => ({ kind: k, target: o.goals[k].target.value, weight: o.goals[k].weight.value }));
@@ -173,7 +173,7 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
   for (const [key, r] of Object.entries(o.ranges)) {
     const v = parseVehVarKey(key);
     if (!v) continue;
-    if (!roots.includes(v.root) || pointAxisLocked(s.locks, v.root, v.k, v.axis, all[v.root].geom.damperArm, all[v.root].geom.kind)) { skippedLocked.push(key); continue; }
+    if (!roots.includes(v.root) || pointAxisLocked(s.locks, v.root, v.k, v.axis, all[v.root].geom.damperArm, all[v.root].geom.kind, layoutOf(all[v.root].geom))) { skippedLocked.push(key); continue; }
     variables.push({ root: v.root, point: STATE_KEY[v.k] as HardpointId, axis: v.axis, lo: r.lo.value, hi: r.hi.value });
   }
   const holds: VehicleHold[] = roots.flatMap((root) => holdsFor(s, root).map((h) => ({ ...h, root })));

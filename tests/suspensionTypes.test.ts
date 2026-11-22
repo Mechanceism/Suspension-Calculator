@@ -327,3 +327,71 @@ describe('single arm (knuckle on the arm)', () => {
     expect(r.corners.FR.tireLoad).toBeGreaterThan(r.corners.FL.tireLoad);
   });
 });
+
+describe('pushrod / pullrod and rocker', () => {
+  it('the rocker follows the pushrod; the motion ratio comes from the linkage; the whole car settles', async () => {
+    const { rockerFromCoilover, springLength, assembleVehicle, solveCase, DEFAULT_MF } = await import('../src/core');
+    const { SAMPLE_SPRING } = await import('../src/examples/sampleLayouts');
+    const d0 = C.damper!;
+    const lay = rockerFromCoilover(d0.chassis, d0.armPoint, 'lca');
+    const g: DoubleWishboneGeometry = { ...C, rocker: lay.rocker, damper: { chassis: lay.damper.chassis, arm: 'rocker', armPoint: lay.damper.armPoint } };
+    const c = new DoubleWishbone(g);
+    const states = c.sweep([-40, -20, 0, 20, 40], (t) => ({ travel: t }));
+    expect(states.every((s) => s.solve.status === 'converged')).toBe(true);
+    // The pushrod keeps its length, the rocker turns about its axis.
+    const L0 = length(sub(lay.rocker.pushrodUpper, lay.rocker.pushrodLower));
+    for (const s of states) expect(length(sub(s.points.pushrodUpper!, s.points.pushrodLower!))).toBeCloseTo(L0, 6);
+    expect(length(sub(states[4]!.points.pushrodUpper!, states[0]!.points.pushrodUpper!))).toBeGreaterThan(5);
+    // Spring shortens in bump; its motion ratio ≈ the pushrod's × 50/60.
+    const mr = (t: DoubleWishboneGeometry) => { const k = new DoubleWishbone(t); return Math.abs(springLength(k.solve({ travel: 1 }))! - springLength(k.solve({ travel: -1 }))!) / 2; };
+    const m = mr(g);
+    expect(m).toBeGreaterThan(0.2);
+    expect(m).toBeLessThan(1.2);
+    expect(springLength(states[4]!)!).toBeLessThan(springLength(states[0]!)!);
+    // A rocker on a MacPherson is refused.
+    expect(() => new DoubleWishbone({ ...SAMPLE_MACPHERSON, rocker: lay.rocker })).toThrow(/rocker/);
+    // Whole car.
+    const gas = { kind: 'gas' as const, volumeChange: true, volumeFactor: 1, conditions: { setPressure: 83, setAltitude: 0, setTemperature: 20, operatingAltitude: 0, operatingTemperature: 20 } };
+    const profile = { radius: 260, width: 205, shoulderRadius: 25, rimRadius: 165 };
+    const p = {
+      designs: { FL: { geometry: g, profile, model: gas, springRate: SAMPLE_SPRING.rate, freeLength: SAMPLE_SPRING.freeLength, unsprungMass: 12 } }, roots: { FL: 'FL', FR: 'FL', RL: 'FL', RR: 'FL' } as const,
+      settings: { FL: { brake: 'outboard', drive: 'none' }, FR: { brake: 'outboard', drive: 'none' }, RL: { brake: 'outboard', drive: 'chassis' }, RR: { brake: 'outboard', drive: 'chassis' } } as const,
+      mass: 300, cg: { x: 0, height: 280, z: -0.47 * 1550 }, wheelbase: 1550, brakeBias: 0.6, driveSplit: 0.5, autoPreload: true,
+      shared: { front: { antiRollBar: { kind: 'none' as const }, heaveSpring: { kind: 'none' as const } }, rear: { antiRollBar: { kind: 'none' as const }, heaveSpring: { kind: 'none' as const } } },
+      dropLinks: { front: null, rear: null }, droop: 40, bump: 40, cases: { lateralG: 0, brakingG: 0, accelG: 0 }, goals: [], variables: [], tireGrip: DEFAULT_MF,
+    };
+    const asm = assembleVehicle(p as never, { FL: g })!;
+    const rest = solveCase(p as never, asm, { name: 'r', kind: 'state', g: 0, lateralG: 0, brakingG: 0, accelG: 0 })!.result;
+    expect(rest.converged).toBe(true);
+    // Preload fitted: the static car sits at its design height.
+    for (const id of ['FL', 'RR'] as const) expect(Math.abs(rest.corners[id].travel)).toBeLessThan(1);
+  });
+});
+
+describe('rocker layout in the app', () => {
+  it('turns into a rocker geometry, saves with the project, and older files load quietly', async () => {
+    const { defaultDesign, toGeometry, activePointKeys } = await import('../src/app/store');
+    const { serializeProject, importProject } = await import('../src/app/project');
+    const d = defaultDesign();
+    const rk = { ...d, geom: { ...d.geom, springLayout: 'rocker' as const, pushrodOn: 'lca' as const } };
+    const g = toGeometry(rk.geom);
+    expect(g.rocker).toBeDefined();
+    expect(g.damper!.arm).toBe('rocker');
+    expect(new DoubleWishbone(g).design().solve.status).toBe('converged');
+    expect(activePointKeys('doubleWishbone', 'rocker')).toContain('prRkr');
+    expect(activePointKeys('macpherson', 'rocker')).not.toContain('prRkr');
+    const back = importProject(JSON.parse(JSON.stringify(serializeProject(rk as never, 'R'))));
+    expect(back.design.geom.springLayout).toBe('rocker');
+    expect(back.design.geom.points.prRkr[1].value).toBeCloseTo(rk.geom.points.prRkr[1].value, 6);
+    const old = JSON.parse(JSON.stringify(serializeProject(d as never, 'Old')));
+    old.formatVersion = 18;
+    for (const c of Object.values(old.corners) as { points: Record<string, unknown>; springLayout?: string }[]) {
+      delete c.springLayout;
+      for (const k of Object.keys(c.points)) if (/_(Rkr_Piv[12]|PR_Arm|PR_Rkr)$/.test(k)) delete c.points[k];
+    }
+    const r = importProject(old);
+    expect(r.design.geom.springLayout).toBe('coilover');
+    expect(r.warnings.filter((w) => /Rkr|PR_/.test(w))).toEqual([]);
+    expect(Number.isFinite(r.design.geom.points.prRkr[0].value)).toBe(true);
+  });
+});

@@ -18,7 +18,7 @@ import type { DoubleWishboneGeometry } from '../core/suspension/doubleWishbone';
 import { variableValue } from '../core/optimize/corner';
 import type { VehicleProblem } from '../core/optimize/vehicle';
 import type { CornerId } from '../core/vehicle/vehicle';
-import { useApp, mergedCorners, OPT_DEFAULT_RANGE, POINT_KEYS, CORNER_NAMES, type Field, type RateUpdate, type AppState, type DamperKey } from './store';
+import { layoutOf, useApp, mergedCorners, OPT_DEFAULT_RANGE, POINT_KEYS, CORNER_NAMES, type Field, type RateUpdate, type AppState, type DamperKey } from './store';
 import { buildVehicleProblem, runVehicleOptimizer, runTestJob, runRatesJob, designRoots, vehVarKey, pointKeyOf } from './optimizer';
 import { testScore as coreTestScore, isUnfixable as coreUnfixable } from '../core/tests/score';
 import type { RateVar, RateTest, RateProgress } from '../core/optimize/rates';
@@ -241,7 +241,7 @@ function ensureFreeCoordinates(): boolean {
     for (const { root } of designRoots(s)) {
       const g = all[root].geom;
       for (const k of POINT_KEYS) for (const a of [0, 1, 2] as const) {
-        if (pointAxisLocked(s.locks, root, k, a, g.damperArm, g.kind)) continue;
+        if (pointAxisLocked(s.locks, root, k, a, g.damperArm, g.kind, layoutOf(g))) continue;
         const v = g.points[k][a].value;
         ranges[vehVarKey(root, k, a)] = { lo: f(v - OPT_DEFAULT_RANGE), hi: f(v + OPT_DEFAULT_RANGE) };
       }

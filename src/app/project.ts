@@ -30,8 +30,11 @@
  *  17  handling over time: yaw inertia (vehicle input), "steered by a driver" per test
  *  18  suspension type per corner design (double wishbone, MacPherson, multilink) and the multilink's
  *      rear-link upright ends (FL_UCA_Out2, FL_LCA_Out2)
+ *  19  spring layout per design (coilover, or pushrod / pullrod + rocker) and the rocker points
+ *      (FL_Rkr_Piv1, FL_Rkr_Piv2, FL_PR_Arm, FL_PR_Rkr); the single-arm suspension type
  */
 import pkg from '../../package.json';
+import { rockerFromCoilover } from '../core/suspension/coilover';
 import { parseValue, type Quantity } from '../core/units/units';
 import { CORNER_IDS, type CornerId } from '../core/vehicle/vehicle';
 import { DIM_MEASURES } from '../core/suspension/dimensions';
@@ -40,7 +43,7 @@ import { CHECK_IDS, CHECK_META, type CheckProfile } from '../core/tests/checks';
 import type { TirModel } from '../core/tire/tir';
 import { parseAero, type AeroModel } from '../core/vehicle/aero';
 import {
-  defaultDesign, mergedCorners, rootOf, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META, SPRING_KEYS, SPRING_META,
+  defaultDesign, mergedCorners, layoutOf, rootOf, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META, SPRING_KEYS, SPRING_META,
   DAMPER_KEYS, DAMPER_META, STEER_KEYS, STEER_META, TIRE_KEYS, TIRE_META, VEHICLE_KEYS, VEHICLE_META,
   DEFAULT_LINKS, DEFAULT_SETTINGS, SHARED_META, defaultShared, defaultOptimizerSetup, defaultVehicleOptimizerSetup, defaultGrip, GRIP_KEYS, GRIP_META,
   defaultTireGrip, MF_KEYS, MF_META, RIDE_KEYS, DAMPER_TWO_STAGE_KEYS, SETUP_STEPS, AERO_KEYS, AERO_META, defaultAero,
@@ -50,7 +53,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 18;
+export const FORMAT_VERSION = 19;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -64,6 +67,8 @@ export interface CornerJson {
   points: Record<string, { x: FieldJson; y: FieldJson; z: FieldJson }>;
   scalars: Record<string, FieldJson>;
   damperArm: 'lca' | 'uca' | 'upright';
+  springLayout?: 'coilover' | 'rocker';
+  pushrodOn?: 'lca' | 'uca' | 'upright';
   spring: Record<string, FieldJson>;
   damper: { fields: Record<string, FieldJson>; bumpStop: boolean; mode?: 'linear' | 'twoStage' };
   tire: { model: DesignState['tireModel']; volumeChange: boolean; sizeText: string; fields: Record<string, FieldJson> };
@@ -135,6 +140,7 @@ function cornerToJson(id: CornerId, c: CornerDesign): CornerJson {
     })),
     scalars: Object.fromEntries(SCALAR_KEYS.map((k) => [cornerParam(id, SCALAR_META[k].name), fj(c.geom.scalars[k])])),
     damperArm: c.geom.damperArm,
+    springLayout: layoutOf(c.geom), pushrodOn: c.geom.pushrodOn ?? 'lca',
     spring: mapFields(SPRING_KEYS, c.spring),
     damper: { fields: mapFields(DAMPER_KEYS, c.damper), bumpStop: c.bumpStop, mode: c.damperMode },
     tire: { model: c.tireModel, volumeChange: c.volumeChange, sizeText: c.tireSizeText, fields: mapFields(TIRE_KEYS, c.tire) },
@@ -294,6 +300,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   16: (f) => ({ ...f, formatVersion: 17 }),
   // 17 → 18: every corner was a double wishbone; the multilink points start at the ball joints.
   17: (f) => ({ ...f, formatVersion: 18 }),
+  // 18 → 19: every spring was a coilover; rocker points are built from it.
+  18: (f) => ({ ...f, formatVersion: 19 }),
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */
@@ -529,18 +537,29 @@ function readRecord<K extends string>(
   return Object.fromEntries(keys.map((k) => [k, readField(obj[k], quantity(k), defaults[k], `${section}.${k}`, warnings)])) as Record<K, Field>;
 }
 
+/** Rocker points built from the coilover (for files from before format 19). */
+function withRockerDefaults(points: CornerDesign['geom']['points']): CornerDesign['geom']['points'] {
+  const v = (k: keyof typeof points) => ({ x: points[k][0].value, y: points[k][1].value, z: points[k][2].value });
+  const lay = rockerFromCoilover(v('dmpChassis'), v('dmpArm'), 'lca').rocker;
+  const f = (q: { x: number; y: number; z: number }) => [q.x, q.y, q.z].map((n) => ({ text: String(Number(n.toFixed(3))), value: n })) as [Field, Field, Field];
+  return { ...points, rkrPiv1: f(lay.pivot1), rkrPiv2: f(lay.pivot2), prArm: f(lay.pushrodLower), prRkr: f(lay.pushrodUpper) };
+}
+
 function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: string[], original = FORMAT_VERSION): CornerDesign {
   const c = isObj(raw) ? raw : {};
   if (!isObj(raw)) warnings.push(`${id}: missing, using the default corner`);
   const w = isObj(raw) ? warnings : [];
   const pts = isObj(c.points) ? c.points : {};
   const points = { ...def.geom.points };
+  let rockerMissing = false;
   for (const k of POINT_KEYS) {
     const name = cornerParam(id, POINT_NAMES[k]);
     const p = pts[name];
     const obj = isObj(p) ? p : {};
     // Format 18 added the multilink's rear-link ends: older files start them at the joints quietly.
     if (!isObj(p) && (k === 'ucaOut2' || k === 'lcaOut2')) { points[k] = points[k === 'ucaOut2' ? 'ucaOut' : 'lcaOut']; continue; }
+    // Format 19 added the rocker points: older files get a working rocker from their coilover, quietly.
+    if (!isObj(p) && (k === 'rkrPiv1' || k === 'rkrPiv2' || k === 'prArm' || k === 'prRkr')) { rockerMissing = true; continue; }
     if (!isObj(p)) w.push(`${name}: missing, using default`);
     points[k] = (['x', 'y', 'z'] as const).map((ax, i) =>
       readField(obj[ax], 'length', def.geom.points[k][i]!, `${name}.${ax}`, isObj(p) ? w : [])) as [Field, Field, Field];
@@ -558,7 +577,11 @@ function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: str
   const tireRaw = isObj(c.tire) ? c.tire : {};
   const model = tireRaw.model === 'rigid' || tireRaw.model === 'stiffness' || tireRaw.model === 'gas' ? tireRaw.model : def.tireModel;
   return {
-    geom: { points, scalars, damperArm: c.damperArm === 'uca' || c.damperArm === 'upright' ? c.damperArm : 'lca', kind: c.type === 'macpherson' || c.type === 'multilink' || c.type === 'singleArm' || c.type === 'rigid' ? c.type : 'doubleWishbone' },
+    geom: {
+      points: rockerMissing ? withRockerDefaults(points) : points, scalars,
+      springLayout: c.springLayout === 'rocker' ? 'rocker' : 'coilover',
+      pushrodOn: c.pushrodOn === 'uca' || c.pushrodOn === 'upright' ? c.pushrodOn : 'lca',
+      damperArm: c.damperArm === 'uca' || c.damperArm === 'upright' ? c.damperArm : 'lca', kind: c.type === 'macpherson' || c.type === 'multilink' || c.type === 'singleArm' || c.type === 'rigid' ? c.type : 'doubleWishbone' },
     spring: readRecord(c.spring, SPRING_KEYS, (k) => SPRING_META[k].quantity, def.spring, `${id}.spring`, w),
     // Damping rates are new in format 8: older files take the defaults quietly.
     damper: (() => {

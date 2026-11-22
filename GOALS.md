@@ -102,7 +102,7 @@ Done: File → Setup wizard (and Vehicle → Inputs), eleven steps with a step l
 **Medium (next, after confirmation):**
 - ✅ **Single arm, knuckle on the arm:** swing arm (pivot line along the car: the long-travel trophy-truck layout, knuckle locked to the long lower arm, steering on a kingpin bushing on the arm, IC at the arm's frame pivot), trailing arm (across the car), semi-trailing (angled). Presets *S* and *T*. The other trophy-truck option, a MacPherson with a long lower arm, is the MacPherson type with longer arm points.
 - **Future: basic car profiles:** starting points for whole cars (e.g. a trophy truck with long-arm MacPhersons, an FSAE car, a kart, a road car) that set every corner's type, points, springs, tires and the vehicle inputs at once.
-- **Pushrod / pullrod with a rocker:** rocker on a chassis pivot, pushrod from an arm or the knuckle, spring from the rocker to the chassis (motion ratio from the linkage; later anti-roll bars on the rockers).
+- ✅ **Pushrod / pullrod with a rocker:** rocker on a chassis pivot, pushrod from an arm or the knuckle, spring from the rocker to the chassis (motion ratio from the linkage). Still to come: anti-roll bars on the rockers, a rocker-ratio editor.
 - **Steering without a rack:** a steering box (pitman arm) or an ATV-style cam / plate on the steering column with the tie rods on it (rotation instead of rack travel); a geared cam as a variable-ratio curve.
 - **Maximum brake force:** from pedal force, pedal ratio, master-cylinder bore, caliper piston area, pad μ, rotor radius and tire radius (most braking g per axle; the bias from the hydraulics).
 - **Towing, static:** hitch point, tongue weight and the trailer's pull on the hitch in cornering and braking (with / without trailer brakes).

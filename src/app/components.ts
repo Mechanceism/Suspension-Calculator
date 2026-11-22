@@ -19,7 +19,21 @@ export interface ComponentDef {
  * Components per suspension type. A type without a component (MacPherson: no upper arm) keeps it with no
  * points (`absent`), so the records stay complete.
  */
-export function componentDefs(damperArm: ArmChoice, kind: SuspensionKind = 'doubleWishbone'): Record<ComponentId, ComponentDef & { absent?: boolean }> {
+export function componentDefs(damperArm: ArmChoice, kind: SuspensionKind = 'doubleWishbone', layout: 'coilover' | 'rocker' = 'coilover', pushrodOn: ArmChoice = 'lca'): Record<ComponentId, ComponentDef & { absent?: boolean }> {
+  const defs = kindDefs(damperArm, kind);
+  if (layout !== 'rocker' || kind === 'macpherson' || kind === 'rigid') return defs;
+  // Pushrod + rocker: the spring part holds the rocker, pushrod and spring; the pushrod's lower end belongs
+  // to what it is on (not the coilover's old mount).
+  const strip = (pts: PointKey[]) => pts.filter((k) => k !== 'dmpArm');
+  const on: ComponentId = pushrodOn === 'upright' ? 'upright' : kind === 'multilink' ? 'upright' : pushrodOn;
+  const out = Object.fromEntries(Object.entries(defs).map(([id, d]) => [id, { ...d, points: strip(d.points) }])) as typeof defs;
+  out[on] = { ...out[on], points: [...out[on].points, 'prArm'] };
+  out.chassis = { ...out.chassis, points: [...out.chassis.points, 'rkrPiv1', 'rkrPiv2'] };
+  out.spring = { id: 'spring', label: 'Rocker, pushrod and spring', points: ['rkrPiv1', 'rkrPiv2', 'prRkr', 'prArm', 'dmpArm', 'dmpChassis'], parents: ['chassis', on] };
+  return out;
+}
+
+function kindDefs(damperArm: ArmChoice, kind: SuspensionKind): Record<ComponentId, ComponentDef & { absent?: boolean }> {
   if (kind === 'macpherson') {
     return {
       chassis: { id: 'chassis', label: 'Chassis / frame', points: ['lcaFwd', 'lcaAft', 'dmpChassis'], parents: [] },
@@ -104,6 +118,7 @@ export const POINT_LABELS: Record<PointKey, string> = {
   trInner: 'Tie rod inner (rack)', trOuter: 'Tie rod outer', wheelCenter: 'Hub center (wheel mounting face)',
   dmpChassis: 'Coilover chassis mount', dmpArm: 'Coilover arm mount',
   ucaOut2: 'Upper rear link, upright end', lcaOut2: 'Lower rear link, upright end',
+  rkrPiv1: 'Rocker pivot (front)', rkrPiv2: 'Rocker pivot (rear)', prArm: 'Pushrod lower end', prRkr: 'Pushrod end on the rocker',
 };
 
 const KIND_LABELS: Partial<Record<SuspensionKind, Partial<Record<PointKey, string>>>> = {
@@ -117,5 +132,6 @@ const KIND_LABELS: Partial<Record<SuspensionKind, Partial<Record<PointKey, strin
   },
 };
 
-/** A hardpoint's label for a suspension type. */
-export const pointLabel = (k: PointKey, kind: SuspensionKind = 'doubleWishbone') => KIND_LABELS[kind]?.[k] ?? POINT_LABELS[k];
+/** A hardpoint's label for a suspension type (and spring layout). */
+export const pointLabel = (k: PointKey, kind: SuspensionKind = 'doubleWishbone', layout: 'coilover' | 'rocker' = 'coilover') =>
+  (layout === 'rocker' && k === 'dmpArm' ? 'Spring end on the rocker' : layout === 'rocker' && k === 'dmpChassis' ? 'Spring frame mount' : KIND_LABELS[kind]?.[k] ?? POINT_LABELS[k]);

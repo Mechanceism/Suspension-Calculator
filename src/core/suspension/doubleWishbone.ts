@@ -33,6 +33,10 @@
  *   revolute 5 · tie rod 1 = 6. Travel lifts the whole corner straight up (no camber or toe change); the
  *   vehicle and ride models hold a rigid corner's travel at 0, so only the tire is compliant.
  *
+ * Pushrod / pullrod + rocker (any type but MacPherson and rigid): a rocker body on a frame pivot axis
+ *   (revolute 5) and a pushrod of fixed length from an arm / the knuckle to the rocker (1) = 6, so it adds
+ *   no freedom; the spring / damper then runs from the rocker to the frame.
+ *
  * Pivot axes are NOT assumed parallel to Z and ball joints are NOT assumed centered between pivots.
  * Steering jacking is not a separate formula: moving the rack rotates the upright about the
  * UBJ–LBJ line and the solve produces the height change directly.
@@ -87,8 +91,17 @@ export interface DoubleWishboneGeometry {
   /** Direction TR_In moves for positive rack travel. Default +X (outboard). */
   readonly rackAxis?: Vec3;
   /**
-   * Optional spring/damper: chassis mount and a mount on an arm or the upright. MacPherson: required, it
-   * is the strut (chassis = the top mount, armPoint = a point on the strut axis fixed to the upright).
+   * Pushrod (or pullrod) and rocker: the rocker pivots on the frame axis pivot1 → pivot2; the pushrod
+   * runs from `pushrodLower` (on `pushrodBody`) to `pushrodUpper` (on the rocker). The damper's armPoint
+   * is then on the rocker (damper.arm = 'rocker').
+   */
+  readonly rocker?: {
+    readonly pivot1: Vec3; readonly pivot2: Vec3;
+    readonly pushrodBody: MountBody; readonly pushrodLower: Vec3; readonly pushrodUpper: Vec3;
+  };
+  /**
+   * Optional spring/damper: chassis mount and a mount on an arm, the upright or the rocker. MacPherson:
+   * required, it is the strut (chassis = the top mount, armPoint = a point on the strut axis fixed to the upright).
    */
   readonly damper?: { readonly chassis: Vec3; readonly arm: MountBody; readonly armPoint: Vec3 };
 }
@@ -96,7 +109,7 @@ export interface DoubleWishboneGeometry {
 /** Any corner type's geometry. */
 export type CornerGeometry = DoubleWishboneGeometry;
 /** Moving body a mount is fixed to. */
-export type MountBody = 'uca' | 'lca' | 'upright';
+export type MountBody = 'uca' | 'lca' | 'upright' | 'rocker';
 export const kindOf = (g: DoubleWishboneGeometry): SuspensionKind => g.kind ?? 'doubleWishbone';
 /** MacPherson strut: top mount and its point on the upright (the damper's two mounts). */
 export const strutOf = (g: DoubleWishboneGeometry): { top: Vec3; lower: Vec3 } | null =>
@@ -138,6 +151,11 @@ export interface CornerPoints {
   /** MacPherson: strut top mount (chassis) and the strut's point on the upright. */
   strutTop?: Vec3;
   strutLower?: Vec3;
+  /** Rocker layout: the rocker's pivot axis (frame) and the pushrod's two ends. */
+  rockerPivot1?: Vec3;
+  rockerPivot2?: Vec3;
+  pushrodLower?: Vec3;
+  pushrodUpper?: Vec3;
 }
 
 export interface CornerState {
@@ -179,6 +197,12 @@ export class DoubleWishbone {
     this.rackAxis = normalize(geometry.rackAxis ?? X_AXIS);
     this.spinAxisDesign = normalize(geometry.wheel.spinAxis);
     this.kind = kindOf(geometry);
+    const rk = geometry.rocker;
+    if (rk) {
+      if (this.kind === 'macpherson' || this.kind === 'rigid') throw new Error('A pushrod and rocker needs an arm or knuckle to push from (not a MacPherson strut or a rigid corner)');
+      if (dist(rk.pivot1, rk.pivot2) < 1e-6) throw new Error('Degenerate geometry: rocker pivot axis points coincide');
+      if (dist(rk.pushrodLower, rk.pushrodUpper) < 1e-6) throw new Error('Degenerate geometry: pushrod ends coincide');
+    }
     this.bodies = this.kind === 'doubleWishbone' ? ['uca', 'lca', 'upright'] : this.kind === 'macpherson' || this.kind === 'singleArm' ? ['lca', 'upright'] : ['upright'];
     if (this.kind === 'singleArm') {
       const g = geometry;
@@ -213,6 +237,7 @@ export class DoubleWishbone {
   /** Body origin (design coordinates) of a moving body. */
   private originOf(body: MountBody): Vec3 {
     const g = this.geometry;
+    if (body === 'rocker' && g.rocker) return centroid(g.rocker.pivot1, g.rocker.pivot2, g.rocker.pushrodUpper, ...(g.damper ? [g.damper.armPoint] : []));
     if (body === 'uca') return centroid(g.uca.fwd, g.uca.aft, g.uca.out);
     if (body === 'lca') return centroid(g.lca.fwd, g.lca.aft, g.lca.out);
     if (this.kind === 'macpherson') return centroid(g.lca.out, strutOf(g)!.lower, g.tieRod.outer, g.wheel.center);
@@ -222,6 +247,7 @@ export class DoubleWishbone {
 
   /** The body a mount ends up on for this type (the upright when this type has no such arm). */
   mountBody(body: MountBody): MountBody {
+    if (body === 'rocker') return this.geometry.rocker ? 'rocker' : 'upright';
     return this.bodies.includes(body) ? body : 'upright';
   }
 
@@ -296,6 +322,12 @@ export class DoubleWishbone {
       points.damperChassis = g.damper.chassis;
       points.damperArm = ctx.world(refs.damperArm);
     }
+    if (g.rocker && refs.pushrodLower && refs.pushrodUpper) {
+      points.rockerPivot1 = g.rocker.pivot1;
+      points.rockerPivot2 = g.rocker.pivot2;
+      points.pushrodLower = ctx.world(refs.pushrodLower);
+      points.pushrodUpper = ctx.world(refs.pushrodUpper);
+    }
     return { kind: this.kind, inputs: full, solve: result, poses: result.poses, points, spinAxis };
   }
 
@@ -364,6 +396,17 @@ export class DoubleWishbone {
         sys.add(fixedDistance(`${l.name} link`, sys.attach('chassis', l.chassis), sys.attach('upright', l.upright), dist(l.chassis, l.upright)));
       }
     }
+    // Rocker and pushrod (the arm bodies exist by now).
+    let pushrodLower: PointRef | undefined, pushrodUpper: PointRef | undefined;
+    if (g.rocker) {
+      const r = g.rocker;
+      const o = this.originOf('rocker');
+      sys.addBody('rocker', o, { size: Math.max(dist(o, r.pushrodUpper), 1) });
+      sys.add(revolute(sys, 'rocker pivot', 'chassis', 'rocker', r.pivot1, r.pivot2));
+      pushrodLower = sys.attach(this.mountBody(r.pushrodBody === 'rocker' ? 'lca' : r.pushrodBody), r.pushrodLower);
+      pushrodUpper = sys.attach('rocker', r.pushrodUpper);
+      sys.add(fixedDistance('pushrod', pushrodLower, pushrodUpper, dist(r.pushrodLower, r.pushrodUpper)));
+    }
     const trInner = sys.attach('rack', g.tieRod.inner);
     const trOuter = sys.attach('upright', g.tieRod.outer);
     sys.add(fixedDistance('tie rod', trInner, trOuter, dist(g.tieRod.inner, g.tieRod.outer)));
@@ -398,6 +441,7 @@ export class DoubleWishbone {
       trInner, trOuter, wheelCenter,
       damperArm: g.damper ? sys.attach(this.mountBody(g.damper.arm), g.damper.armPoint) : undefined,
       ...(this.kind === 'macpherson' ? { strutLower: sys.attach('upright', strutOf(g)!.lower) } : {}),
+      ...(pushrodLower && pushrodUpper ? { pushrodLower, pushrodUpper } : {}),
       ...(this.kind === 'multilink' ? { ucaOut2: sys.attach('upright', g.uca.out2 ?? g.uca.out), lcaOut2: sys.attach('upright', g.lca.out2 ?? g.lca.out) } : {}),
     };
     return { sys, refs };
@@ -408,6 +452,7 @@ interface CornerRefs {
   ucaOut: PointRef; lcaOut: PointRef; trInner: PointRef; trOuter: PointRef; wheelCenter: PointRef;
   damperArm: PointRef | undefined;
   strutLower?: PointRef; ucaOut2?: PointRef; lcaOut2?: PointRef;
+  pushrodLower?: PointRef; pushrodUpper?: PointRef;
 }
 
 /** The four arm links of a multilink corner (chassis end → upright end); the tie rod is the fifth. */

@@ -1,4 +1,4 @@
-import { useApp, forCorner, rootOf, activePointKeys, POINT_NAMES, SCALAR_KEYS, SCALAR_META } from '../store';
+import { layoutOf, useApp, forCorner, rootOf, activePointKeys, POINT_NAMES, SCALAR_KEYS, SCALAR_META } from '../store';
 import { SuspensionTypeRow } from './Inspector';
 import { pointLabel } from '../components';
 import { lockKeys, pointAxisLocked } from '../locks';
@@ -33,12 +33,12 @@ export function Hardpoints() {
           <tr><th>Point</th><th>X</th><th>Y</th><th>Z</th><th /></tr>
         </thead>
         <tbody>
-          {activePointKeys(kind).map((k) => (
-            <tr key={k} title={pointLabel(k, kind)}>
+          {activePointKeys(kind, layoutOf(geom)).map((k) => (
+            <tr key={k} title={pointLabel(k, kind, layoutOf(geom))}>
               <td className="mono">{forCorner(active, POINT_NAMES[k])}</td>
               {([0, 1, 2] as const).map((axis) => (
                 <td key={axis}>
-                  <ValueInput field={geom.points[k][axis]} unit="mm" onCommit={(t) => setPoint(k, axis, t)} locked={pointAxisLocked(locks, root, k, axis, geom.damperArm, geom.kind)} />
+                  <ValueInput field={geom.points[k][axis]} unit="mm" onCommit={(t) => setPoint(k, axis, t)} locked={pointAxisLocked(locks, root, k, axis, geom.damperArm, geom.kind, layoutOf(geom))} />
                 </td>
               ))}
               <td><LockButton keys={([0, 1, 2] as const).map((a) => lockKeys.point(root, k, a))} title="Lock / unlock X, Y and Z of this point" /></td>

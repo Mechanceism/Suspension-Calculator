@@ -47,6 +47,12 @@ function CornerDrawing({ view, onOpen, active, wheelbase }: { view: VehicleCorne
       {vis.upright && <Seg a={foot} b={p.wheelCenter} color={COLORS.upright} width={w} />}
       {vis.tieRod && <Seg a={p.trInner} b={p.trOuter} color={COLORS.tieRod} width={w} />}
       {vis.spring && p.damperChassis && p.damperArm && <Coilover a={p.damperChassis} b={p.damperArm} color={COLORS.spring} radius={22} coils={7} />}
+      {vis.spring && p.rockerPivot1 && p.rockerPivot2 && p.pushrodUpper && p.pushrodLower && p.damperArm && (
+        <>
+          <Polyline pts={[p.rockerPivot1, p.pushrodUpper, p.damperArm, p.rockerPivot1]} color={COLORS.spring} width={w} />
+          <Seg a={p.pushrodLower} b={p.pushrodUpper} color={COLORS.tieRod} width={w} />
+        </>
+      )}
       {(vis.uca || vis.upright) && view.state.kind !== 'macpherson' && <Joint p={p.ucaOut} color={COLORS.uca} r={8} />}
       {(vis.lca || vis.upright) && <Joint p={p.lcaOut} color={COLORS.lca} r={8} />}
       {vis.wheel && <Wheel

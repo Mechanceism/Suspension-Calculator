@@ -40,8 +40,6 @@ export function FileMenu() {
       <button className={`menu-btn${open ? ' on' : ''}`} onClick={() => setOpen(!open)} aria-haspopup="menu" aria-expanded={open}>File</button>
       <span className="file-title" title={dirty ? `Unsaved changes to ${[parts.model && 'the model', parts.tests && 'the tests'].filter(Boolean).join(' and ')} since the last save / export` : 'Saved'}>
         {fileName ?? 'Untitled'}
-        {parts.model && <span className="dirty-dot"> • model</span>}
-        {parts.tests && <span className="dirty-dot"> • tests</span>}
       </span>
       {open && (
         <div className="menu" role="menu">

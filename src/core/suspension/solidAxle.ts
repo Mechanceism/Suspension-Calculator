@@ -52,6 +52,16 @@ export interface AxleState {
   links: { name: string; chassis: Vec3; axle: Vec3 }[];
   /** Spring lengths (mount to mount), mm. */
   springLength?: { left: number; right: number };
+  /** The bodies carrying each wheel in `poses` (a solid axle: 'axle' for both). */
+  bodies?: { left: string; right: string };
+  /** Twist beam: its heave and twist angles (rad) and where the shear center is now. */
+  twist?: { heave: number; twist: number; shearCenter: Vec3 };
+}
+
+/** Anything solved from the two wheels' travels (a solid axle, a twist beam). */
+export interface TwoTravelAxle {
+  design(): AxleState;
+  solve(inputs: AxleInputs, initial?: Poses): AxleState;
 }
 
 const mirror = (p: Vec3): Vec3 => vec3(-p.x, p.y, p.z);

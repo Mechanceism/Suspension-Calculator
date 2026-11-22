@@ -11,7 +11,7 @@
 import { vec3, Y_AXIS, type Vec3 } from '../math/vec3';
 import type { SteeringSpec } from '../tests/steer';
 import type { AeroModel } from '../vehicle/aero';
-import { DoubleWishbone, isBeam, solidAxleOf, type DoubleWishboneGeometry } from '../suspension/doubleWishbone';
+import { DoubleWishbone, isBeam, solidAxleOf, twistBeamOf, type DoubleWishboneGeometry } from '../suspension/doubleWishbone';
 import type { TrailerSpec } from '../vehicle/towing';
 import { characteristics, deg, type Characteristics } from '../suspension/characteristics';
 import { fitFreeLength } from '../suspension/spring';
@@ -21,7 +21,8 @@ import { patchGrip, DEFAULT_GRIP, type GripModel, type PatchGrip } from '../tire
 import { DEFAULT_MF, type TireGrip } from '../tire/magicFormula';
 import { CornerTable } from '../vehicle/cornerTable';
 import { AxleTable, AxleCornerTable } from '../vehicle/axleTable';
-import { SolidAxle, axleCharacteristics, type SolidAxleGeometry, type AxleState } from '../suspension/solidAxle';
+import { SolidAxle, axleCharacteristics, type SolidAxleGeometry, type AxleState, type TwoTravelAxle } from '../suspension/solidAxle';
+import { TwistBeam } from '../suspension/twistBeam';
 import { lineThrough } from '../math/geom';
 import {
   CORNER_IDS, isFront, isLeft, placement, poseFns, solveVehicle, staticCornerLoads, designGroundY,
@@ -220,11 +221,21 @@ export function assembleVehicle(p: VehicleProblem, geometries: Partial<Record<Co
     contactX[id] = chars[id].contactPoint.x;
   }
   // Solid axles: build them, and give their wheels the characteristics the rest of the car reads.
-  const axles: Partial<Record<'front' | 'rear', { axle: SolidAxle; table: AxleTable; design: AxleState }>> = {};
+  const axles: Partial<Record<'front' | 'rear', { axle: TwoTravelAxle; table: AxleTable; design: AxleState }>> = {};
   for (const which of ['front', 'rear'] as const) {
     // A beam-type design on this axle (the corner's root) makes it a solid axle too.
     const rootG = geometries[p.roots[which === 'front' ? 'FL' : 'RL']];
     const g = p.axles?.[which] ?? (rootG && isBeam(rootG.kind) ? solidAxleOf(rootG) : undefined);
+    // A twist beam couples the two wheels too (its corners' characteristics already describe it).
+    if (!g && rootG?.kind === 'twistBeam') {
+      try {
+        const axle = new TwistBeam(twistBeamOf(rootG));
+        const design = axle.design();
+        if (design.solve.status !== 'converged') return null;
+        axles[which] = { axle, table: new AxleTable(axle, range, Math.max(9, Math.min(21, n - 4))), design };
+      } catch { return null; }
+      continue;
+    }
     if (!g) continue;
     try {
       const axle = new SolidAxle(g);

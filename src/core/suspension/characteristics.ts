@@ -88,7 +88,7 @@ export function characteristics(state: CornerState): Characteristics {
   let instantAxis: Line | null = null;
   let axisTrace: Vec3 | null = null;
   if (state.axle) return beamCharacteristics(state, camber, toe);
-  if (state.kind === 'rigid') { /* no suspension motion: no instant axis */ } else if (state.kind === 'singleArm') {
+  if (state.kind === 'rigid') { /* no suspension motion: no instant axis */ } else if (state.kind === 'singleArm' || state.kind === 'twistBeam') {
     // The arm swings about its frame pivots: that line is the instant axis (fixed to the frame).
     instantAxis = lineThrough(p.lcaFwd, p.lcaAft);
     axisTrace = instantAxis.dir;
@@ -112,7 +112,9 @@ export function characteristics(state: CornerState): Characteristics {
   }
 
   const frontViewIC = instantAxis ? intersectLinePlane(instantAxis, transversePlaneAt(cp.z)) : null;
-  const sideViewIC = instantAxis ? intersectLinePlane(instantAxis, longitudinalPlaneAt(wc.x)) : null;
+  // Twist beam in heave: both arms swing about the bushings' lateral line (the instant axis above is its roll axis).
+  const sideViewIC = state.kind === 'twistBeam' ? vec3(wc.x, p.lcaFwd.y, p.lcaFwd.z)
+    : instantAxis ? intersectLinePlane(instantAxis, longitudinalPlaneAt(wc.x)) : null;
 
   // Roll center (mirrored opposite corner → RC lies on x = 0).
   let rollCenterHeight: number | null = null;

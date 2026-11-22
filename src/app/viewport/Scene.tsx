@@ -102,7 +102,7 @@ function Linkage({ state, faint = false }: { state: CornerState; faint?: boolean
         {vis.uca && sh.uca.map(([a, b], i) => <Seg key={i} a={a} b={b} color={COLORS.uca} width={1} opacity={o} />)}
         {vis.lca && sh.lca.map(([a, b], i) => <Seg key={i} a={a} b={b} color={COLORS.lca} width={1} opacity={o} />)}
         {vis.upright && <Polyline pts={sh.upright} color={COLORS.upright} width={1} opacity={o} />}
-        {vis.tieRod && !isBeam(state.kind) && <Seg a={p.trInner} b={p.trOuter} color={COLORS.tieRod} width={1} opacity={o} />}
+        {vis.tieRod && !isBeam(state.kind) && state.kind !== 'twistBeam' && <Seg a={p.trInner} b={p.trOuter} color={COLORS.tieRod} width={1} opacity={o} />}
         {vis.spring && p.damperChassis && p.damperArm && <Seg a={p.damperChassis} b={p.damperArm} color={COLORS.spring} width={1} opacity={o} />}
       </group>
     );
@@ -145,7 +145,7 @@ function Linkage({ state, faint = false }: { state: CornerState; faint?: boolean
           </>
         )}</Part>
       )}
-      {vis.tieRod && !isBeam(state.kind) && (
+      {vis.tieRod && !isBeam(state.kind) && state.kind !== 'twistBeam' && (
         <Part id="tieRod">{(e) => (
           <>
             <Seg a={p.trInner} b={p.trOuter} color={e === 2 ? COLORS.select : COLORS.tieRod} width={em(3, e)} />
@@ -215,12 +215,12 @@ function Joints({ state, cur }: { state: CornerState; cur: Current }) {
   const p = state.points;
   return (
     <group>
-      {vis.chassis && (state.kind === 'beam4' || state.kind === 'beam3' ? (['lcaFwd', 'ucaFwd'] as const) : state.kind === 'rigid' ? ([] as const) : state.kind === 'macpherson' || state.kind === 'singleArm' ? (['lcaFwd', 'lcaAft'] as const) : (['ucaFwd', 'ucaAft', 'lcaFwd', 'lcaAft'] as const)).map((k) => <PickJoint key={k} id={k} p={p[k]} color={COLORS.chassis} />)}
-      {(vis.uca || vis.upright) && state.kind !== 'macpherson' && <PickJoint id="ucaOut" p={p.ucaOut} color={COLORS.uca} r={9} />}
+      {vis.chassis && (state.kind === 'twistBeam' ? (['lcaFwd', 'lcaAft'] as const) : state.kind === 'beamLeaf' ? (['lcaFwd', 'lcaAft'] as const) : state.kind === 'beam4' || state.kind === 'beam3' ? (['lcaFwd', 'ucaFwd'] as const) : state.kind === 'rigid' ? ([] as const) : state.kind === 'macpherson' || state.kind === 'singleArm' ? (['lcaFwd', 'lcaAft'] as const) : (['ucaFwd', 'ucaAft', 'lcaFwd', 'lcaAft'] as const)).map((k) => <PickJoint key={k} id={k} p={p[k]} color={COLORS.chassis} />)}
+      {(vis.uca || vis.upright) && state.kind !== 'macpherson' && state.kind !== 'twistBeam' && state.kind !== 'beamLeaf' && <PickJoint id="ucaOut" p={p.ucaOut} color={COLORS.uca} r={9} />}
       {(vis.lca || vis.upright) && <PickJoint id="lcaOut" p={p.lcaOut} color={COLORS.lca} r={9} />}
       {state.kind === 'multilink' && (vis.uca || vis.upright) && p.ucaOut2 && <PickJoint id="ucaOut2" p={p.ucaOut2} color={COLORS.uca} r={9} />}
       {state.kind === 'multilink' && (vis.lca || vis.upright) && p.lcaOut2 && <PickJoint id="lcaOut2" p={p.lcaOut2} color={COLORS.lca} r={9} />}
-      {vis.tieRod && !isBeam(state.kind) && <PickJoint id="trInner" p={p.trInner} color={COLORS.chassis} />}
+      {vis.tieRod && !isBeam(state.kind) && state.kind !== 'twistBeam' && <PickJoint id="trInner" p={p.trInner} color={COLORS.chassis} />}
       {p.panhardChassis && <PickJoint id="phChs" p={p.panhardChassis} color={COLORS.chassis} />}
       {p.panhardAxle && <PickJoint id="phAxle" p={p.panhardAxle} color={COLORS.lca} />}
       {vis.chassis && p.steerPivot1 && <PickJoint id="strPiv1" p={p.steerPivot1} color={COLORS.chassis} />}
@@ -231,7 +231,7 @@ function Joints({ state, cur }: { state: CornerState; cur: Current }) {
       {vis.spring && p.rockerPivot2 && <PickJoint id="rkrPiv2" p={p.rockerPivot2} color={COLORS.chassis} />}
       {vis.spring && p.pushrodLower && <PickJoint id="prArm" p={p.pushrodLower} color={COLORS.tieRod} />}
       {vis.spring && p.pushrodUpper && <PickJoint id="prRkr" p={p.pushrodUpper} color={COLORS.spring} />}
-      {(vis.tieRod || vis.upright) && !isBeam(state.kind) && <PickJoint id="trOuter" p={p.trOuter} color={COLORS.tieRod} />}
+      {(vis.tieRod || vis.upright) && !isBeam(state.kind) && state.kind !== 'twistBeam' && <PickJoint id="trOuter" p={p.trOuter} color={COLORS.tieRod} />}
       {vis.wheel && <PickJoint id="wheelCenter" p={p.wheelCenter} color={COLORS.upright} r={6} />}
       {vis.wheel && <PickJoint id="contact" p={p.contact} color={COLORS.wheel} r={6} />}
       {/* Derived points are pickable for measuring. */}
@@ -252,10 +252,10 @@ function Chassis({ state, rackLimit, rackAxis }: { state: CornerState; rackLimit
   };
   // Chassis rails along the arms' pivot lines (a MacPherson has no upper arm: its rail is at the top mount).
   const rail = (q: Vec3) => ext(add(q, vec3(-120, 0, 120)), add(q, vec3(-120, 0, -120)));
-  const beam = state.kind === 'beam4' || state.kind === 'beam3';
+  const beam = isBeam(state.kind) || state.kind === 'twistBeam';
   const stub = (q: Vec3) => ext(add(q, vec3(0, 0, 60)), add(q, vec3(0, 0, -60)));
-  const [u1, u2] = beam ? stub(p.ucaFwd) : state.kind === 'rigid' ? rail(p.ucaOut) : state.kind === 'singleArm' ? ext(p.lcaFwd, p.lcaAft) : state.kind === 'macpherson' && p.strutTop ? ext(add(p.strutTop, vec3(0, 0, 120)), sub(p.strutTop, vec3(0, 0, 120))) : ext(p.ucaFwd, p.ucaAft);
-  const [l1, l2] = beam ? stub(p.lcaFwd) : state.kind === 'rigid' ? rail(p.lcaOut) : ext(p.lcaFwd, p.lcaAft);
+  const [u1, u2] = state.kind === 'twistBeam' || state.kind === 'beamLeaf' ? stub(p.lcaFwd) : beam ? stub(p.ucaFwd) : state.kind === 'rigid' ? rail(p.ucaOut) : state.kind === 'singleArm' ? ext(p.lcaFwd, p.lcaAft) : state.kind === 'macpherson' && p.strutTop ? ext(add(p.strutTop, vec3(0, 0, 120)), sub(p.strutTop, vec3(0, 0, 120))) : ext(p.ucaFwd, p.ucaAft);
+  const [l1, l2] = state.kind === 'twistBeam' ? stub(p.lcaFwd) : state.kind === 'beamLeaf' ? stub(p.lcaAft) : beam ? stub(p.lcaFwd) : state.kind === 'rigid' ? rail(p.lcaOut) : ext(p.lcaFwd, p.lcaAft);
   const r1 = add(rackCenter, scale(rackAxis, -rackLimit));
   const r2 = add(rackCenter, scale(rackAxis, rackLimit));
   return (

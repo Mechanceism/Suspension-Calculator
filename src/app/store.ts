@@ -316,6 +316,8 @@ function kindPointKeys(kind: SuspensionKind): PointKey[] {
   if (kind === 'macpherson') return ['lcaFwd', 'lcaAft', 'lcaOut', 'dmpChassis', 'dmpArm', 'trInner', 'trOuter', 'wheelCenter'];
   if (kind === 'rigid') return ['ucaOut', 'lcaOut', 'trInner', 'trOuter', 'wheelCenter'];
   if (kind === 'beam4') return ['lcaFwd', 'lcaOut', 'ucaFwd', 'ucaOut', 'wheelCenter', 'dmpChassis', 'dmpArm'];
+  if (kind === 'beamLeaf') return ['lcaFwd', 'lcaOut', 'lcaAft', 'wheelCenter'];
+  if (kind === 'twistBeam') return ['lcaFwd', 'lcaAft', 'lcaOut', 'wheelCenter', 'dmpChassis', 'dmpArm'];
   if (kind === 'beam3') return ['lcaFwd', 'lcaOut', 'ucaFwd', 'ucaOut', 'phChs', 'phAxle', 'wheelCenter', 'dmpChassis', 'dmpArm'];
   if (kind === 'singleArm') return ['lcaFwd', 'lcaAft', 'lcaOut', 'ucaOut', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm'];
   if (kind === 'multilink') return ['ucaFwd', 'ucaOut', 'ucaAft', 'ucaOut2', 'lcaFwd', 'lcaOut', 'lcaAft', 'lcaOut2', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm'];
@@ -338,6 +340,21 @@ export function convertGeometry(e: EditableGeometry, kind: SuspensionKind): Edit
   // New coilovers keep the old one's installed length (so its damper stroke and bump stop still fit).
   const coil = sub(p('dmpChassis'), p('dmpArm'));
   const coilLen = Math.hypot(coil.x, coil.y, coil.z) || 350;
+  if (kind === 'twistBeam') {
+    // Trailing arms from a bushing ahead of the wheel, joined by a beam whose shear center sits on the
+    // centerline a little behind the bushings (roll camber / roll steer come from where it is).
+    const c = hub;
+    put('lcaFwd', vec3(c.x - 120, c.y - 40, c.z + 450)); put('lcaOut', vec3(c.x - 120, c.y - 40, c.z));
+    put('lcaAft', vec3(0, c.y - 40, c.z + 300));
+    put('dmpArm', vec3(c.x - 170, c.y - 40, c.z - 60)); put('dmpChassis', vec3(c.x - 170, c.y - 40 + coilLen, c.z - 80));
+    return { ...e, kind, points: pts, springLayout: 'coilover', damperArm: 'upright' };
+  }
+  if (kind === 'beamLeaf') {
+    // Leaf springs on a solid axle: spring seat on top of the axle, front eye and rear shackle 650 mm away.
+    const c = hub;
+    put('lcaOut', vec3(c.x - 150, c.y + 40, c.z)); put('lcaFwd', vec3(c.x - 150, c.y + 90, c.z + 650)); put('lcaAft', vec3(c.x - 150, c.y + 120, c.z - 650));
+    return { ...e, kind, points: pts, springLayout: 'coilover', damperArm: 'upright' };
+  }
   if (isBeam(kind)) {
     // A solid axle from the hub: lower trailing links ahead of the axle, upper links (4-link: angled in;
     // 3-link: one in the middle) and, for the 3-link, a Panhard rod; coilovers on the axle.
@@ -350,7 +367,7 @@ export function convertGeometry(e: EditableGeometry, kind: SuspensionKind): Edit
     put('ucaAft', p('ucaFwd')); put('lcaAft', p('lcaFwd'));
     return { ...e, kind, points: pts, springLayout: 'coilover', damperArm: 'upright' };
   }
-  if (from === 'beam4' || from === 'beam3') {
+  if (isBeam(from) || from === 'twistBeam') {
     // Back to a corner type: arms from the sample layout's proportions around the hub.
     const c = hub;
     put('lcaOut', vec3(c.x - 40, c.y - 120, c.z)); put('ucaOut', vec3(c.x - 70, c.y + 160, c.z));
@@ -1612,8 +1629,8 @@ export const useApp = create<AppState>((set, get) => ({
   },
   setSuspensionKind: (kind) => {
     if ((get().geom.kind ?? 'doubleWishbone') === kind) return;
-    // A solid axle belongs to one axle: if the rear shares the front's design, give this axle its own first.
-    if (isBeam(kind) && get().links.rearFromFront) get().setLink('rearFromFront', false);
+    // A solid axle or twist beam belongs to one axle: if the rear shares the front's design, give this axle its own first.
+    if ((isBeam(kind) || kind === 'twistBeam') && get().links.rearFromFront) get().setLink('rearFromFront', false);
     const geom = get().geom;
     const next = convertGeometry(geom, kind);
     try { new DoubleWishbone(toGeometry(next)).design(); } catch (err) {
@@ -1626,7 +1643,13 @@ export const useApp = create<AppState>((set, get) => ({
       const front = get().activeCorner === 'FL' || get().activeCorner === 'FR';
       get().setLink(front ? 'frontPair' : 'rearPair', true);
     }
-    get().notify(`${SUSPENSION_LABELS[kind]}: ${isBeam(kind) ? `one axle carries both wheels (left and right now share this design). Lower links run forward from the axle, ${kind === 'beam4' ? 'the upper links angle in to locate it sideways' : 'one upper link in the middle and a Panhard rod locate it'}; coilovers sit on the axle. Move the link ends to shape it. A beam axle here doesn't steer.` : kind === 'singleArm' ? 'the knuckle now rides on the lower arm, turning on a kingpin from the lower to the upper ball joint\'s position (both on the arm); the arm swings on its frame pivots. Move the pivots along the car for a swing arm, across it for a trailing arm.' : kind === 'rigid' ? 'the wheel turns on a fixed kingpin through the ball joints\' positions; no spring or travel (only the tire gives).' : kind === 'macpherson' ? 'a strut was placed from the upright (top mount above the upper ball joint); adjust its points.' : kind === 'multilink' ? `each link now ends at its own point on the upright (moved 35 mm along the link: the same motion at ride height, nearly the same through travel); move them to shape the motion.${geom.kind === 'doubleWishbone' || !geom.kind ? ' The coilover now mounts on the upright (a multilink has no arm body), so check its motion ratio.' : ''}` : 'the links rejoin at one ball joint per arm.'}`, 'info');
+    // A twist beam's beam twists like an anti-roll bar: start from a typical stiffness if the axle has none.
+    if (kind === 'twistBeam') {
+      const axle = get().activeCorner === 'FL' || get().activeCorner === 'FR' ? 'front' : 'rear';
+      const sh = get().shared[axle];
+      if (sh.antiRollBar === 'none') { get().setShared(axle, { antiRollBar: 'wheelRate' }); get().setSharedField(axle, 'arbRate', '15'); }
+    }
+    get().notify(`${SUSPENSION_LABELS[kind]}: ${kind === 'twistBeam' ? 'each hub is fixed to its trailing arm, which swings about the line from its bushing to the beam\'s shear center (on the centerline); the beam\'s twist stiffness is this axle\'s anti-roll bar (Shared components; started at 15 N/mm at the wheel if there was none). Moving the shear center back adds roll camber and roll steer.' : kind === 'beamLeaf' ? 'a solid axle on leaf springs (left and right now share this design): set the front eye, the spring seat on the axle and the rear shackle; the spring rate is the leaf rate at the seat. Roll center ≈ the seat height.' : isBeam(kind) ? `one axle carries both wheels (left and right now share this design). Lower links run forward from the axle, ${kind === 'beam4' ? 'the upper links angle in to locate it sideways' : 'one upper link in the middle and a Panhard rod locate it'}; coilovers sit on the axle. Move the link ends to shape it. A beam axle here doesn't steer.` : kind === 'singleArm' ? 'the knuckle now rides on the lower arm, turning on a kingpin from the lower to the upper ball joint\'s position (both on the arm); the arm swings on its frame pivots. Move the pivots along the car for a swing arm, across it for a trailing arm.' : kind === 'rigid' ? 'the wheel turns on a fixed kingpin through the ball joints\' positions; no spring or travel (only the tire gives).' : kind === 'macpherson' ? 'a strut was placed from the upright (top mount above the upper ball joint); adjust its points.' : kind === 'multilink' ? `each link now ends at its own point on the upright (moved 35 mm along the link: the same motion at ride height, nearly the same through travel); move them to shape the motion.${geom.kind === 'doubleWishbone' || !geom.kind ? ' The coilover now mounts on the upright (a multilink has no arm body), so check its motion ratio.' : ''}` : 'the links rejoin at one ball joint per arm.'}`, 'info');
   },
   fitSpring: () => {
     const s = get();

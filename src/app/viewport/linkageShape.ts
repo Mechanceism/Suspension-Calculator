@@ -26,6 +26,25 @@ export function linkageShape(p: CornerPoints, kind: SuspensionKind): LinkageShap
       upright: [p.lcaOut, lower, p.trOuter, p.lcaOut], axis: [p.steerLower, p.steerUpper],
     };
   }
+  if (kind === 'twistBeam') {
+    // Trailing arm to the axle point, the hub stub, and the beam across the car at the shear center's height.
+    const beamAt = { x: p.lcaOut.x, y: p.lcaAft.y, z: p.lcaAft.z };
+    return {
+      ucaTri: null, lcaTri: null, uca: [], lca: [[p.lcaFwd, p.lcaOut], [beamAt, { x: -beamAt.x, y: beamAt.y, z: beamAt.z }]],
+      upright: [p.lcaOut, p.wheelCenter], axis: [p.contact, p.steerUpper],
+    };
+  }
+  if (kind === 'beamLeaf') {
+    // The leaf: front eye → seat → rear shackle (both sides), and the axle tube.
+    const m = (v: Vec3): Vec3 => ({ x: -v.x, y: v.y, z: v.z });
+    const right = p.axleRight ?? m(p.wheelCenter);
+    const eye = p.leafEye ?? p.lcaFwd, sh = p.leafShackle ?? p.lcaAft;
+    const seatR = mirrorOnAxle(p, p.lcaOut, right);
+    return {
+      ucaTri: null, lcaTri: null, uca: [], lca: [[eye, p.lcaOut], [p.lcaOut, sh], [m(eye), seatR], [seatR, m(sh)]],
+      upright: [p.wheelCenter, right], axis: [p.contact, p.steerUpper],
+    };
+  }
   if (kind === 'beam4' || kind === 'beam3') {
     // The whole axle: links on both sides (the right ones mirrored), the axle tube, the Panhard rod.
     const m = (v: Vec3): Vec3 => ({ x: -v.x, y: v.y, z: v.z });

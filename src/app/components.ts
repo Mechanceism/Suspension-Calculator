@@ -41,6 +41,20 @@ function withSprings(damperArm: ArmChoice, kind: SuspensionKind, layout: 'coilov
 }
 
 function kindDefs(damperArm: ArmChoice, kind: SuspensionKind): Record<ComponentId, ComponentDef & { absent?: boolean }> {
+  if (kind === 'twistBeam' || kind === 'beamLeaf') {
+    const tb = kind === 'twistBeam';
+    return {
+      chassis: { id: 'chassis', label: 'Chassis / frame', points: tb ? ['lcaFwd', 'dmpChassis'] : ['lcaFwd', 'lcaAft'], parents: [] },
+      uca: { id: 'uca', label: 'Upper arm (none)', points: [], parents: ['chassis'], absent: true },
+      lca: { id: 'lca', label: tb ? 'Trailing arm and beam' : 'Leaf spring', points: tb ? ['lcaFwd', 'lcaAft', 'lcaOut'] : ['lcaFwd', 'lcaOut', 'lcaAft'], parents: ['chassis'] },
+      rack: { id: 'rack', label: 'Steering (none)', points: [], parents: ['chassis'], absent: true },
+      tieRod: { id: 'tieRod', label: 'Tie rod (none)', points: [], parents: ['rack'], absent: true },
+      upright: { id: 'upright', label: tb ? 'Hub on the arm' : 'Axle housing', points: tb ? ['lcaOut', 'wheelCenter', 'dmpArm'] : ['lcaOut', 'wheelCenter'], parents: ['lca'] },
+      wheel: { id: 'wheel', label: 'Wheel & tire', points: ['wheelCenter'], parents: ['upright'] },
+      spring: tb ? { id: 'spring', label: 'Coilover (spring/damper)', points: ['dmpChassis', 'dmpArm'], parents: ['chassis', 'upright'] }
+        : { id: 'spring', label: 'Leaf rate at the seat (spring / damper)', points: [], parents: ['lca'], absent: true },
+    };
+  }
   if (kind === 'beam4' || kind === 'beam3') {
     const ph = kind === 'beam3';
     return {
@@ -146,6 +160,8 @@ export const POINT_LABELS: Record<PointKey, string> = {
 const KIND_LABELS: Partial<Record<SuspensionKind, Partial<Record<PointKey, string>>>> = {
   macpherson: { dmpChassis: 'Strut top mount', dmpArm: 'Strut lower point (on the upright)' },
   rigid: { ucaOut: 'Kingpin top', lcaOut: 'Kingpin bottom' },
+  twistBeam: { lcaFwd: 'Arm bushing (frame)', lcaAft: 'Beam shear center (centerline)', lcaOut: 'Arm at the axle', dmpArm: 'Coilover arm mount' },
+  beamLeaf: { lcaFwd: 'Leaf front eye (frame)', lcaOut: 'Leaf spring seat (on the axle)', lcaAft: 'Leaf rear shackle (frame)' },
   beam4: { lcaFwd: 'Lower link, frame end', lcaOut: 'Lower link, axle end', ucaFwd: 'Upper link, frame end', ucaOut: 'Upper link, axle end', dmpArm: 'Coilover axle mount' },
   beam3: { lcaFwd: 'Lower link, frame end', lcaOut: 'Lower link, axle end', ucaFwd: 'Upper center link, frame end', ucaOut: 'Upper center link, axle end', dmpArm: 'Coilover axle mount' },
   singleArm: { lcaFwd: 'Arm front pivot (frame)', lcaAft: 'Arm rear pivot (frame)', lcaOut: 'Kingpin bottom (on the arm)', ucaOut: 'Kingpin top (on the arm)', dmpArm: 'Coilover lower mount' },

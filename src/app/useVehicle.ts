@@ -180,11 +180,12 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         let axleRef: { table: AxleTable; side: 'L' | 'R' } | undefined;
         let table: CornerTableLike | undefined;
         let freeLength = d.spring.freeLength.value;
-        if (b.corner.solidAxle) {
+        const coupled = b.corner.solidAxle ?? b.corner.twistBeam;
+        if (coupled) {
           const akey = `axle|${range[0]}|${range[1]}`;
           let at = axleCache.current.get(b.corner)?.get(akey);
           if (!at) {
-            at = new AxleTable(b.corner.solidAxle, range, 17);
+            at = new AxleTable(coupled, range, 17);
             axleCache.current.set(b.corner, new Map([[akey, at]]));
           }
           const side = isLeft(id) ? 'L' : 'R';

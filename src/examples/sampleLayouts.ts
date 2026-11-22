@@ -143,6 +143,30 @@ export const SAMPLE_BEAM4: DoubleWishboneGeometry = {
   damper: { chassis: vec3(400, 500, -30), arm: 'upright', armPoint: vec3(400, 190, -30) },
 };
 
+/**
+ * Sample twist beam (rear): trailing arms from bushings 450 mm ahead of the wheel, the beam's shear center on
+ * the centerline 150 mm behind the bushings (a little roll camber and roll steer); the beam's twist acts as
+ * the axle's anti-roll bar. Coilovers on the arms behind the wheel.
+ */
+export const SAMPLE_TWIST_BEAM: DoubleWishboneGeometry = {
+  kind: 'twistBeam',
+  uca: { fwd: vec3(250, 330, 150), aft: vec3(250, 330, -150), out: vec3(560, 300, -10) }, // unused
+  lca: { fwd: vec3(480, 100, 450), aft: vec3(0, 100, 300), out: vec3(480, 100, 0) },
+  tieRod: { inner: vec3(200, 100, -120), outer: vec3(540, 100, -120) }, // unused
+  wheel: { center: WHEEL_CENTER, spinAxis: vec3(1, 0, 0), radius: WHEEL_RADIUS, width: 205 },
+  damper: { chassis: vec3(430, 450, -80), arm: 'upright', armPoint: vec3(430, 100, -60) },
+};
+
+/** Sample solid rear axle on leaf springs: front eyes 650 mm ahead, shackles 650 mm behind, seats on top of the axle. */
+export const SAMPLE_LEAF: DoubleWishboneGeometry = {
+  kind: 'beamLeaf',
+  uca: { fwd: vec3(250, 330, 150), aft: vec3(250, 330, -150), out: vec3(560, 300, -10) }, // unused
+  lca: { fwd: vec3(450, 230, 650), aft: vec3(450, 260, -650), out: vec3(450, 180, 0) },
+  tieRod: { inner: vec3(200, 100, -120), outer: vec3(540, 100, -120) }, // unused
+  wheel: { center: WHEEL_CENTER, spinAxis: vec3(1, 0, 0), radius: WHEEL_RADIUS, width: 205 },
+  damper: { chassis: vec3(400, 500, -30), arm: 'upright', armPoint: vec3(400, 190, -30) }, // the leaf is the spring: this only sets its (virtual) installed length
+};
+
 /** Every preset the app offers: the double wishbone samples, then one of each other type. */
 export const PRESET_LAYOUTS: Layout[] = [
   ...SAMPLE_LAYOUTS,
@@ -152,4 +176,6 @@ export const PRESET_LAYOUTS: Layout[] = [
   { id: 'T', label: 'Single arm: trailing arm', geometry: SAMPLE_TRAILING_ARM },
   { id: 'A4', label: 'Solid axle, 4-link', geometry: SAMPLE_BEAM4 },
   { id: 'A3', label: 'Solid axle, 3-link + Panhard rod', geometry: SAMPLE_BEAM3 },
+  { id: 'TB', label: 'Twist beam', geometry: SAMPLE_TWIST_BEAM },
+  { id: 'LF', label: 'Solid axle on leaf springs', geometry: SAMPLE_LEAF },
 ];

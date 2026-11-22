@@ -8,7 +8,7 @@
  */
 import { type Vec3, vec3, add, sub, normalize } from '../math/vec3';
 import { mulVec, transpose } from '../math/mat3';
-import type { SolidAxle, AxleState } from '../suspension/solidAxle';
+import type { TwoTravelAxle, AxleState } from '../suspension/solidAxle';
 import type { CornerSampleAt } from './cornerTable';
 
 export interface AxleSampleAt extends CornerSampleAt {
@@ -29,7 +29,7 @@ export class AxleTable {
   private readonly n: number;
   private readonly data: Float64Array;
 
-  constructor(axle: SolidAxle, range: [number, number], n = 17) {
+  constructor(axle: TwoTravelAxle, range: [number, number], n = 17) {
     this.n = n;
     this.lo = range[0];
     this.hi = range[1];
@@ -50,9 +50,10 @@ export class AxleTable {
       rowStart = row[0]!.poses;
       states.push(row);
     }
-    // Where an axle-fixed point (design-frame local position) is in a state.
-    const world = (s: AxleState, local: Vec3) => add(s.poses.axle!.position, mulVec(s.poses.axle!.rotation, local));
-    const localOf = (s: AxleState, p: Vec3) => mulVec(transpose(s.poses.axle!.rotation), sub(p, s.poses.axle!.position));
+    // Where a point fixed to the body carrying a wheel (design-frame local position) is in a state.
+    const pose = (s: AxleState, side: 0 | 1) => s.poses[s.bodies ? (side === 0 ? s.bodies.left : s.bodies.right) : 'axle']!;
+    const world = (s: AxleState, side: 0 | 1, local: Vec3) => add(pose(s, side).position, mulVec(pose(s, side).rotation, local));
+    const localOf = (s: AxleState, side: 0 | 1, p: Vec3) => mulVec(transpose(pose(s, side).rotation), sub(p, pose(s, side).position));
     this.data = new Float64Array(n * n * 2 * W);
     for (let i = 0; i < n; i++) {
       for (let j = 0; j < n; j++) {
@@ -61,8 +62,8 @@ export class AxleTable {
           const w = side === 0 ? s.left : s.right;
           const L = s.springLength ? (side === 0 ? s.springLength.left : s.springLength.right) : NaN;
           // Material point at the contact: follow it to the neighbours in each travel.
-          const loc = localOf(s, w.contact);
-          const d = (a: AxleState, b: AxleState, dq: number) => { const pa = world(a, loc), pb = world(b, loc); return vec3((pb.x - pa.x) / dq, (pb.y - pa.y) / dq, (pb.z - pa.z) / dq); };
+          const loc = localOf(s, side, w.contact);
+          const d = (a: AxleState, b: AxleState, dq: number) => { const pa = world(a, side, loc), pb = world(b, side, loc); return vec3((pb.x - pa.x) / dq, (pb.y - pa.y) / dq, (pb.z - pa.z) / dq); };
           const iA = Math.max(0, i - 1), iB = Math.min(n - 1, i + 1), jA = Math.max(0, j - 1), jB = Math.min(n - 1, j + 1);
           let dL_ = d(states[iA]![j]!, states[iB]![j]!, qs[iB]! - qs[iA]!);
           let dR_ = d(states[i]![jA]!, states[i]![jB]!, qs[jB]! - qs[jA]!);

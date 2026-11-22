@@ -45,7 +45,7 @@ function CornerDrawing({ view, onOpen, active, wheelbase }: { view: VehicleCorne
       {vis.lca && sh.lca.map(([a, b], i) => <Seg key={i} a={a} b={b} color={COLORS.lca} width={w} />)}
       {vis.upright && <Polyline pts={sh.upright} color={COLORS.upright} width={w} />}
       {vis.upright && <Seg a={foot} b={p.wheelCenter} color={COLORS.upright} width={w} />}
-      {vis.tieRod && view.state.kind !== 'beam4' && view.state.kind !== 'beam3' && <Seg a={p.trInner} b={p.trOuter} color={COLORS.tieRod} width={w} />}
+      {vis.tieRod && !['beam4', 'beam3', 'beamLeaf', 'twistBeam'].includes(view.state.kind) && <Seg a={p.trInner} b={p.trOuter} color={COLORS.tieRod} width={w} />}
       {vis.spring && p.damperChassis && p.damperArm && <Coilover a={p.damperChassis} b={p.damperArm} color={COLORS.spring} radius={22} coils={7} />}
       {vis.spring && p.rockerPivot1 && p.rockerPivot2 && p.pushrodUpper && p.pushrodLower && p.damperArm && (
         <>

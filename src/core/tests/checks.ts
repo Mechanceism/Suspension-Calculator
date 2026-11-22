@@ -81,6 +81,8 @@ export interface Finding {
   severity: Severity;
   text: string;
   corners?: CornerId[];
+  /** Time it first happens in the ride over time, s (absent for steady states). */
+  t?: number;
 }
 
 export interface StateFacts {
@@ -141,9 +143,10 @@ export function classifyState(f: StateFacts, profile: CheckProfile): Finding[] {
     const abs = CORNER_IDS.filter((id) => g.corners[id].state === 'abs-limit');
     if (abs.length) {
       add('absActive', `${abs.join(', ')} at the ABS limit`, abs);
-      const short = abs.reduce((a, id) => a + g.corners[id].shortfall, 0);
+      // Braking shortfall only: a tire's braking beyond its longitudinal peak (not its cornering share).
+      const short = abs.reduce((a, id) => a + Math.max(0, Math.min(-r.corners[id].brakeForce, -r.corners[id].brakeForce - g.corners[id].capX)), 0);
       if (f.brakeForce > 0 && short / f.brakeForce > (profile.absActive.threshold ?? 5) / 100) {
-        add('speedNotReached', `ABS can only give ${pct(1 - short / f.brakeForce)} of the braking asked: the car can't slow down in the distance`, abs);
+        add('speedNotReached', `ABS can only give ${pct(Math.max(0, 1 - short / f.brakeForce))} of the braking asked: the car can't slow down in the distance`, abs);
       }
     }
     const locked = CORNER_IDS.filter((id) => g.corners[id].state === 'locked');

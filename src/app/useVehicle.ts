@@ -15,7 +15,7 @@ import { contactPatch, type ContactPatch, type TireProfile } from '../core/tire/
 import type { TireForceModel } from '../core/tire/model';
 import { CornerTable } from '../core/vehicle/cornerTable';
 import {
-  CORNER_IDS, isLeft, isFront, placement, poseFns, solveVehicle, designGroundY, axleRollCenter,
+  CORNER_IDS, isLeft, isFront, placement, poseFns, solveVehicle, vehicleAt, designGroundY, axleRollCenter,
   type CornerId, type VehicleResult, type ChassisPose, type VehicleCorner, type AxleShared,
 } from '../core/vehicle/vehicle';
 import type { SharedDesign } from './store';
@@ -93,6 +93,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
   const roadBank = useApp((st) => st.roadBank);
   const wheelBumps = useApp((st) => st.wheelBumps);
   const gripFields = useApp((st) => st.tireGrip);
+  const rideView = useApp((st) => st.rideView);
   // Grade and bank fold into what the tires must supply (see core/tests/segments.ts).
   const road = roadEffective(lateralGKin, longitudinalG, Math.atan(roadGrade / 100), (roadBank * Math.PI) / 180);
   const lateralG = road.lateralG;
@@ -184,16 +185,15 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         heaveSpring: a.heaveSpring === 'wheelRate' ? { kind: 'wheelRate', rate: a.heaveRate.value } : { kind: 'none' },
       });
       const bias = v.brakeBias.value / 100;
-      const res = solveVehicle(
-        {
-          corners, totalMass: v.mass.value, cg, wheelbase, groundY, lateralG, brakingG, brakeBias: bias,
-          accelG, driveSplit: v.driveSplit.value / 100,
-          shared: { front: toAxle(s.shared.front), rear: toAxle(s.shared.rear) },
-          gravityScale: road.gravityScale, groundOffset: wheelBumps, tireGrip: tireGripOf(gripFields),
-          diff: { front: s.settings.FL.diff, rear: s.settings.RL.diff },
-        },
-        { guess: lastPose.current },
-      );
+      const vin = {
+        corners, totalMass: v.mass.value, cg, wheelbase, groundY, lateralG, brakingG, brakeBias: bias,
+        accelG, driveSplit: v.driveSplit.value / 100,
+        shared: { front: toAxle(s.shared.front), rear: toAxle(s.shared.rear) },
+        gravityScale: road.gravityScale, groundOffset: wheelBumps, tireGrip: tireGripOf(gripFields),
+        diff: { front: s.settings.FL.diff, rear: s.settings.RL.diff },
+      };
+      // Playback of the ride over time poses the car directly (body motion and travels from the simulation).
+      const res = rideView ? vehicleAt(vin, rideView.pose, rideView.travel) : solveVehicle(vin, { guess: lastPose.current });
       if (res.converged) lastPose.current = res.pose;
       const P = poseFns(res.pose);
 
@@ -287,7 +287,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
     } catch (e) {
       return { ...empty, error: e instanceof Error ? e.message : String(e) };
     }
-  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, rack, lateralG, brakingG, accelG, road.gravityScale, wheelBumps, gripFields]);
+  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, rack, lateralG, brakingG, accelG, road.gravityScale, wheelBumps, gripFields, rideView]);
 
   return result;
 }

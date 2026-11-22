@@ -8,7 +8,7 @@ import { vec3, type Vec3 } from '../core/math/vec3';
 import { DoubleWishbone, spinAxisFromCamberToe, type DoubleWishboneGeometry, type TravelDriver } from '../core/suspension/doubleWishbone';
 import { SAMPLE_LAYOUTS, SAMPLE_SPRING } from '../examples/sampleLayouts';
 import { fitFreeLength } from '../core/suspension/spring';
-import { CORNER_IDS, staticCornerLoads, type CornerId, type BrakeMount } from '../core/vehicle/vehicle';
+import { CORNER_IDS, staticCornerLoads, type CornerId, type BrakeMount, type ChassisPose } from '../core/vehicle/vehicle';
 import { setArmLength, setPivotInclination, setPivotPlanAngle, setArmFrontViewAngle, transferArmPoint } from '../core/suspension/armGeometry';
 import { add, sub } from '../core/math/vec3';
 import type { TireProfile } from '../core/tire/geometry';
@@ -257,6 +257,8 @@ export interface AppState extends DesignState {
   /** Tests workspace: the test being edited, and the selected result state (segment, sample). */
   activeTestId: string | null;
   testView: { segment: number; sample: number } | null;
+  /** The car posed from the ride over time (playback): body pose and travels, no equilibrium solve. */
+  rideView: { pose: ChassisPose; travel: Record<CornerId, number> } | null;
   updateTests(fn: (t: TestDesign[]) => TestDesign[]): void;
   roadBank: number;
   wheelBumps: Record<CornerId, number>;
@@ -452,7 +454,9 @@ export function rootOf(id: CornerId, links: CornerLinks): CornerId {
 export const CORNER_NAMES: Record<CornerId, string> = { FL: 'Front left', FR: 'Front right', RL: 'Rear left', RR: 'Rear right' };
 
 /** Vehicle inputs (L6). */
-export const VEHICLE_KEYS = ['mass', 'cgX', 'cgY', 'cgZ', 'wheelbase', 'brakeBias', 'driveSplit'] as const;
+export const VEHICLE_KEYS = ['mass', 'cgX', 'cgY', 'cgZ', 'wheelbase', 'brakeBias', 'driveSplit', 'rollInertia', 'pitchInertia', 'tireDamping'] as const;
+/** Vehicle inputs only the ride over time (Phase B) uses. */
+export const RIDE_KEYS = ['rollInertia', 'pitchInertia', 'tireDamping'] as const;
 export type VehicleKey = (typeof VEHICLE_KEYS)[number];
 export const VEHICLE_META: Record<VehicleKey, { label: string; quantity: Quantity; unit: string; hint?: string }> = {
   mass: { label: 'Total mass (incl. unsprung)', quantity: 'mass', unit: 'kg' },
@@ -462,6 +466,9 @@ export const VEHICLE_META: Record<VehicleKey, { label: string; quantity: Quantit
   wheelbase: { label: 'Wheelbase', quantity: 'length', unit: 'mm' },
   brakeBias: { label: 'Brake bias (front share)', quantity: 'percent', unit: '%', hint: 'Share of the braking force on the front axle' },
   driveSplit: { label: 'Drive split (front share)', quantity: 'percent', unit: '%', hint: 'Only used when both axles have powered corners; within an axle the drive is shared equally (open differential)' },
+  rollInertia: { label: 'Body roll inertia', quantity: 'ratio', unit: 'kg·m²', hint: 'Sprung body about its CG, around the car\'s long axis (ride over time). About sprung mass × (0.3–0.4 × track)².' },
+  pitchInertia: { label: 'Body pitch inertia', quantity: 'ratio', unit: 'kg·m²', hint: 'Sprung body about its CG, around the side-to-side axis (ride over time). About sprung mass × (0.35–0.45 × wheelbase)².' },
+  tireDamping: { label: 'Tire damping', quantity: 'damping', unit: 'N·s/m', hint: 'Vertical damping of each tire (ride over time). Small: rubber and air damp little.' },
 };
 
 export type Workspace = 'corner' | 'vehicle' | 'tests';
@@ -702,6 +709,9 @@ export const defaultVehicle = (): Record<VehicleKey, Field> => ({
   wheelbase: field(1550),
   brakeBias: field(60, 'percent'),
   driveSplit: field(50, 'percent'),
+  rollInertia: field(35, 'ratio'),
+  pitchInertia: field(100, 'ratio'),
+  tireDamping: field(100, 'damping'),
 });
 
 export function defaultDesign(presetId = 'C'): DesignState {
@@ -949,6 +959,7 @@ export const useApp = create<AppState>((set, get) => ({
   roadGrade: 0,
   activeTestId: null,
   testView: null,
+  rideView: null,
   updateTests: (fn) => set({ tests: fn(get().tests) }),
   roadBank: 0,
   wheelBumps: { FL: 0, FR: 0, RL: 0, RR: 0 },

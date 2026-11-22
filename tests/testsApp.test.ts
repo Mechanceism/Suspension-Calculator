@@ -164,6 +164,28 @@ describe('priority ranks', () => {
     }
   });
 
+  it('every built-in test also runs over time (Phase B) without going unstable; ride inputs load quietly from older files', async () => {
+    const { runTest } = await import('../src/core');
+    const d = defaultDesign();
+    const { problem } = buildVehicleProblem(d as AppState);
+    expect(problem.ride).toEqual({ rollInertia: 35, pitchInertia: 100, tireDamping: 100 });
+    expect(problem.designs.FL?.damping).toEqual({ bump: 1500, rebound: 2500 });
+    const geoms = Object.fromEntries(Object.entries(problem.designs).map(([k, v]) => [k, v!.geometry]));
+    for (const preset of TEST_PRESETS) {
+      const t = { ...preset.make(), id: 'p' };
+      expect(t.ride).toBe(true);
+      const r = runTest(problem, geoms, t.segments.map((sg) => segmentSpec(sg, t)), { onFail: 'report', ride: true });
+      expect(r.ride?.frames.length).toBeGreaterThan(5);
+      expect(r.segments.flatMap((s) => s.findings).filter((f) => f.check === 'noSolution')).toEqual([]);
+    }
+    const old = JSON.parse(JSON.stringify(serializeProject(d, 'Old')));
+    old.formatVersion = 9;
+    for (const k of ['rollInertia', 'pitchInertia', 'tireDamping']) delete old.vehicle.fields[k];
+    const back = importProject(old);
+    expect(back.warnings).toEqual(['Upgraded from file format 9 to 10.']);
+    expect(back.design.vehicle.rollInertia.value).toBe(35);
+  });
+
   it('metric shows km/h, imperial mph', async () => {
     const { PRESETS } = await import('../src/app/units');
     expect(PRESETS.metric.speed).toBe('km/h');

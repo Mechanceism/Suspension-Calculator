@@ -3,20 +3,21 @@
 import { optimizeCorner, type CornerProblem } from '../core/optimize/corner';
 import { optimizeVehicle, type VehicleProblem } from '../core/optimize/vehicle';
 import { runTest, playbackFrames, type TestRunOptions } from '../core/tests/run';
+import { rideRun } from '../core/tests/ride';
 import type { SegmentSpec } from '../core/tests/segments';
 
 type Job =
   | { kind: 'corner'; problem: CornerProblem }
   | { kind: 'vehicle'; problem: VehicleProblem }
   | { kind: 'test'; problem: VehicleProblem; segments: SegmentSpec[]; opts: TestRunOptions }
-  | { kind: 'playback'; problem: VehicleProblem; segments: SegmentSpec[] };
+  | { kind: 'playback'; problem: VehicleProblem; segments: SegmentSpec[]; ride?: boolean };
 
 self.onmessage = (e: MessageEvent<Job>) => {
   try {
     const j = e.data;
     if (j.kind === 'playback') {
       const geometries = Object.fromEntries(Object.entries(j.problem.designs).map(([r, d]) => [r, d!.geometry]));
-      self.postMessage({ type: 'done', result: playbackFrames(j.problem, geometries, j.segments) });
+      self.postMessage({ type: 'done', result: j.ride ? rideRun(j.problem, geometries, j.segments).frames : playbackFrames(j.problem, geometries, j.segments) });
       return;
     }
     if (j.kind === 'test') {

@@ -135,6 +135,7 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
     designs[root] = {
       geometry: toGeometry(d.geom), profile: toProfile(d.geom), model: toForceModel(d.tireModel, d.tire, d.volumeChange) ?? RIGID_TIRE,
       springRate: d.spring.springRate.value, freeLength: d.spring.freeLength.value, unsprungMass: d.spring.unsprungMass.value,
+      damping: { bump: Math.max(0, d.damper.bumpDamping.value), rebound: Math.max(0, d.damper.reboundDamping.value) },
       bumpStop: d.bumpStop ? { length: d.damper.bumpStopLength.value, rate: d.damper.bumpStopRate.value } : undefined,
     };
   }
@@ -161,6 +162,7 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
       steered: Object.fromEntries(CORNER_IDS.map((id) => [id, s.settings[id].steered])),
       rackLimit: Math.abs(s.steer.rackLimit.value), cFactor: s.steer.cFactor.value,
     },
+    ride: { rollInertia: Math.max(0.1, v.rollInertia.value), pitchInertia: Math.max(0.1, v.pitchInertia.value), tireDamping: Math.max(0, v.tireDamping.value) },
     mass: v.mass.value, cg: { x: v.cgX.value, height: v.cgY.value, z: v.cgZ.value }, wheelbase: v.wheelbase.value,
     brakeBias: v.brakeBias.value / 100, driveSplit: v.driveSplit.value / 100, autoPreload: s.autoPreload,
     shared: { front: toAxleShared(s.shared.front), rear: toAxleShared(s.shared.rear) },
@@ -238,8 +240,8 @@ export function runTestJob(problem: VehicleProblem, segments: SegmentSpec[], opt
   return { done, cancel: () => worker.terminate() };
 }
 
-/** Compute playback frames in the worker. */
-export function runPlaybackJob(problem: VehicleProblem, segments: SegmentSpec[]): { done: Promise<PlaybackFrame[]>; cancel(): void } {
+/** Compute playback frames in the worker (`ride`: over time, Phase B; otherwise steady states). */
+export function runPlaybackJob(problem: VehicleProblem, segments: SegmentSpec[], ride = false): { done: Promise<PlaybackFrame[]>; cancel(): void } {
   const worker = new Worker(new URL('./optimizer.worker.ts', import.meta.url), { type: 'module' });
   const done = new Promise<PlaybackFrame[]>((res, rej) => {
     worker.onmessage = (e: MessageEvent) => {
@@ -249,6 +251,6 @@ export function runPlaybackJob(problem: VehicleProblem, segments: SegmentSpec[])
     };
     worker.onerror = (e) => { worker.terminate(); rej(new Error(e.message || 'Playback worker failed')); };
   });
-  worker.postMessage({ kind: 'playback', problem, segments });
+  worker.postMessage({ kind: 'playback', problem, segments, ride });
   return { done, cancel: () => worker.terminate() };
 }

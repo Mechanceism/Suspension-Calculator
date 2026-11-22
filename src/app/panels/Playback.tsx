@@ -14,6 +14,7 @@ import { CORNER_IDS } from '../../core/vehicle/vehicle';
 import { useApp } from '../store';
 import { buildVehicleProblem, runPlaybackJob } from '../optimizer';
 import { segmentSpec, type TestDesign } from '../tests';
+import { useRun } from './TestsPanels';
 import { useDisplay } from '../units';
 import { fmt } from './FieldRows';
 
@@ -46,14 +47,19 @@ function applyFrame(f: PlaybackFrame) {
   s.set('wheelBumps', { FL: 0, FR: 0, RL: 0, RR: 0, ...f.groundOffset });
   s.set('rack', Number((f.rack ?? 0).toFixed(2)));
   s.set('testView', null);
+  s.set('rideView', f.ride ? { pose: f.ride.pose, travel: f.ride.travel } : null);
 }
 
 async function computeFrames(test: TestDesign) {
   const s = useApp.getState();
   usePlayback.setState({ computing: true, error: null, playing: false, testId: test.id, from: { geom: s.geom, corners: s.corners } });
   try {
+    // The last run already drove the test over time: reuse it while the design is the same.
+    const last = useRun.getState().results[test.id];
+    const fresh = last && last.from.geom === s.geom && last.from.corners === s.corners && last.from.settings === s.settings && last.from.vehicle === s.vehicle;
+    const reuse = test.ride !== false && fresh && last.result.ride?.frames.length ? last.result.ride.frames : null;
     const { problem } = buildVehicleProblem(s);
-    const frames = await runPlaybackJob(problem, test.segments.map((sg) => segmentSpec(sg, test))).done;
+    const frames = reuse ?? await runPlaybackJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), test.ride !== false).done;
     usePlayback.setState({ frames, computing: false, t: 0 });
     if (frames[0]) applyFrame(frames[0]);
     return frames;
@@ -180,6 +186,7 @@ export function PlaybackBar({ test }: { test: TestDesign | null }) {
           <div className="small-text playback-hud">
             <b>{cur.segment + 1}. {test.segments[cur.segment]?.name}</b> · {disp.format(cur.speed, 'm/s', 0)} · lateral {fmt(cur.ay, 2)} g · long. {fmt(cur.ax, 2)} g
             {cur.rack ? ` · rack ${fmt(cur.rack, 1)} mm` : ''}
+            {cur.ride ? ` · roll ${fmt((cur.ride.pose.roll * 180) / Math.PI, 2)}° · pitch ${fmt((cur.ride.pose.pitch * 180) / Math.PI, 2)}°` : ''}
             {' · grip '}{CORNER_IDS.map((id) => (
               <span key={id} className={cur.utilization[id] > 1 ? 'bad-text' : cur.utilization[id] > 0.9 ? 'warn-text' : ''}> {id} {fmt(cur.utilization[id] * 100, 0)}%</span>
             ))}
@@ -187,7 +194,7 @@ export function PlaybackBar({ test }: { test: TestDesign | null }) {
           </div>
         ) : (
           <div className="small-text muted">
-            {pb.error ? `Playback failed: ${pb.error}` : stale ? 'The design changed: Play recomputes.' : 'Play (or Space) drives the car through the test. Steady states for now: the body moves state to state, without transients (Phase B).'}
+            {pb.error ? `Playback failed: ${pb.error}` : stale ? 'The design changed: Play recomputes.' : 'Play (or Space) drives the car through the test: over time (body motion, wheel hop, dampers) when the test has Ride over time on, otherwise state to state.'}
           </div>
         )}
       </div>

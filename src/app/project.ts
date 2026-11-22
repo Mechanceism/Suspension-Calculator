@@ -20,6 +20,7 @@
  *   8  damping rates, ABS and differential per corner, test definitions, road inputs
  *   9  tire grip model = Magic Formula coefficients (the contact-patch model keeps its fields for the
  *      contact-area goal); a format-8 friction coefficient μ ≠ 1 scales the peak μ's
+ *  10  ride over time (Phase B): body roll and pitch inertia, tire damping (vehicle inputs)
  */
 import pkg from '../../package.json';
 import { parseValue, type Quantity } from '../core/units/units';
@@ -31,14 +32,14 @@ import {
   defaultDesign, mergedCorners, rootOf, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META, SPRING_KEYS, SPRING_META,
   DAMPER_KEYS, DAMPER_META, STEER_KEYS, STEER_META, TIRE_KEYS, TIRE_META, VEHICLE_KEYS, VEHICLE_META,
   DEFAULT_LINKS, DEFAULT_SETTINGS, SHARED_META, defaultShared, defaultOptimizerSetup, defaultVehicleOptimizerSetup, defaultGrip, GRIP_KEYS, GRIP_META,
-  defaultTireGrip, MF_KEYS, MF_META,
+  defaultTireGrip, MF_KEYS, MF_META, RIDE_KEYS,
   type VehicleOptimizerSetup, type HeldDimension, newDimId,
   type OptimizerSetup,
   type DesignState, type CornerDesign, type Field, type CornerLinks, type CornerSettings, type SharedDesign, type Axle,
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 9;
+export const FORMAT_VERSION = 10;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -250,6 +251,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
     const scaled = (k: 'pDy1' | 'pDx1') => { const v = Number((d[k].value * mu).toFixed(4)); return { text: String(v), value: v }; };
     return { ...f, formatVersion: 9, tireGrip: { pDy1: scaled('pDy1'), pDx1: scaled('pDx1') } };
   },
+  // 9 → 10: ride inputs (body inertias, tire damping) take their defaults.
+  9: (f) => ({ ...f, formatVersion: 10 }),
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */
@@ -343,6 +346,7 @@ function readTests(raw: unknown, warnings: string[]): TestDesign[] {
       rank: rankOf(t.rank, testLegacy, ti),
       onFail: t.onFail === 'lift' ? 'lift' : 'report',
       enabled: t.enabled !== false,
+      ride: t.ride !== false,
     });
   }
   return out;
@@ -578,7 +582,13 @@ export function importProject(data: unknown): ImportResult {
     driver: motion.driver === 'contactPatch' ? 'contactPatch' : 'wheelCenter',
     corners, links, settings, activeCorner,
     // Files upgraded from format 1 had no vehicle inputs: use the defaults quietly.
-    vehicle: readRecord(vehicleRaw.fields, VEHICLE_KEYS, (k) => VEHICLE_META[k].quantity, def.vehicle, 'vehicle', olderThan4 ? [] : warnings),
+    vehicle: (() => {
+      // Files before format 10 have no ride inputs: they take the defaults quietly.
+      const w: string[] = [];
+      const r = readRecord(vehicleRaw.fields, VEHICLE_KEYS, (k) => VEHICLE_META[k].quantity, def.vehicle, 'vehicle', w);
+      if (!olderThan4) warnings.push(...w.filter((x) => original >= 10 || !RIDE_KEYS.some((k) => x.startsWith(`vehicle.${k}`))));
+      return r;
+    })(),
     autoPreload: typeof vehicleRaw.autoPreload === 'boolean' ? vehicleRaw.autoPreload : def.autoPreload,
     cornerLoadMode: vehicleRaw.cornerLoadMode === 'manual' ? 'manual' : 'vehicle',
     shared: { front: readShared(f.shared, 'front', older ? [] : warnings), rear: readShared(f.shared, 'rear', older ? [] : warnings) },

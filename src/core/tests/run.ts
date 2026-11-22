@@ -10,6 +10,7 @@ import { CORNER_IDS, type CornerId, type ChassisPose, type CornerStatus, type Gr
 import { segmentStates, segmentLatG, roadEffective, G, type RoadState, type SegmentSpec, type CarDims } from './segments';
 import { wheelHeights } from './road';
 import { steerForTurn, type SteerNeed } from './steer';
+import { rideOn } from './ride';
 import { classifyState, worstSeverity, PROFILES, type CheckProfile, type Finding, type Severity } from './checks';
 
 export interface StateResult {
@@ -43,6 +44,8 @@ export interface SegmentResult {
   speedLimit?: number;
   /** "Driver lifts": the segment re-run at its speed limit. */
   lifted?: StateResult[];
+  /** Passes as steady states but fails over time (ride: bumps, transients). */
+  rideFail?: boolean;
 }
 
 export interface TestRunOptions {
@@ -50,6 +53,8 @@ export interface TestRunOptions {
   onFail: 'report' | 'lift';
   /** Search the speed limit of failing segments (always on for 'lift'). */
   speedLimits?: boolean;
+  /** Also drive the test over time (Phase B ride) and check every moment. */
+  ride?: boolean;
 }
 
 export interface TestRun {
@@ -59,6 +64,8 @@ export interface TestRun {
   segments: SegmentResult[];
   /** Assembly failed (geometry can't be built). */
   error?: string;
+  /** The ride over time (Phase B) when asked for: frames for playback. */
+  ride?: { frames: PlaybackFrame[]; error?: string };
 }
 
 /** Segment physics plus the checks that decide its pass / fail. */
@@ -175,8 +182,24 @@ export function runTest(
     }
     segs.push(res);
   });
+  let ride: TestRun['ride'];
+  if (opts.ride) {
+    const rr = rideOn(p, asm, segments, {});
+    ride = { frames: rr.frames, ...(rr.error ? { error: rr.error } : {}) };
+    segs.forEach((sr, i) => {
+      // Add what only shows over time (the steady samples already report the rest).
+      const steadyKeys = new Set(sr.findings.map((f) => `${f.check}|${(f.corners ?? []).join(',')}`));
+      const extra = (rr.findings[i] ?? []).filter((f) => !steadyKeys.has(`${f.check}|${(f.corners ?? []).join(',')}`));
+      if (!extra.length) return;
+      sr.findings = dedupe([...sr.findings, ...extra]);
+      const sev = worstSeverity(sr.findings);
+      if (sr.passed && sev === 'fail') sr.rideFail = true;
+      sr.severity = sev;
+      sr.passed = sev !== 'fail';
+    });
+  }
   const severity = worstSeverity(segs.flatMap((s) => s.findings));
-  return { severity, passed: severity !== 'fail', states, segments: segs };
+  return { severity, passed: severity !== 'fail', states, segments: segs, ...(ride ? { ride } : {}) };
 }
 
 /** Wheelbase and half track of the assembled car, mm. */
@@ -203,6 +226,8 @@ export interface PlaybackFrame {
   severity: Severity;
   utilization: Record<CornerId, number>;
   findings: string[];
+  /** Ride over time (Phase B): the body pose, each travel (mm) and tire load (N) at this moment. */
+  ride?: { pose: ChassisPose; travel: Record<CornerId, number>; tireLoad: Record<CornerId, number> };
 }
 
 /**

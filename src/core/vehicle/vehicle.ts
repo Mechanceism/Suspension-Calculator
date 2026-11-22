@@ -52,6 +52,10 @@ export interface VehicleCorner {
   drive?: DriveMount;
   /** Anti-lock brakes (default true). Without ABS a tire braked past its grip locks and slides. */
   abs?: boolean;
+  /** Damper rates at the damper (coaxial with the spring), N·s/m: bump = compression, rebound = extension. */
+  damper?: { bump: number; rebound: number };
+  /** Fast vertical tire force (N) from the wheel-center height above the ground h0 (mm) and tilt (a lookup table). */
+  tireForceAt?: (h0: number, tilt: number) => number;
 }
 
 export type DiffType = 'open' | 'locked' | 'lsd';
@@ -239,7 +243,7 @@ export interface VehicleResult {
   unmet: { accel: boolean; brake: boolean };
 }
 
-function sprungProperties(input: VehicleInput) {
+export function sprungProperties(input: VehicleInput) {
   let m = input.totalMass;
   let sum = vec3(input.cg.x * m, input.cg.y * m, input.cg.z * m);
   for (const c of input.corners) {
@@ -250,7 +254,7 @@ function sprungProperties(input: VehicleInput) {
   return { mass: m, cg: vec3(sum.x / m, sum.y / m, sum.z / m) };
 }
 
-const NO_SHARED: AxleShared = { antiRollBar: { kind: 'none' }, heaveSpring: { kind: 'none' } };
+export const NO_SHARED: AxleShared = { antiRollBar: { kind: 'none' }, heaveSpring: { kind: 'none' } };
 const partner = (id: CornerId): CornerId => ({ FL: 'FR', FR: 'FL', RL: 'RR', RR: 'RL' } as const)[id];
 
 /**
@@ -276,7 +280,7 @@ function sharedForce(c: VehicleCorner, partnerC: VehicleCorner | undefined, axle
   return f;
 }
 
-interface CornerLoads {
+export interface CornerLoads {
   lateral: number;
   /** Braking force (≤ 0) and drive force (≥ 0), N along world Z. */
   brake: number;
@@ -285,10 +289,13 @@ interface CornerLoads {
   aZ: number;
 }
 
-/** Virtual work along the corner's travel (N) at q, with the partner corner at qOther. Decreasing in q. */
-function cornerWork(
+/**
+ * Virtual work along the corner's travel (N) at q, with the partner corner at qOther. Decreasing in q.
+ * `tireExtra` adds to the vertical tire force while the tire touches the ground (ride model: tire damping).
+ */
+export function cornerWork(
   c: VehicleCorner, input: VehicleInput, pose: ChassisPose, f: CornerLoads,
-  shared: { partner: VehicleCorner | undefined; axle: AxleShared }, q: number, qOther: number,
+  shared: { partner: VehicleCorner | undefined; axle: AxleShared }, q: number, qOther: number, tireExtra = 0,
 ) {
   const pl = placement(c.id, input.wheelbase);
   const P = poseFns(pose);
@@ -303,8 +310,14 @@ function cornerWork(
   const gY = input.groundY + (input.groundOffset?.[c.id] ?? 0);
   const h0 = wc.y - gY;
   // Tilt toward the corner's own outboard direction (mirrored axis already points outboard).
-  const patch = localPatch(c.tire.profile, h0, axis.y);
-  const ft = tireForce(c.tire.model, c.tire.profile, patch).force;
+  let ft: number;
+  if (c.tireForceAt) {
+    const f0 = c.tireForceAt(h0, axis.y);
+    ft = f0 > 0 ? Math.max(0, f0 + tireExtra) : 0;
+  } else {
+    const patch = localPatch(c.tire.profile, h0, axis.y);
+    ft = patch.inContact ? Math.max(0, tireForce(c.tire.model, c.tire.profile, patch).force + tireExtra) : 0;
+  }
   const fs = Number.isFinite(s.L) ? springForce(c.spring, s.L) : 0;
   const fShared = sharedForce(c, shared.partner, shared.axle, q, qOther);
   const work = ft * dcp.y + f.lateral * dcp.x
@@ -320,7 +333,7 @@ function cornerWork(
   return { work, ft, fs, fShared, s, wc, axis, P, pl, gY };
 }
 
-function cornerResult(c: VehicleCorner, input: VehicleInput, f: CornerLoads, q: number, status: CornerStatus, r: ReturnType<typeof cornerWork>): CornerResult {
+export function cornerResult(c: VehicleCorner, input: VehicleInput, f: CornerLoads, q: number, status: CornerStatus, r: ReturnType<typeof cornerWork>): CornerResult {
   const cpWorld = r.P.point(r.pl.point(r.s.cp));
   return {
     id: c.id, travel: q, status, tireLoad: r.ft, lateralForce: f.lateral, longitudinalForce: f.brake + f.drive,
@@ -464,8 +477,24 @@ function diffSplit(diff: DiffType, loadL: number, loadR: number, bias: number): 
   return [a, 1 - a];
 }
 
-export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions = {}): VehicleResult {
-  const sp = sprungProperties(input);
+/** What a load case asks of the tires, independent of the pose (see solveVehicle). */
+export interface ForceSetup {
+  /** Gravity share normal to the road and the car's weight on it, N. */
+  gs: number;
+  W: number;
+  /** Total lateral (+ left), braking (magnitude) and drive force the tires must give, N; aZ in m/s² (+ forward). */
+  latTotal: number;
+  brakeTotal: number;
+  driveTotal: number;
+  aZ: number;
+  driveShares: Record<CornerId, number>;
+  /** Front share of the cornering force (yaw balance). */
+  frontLatShare: number;
+  notes: string[];
+  unmet: { accel: boolean; brake: boolean };
+}
+
+export function forceSetup(input: VehicleInput): ForceSetup {
   const gs = input.gravityScale ?? 1;
   const W = input.totalMass * G * gs;
   const latTotal = input.totalMass * input.lateralG * G;
@@ -498,12 +527,101 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
     for (const c of fp) driveShares[c.id] = split / fp.length;
     for (const c of rp) driveShares[c.id] = (1 - split) / rp.length;
   }
-  // Chassis-driven axles with both wheels powered: the differential sets the left/right split.
-  const diffOf = (front: boolean): DiffType => (front ? input.diff?.front : input.diff?.rear) ?? 'open';
-  const chassisAxle = (l: CornerId, r: CornerId) => [l, r].every((id) => (input.corners.find((c) => c.id === id)?.drive ?? 'none') === 'chassis');
   // Cornering force: front/rear shares come from the CG position (yaw balance), not from the tires.
   const L = input.wheelbase;
   const frontLatShare = L > 0 ? Math.min(1, Math.max(0, (L + input.cg.z) / L)) : 0.5;
+  return { gs, W, latTotal, brakeTotal, driveTotal, aZ, driveShares, frontLatShare, notes, unmet };
+}
+
+/**
+ * Lateral, braking and drive force of each tire for the current tire loads: braking by bias then load,
+ * drive by split and differential, cornering by yaw balance front / rear and, within an axle, so both
+ * tires use the same share of their grip (when their peaks are known) or by load.
+ */
+export function tireForcesFor(input: VehicleInput, fs: ForceSetup, loads: Record<CornerId, number>, caps: Record<CornerId, TireCaps> | null): Record<CornerId, CornerLoads> {
+  const bShares = brakeShares(input, loads);
+  const dShares = { ...fs.driveShares };
+  const diffOf = (front: boolean): DiffType => (front ? input.diff?.front : input.diff?.rear) ?? 'open';
+  const chassisAxle = (l: CornerId, r: CornerId) => [l, r].every((id) => (input.corners.find((c) => c.id === id)?.drive ?? 'none') === 'chassis');
+  for (const [l, r, front] of [['FL', 'FR', true], ['RL', 'RR', false]] as const) {
+    if (!chassisAxle(l, r)) continue;
+    const axleShare = dShares[l] + dShares[r];
+    const [a, b] = diffSplit(diffOf(front), loads[l], loads[r], input.lsdBias ?? 2.5);
+    dShares[l] = axleShare * a; dShares[r] = axleShare * b;
+  }
+  const brakeF = (id: CornerId) => -fs.brakeTotal * bShares[id];
+  const driveF = (id: CornerId) => fs.driveTotal * dShares[id];
+  const lat: Record<CornerId, number> = { FL: 0, FR: 0, RL: 0, RR: 0 };
+  for (const [l, r, share] of [['FL', 'FR', fs.frontLatShare], ['RL', 'RR', 1 - fs.frontLatShare]] as const) {
+    const F = fs.latTotal * share;
+    if (caps) {
+      const sh = shareLateral(F, [brakeF(l) + driveF(l), brakeF(r) + driveF(r)], [caps[l].y, caps[r].y], [caps[l].x, caps[r].x]);
+      lat[l] = sh.fy[0]!; lat[r] = sh.fy[1]!;
+    } else {
+      const t = Math.max(0, loads[l]) + Math.max(0, loads[r]);
+      lat[l] = t > 0 ? (F * Math.max(0, loads[l])) / t : F / 2;
+      lat[r] = F - lat[l];
+    }
+  }
+  return Object.fromEntries(CORNER_IDS.map((id) => [id, { lateral: lat[id], brake: brakeF(id), drive: driveF(id), aZ: fs.aZ }])) as Record<CornerId, CornerLoads>;
+}
+
+/**
+ * External forces on the whole car as generalized forces of the body pose: net vertical force (N) and
+ * roll / pitch moments about the origin (N·m). Zero in equilibrium; in the ride model they drive the
+ * body (tire forces at the contacts, weight and the steady inertia of every mass).
+ */
+export function bodyResidual(input: VehicleInput, sp: { mass: number; cg: Vec3 }, fs: ForceSetup, pose: ChassisPose, corners: Record<CornerId, CornerResult>): [number, number, number] {
+  const P = poseFns(pose);
+  let fy = 0, mRoll = 0, mPitch = 0;
+  const add2 = ([a, b]: [number, number]) => { mRoll += a; mPitch += b; };
+  for (const c of input.corners) {
+    const r = corners[c.id];
+    fy += r.tireLoad;
+    add2(momentOf(r.contact, vec3(r.lateralForce, r.tireLoad, r.longitudinalForce)));
+    // Unsprung weight and inertia (lateral, braking) at the wheel center.
+    add2(momentOf(r.wheelCenter, vec3(-c.unsprungMass * input.lateralG * G, -c.unsprungMass * G * fs.gs, -c.unsprungMass * fs.aZ)));
+  }
+  const cg = P.point(sp.cg);
+  add2(momentOf(cg, vec3(-sp.mass * input.lateralG * G, -sp.mass * G * fs.gs, -sp.mass * fs.aZ)));
+  return [fy - fs.W, mRoll / 1000, mPitch / 1000];
+}
+
+/**
+ * The car at a given body pose and wheel travels, without solving for equilibrium (the ride model's
+ * state, for drawing and checks): corner forces, tire loads and grip.
+ */
+export function vehicleAt(input: VehicleInput, pose: ChassisPose, travel: Record<CornerId, number>, status?: Partial<Record<CornerId, CornerStatus>>): VehicleResult {
+  const sp = sprungProperties(input);
+  const fs = forceSetup(input);
+  const byId = Object.fromEntries(input.corners.map((c) => [c.id, c])) as Partial<Record<CornerId, VehicleCorner>>;
+  const partnerOf = (id: CornerId) => byId[partner(id)];
+  let loads: Record<CornerId, number> = { FL: fs.W / 4, FR: fs.W / 4, RL: fs.W / 4, RR: fs.W / 4 };
+  let caps: Record<CornerId, TireCaps> | null = null;
+  let corners = {} as Record<CornerId, CornerResult>;
+  for (let pass = 0; pass < 3; pass++) {
+    const f = tireForcesFor(input, fs, loads, caps);
+    corners = {} as Record<CornerId, CornerResult>;
+    for (const c of input.corners) {
+      const axle = (isFront(c.id) ? input.shared?.front : input.shared?.rear) ?? NO_SHARED;
+      const w = cornerWork(c, input, pose, f[c.id], { partner: partnerOf(c.id), axle }, travel[c.id], travel[partner(c.id)]);
+      corners[c.id] = cornerResult(c, input, f[c.id], travel[c.id], status?.[c.id] ?? 'ok', w);
+    }
+    loads = Object.fromEntries(CORNER_IDS.map((id) => [id, corners[id]?.tireLoad ?? 0])) as Record<CornerId, number>;
+    if (input.tireGrip) caps = capacities(input, corners, Math.sign(fs.latTotal));
+  }
+  const out: VehicleResult = {
+    pose, corners, converged: true, iterations: 0, residual: bodyResidual(input, sp, fs, pose, corners),
+    sprungMass: sp.mass, sprungCg: sp.cg, notes: fs.notes, unmet: fs.unmet,
+  };
+  if (input.tireGrip && caps) out.grip = gripSummary(input, out, caps, fs.frontLatShare, fs.latTotal);
+  return out;
+}
+
+export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions = {}): VehicleResult {
+  const sp = sprungProperties(input);
+  const fs = forceSetup(input);
+  const { W, latTotal, notes, unmet, frontLatShare } = fs;
   let caps: Record<CornerId, TireCaps> | null = null;
   const latSign = Math.sign(latTotal);
   const byId = Object.fromEntries(input.corners.map((c) => [c.id, c])) as Partial<Record<CornerId, VehicleCorner>>;
@@ -515,62 +633,26 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
   const cornerGuess: Partial<Record<CornerId, number>> = { ...(options.cornerGuess ?? {}) };
 
   const evaluate = (pose: ChassisPose) => {
-    const total = CORNER_IDS.reduce((s, id) => s + Math.max(0, loads[id]), 0);
-    const bShares = brakeShares(input, loads);
+    const f = tireForcesFor(input, fs, loads, caps);
     const corners = {} as Record<CornerId, CornerResult>;
-    const dShares = { ...driveShares };
-    for (const [l, r, front] of [['FL', 'FR', true], ['RL', 'RR', false]] as const) {
-      if (!chassisAxle(l, r)) continue;
-      const axleShare = dShares[l] + dShares[r];
-      const [a, b] = diffSplit(diffOf(front), loads[l], loads[r], input.lsdBias ?? 2.5);
-      dShares[l] = axleShare * a; dShares[r] = axleShare * b;
-    }
-    const brakeF = (id: CornerId) => -brakeTotal * bShares[id];
-    const driveF = (id: CornerId) => driveTotal * dShares[id];
-    const lat: Record<CornerId, number> = { FL: 0, FR: 0, RL: 0, RR: 0 };
-    for (const [l, r, share] of [['FL', 'FR', frontLatShare], ['RL', 'RR', 1 - frontLatShare]] as const) {
-      const F = latTotal * share;
-      if (caps) {
-        const sh = shareLateral(F, [brakeF(l) + driveF(l), brakeF(r) + driveF(r)], [caps[l].y, caps[r].y], [caps[l].x, caps[r].x]);
-        lat[l] = sh.fy[0]!; lat[r] = sh.fy[1]!;
-      } else {
-        const t = Math.max(0, loads[l]) + Math.max(0, loads[r]);
-        lat[l] = t > 0 ? (F * Math.max(0, loads[l])) / t : F / 2;
-        lat[r] = F - lat[l];
-      }
-    }
-    void total;
-    const forces = (id: CornerId): CornerLoads => ({ lateral: lat[id], brake: brakeF(id), drive: driveF(id), aZ });
     for (const [l, r] of [['FL', 'FR'], ['RL', 'RR']] as const) {
       const cl = byId[l];
       const cr = byId[r];
       const axle = axleOf(l);
       if (cl && cr && isCoupled(axle)) {
-        const [rl, rr] = settleAxle([cl, cr], input, pose, [forces(l), forces(r)], axle, [cornerGuess[l], cornerGuess[r]]);
+        const [rl, rr] = settleAxle([cl, cr], input, pose, [f[l], f[r]], axle, [cornerGuess[l], cornerGuess[r]]);
         corners[l] = rl; corners[r] = rr;
         continue;
       }
       for (const c of [cl, cr]) {
         if (!c) continue;
-        const f = forces(c.id);
-        const work = (q: number) => cornerWork(c, input, pose, f, { partner: undefined, axle: NO_SHARED }, q, 0).work;
+        const fc = f[c.id];
+        const work = (q: number) => cornerWork(c, input, pose, fc, { partner: undefined, axle: NO_SHARED }, q, 0).work;
         const { q, status } = settle1(work, c.table.lo, c.table.hi, cornerGuess[c.id]);
-        corners[c.id] = cornerResult(c, input, f, q, status, cornerWork(c, input, pose, f, { partner: undefined, axle: NO_SHARED }, q, 0));
+        corners[c.id] = cornerResult(c, input, fc, q, status, cornerWork(c, input, pose, fc, { partner: undefined, axle: NO_SHARED }, q, 0));
       }
     }
-    const P = poseFns(pose);
-    let fy = 0, mRoll = 0, mPitch = 0;
-    const add2 = ([a, b]: [number, number]) => { mRoll += a; mPitch += b; };
-    for (const c of input.corners) {
-      const r = corners[c.id];
-      fy += r.tireLoad;
-      add2(momentOf(r.contact, vec3(r.lateralForce, r.tireLoad, r.longitudinalForce)));
-      // Unsprung weight and inertia (lateral, braking) at the wheel center.
-      add2(momentOf(r.wheelCenter, vec3(-c.unsprungMass * input.lateralG * G, -c.unsprungMass * G * gs, -c.unsprungMass * aZ)));
-    }
-    const cg = P.point(sp.cg);
-    add2(momentOf(cg, vec3(-sp.mass * input.lateralG * G, -sp.mass * G * gs, -sp.mass * aZ)));
-    return { corners, res: [fy - W, mRoll / 1000, mPitch / 1000] as [number, number, number] };
+    return { corners, res: bodyResidual(input, sp, fs, pose, corners) };
   };
 
   let pose: ChassisPose = options.guess ?? { heave: 0, roll: 0, pitch: 0 };
@@ -628,7 +710,7 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
 export const tirePressure = (m: TireForceModel): number | undefined => (m.kind === 'gas' ? m.conditions.setPressure : undefined);
 
 /** A tire's peaks at its solved load, inclination and pressure (Magic Formula). */
-interface TireCaps {
+export interface TireCaps {
   /** Peak lateral force toward the turn, peak longitudinal force, N. */
   y: number;
   x: number;
@@ -645,7 +727,7 @@ interface TireCaps {
  * whose top leans into the turn gets camber thrust on top of its peak. Straight ahead (latSign 0) the
  * camber only lowers the peak, so both lean directions are averaged.
  */
-function capacities(input: VehicleInput, corners: Record<CornerId, CornerResult>, latSign: number): Record<CornerId, TireCaps> {
+export function capacities(input: VehicleInput, corners: Record<CornerId, CornerResult>, latSign: number): Record<CornerId, TireCaps> {
   const m = input.tireGrip!;
   const out = {} as Record<CornerId, TireCaps>;
   for (const id of CORNER_IDS) out[id] = { y: 0, x: 0, slideY: 1, slideX: 1, fz: 0, gamma: 0 };
@@ -669,7 +751,7 @@ function capacities(input: VehicleInput, corners: Record<CornerId, CornerResult>
 }
 
 /** Grip use, slip states and what limits the car (see docs/MATH.md § Grip and slip). */
-function gripSummary(input: VehicleInput, r: VehicleResult, cap: Record<CornerId, TireCaps>, frontShare: number, latTotal: number): GripSummary {
+export function gripSummary(input: VehicleInput, r: VehicleResult, cap: Record<CornerId, TireCaps>, frontShare: number, latTotal: number): GripSummary {
   const m = input.tireGrip!;
   const latSign = Math.sign(latTotal);
   const byId = Object.fromEntries(input.corners.map((c) => [c.id, c])) as Partial<Record<CornerId, VehicleCorner>>;

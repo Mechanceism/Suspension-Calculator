@@ -20,7 +20,7 @@ import { DEFAULT_MF, type MFCoeffs } from '../tire/magicFormula';
 import { CornerTable } from '../vehicle/cornerTable';
 import {
   CORNER_IDS, isFront, placement, poseFns, solveVehicle, staticCornerLoads, designGroundY,
-  type AxleShared, type BrakeMount, type CornerId, type DriveMount, type VehicleCorner, type VehicleResult, type ChassisPose, type DiffType,
+  type AxleShared, type BrakeMount, type CornerId, type DriveMount, type VehicleCorner, type VehicleResult, type ChassisPose, type DiffType, type VehicleInput,
 } from '../vehicle/vehicle';
 import { boundedLeastSquares, type LsqResult } from './leastSquares';
 import type { RoadState } from '../tests/segments';
@@ -60,6 +60,14 @@ export interface VehicleGoal { kind: VehicleGoalKind; target: number; weight: nu
 export type VehicleVariable = Variable & { root: CornerId };
 export type VehicleHold = Hold & { root: CornerId };
 
+export interface RideSpec {
+  /** Sprung-body inertia about the sprung CG, kg·m²: roll (about the car's long axis) and pitch. */
+  rollInertia: number;
+  pitchInertia: number;
+  /** Tire vertical damping, N·s/m. */
+  tireDamping: number;
+}
+
 export interface VehicleDesignIn {
   geometry: DoubleWishboneGeometry;
   profile: TireProfile;
@@ -68,6 +76,8 @@ export interface VehicleDesignIn {
   freeLength: number;
   bumpStop?: { length: number; rate: number };
   unsprungMass: number;
+  /** Damper rates at the damper, N·s/m (ride model). */
+  damping?: { bump: number; rebound: number };
 }
 
 export interface VehicleProblem {
@@ -82,6 +92,8 @@ export interface VehicleProblem {
   states?: RoadState[];
   /** Steered corners and the rack (tests: the rack travel a turn needs). */
   steering?: SteeringSpec;
+  /** Ride model (Phase B): body inertias about the sprung CG (kg·m²) and tire damping (N·s/m). */
+  ride?: RideSpec;
   mass: number;
   /** CG: x (+ left), height above ground, z (from the front axle, + forward). */
   cg: { x: number; height: number; z: number };
@@ -184,6 +196,7 @@ export function assembleVehicle(p: VehicleProblem, geometries: Partial<Record<Co
       id, table, unsprungMass: d.unsprungMass, tire: { profile: d.profile, model: d.model },
       brake: p.settings[id].brake, drive: p.settings[id].drive, abs: p.settings[id].abs ?? true,
       spring: { rate: d.springRate, freeLength, ...(d.bumpStop ? { bumpStopLength: d.bumpStop.length, bumpStopRate: d.bumpStop.rate } : {}) },
+      ...(d.damping ? { damper: d.damping } : {}),
     });
   }
   const groundY = designGroundY(CORNER_IDS.map((id) => {
@@ -215,14 +228,17 @@ export function caseList(p: VehicleProblem): CaseSpec[] {
   return out;
 }
 
+/** The whole-car solver's input for a load case on an assembled car. */
+export const vehicleInputOf = (p: VehicleProblem, asm: AssembledVehicle, c: Omit<CaseSpec, 'name' | 'kind' | 'g'>): VehicleInput => ({
+  corners: asm.corners, totalMass: p.mass, cg: asm.cg, wheelbase: p.wheelbase, groundY: asm.groundY,
+  lateralG: c.lateralG, brakingG: c.brakingG, brakeBias: p.brakeBias, accelG: c.accelG, driveSplit: p.driveSplit, shared: p.shared,
+  gravityScale: c.gravityScale, groundOffset: c.groundOffset, tireGrip: p.tireGrip ?? DEFAULT_MF, diff: p.diff,
+});
+
 /** Solve one load case on an assembled car. null = didn't converge. */
 export function solveCase(p: VehicleProblem, asm: AssembledVehicle, c: CaseSpec, guess?: ChassisPose): CaseEval | null {
   const grip = p.grip ?? DEFAULT_GRIP;
-  const result = solveVehicle({
-    corners: asm.corners, totalMass: p.mass, cg: asm.cg, wheelbase: p.wheelbase, groundY: asm.groundY,
-    lateralG: c.lateralG, brakingG: c.brakingG, brakeBias: p.brakeBias, accelG: c.accelG, driveSplit: p.driveSplit, shared: p.shared,
-    gravityScale: c.gravityScale, groundOffset: c.groundOffset, tireGrip: p.tireGrip ?? DEFAULT_MF, diff: p.diff,
-  }, { guess });
+  const result = solveVehicle(vehicleInputOf(p, asm, c), { guess });
   if (!result.converged) return null;
   const P = poseFns(result.pose);
   const g = {} as Record<CornerId, PatchGrip>;

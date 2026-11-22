@@ -83,6 +83,7 @@ export function showState(st: StateResult['state']) {
   s.set('roadBank', Number(((st.bank * 180) / Math.PI).toFixed(2)));
   s.set('wheelBumps', { FL: 0, FR: 0, RL: 0, RR: 0, ...st.groundOffset });
   s.set('rack', Number((st.rack ?? 0).toFixed(2)));
+  s.set('rideView', null);
 }
 
 /** Run a test in the worker (also used by the optimize loop). */
@@ -91,7 +92,7 @@ export function startTestRun(test: TestDesign) {
   run.cancel?.();
   const s = useApp.getState();
   const { problem } = buildVehicleProblem(s);
-  const job = runTestJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), { onFail: test.onFail, speedLimits: true });
+  const job = runTestJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), { onFail: test.onFail, speedLimits: true, ride: test.ride !== false });
   const from = designRef(s);
   useRun.setState({ running: true, testId: test.id, error: null, cancel: job.cancel });
   return job.done
@@ -480,6 +481,12 @@ export function TestsSidebar() {
                 <td>Test priority</td>
                 <td><RankSelect kind="test" rank={test.rank} n={tests.length} onChange={(r) => updateTest(test.id, (t) => ({ ...t, rank: r }))} /></td>
               </tr>
+              <tr title="Also drive the test over time (Phase B): the body and wheels move with springs, dampers and tires, bumps hit at speed, segment changes cause transients. Every moment is checked by the pass rules.">
+                <td>Ride over time</td>
+                <td>
+                  <label className="check-label"><input type="checkbox" checked={test.ride !== false} onChange={(e) => updateTest(test.id, (t) => ({ ...t, ride: e.target.checked }))} /> dynamics (Phase B)</label>
+                </td>
+              </tr>
               <tr title="Report: show the failure. Driver lifts: also re-run the failing segment at the fastest speed that passes.">
                 <td>When a segment fails</td>
                 <td>
@@ -629,7 +636,8 @@ export function TestResults() {
             <Findings list={s.findings} />
             {s.impossible && <div className="small-text warn-text">No suspension change can make this pass: the tires can't give that much force. Lower the speed, enlarge the radius, or improve the tires.</div>}
             {s.findings.some((f) => f.check === 'steerLimit' && f.severity === 'fail') && <div className="small-text warn-text">Slowing down doesn't help: enlarge the radius, or allow more rack travel / a longer-reach steering arm (Corner view → Steering rack).</div>}
-            {s.speedLimit !== undefined && !s.findings.some((f) => f.check === 'steerLimit' && f.severity === 'fail') && (
+            {s.rideFail && <div className="small-text warn-text">Passes as steady states but fails over time (bumps at speed, transients): softer / firmer damping, more travel or a lower speed can help. Play it back to watch.</div>}
+            {s.speedLimit !== undefined && !s.rideFail && !s.findings.some((f) => f.check === 'steerLimit' && f.severity === 'fail') && (
               <div className="small-text">
                 {s.speedLimit > 0
                   ? <>Passes at {fmt(s.speedLimit * 100, 0)}% of its speed (max ≈ {disp.format(vmax * s.speedLimit, 'm/s', 0)}){s.lifted ? ' — driver lifts: re-run at that speed passes.' : '.'}</>

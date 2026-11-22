@@ -119,8 +119,9 @@ export function designRoots(s: Pick<AppState, 'links'>): { root: CornerId; corne
   return roots.map((root) => ({ root, corners: CORNER_IDS.filter((id) => rootOf(id, s.links) === root) }));
 }
 
-export function buildVehicleProblem(s: AppState): BuiltProblem<VehicleProblem> {
-  const o = s.vehicleOptimizer;
+/** `caseSource` overrides the optimizer's load-case source (a test id or 'all'), e.g. for the Tests optimize loop. */
+export function buildVehicleProblem(s: AppState, over: { caseSource?: string } = {}): BuiltProblem<VehicleProblem> {
+  const o = { ...s.vehicleOptimizer, ...(over.caseSource ? { caseSource: over.caseSource } : {}) };
   const all = mergedCorners(s);
   const roots = designRoots(s).map((r) => r.root);
   const designs: VehicleProblem['designs'] = {};
@@ -151,6 +152,10 @@ export function buildVehicleProblem(s: AppState): BuiltProblem<VehicleProblem> {
       brake: s.settings[id].brake, drive: s.settings[id].powered ? s.settings[id].drive : 'none', abs: s.settings[id].abs,
     }])) as VehicleProblem['settings'],
     diff: { front: s.settings.FL.diff, rear: s.settings.RL.diff },
+    steering: {
+      steered: Object.fromEntries(CORNER_IDS.map((id) => [id, s.settings[id].steered])),
+      rackLimit: Math.abs(s.steer.rackLimit.value), cFactor: s.steer.cFactor.value,
+    },
     mass: v.mass.value, cg: { x: v.cgX.value, height: v.cgY.value, z: v.cgZ.value }, wheelbase: v.wheelbase.value,
     brakeBias: v.brakeBias.value / 100, driveSplit: v.driveSplit.value / 100, autoPreload: s.autoPreload,
     shared: { front: toAxleShared(s.shared.front), rear: toAxleShared(s.shared.rear) },

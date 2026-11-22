@@ -550,3 +550,48 @@ input[type='range']:disabled { opacity: 0.4; }
 .presets summary { cursor: pointer; color: var(--muted); margin: 6px 0 4px; }
 .presets .wide-btn { margin-bottom: 4px; }
 .test-head { margin-top: 10px; }
+
+/* Running indicator */
+.spinner {
+  display: inline-block; width: 11px; height: 11px; vertical-align: -1px; flex: none;
+  border: 2px solid rgba(91, 156, 245, 0.25); border-top-color: var(--accent); border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.busy-pill {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 420px; padding: 2px 4px 2px 10px;
+  border: 1px solid rgba(91, 156, 245, 0.5); border-radius: 12px; background: rgba(91, 156, 245, 0.12);
+  color: var(--text); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.busy-stop { background: none; border: 1px solid var(--border); border-radius: 10px; padding: 0 7px; cursor: pointer; color: var(--bad); font-size: 11px; }
+.busy-stop:hover { border-color: var(--bad); }
+.busy-strip {
+  position: fixed; top: 0; left: 0; right: 0; height: 2px; z-index: 50; pointer-events: none;
+  background: linear-gradient(90deg, transparent 0%, var(--accent) 50%, transparent 100%);
+  background-size: 40% 100%; background-repeat: no-repeat; animation: busy-slide 1.2s ease-in-out infinite;
+}
+@keyframes busy-slide { from { background-position: -40% 0; } to { background-position: 140% 0; } }
+.run-line { display: inline-flex; align-items: center; gap: 6px; }
+
+/* Test list: enable, status, test vs segment priority */
+.test-enable { margin: 0 2px 0 0; flex: none; cursor: pointer; }
+.test-status { font-weight: 600; margin-left: 4px; }
+.test-status.stale { opacity: 0.4; }
+.sev-text-pass { color: var(--ok); }
+.sev-text-warn { color: var(--warn); }
+.sev-text-fail { color: var(--bad); }
+.disabled-text { opacity: 0.5; }
+.rank-select.test-rank { color: #7fd1ff; font-weight: 600; }
+.rank-select.segment-rank { color: #ffd166; }
+.add-seg-row label { margin-right: -2px; }
+.all-tests { margin-bottom: 8px; }
+
+/* Track map while building a test */
+.segment-map { display: block; width: 100%; height: auto; max-height: 170px; margin: 2px 0 6px; background: var(--viewport-bg); border: 1px solid var(--border); border-radius: 6px; }
+.segment-map .seg-path { cursor: pointer; }
+.seg-map-num { font-size: 9px; fill: #e4e7ec; paint-order: stroke; stroke: #16191e; stroke-width: 2.5px; pointer-events: none; }
+.seg-map-scale { font-size: 8px; fill: #9aa3ad; }
+/* Test rows: the tools go on their own line so names stay readable. */
+.test-list li { flex-wrap: wrap; row-gap: 2px; }
+.test-list .seg-text { flex: 1 1 calc(100% - 70px); }
+.test-list .seg-tools { flex-basis: 100%; justify-content: flex-end; }

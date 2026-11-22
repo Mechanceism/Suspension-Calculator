@@ -4,12 +4,13 @@
  * The optimizer treats Fail checks as hard requirements and Warning checks as soft penalties.
  */
 import { CORNER_IDS, isFront, type CornerId, type VehicleResult } from '../vehicle/vehicle';
+import type { SteerNeed } from './steer';
 
 export type Severity = 'pass' | 'warn' | 'fail';
 
 export type CheckId =
   | 'nearLimit' | 'understeer' | 'oversteer' | 'wheelspin' | 'absActive' | 'lockup' | 'speedNotReached'
-  | 'bumpStop' | 'bottoming' | 'wheelLift' | 'rollover' | 'noSolution' | 'beyondGrip';
+  | 'bumpStop' | 'bottoming' | 'wheelLift' | 'rollover' | 'noSolution' | 'beyondGrip' | 'steerLimit';
 
 export interface CheckSetting {
   severity: Severity;
@@ -42,6 +43,7 @@ export const CHECK_META: Record<CheckId, CheckMeta> = {
   wheelLift: { label: 'Wheel lift', hint: 'A tire unloads to (almost) nothing.' },
   rollover: { label: 'Rollover', hint: 'Cornering g beyond the rigid rollover threshold (half track ÷ CG height).', fixed: true },
   noSolution: { label: 'No solution', hint: "The car can't settle in this state.", fixed: true },
+  steerLimit: { label: 'Steering lock', hint: 'The turn is tighter than the steering allows: its road-wheel angle (atan(wheelbase ÷ radius)) needs more rack travel than the rack limit, or no wheel steers.' },
   beyondGrip: { label: 'Beyond the tires', hint: 'The state asks for more total force than all four tires can give: no suspension can pass it. Lower the speed, enlarge the radius, or improve the tires.', fixed: true },
 };
 export const CHECK_IDS = Object.keys(CHECK_META) as CheckId[];
@@ -60,6 +62,7 @@ const base: CheckProfile = {
   rollover: { severity: 'fail' },
   noSolution: { severity: 'fail' },
   beyondGrip: { severity: 'fail' },
+  steerLimit: { severity: 'fail' },
 };
 
 export type BuiltinProfile = 'default' | 'street' | 'track' | 'drift' | 'offroad';
@@ -70,7 +73,8 @@ export const PROFILES: Record<BuiltinProfile, { label: string; checks: CheckProf
   drift: { label: 'Drift', checks: { ...base, oversteer: { severity: 'warn', threshold: 30, threshold2: 10 }, wheelspin: { severity: 'warn', threshold: 30 }, nearLimit: { severity: 'pass', threshold: 0 } } },
   offroad: { label: 'Off-road', checks: { ...base, wheelLift: { severity: 'pass' }, bumpStop: { severity: 'pass' } } },
 };
-export const cloneProfile = (p: CheckProfile): CheckProfile => JSON.parse(JSON.stringify(p)) as CheckProfile;
+/** A copy, with any check missing (profiles saved before it existed) taken from the default. */
+export const cloneProfile = (p: CheckProfile): CheckProfile => ({ ...(JSON.parse(JSON.stringify(base)) as CheckProfile), ...(JSON.parse(JSON.stringify(p)) as CheckProfile) });
 
 export interface Finding {
   check: CheckId;
@@ -93,10 +97,12 @@ export interface StateFacts {
   requiredG: number;
   /** Most the four tires can give with the car at rest, g (an upper bound: load transfer only lowers it). */
   availableG: number;
+  /** Steering the turn needs (turns only). */
+  steer?: SteerNeed | null;
 }
 
 const pct = (x: number) => `${(x * 100).toFixed(0)}%`;
-const sevOf = (p: CheckProfile, id: CheckId) => p[id].severity;
+const sevOf = (p: CheckProfile, id: CheckId) => (p[id] ?? base[id]).severity;
 
 /** Findings for one solved state (only checks whose severity isn't Pass). */
 export function classifyState(f: StateFacts, profile: CheckProfile): Finding[] {
@@ -108,6 +114,12 @@ export function classifyState(f: StateFacts, profile: CheckProfile): Finding[] {
   const r = f.result;
   // Independent of the solve: more than the tires can give at rest can never pass.
   if (f.requiredG > f.availableG * 1.001) add('beyondGrip', `Needs ${f.requiredG.toFixed(2)} g, the tires give at most about ${f.availableG.toFixed(2)} g: no suspension can pass this`);
+  const st = f.steer;
+  if (st?.none) add('steerLimit', "No steered wheels (or the rack doesn't turn them): the car can't follow the turn");
+  else if (st?.over) {
+    add('steerLimit', `Too tight for the steering: needs ${Math.abs(st.wheelAngle).toFixed(1)}° at the road wheels`
+      + `${Number.isFinite(st.rack) ? ` (rack ${Math.abs(st.rack).toFixed(1)} mm, limit ±${st.limit.toFixed(0)} mm)` : ''}; full lock gives ${st.maxAngle.toFixed(1)}°`);
+  }
   if (!r || !r.converged) { add('noSolution', "The car can't settle in this state"); return out; }
   const g = r.grip;
   if (r.unmet.accel) add('speedNotReached', 'No powered wheels: the car cannot accelerate (or hold speed uphill)');

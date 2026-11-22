@@ -125,6 +125,45 @@ describe('priority ranks', () => {
     expect(r[0]!.segments.map((s) => s.rank)).toEqual([2, 2, 1, 2, 2]);
   });
 
+  it('skipped tests are left out of all-tests optimizing and saved as skipped; segment presets start with Empty', async () => {
+    const { statesForTests, SEGMENT_PRESETS } = await import('../src/app/tests');
+    const a = { ...TEST_PRESETS[3]!.make(), id: 'a' };
+    const b = { ...TEST_PRESETS[3]!.make(), id: 'b', enabled: false };
+    const both = statesForTests([a, { ...b, enabled: true }], 'all');
+    expect(statesForTests([a, b], 'all')).toHaveLength(both.length / 2);
+    // A skipped test can still be optimized on its own.
+    expect(statesForTests([a, b], 'b').length).toBeGreaterThan(0);
+    const d = defaultDesign();
+    d.tests = [a, b];
+    const r = importProject(JSON.parse(JSON.stringify(serializeProject(d, 'E')))).design.tests;
+    expect(r.map((t) => t.enabled)).toEqual([true, false]);
+    const old = JSON.parse(JSON.stringify(serializeProject(d, 'Old')));
+    for (const t of old.tests) delete t.enabled;
+    expect(importProject(old).design.tests.every((t) => t.enabled)).toBe(true);
+    expect(SEGMENT_PRESETS[0]!.label).toBe('Empty');
+  });
+
+  it('the vehicle problem carries the steering (steered corners, rack limit)', () => {
+    const d = defaultDesign();
+    const b = buildVehicleProblem(d as AppState);
+    expect(b.problem.steering?.steered).toMatchObject({ FL: true, FR: true, RL: false, RR: false });
+    expect(b.problem.steering?.rackLimit).toBe(30);
+    const o = buildVehicleProblem({ ...d, tests: [{ ...TEST_PRESETS[3]!.make(), id: 'x' }] } as AppState, { caseSource: 'x' });
+    expect(o.problem.states?.length).toBeGreaterThan(0);
+  });
+
+  it('every built-in test settles in every state on the default car (warm start falls back to a cold start)', async () => {
+    const { runTest } = await import('../src/core');
+    const d = defaultDesign();
+    const { problem } = buildVehicleProblem(d as AppState);
+    const geoms = Object.fromEntries(Object.entries(problem.designs).map(([k, v]) => [k, v!.geometry]));
+    for (const preset of TEST_PRESETS) {
+      const t = { ...preset.make(), id: 'p' };
+      const r = runTest(problem, geoms, t.segments.map((sg) => segmentSpec(sg, t)), { onFail: 'report' });
+      expect(r.states.filter((s) => !s.converged).map((s) => `${t.name} ${s.state.name}`)).toEqual([]);
+    }
+  });
+
   it('metric shows km/h, imperial mph', async () => {
     const { PRESETS } = await import('../src/app/units');
     expect(PRESETS.metric.speed).toBe('km/h');

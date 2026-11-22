@@ -1,11 +1,15 @@
 /**
  * Test playback (Phase A): the car driven through the test frame by frame (every 0.1 s), each frame a
  * steady state. Play / pause, scrub, speed; a top-view map of the track colored by Pass / Warning /
- * Fail. Each frame poses the 3D car (the Vehicle view's accelerations, grade, bank and wheel bumps).
+ * Fail. Each frame poses the 3D car (the Vehicle view's accelerations, grade, bank, wheel bumps and the
+ * steering the turn needs). Space plays / pauses.
+ * Also the track map shown while building a test (from the segments alone, no run needed).
  */
 import { useEffect, useMemo, useRef } from 'react';
 import { create } from 'zustand';
 import type { PlaybackFrame } from '../../core/tests/run';
+import { trackPath } from '../../core/tests/segments';
+import type { Severity } from '../../core/tests/checks';
 import { CORNER_IDS } from '../../core/vehicle/vehicle';
 import { useApp } from '../store';
 import { buildVehicleProblem, runPlaybackJob } from '../optimizer';
@@ -40,6 +44,7 @@ function applyFrame(f: PlaybackFrame) {
   s.set('roadGrade', Number((Math.tan(f.grade) * 100).toFixed(2)));
   s.set('roadBank', Number(((f.bank * 180) / Math.PI).toFixed(2)));
   s.set('wheelBumps', { FL: 0, FR: 0, RL: 0, RR: 0, ...f.groundOffset });
+  s.set('rack', Number((f.rack ?? 0).toFixed(2)));
   s.set('testView', null);
 }
 
@@ -121,7 +126,7 @@ export function PlaybackBar({ test }: { test: TestDesign | null }) {
   }, [pb.playing, frames, total]);
 
   const play = async () => {
-    if (!test) return;
+    if (!test || usePlayback.getState().computing) return;
     let fs = frames;
     if (!fs.length || stale) fs = await computeFrames(test);
     if (!fs.length) return;
@@ -129,6 +134,28 @@ export function PlaybackBar({ test }: { test: TestDesign | null }) {
     if (st.t >= (fs[fs.length - 1]?.t ?? 0)) usePlayback.setState({ t: 0 });
     usePlayback.setState({ playing: true });
   };
+  // Space plays / pauses (not while typing in a field).
+  const toggle = useRef<() => void>(() => {});
+  toggle.current = () => {
+    if (usePlayback.getState().playing) usePlayback.setState({ playing: false });
+    else void play();
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' && e.key !== ' ') return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      const typing = t && (t.isContentEditable || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT'
+        || (t.tagName === 'INPUT' && (t as HTMLInputElement).type !== 'range' && (t as HTMLInputElement).type !== 'checkbox'));
+      if (typing || document.querySelector('.modal')) return;
+      e.preventDefault();
+      // A focused button would also click on Space: keep it to play / pause.
+      if (t && t.tagName === 'BUTTON') t.blur();
+      toggle.current();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, []);
   const seek = (t: number) => {
     usePlayback.setState({ t, playing: false });
     const f = frameAt(frames, t);
@@ -141,8 +168,8 @@ export function PlaybackBar({ test }: { test: TestDesign | null }) {
       <div className="playback-main">
         <div className="jm-row">
           {!pb.playing
-            ? <button onClick={() => void play()} disabled={!test || pb.computing} title={frames.length && !stale ? 'Play' : 'Drive the car through the test (computes every 0.1 s)'}>{pb.computing ? 'Preparing…' : '▶ Play'}</button>
-            : <button onClick={() => usePlayback.setState({ playing: false })}>❚❚ Pause</button>}
+            ? <button onClick={() => void play()} disabled={!test || pb.computing} title={`${frames.length && !stale ? 'Play' : 'Drive the car through the test (computes every 0.1 s)'} (Space)`}>{pb.computing ? <><span className="spinner" /> Preparing…</> : '▶ Play'}</button>
+            : <button onClick={() => usePlayback.setState({ playing: false })} title="Pause (Space)">❚❚ Pause</button>}
           <input type="range" min={0} max={total || 1} step={0.05} value={Math.min(pb.t, total)} disabled={!frames.length} onChange={(e) => seek(Number(e.target.value))} className="playback-slider" />
           <span className="mono small-text">{fmt(Math.min(pb.t, total), 1)} / {fmt(total, 1)} s</span>
           <select value={pb.rate} onChange={(e) => usePlayback.setState({ rate: Number(e.target.value) })} title="Playback speed">
@@ -152,6 +179,7 @@ export function PlaybackBar({ test }: { test: TestDesign | null }) {
         {cur && test ? (
           <div className="small-text playback-hud">
             <b>{cur.segment + 1}. {test.segments[cur.segment]?.name}</b> · {disp.format(cur.speed, 'm/s', 0)} · lateral {fmt(cur.ay, 2)} g · long. {fmt(cur.ax, 2)} g
+            {cur.rack ? ` · rack ${fmt(cur.rack, 1)} mm` : ''}
             {' · grip '}{CORNER_IDS.map((id) => (
               <span key={id} className={cur.utilization[id] > 1 ? 'bad-text' : cur.utilization[id] > 0.9 ? 'warn-text' : ''}> {id} {fmt(cur.utilization[id] * 100, 0)}%</span>
             ))}
@@ -159,10 +187,79 @@ export function PlaybackBar({ test }: { test: TestDesign | null }) {
           </div>
         ) : (
           <div className="small-text muted">
-            {pb.error ? `Playback failed: ${pb.error}` : stale ? 'The design changed: Play recomputes.' : 'Play drives the car through the test. Steady states for now: the body moves state to state, without transients (Phase B).'}
+            {pb.error ? `Playback failed: ${pb.error}` : stale ? 'The design changed: Play recomputes.' : 'Play (or Space) drives the car through the test. Steady states for now: the body moves state to state, without transients (Phase B).'}
           </div>
         )}
       </div>
     </div>
+  );
+}
+
+const MAP_COLORS = ['#8ab4f8', '#c3a6ff', '#7fd1c7', '#f2a7c3', '#e6c07b'];
+
+/**
+ * Top view of a test while building it: each segment drawn from its distance, path and radius, chained
+ * from the start (white dot). Click a segment to edit it. Colored by the last run's result when it's
+ * current, otherwise by segment; bumps / potholes are marked, rough road is dashed.
+ */
+export function SegmentMap({ test, selected, onSelect, severities }: {
+  test: TestDesign; selected: string | null; onSelect: (id: string) => void; severities?: (Severity | undefined)[];
+}) {
+  const disp = useDisplay();
+  const paths = useMemo(() => trackPath(test.segments.map((sg) => ({
+    distance: Math.max(sg.distance.value, 0), path: sg.path, radius: Math.max(sg.radius.value, 0.1),
+  }))), [test.segments]);
+  const pts = paths.flat();
+  if (!pts.length) return null;
+  const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const W = 300, H = 150, pad = 14;
+  const k = Math.min((W - 2 * pad) / Math.max(maxX - minX, 1), (H - 2 * pad) / Math.max(maxY - minY, 1));
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  const px = (x: number) => W / 2 + (x - cx) * k;
+  const py = (y: number) => H / 2 - (y - cy) * k;
+  const d = (ps: { x: number; y: number }[]) => ps.map((p, i) => `${i ? 'L' : 'M'}${px(p.x).toFixed(1)},${py(p.y).toFixed(1)}`).join(' ');
+  // Scale bar: a round length about a quarter of the width.
+  const target = (W / 4) / k;
+  const mag = 10 ** Math.floor(Math.log10(Math.max(target, 1e-6)));
+  const bar = [1, 2, 5, 10].map((m) => m * mag).reduce((a, b) => (Math.abs(b - target) < Math.abs(a - target) ? b : a));
+  const at = (seg: number, sAlong: number) => {
+    const ps = paths[seg]!;
+    const total = test.segments[seg]!.distance.value || 1;
+    const idx = Math.min(ps.length - 1, Math.max(0, Math.round((sAlong / total) * (ps.length - 1))));
+    return ps[idx]!;
+  };
+  const end = pts[pts.length - 1]!;
+  return (
+    <svg className="segment-map" viewBox={`0 0 ${W} ${H}`} aria-label="Track map of the test">
+      {paths.map((ps, i) => {
+        const seg = test.segments[i]!;
+        const sev = severities?.[i];
+        const color = sev ? SEV_COLOR[sev] : MAP_COLORS[i % MAP_COLORS.length];
+        const sel = seg.id === selected;
+        const mid = ps[Math.floor(ps.length / 2)]!;
+        return (
+          <g key={seg.id} className="seg-path" onClick={() => onSelect(seg.id)}>
+            <title>{`${i + 1}. ${seg.name}`}</title>
+            <path d={d(ps)} stroke="transparent" strokeWidth={12} fill="none" />
+            {sel && <path d={d(ps)} stroke="#ffffff" strokeWidth={7} strokeLinecap="round" fill="none" opacity={0.85} />}
+            <path d={d(ps)} stroke={color} strokeWidth={sel ? 4 : 3} strokeLinecap="round" fill="none" strokeDasharray={seg.rough.on ? '4 3' : undefined} />
+            {seg.features.map((f) => {
+              const p = at(i, f.at.value);
+              return <circle key={f.id} cx={px(p.x)} cy={py(p.y)} r={3} fill={f.kind === 'bump' ? '#ffb703' : '#4cc9f0'} stroke="#16191e" strokeWidth={0.8} />;
+            })}
+            <text x={px(mid.x)} y={py(mid.y) - 6} className="seg-map-num" textAnchor="middle">{i + 1}</text>
+          </g>
+        );
+      })}
+      <circle cx={px(0)} cy={py(0)} r={4} fill="#ffffff" stroke="#16191e" strokeWidth={1}><title>Start</title></circle>
+      <g transform={`translate(${px(end.x)},${py(end.y)}) rotate(${(-end.heading * 180) / Math.PI})`}>
+        <polygon points="6,0 -4,-4 -4,4" fill="#ffffff" stroke="#16191e" strokeWidth={0.8} />
+      </g>
+      <g transform={`translate(${W - pad - bar * k},${H - 6})`}>
+        <line x1={0} y1={0} x2={bar * k} y2={0} stroke="#9aa3ad" strokeWidth={1.5} />
+        <text x={(bar * k) / 2} y={-3} className="seg-map-scale" textAnchor="middle">{disp.format(bar, 'm', 0)}</text>
+      </g>
+    </svg>
   );
 }

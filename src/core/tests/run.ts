@@ -9,6 +9,7 @@ import type { DoubleWishboneGeometry } from '../suspension/doubleWishbone';
 import { CORNER_IDS, type CornerId, type ChassisPose, type CornerStatus, type GripSummary, type VehicleResult } from '../vehicle/vehicle';
 import { segmentStates, segmentLatG, roadEffective, G, type RoadState, type SegmentSpec, type CarDims } from './segments';
 import { wheelHeights } from './road';
+import { steerForTurn, type SteerNeed } from './steer';
 import { classifyState, worstSeverity, PROFILES, type CheckProfile, type Finding, type Severity } from './checks';
 
 export interface StateResult {
@@ -34,6 +35,8 @@ export interface SegmentResult {
   findings: Finding[];
   /** Asks for more than the tires can give at its own speed: no suspension can pass it. */
   impossible: boolean;
+  /** Steering the turn needs (turns only). */
+  steer?: SteerNeed | null;
   /** Fastest speed scale (× the segment's speeds) with no Fail, when searched. */
   speedLimit?: number;
   /** "Driver lifts": the segment re-run at its speed limit. */
@@ -59,14 +62,18 @@ export interface TestRun {
 /** Segment physics plus the checks that decide its pass / fail. */
 export type TestSegmentSpec = SegmentSpec & { checks?: CheckProfile; weight?: number };
 
-export function stateFacts(p: VehicleProblem, asm: AssembledVehicle, st: RoadState, result: VehicleResult | null) {
+/** Steering a segment's turn needs (null on a straight or without steering data). */
+export const steerNeedOf = (p: VehicleProblem, asm: AssembledVehicle, seg: Pick<SegmentSpec, 'path' | 'radius'>): SteerNeed | null =>
+  (p.steering ? steerForTurn(asm.built, p.roots, p.steering, p.wheelbase, seg.path, seg.radius) : null);
+
+export function stateFacts(p: VehicleProblem, asm: AssembledVehicle, st: RoadState, result: VehicleResult | null, steer?: SteerNeed | null) {
   const track = Math.abs(asm.chars.FL.contactPoint.x) + Math.abs(asm.chars.RL.contactPoint.x); // average track
   const along = st.accelG - st.brakingG;
   return {
     result, lateralG: st.lateralG, rolloverG: track / 2 / Math.max(p.cg.height, 1),
     weight: p.mass * G * st.gravityScale, brakeForce: p.mass * G * st.brakingG,
     requiredG: Math.hypot(st.lateralG, along) / Math.max(st.gravityScale, 1e-6),
-    availableG: availableG(p, asm),
+    availableG: availableG(p, asm), steer,
   };
 }
 
@@ -82,12 +89,19 @@ function availableG(p: VehicleProblem, asm: AssembledVehicle): number {
   return v;
 }
 
-function evalState(p: VehicleProblem, asm: AssembledVehicle, st: RoadState, checks: CheckProfile, guess?: ChassisPose): StateResult {
-  const e = solveCase(p, asm, {
-    name: st.name, kind: 'state', g: Math.hypot(st.ay, st.ax), lateralG: st.lateralG, brakingG: st.brakingG, accelG: st.accelG,
+function evalState(p: VehicleProblem, asm: AssembledVehicle, st: RoadState, checks: CheckProfile, guess?: ChassisPose, steer?: SteerNeed | null): StateResult {
+  const spec = {
+    name: st.name, kind: 'state' as const, g: Math.hypot(st.ay, st.ax), lateralG: st.lateralG, brakingG: st.brakingG, accelG: st.accelG,
     gravityScale: st.gravityScale, groundOffset: st.groundOffset, state: st,
-  }, guess);
-  const findings = classifyState(stateFacts(p, asm, st, e?.result ?? null), checks);
+  };
+  let e = solveCase(p, asm, spec, guess);
+  // The previous state's pose is usually a good start, but a very different state (a bump, a dip) can
+  // send the solver astray from it: try again from the design pose.
+  if (guess && !e?.result.converged) {
+    const cold = solveCase(p, asm, spec);
+    if (cold && (cold.result.converged || !e)) e = cold;
+  }
+  const findings = classifyState(stateFacts(p, asm, st, e?.result ?? null, steer), checks);
   const severity = worstSeverity(findings);
   if (!e) return { state: st, converged: false, pose: null, corners: null, grip: null, findings, severity, passed: false };
   const r = e.result;
@@ -107,7 +121,8 @@ const dedupe = (fs: Finding[]): Finding[] => {
 
 /** Fastest speed scale (0–1) at which every sample of the segment has no Fail. */
 function speedLimitOf(p: VehicleProblem, asm: AssembledVehicle, seg: TestSegmentSpec, index: number, checks: CheckProfile): number {
-  const passes = (k: number) => segmentStates(seg, index, k, dimsOf(p, asm)).every((st) => evalState(p, asm, st, checks).passed);
+  const steer = steerNeedOf(p, asm, seg);
+  const passes = (k: number) => segmentStates(seg, index, k, dimsOf(p, asm)).every((st) => evalState(p, asm, st, checks, undefined, steer).passed);
   if (!passes(0.02)) return 0;
   let lo = 0.02, hi = 1;
   for (let i = 0; i < 12; i++) {
@@ -127,8 +142,10 @@ export function runTest(
   let guess: ChassisPose | undefined;
   segments.forEach((seg, i) => {
     const checks = seg.checks ?? PROFILES.default.checks;
+    const steer = steerNeedOf(p, asm, seg);
     const rs = segmentStates(seg, i, 1, dimsOf(p, asm)).map((st) => {
-      const r = evalState(p, asm, st, checks, guess);
+      if (steer) st.rack = steer.rackUsed;
+      const r = evalState(p, asm, st, checks, guess, steer);
       if (r.pose) guess = r.pose;
       return r;
     });
@@ -138,11 +155,11 @@ export function runTest(
     const res: SegmentResult = {
       index: i, severity, passed: severity !== 'fail', findings,
       maxUtilization: Math.max(...rs.map((r) => r.grip?.maxUtilization ?? Infinity)),
-      impossible: findings.some((f) => f.check === 'beyondGrip'),
+      impossible: findings.some((f) => f.check === 'beyondGrip'), steer,
     };
     if (!res.passed && (opts.onFail === 'lift' || opts.speedLimits)) {
       res.speedLimit = speedLimitOf(p, asm, seg, i, checks);
-      if (opts.onFail === 'lift' && res.speedLimit > 0) res.lifted = segmentStates(seg, i, res.speedLimit, dimsOf(p, asm)).map((st) => evalState(p, asm, st, checks));
+      if (opts.onFail === 'lift' && res.speedLimit > 0) res.lifted = segmentStates(seg, i, res.speedLimit, dimsOf(p, asm)).map((st) => evalState(p, asm, st, checks, undefined, steer));
     }
     segs.push(res);
   });
@@ -169,6 +186,8 @@ export interface PlaybackFrame {
   /** Position on the test track, top view (m) and height (m); heading, rad. */
   pos: { x: number; y: number; z: number };
   heading: number;
+  /** Rack travel for the turn, mm (left corner's rack, clamped to the limit). */
+  rack: number;
   severity: Severity;
   utilization: Record<CornerId, number>;
   findings: string[];
@@ -198,6 +217,7 @@ export function playbackFrames(
     if (!(T > 0)) return;
     const a = (sg.v1 - sg.v0) / T; // m/s², constant over the segment
     const checks = sg.checks ?? PROFILES.default.checks;
+    const steer = steerNeedOf(p, asm, sg);
     let lastS = 0;
     for (let tt = 0; tt < T - 1e-9; tt += dt) {
       const sAlong = sg.v0 * tt + 0.5 * a * tt * tt;
@@ -215,12 +235,12 @@ export function playbackFrames(
       const wh = sg.road ? wheelHeights(sg.road, sAlong, dims.wheelbase / 1000, dims.halfTrack / 1000) : { FL: 0, FR: 0, RL: 0, RR: 0 };
       const ground: Partial<Record<CornerId, number>> = {};
       for (const id of CORNER_IDS) { const h = (sg.bumps?.[id] ?? 0) + wh[id]; if (Math.abs(h) > 1e-6) ground[id] = h; }
-      const st: RoadState = { name: `${i + 1}@${sAlong.toFixed(1)}m`, segment: i, speed: v, ay, ax, at: sAlong, ...roadEffective(ay, ax, sg.grade, sg.bank), groundOffset: ground, grade: sg.grade, bank: sg.bank };
-      const r = evalState(p, asm, st, checks, guess);
+      const st: RoadState = { name: `${i + 1}@${sAlong.toFixed(1)}m`, segment: i, speed: v, ay, ax, at: sAlong, ...roadEffective(ay, ax, sg.grade, sg.bank), groundOffset: ground, grade: sg.grade, bank: sg.bank, rack: steer?.rackUsed ?? 0 };
+      const r = evalState(p, asm, st, checks, guess, steer);
       if (r.pose) guess = r.pose;
       frames.push({
         t: t0 + tt, segment: i, s: sAlong, speed: v, ay, ax, grade: sg.grade, bank: sg.bank, groundOffset: ground,
-        pos: { x, y, z }, heading, severity: r.severity,
+        pos: { x, y, z }, heading, rack: steer?.rackUsed ?? 0, severity: r.severity,
         utilization: Object.fromEntries(CORNER_IDS.map((id) => [id, r.grip?.corners[id].utilization ?? NaN])) as Record<CornerId, number>,
         findings: r.findings.filter((f) => f.severity !== 'pass').map((f) => f.text),
       });

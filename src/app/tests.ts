@@ -73,6 +73,8 @@ export interface TestDesign {
   rank: number;
   /** On a failing segment: report it, or let the driver lift to the speed that passes. */
   onFail: 'report' | 'lift';
+  /** Included in Run all / Optimize all (unchecked = skipped). */
+  enabled: boolean;
 }
 
 export const defaultChecks = () => cloneProfile(PROFILES.default.checks);
@@ -108,6 +110,7 @@ const bumpsOf = (b: Partial<Record<CornerId, number>>) =>
 
 /** Building blocks: speed changes, turns, road features. Combine by editing one segment. */
 export const SEGMENT_PRESETS: SegmentPreset[] = [
+  { label: 'Empty', make: () => ({ name: 'New segment' }) },
   { label: 'Accelerate 0–60 mph', make: () => ({ name: 'Accelerate 0–60', distance: f(120, 'distance'), speedStart: f(0, 'speed'), speedEnd: f(60 * MPH, 'speed') }) },
   { label: 'Constant 45 mph', make: () => ({ name: 'Constant 45', distance: f(100, 'distance'), speedStart: f(45 * MPH, 'speed'), speedEnd: f(45 * MPH, 'speed') }) },
   { label: 'Brake 60–0 mph', make: () => ({ name: 'Brake 60–0', distance: f(45, 'distance'), speedStart: f(60 * MPH, 'speed'), speedEnd: f(0, 'speed') }) },
@@ -125,7 +128,7 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
   {
     label: 'Autocross sequence',
     make: () => ({
-      name: 'Autocross sequence', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report',
+      name: 'Autocross sequence', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true,
       segments: [
         newSegment({ name: 'Launch 0–40', distance: f(50, 'distance'), speedStart: f(0, 'speed'), speedEnd: f(40 * MPH, 'speed') }),
         newSegment({ name: 'Brake 40–30', distance: f(15, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(30 * MPH, 'speed') }),
@@ -138,7 +141,7 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
   {
     label: 'Pothole while braking in a turn',
     make: () => ({
-      name: 'Pothole while braking in a turn', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report',
+      name: 'Pothole while braking in a turn', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true,
       segments: [
         newSegment({ name: 'Braking left turn + pothole', path: 'left', radius: f(45, 'distance'), distance: f(35, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(30 * MPH, 'speed'), features: [{ ...newFeature('pothole', 15), height: f(40, 'length') }] }),
       ],
@@ -147,7 +150,7 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
   {
     label: 'Hills: incline left, lumpy decline right',
     make: () => ({
-      name: 'Hills', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report',
+      name: 'Hills', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true,
       segments: [
         newSegment({ name: 'Flat straight', distance: f(100, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(40 * MPH, 'speed') }),
         newSegment({ name: 'Bumps + potholes straight', distance: f(60, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(40 * MPH, 'speed'), features: [{ ...newFeature('bump', 15), side: 'left' }, newFeature('pothole', 35)] }),
@@ -156,7 +159,7 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
       ],
     }),
   },
-  { label: 'Empty test', make: () => ({ name: 'New test', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', segments: [newSegment()] }) },
+  { label: 'Empty test', make: () => ({ name: 'New test', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, segments: [newSegment()] }) },
 ];
 
 /**
@@ -196,11 +199,11 @@ export function roadSpecOf(s: TestSegment): RoadSpec | undefined {
 /**
  * Load cases for the optimizer from tests: every segment's speed samples, each with weight
  * (test priority × segment priority, from their ranks) and the segment's pass rules.
- * `source`: a test id, or 'all' for every test (weighted by its priority rank).
+ * `source`: a test id, or 'all' for every enabled test (weighted by its priority rank).
  */
 export function statesForTests(tests: TestDesign[], source: string, dims?: CarDims): RoadState[] {
-  const chosen = source === 'all' ? tests : tests.filter((t) => t.id === source);
-  const tw = (t: TestDesign) => (source === 'all' ? rankWeight(t.rank, tests.length) : 1);
+  const chosen = source === 'all' ? tests.filter((t) => t.enabled !== false) : tests.filter((t) => t.id === source);
+  const tw = (t: TestDesign) => (source === 'all' ? rankWeight(t.rank, chosen.length) : 1);
   const totalPriority = chosen.reduce((a, t) => a + tw(t), 0) || 1;
   const out: RoadState[] = [];
   for (const t of chosen) {

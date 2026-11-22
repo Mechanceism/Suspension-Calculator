@@ -9,6 +9,7 @@
  * moves it on all four corners.
  */
 import { vec3, Y_AXIS, type Vec3 } from '../math/vec3';
+import type { SteeringSpec } from '../tests/steer';
 import { DoubleWishbone, type DoubleWishboneGeometry } from '../suspension/doubleWishbone';
 import { characteristics, deg, type Characteristics } from '../suspension/characteristics';
 import { fitFreeLength } from '../suspension/spring';
@@ -80,6 +81,8 @@ export interface VehicleProblem {
   slidingRatio?: number;
   /** Test states: when given, they replace the fixed load cases. */
   states?: RoadState[];
+  /** Steered corners and the rack (tests: the rack travel a turn needs). */
+  steering?: SteeringSpec;
   mass: number;
   /** CG: x (+ left), height above ground, z (from the front axle, + forward). */
   cg: { x: number; height: number; z: number };

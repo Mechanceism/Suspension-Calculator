@@ -224,8 +224,8 @@ interface RunState {
 type RunStore = UseBoundStore<StoreApi<RunState>>;
 const makeRunStore = (): RunStore => create<RunState>(() => ({ running: false, progress: null, result: null, from: null, error: null, handle: null }));
 /** Run state lives outside the components so switching tabs doesn't lose a run. */
-const useCornerRun = makeRunStore();
-const useVehicleRun = makeRunStore();
+export const useCornerRun = makeRunStore();
+export const useVehicleRun = makeRunStore();
 
 function RunArea({ useRun, blockers, notes, label, start, current, meta, onApply, undo }: {
   useRun: RunStore;

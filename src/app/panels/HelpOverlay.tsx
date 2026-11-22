@@ -39,6 +39,7 @@ const SECTIONS: { title: string; rows: [string, string][] }[] = [
       ['Ctrl + Y / Ctrl + Shift + Z', 'Redo'],
       ['Ctrl + S', 'Save'],
       ['Ctrl + Shift + S', 'Save as'],
+      ['Space', 'Play / pause the test playback (Tests)'],
       ['?', 'This help'],
     ],
   },

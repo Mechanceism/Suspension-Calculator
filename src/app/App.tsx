@@ -7,6 +7,7 @@ import { ViewMenu } from './panels/ViewMenu';
 import { UnitsMenu } from './panels/UnitsMenu';
 import { TestsSidebar, TestResults, TestViewBar } from './panels/TestsPanels';
 import { HelpOverlay } from './panels/HelpOverlay';
+import { BusyIndicator } from './panels/BusyIndicator';
 import { initHistory, undo, redo, useHistory } from './history';
 import { initHeldDimensions } from './heldDimensions';
 import { save, useDirty } from './fileActions';
@@ -95,6 +96,7 @@ export function App() {
           <button role="tab" aria-selected={workspace === 'vehicle'} className={workspace === 'vehicle' ? 'on' : ''} onClick={() => setWorkspace('vehicle')}>Vehicle</button>
           <button role="tab" aria-selected={workspace === 'tests'} className={workspace === 'tests' ? 'on' : ''} onClick={() => setWorkspace('tests')} title="Chains of driving segments run on the whole car">Tests</button>
         </nav>
+        <BusyIndicator />
         <span className="muted topbar-note">{workspace === 'corner' ? 'Chassis fixed · one corner' : workspace === 'vehicle' ? 'Whole car · quasi-static' : 'Tests · steady states (Phase A)'}</span>
         <button className="menu-btn help-btn" onClick={() => setHelp(true)} title="Keyboard & mouse help (?)">?</button>
       </header>

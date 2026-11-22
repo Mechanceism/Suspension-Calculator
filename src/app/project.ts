@@ -326,6 +326,7 @@ function readTests(raw: unknown, warnings: string[]): TestDesign[] {
       profile: typeof t.profile === 'string' ? t.profile : isObj(t.checks) ? 'custom' : 'default',
       rank: rankOf(t.rank, testLegacy, ti),
       onFail: t.onFail === 'lift' ? 'lift' : 'report',
+      enabled: t.enabled !== false,
     });
   }
   return out;

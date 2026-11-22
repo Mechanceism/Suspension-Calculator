@@ -69,6 +69,8 @@ export interface RoadState {
   bank: number;
   /** Position along the segment, m (road-surface states). */
   at?: number;
+  /** Rack travel for the turn, mm (left corner's rack; clamped to the limit). */
+  rack?: number;
   /** Optimizer weight (test priority × segment weight) and the pass rules that apply. */
   weight?: number;
   checks?: CheckProfile;
@@ -139,6 +141,39 @@ export function segmentStates(s: SegmentSpec, index: number, speedScale = 1, dim
 }
 
 export const testStates = (segments: SegmentSpec[], dims?: CarDims): RoadState[] => segments.flatMap((s, i) => segmentStates(s, i, 1, dims));
+
+/** A point on the track (top view), m, and the heading, rad (0 = +x, + = left). */
+export interface TrackPoint { x: number; y: number; heading: number }
+
+/**
+ * The track drawn from the segments alone (top view): straights and arcs of the turn radius, chained.
+ * One polyline per segment, each starting where the previous one ended.
+ */
+export function trackPath(segs: Pick<SegmentSpec, 'distance' | 'path' | 'radius'>[], maxStep = 2): TrackPoint[][] {
+  let x = 0, y = 0, heading = 0;
+  return segs.map((s) => {
+    const pts: TrackPoint[] = [{ x, y, heading }];
+    const d = Math.max(0, s.distance);
+    const curv = s.path === 'straight' ? 0 : (s.path === 'left' ? 1 : -1) / Math.max(s.radius, 0.1);
+    // Arcs: at most ~10° per step so they look round.
+    const step = curv ? Math.min(maxStep, (10 * Math.PI) / 180 / Math.abs(curv)) : d;
+    const n = Math.max(1, Math.ceil(d / Math.max(step, 1e-6)));
+    const x0 = x, y0 = y, h0 = heading;
+    for (let i = 1; i <= n; i++) {
+      const sAlong = (d * i) / n;
+      if (curv) {
+        heading = h0 + curv * sAlong;
+        x = x0 + (Math.sin(heading) - Math.sin(h0)) / curv;
+        y = y0 - (Math.cos(heading) - Math.cos(h0)) / curv;
+      } else {
+        x = x0 + sAlong * Math.cos(h0);
+        y = y0 + sAlong * Math.sin(h0);
+      }
+      pts.push({ x, y, heading });
+    }
+    return pts;
+  });
+}
 
 /** Segment duration, s (constant acceleration over the distance). */
 export function segmentDuration(s: SegmentSpec): number {

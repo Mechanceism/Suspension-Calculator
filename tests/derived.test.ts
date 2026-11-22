@@ -69,3 +69,41 @@ describe('roll stiffness from the whole-car solve', () => {
     expect(K / expected).toBeLessThan(1.1);
   });
 });
+
+describe('rack ahead of / behind the axle', () => {
+  it('mirrors the steering arm through the steering axis: same Ackermann line, tie rod kept, reversible', async () => {
+    const { editableFromLayout, flipRackSide, rackAhead, toGeometry } = await import('../src/app/store');
+    const e = editableFromLayout('C');
+    expect(rackAhead(e)).toBe(false);
+    const f = flipRackSide(e);
+    expect(rackAhead(f)).toBe(true);
+    const len = (x: typeof e) => Math.hypot(...([0, 1, 2] as const).map((i) => x.points.trOuter[i].value - x.points.trInner[i].value));
+    expect(len(f)).toBeCloseTo(len(e), 9);
+    const back = flipRackSide(f);
+    for (const k of ['trInner', 'trOuter'] as const) for (const i of [0, 1, 2]) expect(back.points[k][i]!.value).toBeCloseTo(e.points[k][i]!.value, 6);
+    // Ackermann keeps its sign (the arm lies on the same line through the steering axis).
+    const ack = (x: typeof e) => {
+      const c = new DoubleWishbone(toGeometry(x));
+      const h0 = headingAngle(c.solve({}).spinAxis);
+      // Find the rack travel that turns the wheel 15° toward outboard, either direction of rack.
+      const yaw = (r: number) => headingAngle(c.solve({ rack: r }).spinAxis) - h0;
+      const r = Math.sign(yaw(5)) * 25;
+      return ackermann(yaw(r), -yaw(-r), 1550, 1100).percent;
+    };
+    const a0 = ack(e), a1 = ack(f);
+    expect(Math.sign(a1)).toBe(Math.sign(a0));
+  });
+});
+
+describe('Ackermann lines', () => {
+  it('cross on the centerline; parallel arms never cross', async () => {
+    const { ackermannLinesCross } = await import('../src/core');
+    // Arms pointing back and inward toward (0, −1550).
+    const kL = { x: 550, z: 0 }, kR = { x: -550, z: 0 };
+    const towards = (k: { x: number; z: number }) => ({ x: k.x + (0 - k.x) * 0.08, z: k.z + (-1550 - k.z) * 0.08 });
+    const c = ackermannLinesCross(kL, towards(kL), kR, towards(kR))!;
+    expect(c.x).toBeCloseTo(0, 9);
+    expect(c.z).toBeCloseTo(-1550, 6);
+    expect(ackermannLinesCross(kL, { x: 550, z: -100 }, kR, { x: -550, z: -100 })).toBeNull();
+  });
+});

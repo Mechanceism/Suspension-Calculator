@@ -1,4 +1,6 @@
-import { useApp, STEER_META, type SteerKey } from '../store';
+import { useApp, STEER_META, rackAhead, rootOf, type SteerKey } from '../store';
+import { parseValue } from '../../core/units/units';
+import { lockKeys } from '../locks';
 import { deg } from '../../core/suspension/characteristics';
 import type { Model } from '../useModel';
 import { FieldRows, fmt } from './FieldRows';
@@ -17,7 +19,42 @@ export function SteerFields({ keys }: { keys: SteerKey[] }) {
   );
 }
 
-export const SteeringSystemFields = () => <SteerFields keys={SYSTEM} />;
+export const SteeringSystemFields = () => <><SteerFields keys={SYSTEM} /><RackLayoutFields /></>;
+
+/**
+ * Where the rack sits and how long it is: ahead of / behind the axle, and the distance between its inner
+ * ball joints (left and right mirror images: 2 × the inner joint's X). The tie rods reach from there to the
+ * steering arms.
+ */
+export function RackLayoutFields() {
+  const geom = useApp((s) => s.geom);
+  const setRackSide = useApp((s) => s.setRackSide);
+  const setPointsAxis = useApp((s) => s.setPointsAxis);
+  const root = useApp((s) => rootOf(s.activeCorner, s.links));
+  const pt = (k: 'trInner' | 'trOuter') => geom.points[k].map((f) => f.value);
+  const [ix, iy, iz] = pt('trInner'), [ox, oy, oz] = pt('trOuter');
+  const length = 2 * Math.abs(ix!);
+  return (
+    <>
+      <div className="row" title="Behind the axle (the steering arms point back) or ahead of it (they point forward). Switching mirrors the steering arm through the steering axis.">
+        <span className="muted">Rack position</span>
+        <select value={rackAhead(geom) ? 'ahead' : 'behind'} onChange={(e) => setRackSide(e.target.value === 'ahead')}>
+          <option value="behind">Behind the axle</option>
+          <option value="ahead">Ahead of the axle</option>
+        </select>
+      </div>
+      <FieldRows rows={[
+        {
+          label: 'Rack length (inner ball joint to ball joint)', field: { text: fmt(length, 1), value: length }, unit: 'mm',
+          hint: 'Racks come in fixed lengths: set it here (moves both inner tie-rod joints in X); the tie rods then reach to the steering arms. Lock it with the inner joint\'s X.',
+          onCommit: (t: string) => { const r = parseValue(t, 'length'); if (r.ok && r.value > 0) setPointsAxis([{ key: 'trInner', axis: 0, value: (Math.sign(ix!) || 1) * r.value / 2 }]); },
+          lockKey: lockKeys.point(root, 'trInner', 0),
+        },
+        { label: 'Tie-rod length', value: fmt(Math.hypot(ox! - ix!, oy! - iy!, oz! - iz!), 1), unit: 'mm', hint: 'Inner to outer ball joint (follows from the rack length and the steering arm)' },
+      ]} />
+    </>
+  );
+}
 export const TireForceFields = () => <SteerFields keys={FORCES} />;
 
 /** Steering results: angles, ratio, and the forces back to the rack and steering wheel. */

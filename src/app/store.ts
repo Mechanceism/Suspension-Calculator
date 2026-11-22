@@ -166,7 +166,7 @@ export interface EditableGeometry {
 
 export const VIS_KEYS = [
   'chassis', 'uca', 'lca', 'upright', 'tieRod', 'wheel',
-  'spring', 'patch', 'steeringAxis', 'icConstruction', 'rollCenter', 'ground', 'datum', 'labels', 'dimensions',
+  'spring', 'patch', 'steeringAxis', 'icConstruction', 'rollCenter', 'ground', 'datum', 'labels', 'dimensions', 'ackermann',
 ] as const;
 export type VisKey = (typeof VIS_KEYS)[number];
 
@@ -227,6 +227,27 @@ export function toGeometry(e: EditableGeometry): DoubleWishboneGeometry {
     // MacPherson: the damper is the strut (its lower point is on the upright); multilink: on the upright.
     damper: { chassis: p('dmpChassis'), arm: kind === 'doubleWishbone' ? e.damperArm : 'upright', armPoint: p('dmpArm') },
   };
+}
+
+/** Is the rack (tie-rod inner joint) ahead of the axle (wheel center)? */
+export const rackAhead = (e: EditableGeometry) => e.points.trInner[2].value > e.points.wheelCenter[2].value;
+
+/**
+ * The steering rack moved to the other side of the axle. The steering arm (steering axis → tie-rod outer
+ * joint) is reflected through the steering axis in top view, so it lies on the same line: the classic
+ * Ackermann lines keep pointing where they did. The tie rod keeps its length and direction (the inner
+ * joint moves with the outer one).
+ */
+export function flipRackSide(e: EditableGeometry): EditableGeometry {
+  const s = new DoubleWishbone(toGeometry(e)).design();
+  const p = (k: PointKey) => vec3(e.points[k][0].value, e.points[k][1].value, e.points[k][2].value);
+  const out = p('trOuter'), inn = p('trInner');
+  const lo = s.points.steerLower, up = s.points.steerUpper;
+  const t = Math.abs(up.y - lo.y) > 1e-9 ? (out.y - lo.y) / (up.y - lo.y) : 0;
+  const K = vec3(lo.x + t * (up.x - lo.x), out.y, lo.z + t * (up.z - lo.z));
+  const out2 = vec3(2 * K.x - out.x, out.y, 2 * K.z - out.z);
+  const in2 = vec3(out2.x - (out.x - inn.x), inn.y, out2.z - (out.z - inn.z));
+  return { ...e, points: { ...e.points, trOuter: fields(out2), trInner: fields(in2) } };
 }
 
 /** Hardpoints a suspension type uses, in table order. */
@@ -473,6 +494,8 @@ export interface AppState extends DesignState {
   addMeasureAnchor(a: AnchorId, at?: Vec3): void;
   setSpringField(key: SpringKey, text: string): void;
   setDamperArm(arm: ArmChoice): void;
+  /** Put the steering rack ahead of or behind the axle (flipRackSide). */
+  setRackSide(ahead: boolean): void;
   /** Change the active design's suspension type (convertGeometry). */
   setSuspensionKind(kind: SuspensionKind): void;
   /** Set the free length so the static corner load sits at the design position (travel 0). */
@@ -965,7 +988,7 @@ export const useApp = create<AppState>((set, get) => ({
   visibility: {
     chassis: true, uca: true, lca: true, upright: true, tieRod: true, wheel: true, spring: true,
     patch: true, steeringAxis: true, icConstruction: true, rollCenter: true, ground: true, datum: true, labels: params.get('labels') === '1',
-    dimensions: true,
+    dimensions: true, ackermann: true,
   },
   projection: params.get('projection') === 'perspective' ? 'perspective' : 'orthographic',
   focus: 'corner',
@@ -1340,6 +1363,16 @@ export const useApp = create<AppState>((set, get) => ({
       points: { ...geom.points, dmpArm: fields(moved), dmpChassis: fields(chassisMount) },
     };
     set({ geom: next, presetId: 'custom', spring: fittedSpring(next, get().spring) });
+  },
+  setRackSide: (ahead) => {
+    const geom = get().geom;
+    if (rackAhead(geom) === ahead) return;
+    try {
+      const next = flipRackSide(geom);
+      new DoubleWishbone(toGeometry(next)).design();
+      set({ geom: next, presetId: 'custom' });
+      get().notify(`Rack ${ahead ? 'ahead of' : 'behind'} the axle: the steering arm was mirrored through the steering axis (same Ackermann line); the rack now moves the other way for the same turn.`, 'info');
+    } catch (err) { get().notify(`Can't move the rack: ${err instanceof Error ? err.message : String(err)}`, 'error'); }
   },
   setSuspensionKind: (kind) => {
     const geom = get().geom;

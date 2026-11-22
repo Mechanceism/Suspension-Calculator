@@ -21,6 +21,7 @@ const CONSTRUCTION: { key: VisKey; label: string; color: string }[] = [
   { key: 'steeringAxis', label: 'Steering axis', color: COLORS.steering },
   { key: 'icConstruction', label: 'Front-view IC lines', color: COLORS.ic },
   { key: 'rollCenter', label: 'Roll center', color: COLORS.rc },
+  { key: 'ackermann', label: 'Ackermann lines (Vehicle view)', color: COLORS.steering },
   { key: 'ground', label: 'Ground plane', color: COLORS.ground },
   { key: 'datum', label: 'Origin axes', color: '#ffffff' },
   { key: 'labels', label: 'Point labels', color: '#ffffff' },

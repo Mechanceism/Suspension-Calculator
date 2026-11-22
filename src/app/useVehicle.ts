@@ -2,7 +2,7 @@
  * Vehicle view model (L6): builds all four corners from their (linked) designs, solves the whole-car
  * equilibrium, and derives the results shown in the Vehicle view.
  */
-import { rollStiffness } from '../core/suspension/derived';
+import { rollStiffness, ackermannLinesCross } from '../core/suspension/derived';
 import { useMemo, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import {
@@ -65,6 +65,11 @@ export interface VehicleModel {
   /** Roll stiffness per axle from this cornering state, N·m/deg (NaN without cornering), and roll per g. */
   rollStiffness: { front: number; rear: number };
   rollGradient: number;
+  /**
+   * Classic Ackermann lines (vehicle frame, sprung): each front steering axis (at the tie-rod height) through
+   * its outer tie-rod joint, and where they cross (null = parallel). 100 % Ackermann: on the rear axle.
+   */
+  ackermannLines: { kL: Vec3; tL: Vec3; kR: Vec3; tR: Vec3; cross: { x: number; z: number } | null } | null;
   /** Longitudinal (braking) load transfer onto the front axle vs. static, N. */
   frontLoadGain: number;
   /** Classic geometric anti-dive (front) and anti-lift (rear) under braking, % (side-view IC, brake mount, bias). */
@@ -141,7 +146,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
       error: setup.error, result: null, corners: {}, staticLoads: { FL: 0, FR: 0, RL: 0, RR: 0 }, groundY: 0,
       rollCenters: { front: null, rear: null }, rideHeight: { front: NaN, rear: NaN },
       transfer: { front: { total: 0, geometric: 0, elastic: 0 }, rear: { total: 0, geometric: 0, elastic: 0 }, lltdFront: NaN },
-      rollStiffness: { front: NaN, rear: NaN }, rollGradient: NaN,
+      rollStiffness: { front: NaN, rear: NaN }, rollGradient: NaN, ackermannLines: null,
       rolloverG: NaN, sprungCgWorld: null, wheelbase, accel: { lateral: 0, longitudinal: 0 }, frontLoadGain: NaN, antiDive: NaN, antiLift: NaN, antiSquat: NaN, antiLiftAccel: NaN,
     };
     if (!setup.all || !setup.built) return empty;
@@ -288,6 +293,19 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
           ? { front: rollStiffness(front.elastic, trackF, (res.pose.roll * 180) / Math.PI), rear: rollStiffness(rear.elastic, trackR, (res.pose.roll * 180) / Math.PI) }
           : { front: NaN, rear: NaN },
         rollGradient: Math.abs(lateralG) > 0.02 ? Math.abs((res.pose.roll * 180) / Math.PI / lateralG) : NaN,
+        ackermannLines: (() => {
+          const arm = (id: CornerId) => {
+            const v = views[id];
+            if (!v) return null;
+            const p = v.state.points, pl = placement(id, wheelbase);
+            const lo = p.steerLower, up = p.steerUpper, t = p.trOuter;
+            const f = Math.abs(up.y - lo.y) > 1e-9 ? (t.y - lo.y) / (up.y - lo.y) : 0;
+            return { k: pl.point(vec3(lo.x + f * (up.x - lo.x), t.y, lo.z + f * (up.z - lo.z))), t: pl.point(t) };
+          };
+          const L = arm('FL'), R = arm('FR');
+          if (!L || !R) return null;
+          return { kL: L.k, tL: L.t, kR: R.k, tR: R.t, cross: ackermannLinesCross(L.k, L.t, R.k, R.t) };
+        })(),
         rolloverG: (0.5 * (trackF + trackR)) / (2 * v.cgY.value),
         frontLoadGain: res.corners.FL.tireLoad + res.corners.FR.tireLoad - frontStatic,
         antiDive: antiOf(['FL', 'FR'], bias, 1),

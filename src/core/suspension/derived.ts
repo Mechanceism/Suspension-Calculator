@@ -48,3 +48,19 @@ export function ackermann(left: number, right: number, wheelbase: number, track:
 export function rollStiffness(elasticTransfer: number, track: number, rollDeg: number): number {
   return Math.abs(rollDeg) > 1e-6 ? Math.abs((elasticTransfer * track) / 1000 / rollDeg) : NaN;
 }
+
+/**
+ * Classic Ackermann check (top view): the line from each front steering axis through its steering arm's
+ * outer (tie-rod) joint. With 100 % Ackermann near straight ahead the two lines meet on the rear axle's
+ * centerline. Points are (x, z) in the vehicle frame (x left, z forward). Returns where they cross, or null
+ * when they are parallel (parallel steer).
+ */
+export function ackermannLinesCross(
+  kL: { x: number; z: number }, tL: { x: number; z: number }, kR: { x: number; z: number }, tR: { x: number; z: number },
+): { x: number; z: number } | null {
+  const d1 = { x: tL.x - kL.x, z: tL.z - kL.z }, d2 = { x: tR.x - kR.x, z: tR.z - kR.z };
+  const den = d1.x * d2.z - d1.z * d2.x;
+  if (Math.abs(den) < 1e-9 * Math.hypot(d1.x, d1.z) * Math.hypot(d2.x, d2.z)) return null;
+  const t = ((kR.x - kL.x) * d2.z - (kR.z - kL.z) * d2.x) / den;
+  return { x: kL.x + t * d1.x, z: kL.z + t * d1.z };
+}

@@ -183,6 +183,7 @@ function VehicleScene({ model, arrows }: { model: VehicleModel; arrows: ForceArr
       {/* Chassis (everything sprung) moves with the solved pose. */}
       <group position={[0, pose.heave, 0]} rotation={euler}>
         {vis.chassis && <Frame model={model} />}
+        {vis.ackermann && <AckermannLines model={model} />}
         {CORNER_IDS.map((id) => {
           const v = model.corners[id];
           if (!v) return null;
@@ -204,6 +205,32 @@ function VehicleScene({ model, arrows }: { model: VehicleModel; arrows: ForceArr
           <Seg a={vec3(rcF.x, rcF.y, 250)} b={vec3(rcR.x, rcR.y, -model.wheelbase - 250)} color={COLORS.rc} width={1.5} dashed />
         </>
       )}
+    </group>
+  );
+}
+
+/**
+ * Classic Ackermann check, top view: from each front steering axis through its steering arm's outer joint,
+ * to where the lines cross (or past the rear axle when they don't); the rear axle's center is marked.
+ */
+function AckermannLines({ model }: { model: VehicleModel }) {
+  const a = model.ackermannLines;
+  if (!a) return null;
+  const L = model.wheelbase;
+  const y = (a.tL.y + a.tR.y) / 2;
+  // Draw to the crossing when it is within reach, otherwise a little past the rear axle.
+  const reach = (k: Vec3, t: Vec3) => {
+    const dz = t.z - k.z;
+    const endZ = a.cross && Math.abs(a.cross.z) < 4 * L ? a.cross.z : -L - 300;
+    const s = Math.abs(dz) > 1e-9 ? (endZ - k.z) / dz : 0;
+    return vec3(k.x + s * (t.x - k.x), y, endZ);
+  };
+  return (
+    <group>
+      <Seg a={a.kL} b={reach(a.kL, a.tL)} color={COLORS.steering} width={1.5} dashed />
+      <Seg a={a.kR} b={reach(a.kR, a.tR)} color={COLORS.steering} width={1.5} dashed />
+      <Joint p={vec3(0, y, -L)} color="#ffffff" r={9} />
+      {a.cross && Math.abs(a.cross.z) < 4 * L && <Joint p={vec3(a.cross.x, y, a.cross.z)} color={COLORS.steering} r={10} />}
     </group>
   );
 }

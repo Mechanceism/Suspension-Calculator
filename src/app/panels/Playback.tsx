@@ -202,6 +202,7 @@ export function PlaybackBar({ test }: { test: TestDesign | null }) {
             {' · grip '}{CORNER_IDS.map((id) => (
               <span key={id} className={cur.utilization[id] > 1 ? 'bad-text' : cur.utilization[id] > 0.9 ? 'warn-text' : ''}> {id} {fmt(cur.utilization[id] * 100, 0)}%</span>
             ))}
+            {cur.brakeTemp && <span title="Brake fade: rotor temperature front / rear"> · brakes {disp.format(cur.brakeTemp.front, '°C', 0)} / {disp.format(cur.brakeTemp.rear, '°C', 0)}</span>}
             {cur.findings.length > 0 && <span style={{ color: SEV_COLOR[cur.severity] }}> · {cur.findings[0]}</span>}
           </div>
         ) : (

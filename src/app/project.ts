@@ -52,14 +52,14 @@ import {
   defaultDesign, mergedCorners, layoutOf, rootOf, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META, SPRING_KEYS, SPRING_META,
   DAMPER_KEYS, DAMPER_META, STEER_KEYS, STEER_META, MECH_STEER_KEYS, TIRE_KEYS, TIRE_META, VEHICLE_KEYS, VEHICLE_META,
   DEFAULT_LINKS, DEFAULT_SETTINGS, SHARED_META, defaultShared, defaultOptimizerSetup, defaultVehicleOptimizerSetup, defaultGrip, GRIP_KEYS, GRIP_META,
-  defaultTireGrip, MF_KEYS, MF_META, RIDE_KEYS, DAMPER_TWO_STAGE_KEYS, SETUP_STEPS, AERO_KEYS, AERO_META, defaultAero, BRAKE_KEYS, BRAKE_META, defaultBrakes, TOW_KEYS, TOW_META, defaultTow,
+  defaultTireGrip, MF_KEYS, MF_META, RIDE_KEYS, DAMPER_TWO_STAGE_KEYS, SETUP_STEPS, AERO_KEYS, AERO_META, defaultAero, BRAKE_KEYS, BRAKE_META, FADE_KEYS, FADE_META, defaultBrakes, TOW_KEYS, TOW_META, defaultTow,
   type VehicleOptimizerSetup, type HeldDimension, newDimId,
   type OptimizerSetup,
   type DesignState, type CornerDesign, type Field, type CornerLinks, type CornerSettings, type SharedDesign, type Axle,
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 24;
+export const FORMAT_VERSION = 25;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -119,7 +119,7 @@ export interface ProjectFile {
   tireFile?: { name: string; fittyp: number; version: '6.1' | '5.2'; fnomin: number; nompres: number; p: Record<string, number> } | null;
   /** Aerodynamics (format 16). */
   aero?: { on: boolean; fields: Record<string, FieldJson>; file: AeroModel | null };
-  brakes?: { on: boolean; dualMc: boolean; useBias: boolean; fields: Record<string, FieldJson> };
+  brakes?: { on: boolean; dualMc: boolean; useBias: boolean; fields: Record<string, FieldJson>; fade?: { on: boolean; fields: Record<string, FieldJson> } };
   tow?: { on: boolean; fields: Record<string, FieldJson> };
   /** Setup wizard status per step (format 14). */
   setupStatus?: Record<string, 'entered' | 'estimated'>;
@@ -204,7 +204,7 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
     tireFileRear: d.tireFileRear === 'simple' ? 'simple' : d.tireFileRear ? tirJson(d.tireFileRear) : null,
     setupStatus: { ...d.setupStatus },
     aero: { on: d.aero.on, fields: mapFields(AERO_KEYS, d.aero), file: d.aero.file ? JSON.parse(JSON.stringify(d.aero.file)) as AeroModel : null },
-    brakes: { on: d.brakes.on, dualMc: d.brakes.dualMc, useBias: d.brakes.useBias, fields: mapFields(BRAKE_KEYS, d.brakes) },
+    brakes: { on: d.brakes.on, dualMc: d.brakes.dualMc, useBias: d.brakes.useBias, fields: mapFields(BRAKE_KEYS, d.brakes), fade: { on: d.brakes.fade, fields: mapFields(FADE_KEYS, d.brakes) } },
     tow: { on: d.tow.on, fields: mapFields(TOW_KEYS, d.tow) },
     ...(include.tests ? { tests: JSON.parse(JSON.stringify(d.tests)) as unknown[] } : {}),
     dimensions: d.dimensions.map((x) => ({
@@ -326,6 +326,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   22: (f) => ({ ...f, formatVersion: 23 }),
   // 23 → 24: no solid axles.
   23: (f) => ({ ...f, formatVersion: 24 }),
+  // 24 → 25: no brake fade.
+  24: (f) => ({ ...f, formatVersion: 25 }),
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */
@@ -752,7 +754,10 @@ export function importProject(data: unknown): ImportResult {
     brakes: (() => {
       const b = isObj(f.brakes) ? f.brakes : {};
       const fields = readRecord(b.fields, BRAKE_KEYS, (k) => BRAKE_META[k].quantity, defaultBrakes(), 'brakes', isObj(f.brakes) ? warnings : []);
-      return { ...fields, on: b.on === true, dualMc: b.dualMc === true, useBias: b.useBias === true };
+      // Brake fade came with format 25: older files have it off, quietly.
+      const fd = isObj(b.fade) ? b.fade : {};
+      const fade = readRecord(fd.fields, FADE_KEYS, (k) => FADE_META[k].quantity, defaultBrakes(), 'brakes.fade', isObj(b.fade) ? warnings : []);
+      return { ...fields, ...fade, on: b.on === true, fade: fd.on === true, dualMc: b.dualMc === true, useBias: b.useBias === true };
     })(),
     // Towing came with format 22: older files have no trailer, quietly.
     tow: (() => {

@@ -564,7 +564,8 @@ export interface AppState extends DesignState {
   setAeroField(key: AeroKey, text: string): void;
   setAero(patch: Partial<Pick<AeroSettings, 'on' | 'file'>>): void;
   setBrakeField(key: BrakeKey, text: string): void;
-  setBrakes(patch: Partial<Pick<BrakeSettings, 'on' | 'dualMc' | 'useBias'>>): void;
+  setBrakes(patch: Partial<Pick<BrakeSettings, 'on' | 'fade' | 'dualMc' | 'useBias'>>): void;
+  setFadeField(key: FadeKey, text: string): void;
   setTowField(key: TowKey, text: string): void;
   setTow(patch: Partial<Pick<TowSettings, 'on'>>): void;
   /** Grip scale of a loaded file (λμ): side (LMUY) or braking / drive (LMUX). */
@@ -797,9 +798,24 @@ export const BRAKE_META: Record<BrakeKey, { label: string; quantity: Quantity; u
   rotorRF: { label: 'Effective rotor radius, front', quantity: 'length', unit: 'mm', initial: 100, hint: 'Rotor center to the middle of the pad' },
   rotorRR: { label: 'Effective rotor radius, rear', quantity: 'length', unit: 'mm', initial: 90 },
 };
-export interface BrakeSettings extends Record<BrakeKey, Field> {
+/** Brake fade inputs (docs/MATH.md § Brakes, fade): rotors heat through a test, pads lose grip when hot. */
+export const FADE_KEYS = ['rotorMassF', 'rotorMassR', 'cooling', 'fadeStart', 'fadeEnd', 'fadeLoss', 'fadeAir', 'fadeStartTemp'] as const;
+export type FadeKey = (typeof FADE_KEYS)[number];
+export const FADE_META: Record<FadeKey, { label: string; quantity: Quantity; unit: string; initial: number; hint?: string }> = {
+  rotorMassF: { label: 'Rotor mass, front (each)', quantity: 'mass', unit: 'kg', initial: 2.5, hint: 'Heavier rotors heat up less per stop (road-car front rotors ≈ 6–10 kg, small race cars ≈ 1.5–3 kg)' },
+  rotorMassR: { label: 'Rotor mass, rear (each)', quantity: 'mass', unit: 'kg', initial: 2 },
+  cooling: { label: 'Cooling per rotor at 100 km/h', quantity: 'ratio', unit: 'W/K', initial: 25, hint: 'Heat carried away per °C above the air (a fifth of it at a stop). Solid rotor ≈ 15–25, vented ≈ 30–50, more with ducts' },
+  fadeStart: { label: 'Pads start to fade at', quantity: 'temperature', unit: '°C', initial: 400, hint: 'Street pads ≈ 300–400 °C, race pads ≈ 550–700 °C' },
+  fadeEnd: { label: 'Fully faded at', quantity: 'temperature', unit: '°C', initial: 650 },
+  fadeLoss: { label: 'Pad grip lost when fully faded', quantity: 'ratio', unit: '%', initial: 40 },
+  fadeAir: { label: 'Air temperature', quantity: 'temperature', unit: '°C', initial: 20 },
+  fadeStartTemp: { label: 'Rotor temperature at the start of a test', quantity: 'temperature', unit: '°C', initial: 50 },
+};
+export interface BrakeSettings extends Record<BrakeKey, Field>, Record<FadeKey, Field> {
   /** Model the brake hydraulics (off = the brakes are always strong enough). */
   on: boolean;
+  /** Model brake fade in tests (with the hydraulics). */
+  fade: boolean;
   /** Two master cylinders on a balance bar (else one tandem master cylinder). */
   dualMc: boolean;
   /** Use the hydraulics' front / rear split as the brake bias. */
@@ -807,7 +823,8 @@ export interface BrakeSettings extends Record<BrakeKey, Field> {
 }
 export const defaultBrakes = (): BrakeSettings => ({
   ...(Object.fromEntries(BRAKE_KEYS.map((k) => [k, field(BRAKE_META[k].initial, BRAKE_META[k].quantity)])) as Record<BrakeKey, Field>),
-  on: false, dualMc: false, useBias: false,
+  ...(Object.fromEntries(FADE_KEYS.map((k) => [k, field(FADE_META[k].initial, FADE_META[k].quantity)])) as Record<FadeKey, Field>),
+  on: false, fade: false, dualMc: false, useBias: false,
 });
 
 /** Towing inputs (docs/MATH.md § Towing). */
@@ -1318,6 +1335,10 @@ export const useApp = create<AppState>((set, get) => ({
     set({ brakes: { ...b, [key]: parseField(text, BRAKE_META[key].quantity, b[key]) } });
   },
   setBrakes: (patch) => set({ brakes: { ...get().brakes, ...patch } }),
+  setFadeField: (key, text) => {
+    const b = get().brakes;
+    set({ brakes: { ...b, [key]: parseField(text, FADE_META[key].quantity, b[key]) } });
+  },
   setTowField: (key, text) => {
     const t = get().tow;
     set({ tow: { ...t, [key]: parseField(text, TOW_META[key].quantity, t[key]) } });

@@ -400,7 +400,22 @@ Off by default (the brakes can always make the braking asked; only grip limits i
 - **Pedal force needed** for a braking case: everything is linear in the pedal force, so per axle it is (demand ÷ capacity) × the most pedal force; the larger axle sets it. More than the most pedal force → the new pass rule **Brakes too weak** (Fail by default; no suspension change can fix it).
 - Defaults: 500 N pedal, 4 : 1, no booster, 3/4" master cylinder, 2 × 32 mm pistons per side front, 1 × 28 mm rear, μ 0.45, 100 / 90 mm effective radius. That gives 7.0 MPa, 7.8 / 2.7 kN per axle, 3.6 g of brake capacity on the default car and a 74 % hydraulic bias; a 1.2 g stop needs 262 N of pedal.
 - Tested: the hand-calculated pressure, torque and tire force; the balance-bar split; linear pedal force; a 1.2 g stop beyond weak brakes fails *Brakes too weak* and is fine with strong ones; the axle that needs more pedal sets the pedal force.
-- Still to come: brake fade (rotor temperature over a test, μ vs temperature).
+
+### Brake fade ✅ (`src/core/vehicle/brakeThermal.ts`)
+With the hydraulics on, *Brake fade in tests* heats the rotors through a test. One lumped rotor per wheel:
+
+    C dT/dt = P − hA(v) (T − T_air)       C = rotor mass · 460 J/(kg·K) (cast iron)
+    P       = braking force at the wheel · v   (all the braking energy into the rotor)
+    hA(v)   = cooling · (0.2 + 0.8 · v / 27.8 m/s)   (cooling given at 100 km/h; a fifth of it at a stop)
+    exact step for constant P, v:  T(t) = T∞ + (T0 − T∞) e^(−hA t / C),  T∞ = T_air + P / hA
+
+- **Pads:** μ = μ0 below the fade start, falling linearly to μ0 · (1 − loss) at the fade end, then staying there. Each axle's braking capacity scales with its pads.
+- **In a test:** each segment's brake energy per axle = the samples' mean braking force × the distance (∫ F v dt = ∫ F ds), over the segment's time (distance ÷ mean speed). Every sample is then checked at the hottest the segment gets (the larger of its start and end temperatures):
+  - **Brake fade** (Warning by default): the pads have lost more than the allowed share (10 %).
+  - **Brakes too weak** (Fail): the faded brakes can't make the braking at the most pedal force (when the cold ones could).
+- **Results:** the rotor temperatures (front / rear) at the end of each segment in the test table, and in playback (state-to-state playback integrates frame by frame with each frame's braking force; the ride over time estimates it from the deceleration and grade, m·g·(−a_x − sin grade), split by the brake bias).
+- **Defaults:** 2.5 / 2 kg rotors, 25 W/K cooling at 100 km/h, fade from 400 °C to 650 °C losing 40 %, air 20 °C, rotors at 50 °C at the start.
+- **Tested:** the exact step (steady temperature, time constant), the pad curve; a stop heats each rotor by its share of the kinetic energy; repeated hard stops on light rotors and early-fading pads build heat stop to stop, warn of fade and then fail *Brakes too weak* while the same test without fade passes; playback frames carry the temperatures; the project saves it, and older files load with it off (format 25). In the browser, the Balanced test on the default car with 0.8 kg rotors reaches 94 °C front.
 
 ## Towing (static) ✅ (`src/core/vehicle/towing.ts`)
 Off by default. On (Vehicle → Inputs → *Towing*): a trailer on a ball hitch behind the car that follows the car's accelerations (no sway). Its forces on the car at the hitch come from its own balance. m_t = trailer mass, τ = static tongue share (its CG sits τ·L_t ahead of its axle), L_t = hitch to axle, h_h and h_cg = hitch and CG heights, β = the share of its braking its own brakes make.

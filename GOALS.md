@@ -109,7 +109,7 @@ Done: File → Setup wizard (and Vehicle → Inputs), eleven steps with a step l
 
 **Large (after the medium ones):**
 - ✅ **Solid axle, twist beam and leaf springs:** solid axle with a 4-link, 3-link + Panhard rod or leaf springs, and the twist beam (two travels; heave about the bushing line, roll about bushing → shear center), through kinematics, the whole car, ride, app and presets (*A4*, *A3*, *LF*, *TB*). Still to come: a steered beam axle, Watt's linkage. Originally: both wheels on one body located by links (4-link, 3-link + Panhard, Watt's, leaf springs); a twist beam as two trailing arms joined by a twisting beam. A leaf spring locates the axle as well as springing it, so it comes with the solid axle.
-- **Brake fade:** rotor temperature over a test (brake energy into the rotor) and pad μ vs temperature; a fade check.
+- ✅ **Brake fade:** rotor temperature over a test (brake energy into a lumped rotor, speed-dependent cooling), pad μ vs temperature scaling the hydraulics' capacity, a *Brake fade* check and *Brakes too weak* when faded; temperatures in the test table and playback.
 - **Trailer sway:** the trailer as a second body in the handling model.
 - **User-defined linkages:** an editor for bodies and joints (the solver already takes any).
 

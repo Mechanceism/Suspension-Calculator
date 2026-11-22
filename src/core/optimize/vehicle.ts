@@ -23,6 +23,7 @@ import { CornerTable } from '../vehicle/cornerTable';
 import { AxleTable, AxleCornerTable } from '../vehicle/axleTable';
 import { SolidAxle, axleCharacteristics, type SolidAxleGeometry, type AxleState, type TwoTravelAxle } from '../suspension/solidAxle';
 import { TwistBeam } from '../suspension/twistBeam';
+import type { BrakeThermal } from '../vehicle/brakeThermal';
 import { lineThrough } from '../math/geom';
 import {
   CORNER_IDS, isFront, isLeft, placement, poseFns, solveVehicle, staticCornerLoads, designGroundY,
@@ -131,6 +132,8 @@ export interface VehicleProblem {
   tireGripRear?: TireGrip;
   /** Brake hydraulics: the most braking force per axle (N, at the tires) at the most pedal force (N). */
   brakeLimit?: { front: number; rear: number; maxPedal: number };
+  /** Brake fade (with brakeLimit): the rotors heat through a test and the pads lose grip when hot. */
+  brakeThermal?: BrakeThermal;
   /** Towing a trailer (static). */
   trailer?: TrailerSpec;
   /**

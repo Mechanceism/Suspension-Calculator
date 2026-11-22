@@ -3,7 +3,7 @@
  * equilibrium, and derives the results shown in the Vehicle view.
  */
 import { rollStiffness, ackermannLinesCross } from '../core/suspension/derived';
-import { brakesOf } from './optimizer';
+import { brakesOf, trailerOf } from './optimizer';
 import { useMemo, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import {
@@ -109,6 +109,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
   const tireFileRear = useApp((st) => st.tireFileRear);
   const aeroSettings = useApp((st) => st.aero);
   const brakeSettings = useApp((st) => st.brakes);
+  const towSettings = useApp((st) => st.tow);
   const speed = useApp((st) => st.vehicleSpeed);
   // Grade and bank fold into what the tires must supply (see core/tests/segments.ts).
   const road = roadEffective(lateralGKin, longitudinalG, Math.atan(roadGrade / 100), (roadBank * Math.PI) / 180);
@@ -212,6 +213,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         diff: { front: s.settings.FL.diff, rear: s.settings.RL.diff },
         ...(aeroOf({ aero: aeroSettings }) && speed > 0 ? { aero: { ...aeroOf({ aero: aeroSettings })!, speed } } : {}),
         ...(brk ? { brakeLimit: { front: brk.capacity.axleForce.front, rear: brk.capacity.axleForce.rear, maxPedal: brk.system.maxPedalForce } } : {}),
+        ...(trailerOf({ tow: towSettings }) ? { trailer: trailerOf({ tow: towSettings })! } : {}),
       };
       // Playback of the ride over time poses the car directly (body motion and travels from the simulation).
       const res = rideView ? vehicleAt(vin, rideView.pose, rideView.travel) : solveVehicle(vin, { guess: lastPose.current });
@@ -325,7 +327,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
     } catch (e) {
       return { ...empty, error: e instanceof Error ? e.message : String(e) };
     }
-  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, rack, lateralG, brakingG, accelG, road.gravityScale, wheelBumps, gripFields, rideView, tireFile, tireFileRear, aeroSettings, brakeSettings, speed]);
+  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, rack, lateralG, brakingG, accelG, road.gravityScale, wheelBumps, gripFields, rideView, tireFile, tireFileRear, aeroSettings, brakeSettings, towSettings, speed]);
 
   return result;
 }

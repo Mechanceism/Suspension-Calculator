@@ -34,6 +34,7 @@
  *      (FL_Rkr_Piv1, FL_Rkr_Piv2, FL_PR_Arm, FL_PR_Rkr); the single-arm suspension type
  *  20  steering mechanism (rack, or steering arm / plate with its pivot FL_Str_Piv1–2) and the variable ratio
  *  21  brake hydraulics (pedal, master cylinders, calipers, pads, rotors; off by default)
+ *  22  towing a trailer (static hitch forces; off by default)
  */
 import pkg from '../../package.json';
 import { rockerFromCoilover } from '../core/suspension/coilover';
@@ -48,14 +49,14 @@ import {
   defaultDesign, mergedCorners, layoutOf, rootOf, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META, SPRING_KEYS, SPRING_META,
   DAMPER_KEYS, DAMPER_META, STEER_KEYS, STEER_META, TIRE_KEYS, TIRE_META, VEHICLE_KEYS, VEHICLE_META,
   DEFAULT_LINKS, DEFAULT_SETTINGS, SHARED_META, defaultShared, defaultOptimizerSetup, defaultVehicleOptimizerSetup, defaultGrip, GRIP_KEYS, GRIP_META,
-  defaultTireGrip, MF_KEYS, MF_META, RIDE_KEYS, DAMPER_TWO_STAGE_KEYS, SETUP_STEPS, AERO_KEYS, AERO_META, defaultAero, BRAKE_KEYS, BRAKE_META, defaultBrakes,
+  defaultTireGrip, MF_KEYS, MF_META, RIDE_KEYS, DAMPER_TWO_STAGE_KEYS, SETUP_STEPS, AERO_KEYS, AERO_META, defaultAero, BRAKE_KEYS, BRAKE_META, defaultBrakes, TOW_KEYS, TOW_META, defaultTow,
   type VehicleOptimizerSetup, type HeldDimension, newDimId,
   type OptimizerSetup,
   type DesignState, type CornerDesign, type Field, type CornerLinks, type CornerSettings, type SharedDesign, type Axle,
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 21;
+export const FORMAT_VERSION = 22;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -114,6 +115,7 @@ export interface ProjectFile {
   /** Aerodynamics (format 16). */
   aero?: { on: boolean; fields: Record<string, FieldJson>; file: AeroModel | null };
   brakes?: { on: boolean; dualMc: boolean; useBias: boolean; fields: Record<string, FieldJson> };
+  tow?: { on: boolean; fields: Record<string, FieldJson> };
   /** Setup wizard status per step (format 14). */
   setupStatus?: Record<string, 'entered' | 'estimated'>;
   /** Rear tires (format 13): null = same as the front, 'simple', or their own .tir model. */
@@ -197,6 +199,7 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
     setupStatus: { ...d.setupStatus },
     aero: { on: d.aero.on, fields: mapFields(AERO_KEYS, d.aero), file: d.aero.file ? JSON.parse(JSON.stringify(d.aero.file)) as AeroModel : null },
     brakes: { on: d.brakes.on, dualMc: d.brakes.dualMc, useBias: d.brakes.useBias, fields: mapFields(BRAKE_KEYS, d.brakes) },
+    tow: { on: d.tow.on, fields: mapFields(TOW_KEYS, d.tow) },
     ...(include.tests ? { tests: JSON.parse(JSON.stringify(d.tests)) as unknown[] } : {}),
     dimensions: d.dimensions.map((x) => ({
       root: x.root, a: cornerParam(x.root, POINT_NAMES[x.a]), b: cornerParam(x.root, POINT_NAMES[x.b]),
@@ -311,6 +314,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   19: (f) => ({ ...f, formatVersion: 20 }),
   // 20 → 21: brakes always strong enough (hydraulics off).
   20: (f) => ({ ...f, formatVersion: 21 }),
+  // 21 → 22: no trailer.
+  21: (f) => ({ ...f, formatVersion: 22 }),
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */
@@ -732,6 +737,11 @@ export function importProject(data: unknown): ImportResult {
       const b = isObj(f.brakes) ? f.brakes : {};
       const fields = readRecord(b.fields, BRAKE_KEYS, (k) => BRAKE_META[k].quantity, defaultBrakes(), 'brakes', isObj(f.brakes) ? warnings : []);
       return { ...fields, on: b.on === true, dualMc: b.dualMc === true, useBias: b.useBias === true };
+    })(),
+    // Towing came with format 22: older files have no trailer, quietly.
+    tow: (() => {
+      const t = isObj(f.tow) ? f.tow : {};
+      return { ...readRecord(t.fields, TOW_KEYS, (k) => TOW_META[k].quantity, defaultTow(), 'tow', isObj(f.tow) ? warnings : []), on: t.on === true };
     })(),
     setupStatus: Object.fromEntries(Object.entries(isObj(f.setupStatus) ? f.setupStatus : {})
       .filter(([k, v]) => (SETUP_STEPS as readonly string[]).includes(k) && (v === 'entered' || v === 'estimated'))) as DesignState['setupStatus'],

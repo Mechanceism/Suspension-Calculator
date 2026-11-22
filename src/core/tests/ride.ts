@@ -253,16 +253,25 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     return { fy, alpha: { FL: 0, FR: 0, RL: 0, RR: 0 }, wheels, sumFy: total, mz: 0 };
   };
   /** Advance the planar state by h (two sub-steps) and learn the understeer; returns the forces at the start. */
+  const trailer = p.trailer;
+  const hitchZ = trailer ? (-p.wheelbase - trailer.hitchBehindRear - asm.cg.z) / 1000 : 0; // m from the CG (negative: behind)
+  /** Towing: the hitch's side force, F = −m_t·τ·a with a = (ΣF_tires + F) / m (the trailer follows the car). */
+  const withHitch = (fh: HandlingForces): HandlingForces => {
+    if (!trailer || !car) return fh;
+    const mt = trailer.mass * Math.min(1, Math.max(0, trailer.tongueShare));
+    const F = (-mt * fh.sumFy) / (car.mass + mt);
+    return { ...fh, sumFy: fh.sumFy + F, mz: fh.mz + hitchZ * F, tireFy: fh.sumFy };
+  };
   const advance = (u: number, S: number, grav: number, h: number, kAt: (s: number) => number): HandlingForces => {
     const cmd = driverCommand(car!, H!, u, kAt, S, grav, o.driver);
     const kap = kAt(S);
     let first: HandlingForces | null = null;
     for (let sub = 0; sub < 2; sub++) {
-      const fh = handlingNow(u, grav);
+      const fh = withHitch(handlingNow(u, grav));
       if (!first) first = fh;
       stepHandling(car!, H!, u, kap, fh, grav, cmd, h / 2, o.driver);
     }
-    const ayT = first!.sumFy / (car!.mass * G);
+    const ayT = (first!.tireFy ?? first!.sumFy) / (car!.mass * G);
     if (u >= KINEMATIC_SPEED && Math.abs(ayT) > 0.15) {
       const sd = (first!.alpha.FL + first!.alpha.FR) / 2 - (first!.alpha.RL + first!.alpha.RR) / 2;
       H!.K += (sd / ayT - H!.K) * Math.min(1, h / 1.0);
@@ -432,7 +441,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       // Check this moment (and record a frame).
       const result: VehicleResult = {
         pose: now.pose, corners: now.res, converged: true, iterations: 0, residual: [0, 0, 0],
-        sprungMass: sp.mass, sprungCg: sp.cg, notes: fs.notes, unmet: fs.unmet, ...(fs.brakePedal ? { brakePedal: fs.brakePedal } : {}),
+        sprungMass: sp.mass, sprungCg: sp.cg, notes: fs.notes, unmet: fs.unmet, ...(fs.brakePedal ? { brakePedal: fs.brakePedal } : {}), ...(fs.hitch ? { hitch: fs.hitch } : {}),
       };
       result.grip = gripSummary(input, result, caps, fs.frontLatShare, fs.latTotal);
       if (H && hf && kin.v >= KINEMATIC_SPEED) {

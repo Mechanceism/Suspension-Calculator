@@ -181,6 +181,8 @@ export interface HandlingForces {
   wheels: Record<CornerId, number>;
   sumFy: number;
   mz: number;
+  /** Towing: the tires' share of sumFy (sumFy then includes the hitch's side force). */
+  tireFy?: number;
 }
 
 export const KINEMATIC_SPEED = 3;

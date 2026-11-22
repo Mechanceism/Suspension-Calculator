@@ -379,6 +379,28 @@ Off by default (the brakes can always make the braking asked; only grip limits i
 - Tested: the hand-calculated pressure, torque and tire force; the balance-bar split; linear pedal force; a 1.2 g stop beyond weak brakes fails *Brakes too weak* and is fine with strong ones; the axle that needs more pedal sets the pedal force.
 - Still to come: brake fade (rotor temperature over a test, μ vs temperature).
 
+## Towing (static) ✅ (`src/core/vehicle/towing.ts`)
+Off by default. On (Vehicle → Inputs → *Towing*): a trailer on a ball hitch behind the car that follows the car's accelerations (no sway). Its forces on the car at the hitch come from its own balance. m_t = trailer mass, τ = static tongue share (its CG sits τ·L_t ahead of its axle), L_t = hitch to axle, h_h and h_cg = hitch and CG heights, β = the share of its braking its own brakes make.
+
+    lateral       F_x = −m_t · a_y · τ                                   (pulls the hitch outward)
+    along         F_trailer = m_t · a_x − (braking ? β · m_t · a_x : 0),   F_z = −F_trailer
+    tongue load   V = m_t · g · τ + (h_h · F_trailer − h_cg · m_t · a_x) / L_t,   F_y = −V
+
+- The force acts on the body at the hitch (vertical load, plus roll and pitch moments).
+- The tires must also give what the hitch takes:
+  - drive / braking: tire net g − F_z / (m·g)
+  - side force: m·a_y − F_x
+  - front / rear split from the yaw balance about the front axle: F_rear · (−L) + F_x · z_hitch = m·a_y·z_cg, so the rear tires take more.
+- Handling over time: the trailer's tongue share of mass follows the car sideways, F_x = −m_t·τ·ΣF_tires / (m + m_t·τ), and yaws it about the CG.
+- Results: tongue load, push / pull and side force at the hitch.
+- Tested:
+  - the hitch forces by hand; the tongue weight adds to the tire loads (the rear gains more than it, the front loses some, since the hitch is behind the rear axle);
+  - braking at 0.5 g the car's brakes stop the trailer too (+ m_t · 0.5 g), and trailer brakes remove that push;
+  - cornering, the tires give the trailer's tongue share of side force, mostly at the rear;
+  - a test with handling is driven within 0.6 m of the line.
+- In the browser: 400 kg at 10 % → 392 N tongue load; braking at 0.5 g → 1961 N push and 556 N on the tongue.
+- Still to come: trailer sway (the trailer as its own body in the handling model), a tongue-weight limit check.
+
 ## Aerodynamics ✅ (`src/core/vehicle/aero.ts`)
 Off by default (negligible for slow cars). On: forces on the **body**, never through the tires, at the car's speed V (tests: each moment's speed; Vehicle view: the *Speed* slider) and air density ρ (from altitude and temperature: standard-atmosphere pressure, dry air).
 

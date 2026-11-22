@@ -514,6 +514,8 @@ export interface AppState extends DesignState {
   setAero(patch: Partial<Pick<AeroSettings, 'on' | 'file'>>): void;
   setBrakeField(key: BrakeKey, text: string): void;
   setBrakes(patch: Partial<Pick<BrakeSettings, 'on' | 'dualMc' | 'useBias'>>): void;
+  setTowField(key: TowKey, text: string): void;
+  setTow(patch: Partial<Pick<TowSettings, 'on'>>): void;
   /** Grip scale of a loaded file (λμ): side (LMUY) or braking / drive (LMUX). */
   setTireScale(key: 'LMUY' | 'LMUX', value: number, axle?: 'front' | 'rear'): void;
   /** Set the tire size (mm) of the designs used on an axle (both = every design). */
@@ -757,6 +759,23 @@ export const defaultBrakes = (): BrakeSettings => ({
   on: false, dualMc: false, useBias: false,
 });
 
+/** Towing inputs (docs/MATH.md § Towing). */
+export const TOW_KEYS = ['trailerMass', 'tongueShare', 'hitchHeight', 'hitchBehindRear', 'hitchToAxle', 'trailerCgHeight', 'trailerBrakes'] as const;
+export type TowKey = (typeof TOW_KEYS)[number];
+export const TOW_META: Record<TowKey, { label: string; quantity: Quantity; unit: string; initial: number; hint?: string }> = {
+  trailerMass: { label: 'Trailer mass (loaded)', quantity: 'mass', unit: 'kg', initial: 400 },
+  tongueShare: { label: 'Tongue weight (share of the trailer)', quantity: 'ratio', unit: '%', initial: 10, hint: 'About 10–15 % keeps a trailer stable; less makes it sway' },
+  hitchHeight: { label: 'Hitch ball height', quantity: 'length', unit: 'mm', initial: 450, hint: 'Above the ground' },
+  hitchBehindRear: { label: 'Hitch ball behind the rear axle', quantity: 'length', unit: 'mm', initial: 900 },
+  hitchToAxle: { label: 'Hitch ball to the trailer axle', quantity: 'length', unit: 'mm', initial: 3000 },
+  trailerCgHeight: { label: 'Trailer CG height', quantity: 'length', unit: 'mm', initial: 700, hint: 'Above the ground; above the hitch, braking presses the tongue down more' },
+  trailerBrakes: { label: 'Trailer brakes (share of its braking)', quantity: 'ratio', unit: '%', initial: 0, hint: '0 = none: the trailer pushes the car when braking; 100 = it stops itself' },
+};
+export interface TowSettings extends Record<TowKey, Field> { on: boolean }
+export const defaultTow = (): TowSettings => ({
+  ...(Object.fromEntries(TOW_KEYS.map((k) => [k, field(TOW_META[k].initial, TOW_META[k].quantity)])) as Record<TowKey, Field>), on: false,
+});
+
 export const AERO_KEYS = ['CdA', 'downF', 'downR', 'dragHeight', 'altitude', 'temperature'] as const;
 export type AeroKey = (typeof AERO_KEYS)[number];
 export const AERO_META: Record<AeroKey, { label: string; quantity: Quantity; unit: string; hint: string }> = {
@@ -926,6 +945,8 @@ export interface DesignState {
   aero: AeroSettings;
   /** Brake hydraulics (off = the brakes are always strong enough). */
   brakes: BrakeSettings;
+  /** Towing a trailer (off = no trailer). */
+  tow: TowSettings;
   /** Setup wizard: which steps hold the user's own values and which are estimates (results say so). */
   setupStatus: Partial<Record<SetupStep, 'entered' | 'estimated'>>;
   /** Held dimensions between two points (Measure → set, hold). Kept like CAD sketch dimensions. */
@@ -983,7 +1004,7 @@ export const pickDesign = (s: DesignState): DesignState => ({
   droop: s.droop, bump: s.bump, driver: s.driver,
   corners: s.corners, links: s.links, settings: s.settings, activeCorner: s.activeCorner,
   vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode, shared: s.shared, locks: s.locks,
-  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, tireGrip: s.tireGrip, tireFile: s.tireFile, tireFileRear: s.tireFileRear, setupStatus: s.setupStatus, aero: s.aero, brakes: s.brakes, dimensions: s.dimensions, tests: s.tests,
+  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, tireGrip: s.tireGrip, tireFile: s.tireFile, tireFileRear: s.tireFileRear, setupStatus: s.setupStatus, aero: s.aero, brakes: s.brakes, tow: s.tow, dimensions: s.dimensions, tests: s.tests,
 });
 
 /** The default layout (File → New). */
@@ -1068,6 +1089,7 @@ export function defaultDesign(presetId = 'C'): DesignState {
     setupStatus: {},
     aero: defaultAero(),
     brakes: defaultBrakes(),
+    tow: defaultTow(),
     dimensions: [],
     tests: [],
   };
@@ -1239,6 +1261,11 @@ export const useApp = create<AppState>((set, get) => ({
     set({ brakes: { ...b, [key]: parseField(text, BRAKE_META[key].quantity, b[key]) } });
   },
   setBrakes: (patch) => set({ brakes: { ...get().brakes, ...patch } }),
+  setTowField: (key, text) => {
+    const t = get().tow;
+    set({ tow: { ...t, [key]: parseField(text, TOW_META[key].quantity, t[key]) } });
+  },
+  setTow: (patch) => set({ tow: { ...get().tow, ...patch } }),
   setSetupStatus: (step, status) => {
     const cur = { ...get().setupStatus };
     if (status) cur[step] = status; else delete cur[step];

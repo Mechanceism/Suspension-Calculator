@@ -3,6 +3,7 @@
  * CornerProblem or a VehicleProblem, and runs them in a Web Worker so the UI stays responsive.
  */
 import { brakeCapacity, type BrakeSystem, type BrakeCapacity } from '../core/vehicle/brakes';
+import type { TrailerSpec } from '../core/vehicle/towing';
 import {
   GOAL_KINDS, GOAL_META, reportCorner, variableValue,
   type CornerProblem, type CornerReport, type HardpointId, type ProgressInfo, type Variable, type Hold,
@@ -73,6 +74,16 @@ export function brakesOf(s: Pick<AppState, 'brakes'> & Parameters<typeof mergedC
   const all = mergedCorners(s);
   const r = (id: CornerId) => all[rootOf(id, s.links)].geom.scalars.tireDiameter.value / 2;
   return { system, capacity: brakeCapacity(system, { front: r('FL'), rear: r('RL') }) };
+}
+
+/** The trailer from the towing inputs, or undefined when not towing. */
+export function trailerOf(s: Pick<AppState, 'tow'>): TrailerSpec | undefined {
+  const t = s.tow;
+  if (!t?.on) return undefined;
+  return {
+    mass: t.trailerMass.value, tongueShare: t.tongueShare.value / 100, hitchHeight: t.hitchHeight.value, hitchBehindRear: t.hitchBehindRear.value,
+    hitchToAxle: t.hitchToAxle.value, cgHeight: t.trailerCgHeight.value, brakeShare: t.trailerBrakes.value / 100,
+  };
 }
 
 export function aeroOf(s: Pick<AppState, 'aero'>): { model: AeroModel; rho: number } | undefined {
@@ -217,6 +228,7 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
     mass: v.mass.value, cg: { x: v.cgX.value, height: v.cgY.value, z: v.cgZ.value }, wheelbase: v.wheelbase.value,
     brakeBias: brk?.useBias ?? v.brakeBias.value / 100, driveSplit: v.driveSplit.value / 100, autoPreload: s.autoPreload,
     ...(brk ? { brakeLimit: brk.limit } : {}),
+    ...(trailerOf(s) ? { trailer: trailerOf(s)! } : {}),
     shared: { front: toAxleShared(s.shared.front), rear: toAxleShared(s.shared.rear) },
     dropLinks: { front: dl(s.shared.front), rear: dl(s.shared.rear) },
     droop: Math.abs(s.droop), bump: Math.abs(s.bump),

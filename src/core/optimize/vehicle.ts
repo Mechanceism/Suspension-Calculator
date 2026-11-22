@@ -12,6 +12,7 @@ import { vec3, Y_AXIS, type Vec3 } from '../math/vec3';
 import type { SteeringSpec } from '../tests/steer';
 import type { AeroModel } from '../vehicle/aero';
 import { DoubleWishbone, type DoubleWishboneGeometry } from '../suspension/doubleWishbone';
+import type { TrailerSpec } from '../vehicle/towing';
 import { characteristics, deg, type Characteristics } from '../suspension/characteristics';
 import { fitFreeLength } from '../suspension/spring';
 import type { TireProfile } from '../tire/geometry';
@@ -126,6 +127,8 @@ export interface VehicleProblem {
   tireGripRear?: TireGrip;
   /** Brake hydraulics: the most braking force per axle (N, at the tires) at the most pedal force (N). */
   brakeLimit?: { front: number; rear: number; maxPedal: number };
+  /** Towing a trailer (static). */
+  trailer?: TrailerSpec;
   keepClose?: number;
   maxIterations?: number;
   /** Gradient runs: 1 = from the current design only; more = also from the best DOE samples (wider search). */
@@ -248,6 +251,7 @@ export const vehicleInputOf = (p: VehicleProblem, asm: AssembledVehicle, c: Omit
   lateralG: c.lateralG, brakingG: c.brakingG, brakeBias: p.brakeBias, accelG: c.accelG, driveSplit: p.driveSplit, shared: p.shared,
   gravityScale: c.gravityScale, groundOffset: c.groundOffset, tireGrip: p.tireGrip ?? DEFAULT_MF, diff: p.diff,
   ...(p.brakeLimit ? { brakeLimit: p.brakeLimit } : {}),
+  ...(p.trailer ? { trailer: p.trailer } : {}),
 });
 
 /** Solve one load case on an assembled car. null = didn't converge. */

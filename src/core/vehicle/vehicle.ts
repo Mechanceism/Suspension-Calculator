@@ -13,6 +13,7 @@
  * Lateral tire forces are shared in proportion to each tire's vertical load.
  */
 import { pedalForceNeeded } from './brakes';
+import { hitchPoint, hitchForce, type TrailerSpec } from './towing';
 import { type Vec3, vec3, add, sub, cross } from '../math/vec3';
 import { illinois } from '../math/roots';
 import { solveLinear } from '../math/linalg';
@@ -153,6 +154,8 @@ export interface VehicleInput {
    * tires) and that pedal force (N). Omit = the brakes are always strong enough.
    */
   brakeLimit?: { front: number; rear: number; maxPedal: number };
+  /** Towing a trailer (static: it follows the car's accelerations; forces at the hitch). Omit = none. */
+  trailer?: TrailerSpec;
   /** Aerodynamics at the car's speed (drag on the body, lift / downforce at each axle). Omit = none. */
   aero?: AeroInput;
   /** Differential per axle for chassis-driven corners (default open). */
@@ -283,6 +286,8 @@ export interface VehicleResult {
   aero?: { drag: number; liftF: number; liftR: number };
   /** Brake hydraulics given: the pedal force this braking needs and the most the driver applies, N. */
   brakePedal?: { needed: number; max: number };
+  /** Towing: the hitch (vehicle frame, design position, mm) and the trailer's force on the car there, N. */
+  hitch?: { point: Vec3; force: Vec3 };
 }
 
 export function sprungProperties(input: VehicleInput) {
@@ -536,19 +541,25 @@ export interface ForceSetup {
   unmet: { accel: boolean; brake: boolean; brakeCapacity?: boolean };
   /** Pedal force the braking needs (with brake hydraulics), N. */
   brakePedal?: { needed: number; max: number };
+  /** Towing: hitch point (design, vehicle frame) and the trailer's force on the car, N. */
+  hitch?: { point: Vec3; force: Vec3 };
 }
 
 export function forceSetup(input: VehicleInput): ForceSetup {
   const gs = input.gravityScale ?? 1;
   const W = input.totalMass * G * gs;
-  const latTotal = input.totalMass * input.lateralG * G;
+  const latTotalCar = input.totalMass * input.lateralG * G;
   const notes: string[] = [];
   // The car's own acceleration (inertia) and what the tires must push: drag adds to the drive needed
   // (or takes from the braking), at the design ride height.
   const kinematicZ = (Math.max(0, input.accelG ?? 0) - Math.max(0, input.brakingG ?? 0)) * G;
   const rh0 = { front: -input.groundY, rear: -input.groundY };
   const drag = input.aero ? aeroForces(input.aero, rh0, rh0).drag : 0;
-  const tireNet = (input.accelG ?? 0) - (input.brakingG ?? 0) + drag / (input.totalMass * G);
+  // Towing: the trailer's pull / push and side force at the hitch (it follows the car's accelerations).
+  const hitch = input.trailer
+    ? { point: hitchPoint(input.trailer, input.groundY, input.wheelbase), force: hitchForce(input.trailer, input.lateralG, kinematicZ / G, gs) }
+    : undefined;
+  const tireNet = (input.accelG ?? 0) - (input.brakingG ?? 0) + drag / (input.totalMass * G) - (hitch ? hitch.force.z / (input.totalMass * G) : 0);
   let brakingG = Math.max(0, -tireNet);
   const powered = input.corners.filter((c) => (c.drive ?? 'none') !== 'none');
   const braked = input.corners.filter((c) => (c.brake ?? 'outboard') !== 'none');
@@ -580,7 +591,14 @@ export function forceSetup(input: VehicleInput): ForceSetup {
   }
   // Cornering force: front/rear shares come from the CG position (yaw balance), not from the tires.
   const L = input.wheelbase;
-  const frontLatShare = L > 0 ? Math.min(1, Math.max(0, (L + input.cg.z) / L)) : 0.5;
+  // The tires give the car's cornering force less what the hitch gives (the trailer pulls it outward).
+  const latTotal = latTotalCar - (hitch?.force.x ?? 0);
+  // Yaw balance about the front axle: rear tires · (−L) + hitch force · z_hitch = m · a_y · z_cg.
+  let frontLatShare = L > 0 ? Math.min(1, Math.max(0, (L + input.cg.z) / L)) : 0.5;
+  if (hitch && L > 0 && Math.abs(latTotal) > 1e-9) {
+    const rear = (hitch.force.x * hitch.point.z - latTotalCar * input.cg.z) / L;
+    frontLatShare = Math.min(1, Math.max(0, 1 - rear / latTotal));
+  }
   // Brake hydraulics: the pedal force this braking needs (the bias splits it front / rear).
   let brakePedal: ForceSetup['brakePedal'];
   if (input.brakeLimit && brakeTotal > 0) {
@@ -593,7 +611,7 @@ export function forceSetup(input: VehicleInput): ForceSetup {
       notes.push(`The brakes can't make this braking: it needs ${Number.isFinite(needed) ? needed.toFixed(0) : '∞'} N of pedal force (most ${L.maxPedal.toFixed(0)} N).`);
     }
   }
-  return { gs, W, latTotal, brakeTotal, driveTotal, aZ, driveShares, frontLatShare, notes, unmet, ...(brakePedal ? { brakePedal } : {}) };
+  return { gs, W, latTotal, brakeTotal, driveTotal, aZ, driveShares, frontLatShare, notes, unmet, ...(brakePedal ? { brakePedal } : {}), ...(hitch ? { hitch } : {}) };
 }
 
 /**
@@ -655,6 +673,11 @@ export function bodyResidual(input: VehicleInput, sp: { mass: number; cg: Vec3 }
     add2(momentOf(r, vec3(0, aero.liftR, 0)));
     add2(momentOf(vec3(0, input.groundY + input.aero!.model.dragHeight, P.point(sp.cg).z), vec3(0, 0, -aero.drag)));
   }
+  // Towing: the trailer's force on the body at the hitch.
+  if (fs.hitch) {
+    fy += fs.hitch.force.y;
+    add2(momentOf(P.point(fs.hitch.point), fs.hitch.force));
+  }
   for (const c of input.corners) {
     const r = corners[c.id];
     fy += r.tireLoad;
@@ -692,7 +715,7 @@ export function vehicleAt(input: VehicleInput, pose: ChassisPose, travel: Record
   }
   const out: VehicleResult = {
     pose, corners, converged: true, iterations: 0, residual: bodyResidual(input, sp, fs, pose, corners),
-    sprungMass: sp.mass, sprungCg: sp.cg, notes: fs.notes, unmet: fs.unmet, ...(fs.brakePedal ? { brakePedal: fs.brakePedal } : {}),
+    sprungMass: sp.mass, sprungCg: sp.cg, notes: fs.notes, unmet: fs.unmet, ...(fs.brakePedal ? { brakePedal: fs.brakePedal } : {}), ...(fs.hitch ? { hitch: fs.hitch } : {}),
   };
   if (input.tireGrip && caps) out.grip = gripSummary(input, out, caps, fs.frontLatShare, fs.latTotal);
   return out;
@@ -780,7 +803,7 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
   }
   const out: VehicleResult = {
     pose, corners: cur.corners, converged: norm(cur.res) < 1e-5, iterations: it, residual: cur.res,
-    sprungMass: sp.mass, sprungCg: sp.cg, notes, unmet, ...(fs.brakePedal ? { brakePedal: fs.brakePedal } : {}),
+    sprungMass: sp.mass, sprungCg: sp.cg, notes, unmet, ...(fs.brakePedal ? { brakePedal: fs.brakePedal } : {}), ...(fs.hitch ? { hitch: fs.hitch } : {}),
   };
   if (input.tireGrip) out.grip = gripSummary(input, out, capacities(input, cur.corners, latSign), frontLatShare, latTotal);
   const aero = aeroAt(input, pose);

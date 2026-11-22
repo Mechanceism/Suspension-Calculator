@@ -13,7 +13,7 @@ import { deg } from '../../core/suspension/characteristics';
 import {
   useApp, VEHICLE_KEYS, VEHICLE_META, CORNER_NAMES, SHARED_META, rootOf,
   type CornerLinks, type DiffType, type Axle, type SharedDesign,
-  BRAKE_KEYS, BRAKE_META,
+  BRAKE_KEYS, BRAKE_META, TOW_KEYS, TOW_META,
 } from '../store';
 import type { BrakeMount } from '../../core/vehicle/vehicle';
 import { ValueInput } from './ValueInput';
@@ -170,6 +170,9 @@ export function VehicleInputs({ model }: { model: VehicleModel | null }) {
       <Section title="Aerodynamics" open={false} extra={<AeroBadge />}>
         <AeroPanel />
       </Section>
+      <Section title="Towing" open={false} extra={<span className="muted small-text">{useApp.getState().tow.on ? 'trailer' : 'off'}</span>}>
+        <TowPanel />
+      </Section>
       <Section title="Brake system" open={false} extra={<span className="muted small-text">{useApp.getState().brakes.on ? 'hydraulics' : 'off'}</span>}>
         <BrakePanel />
       </Section>
@@ -316,6 +319,11 @@ export function VehicleResults({ model }: { model: VehicleModel | null }) {
       <Section title="Braking & acceleration">
         <FieldRows rows={[
           { label: 'Load moved onto the front axle', value: fmt(model.frontLoadGain, 0), unit: 'N', hint: 'Front axle load minus its static load (negative = moved to the rear)' },
+          ...(r.hitch ? [
+            { label: 'Hitch: tongue load (down on the car)', value: fmt(-r.hitch.force.y, 0), unit: 'N', hint: 'Static tongue weight plus the load shift from braking / accelerating' },
+            { label: 'Hitch: trailer push (+) / pull (−)', value: fmt(r.hitch.force.z, 0), unit: 'N', hint: 'Along the car: + pushes it forward (braking without trailer brakes)' },
+            { label: 'Hitch: side force on the car', value: fmt(r.hitch.force.x, 0), unit: 'N', hint: '+ = toward the left; cornering, the trailer pulls the hitch outward' },
+          ] : []),
           ...(r.brakePedal ? [{ label: 'Pedal force this braking needs', value: `${fmt(r.brakePedal.needed, 0)} of ${fmt(r.brakePedal.max, 0)}`, unit: 'N', hint: 'Brake hydraulics: more than the most = the brakes are too weak for this braking' }] : []),
           { label: 'Anti-dive, braking (front)', value: fmt(model.antiDive, 1), unit: '%', hint: 'tan θ · (wheelbase / CG height) · front brake share; θ from the side-view IC (contact patch for outboard brakes, wheel center for inboard)' },
           { label: 'Anti-lift, braking (rear)', value: fmt(model.antiLift, 1), unit: '%' },
@@ -446,6 +454,22 @@ function SpeedControl() {
         <input type="range" min={0} max={90} step={0.5} value={speed} onChange={(e) => { set('rideView', null); set('vehicleSpeed', Number(e.target.value)); }} onDoubleClick={() => set('vehicleSpeed', 0)} />
       </label>
     </div>
+  );
+}
+
+/** Towing a trailer (static): its forces at the hitch while the car corners, brakes and accelerates. */
+function TowPanel() {
+  const t = useApp((s) => s.tow);
+  const setT = useApp((s) => s.setTow);
+  const setF = useApp((s) => s.setTowField);
+  return (
+    <>
+      <div className="jm-row" title="A trailer on a ball hitch behind the car: its tongue weight, and its pull / push and side force at the hitch as the car accelerates, brakes and corners (it follows the car; no sway).">
+        <button className={`chip${!t.on ? ' on' : ''}`} onClick={() => setT({ on: false })}>No trailer</button>
+        <button className={`chip${t.on ? ' on' : ''}`} onClick={() => setT({ on: true })}>Towing a trailer</button>
+      </div>
+      {t.on && <FieldRows rows={TOW_KEYS.map((k) => ({ label: TOW_META[k].label, field: t[k], unit: TOW_META[k].unit, hint: TOW_META[k].hint, onCommit: (x: string) => setF(k, x) }))} />}
+    </>
   );
 }
 

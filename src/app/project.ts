@@ -35,6 +35,7 @@
  *  20  steering mechanism (rack, or steering arm / plate with its pivot FL_Str_Piv1–2) and the variable ratio
  *  21  brake hydraulics (pedal, master cylinders, calipers, pads, rotors; off by default)
  *  22  towing a trailer (static hitch forces; off by default)
+ *  23  each steering mechanism keeps its own ratio and limit (the unused one is saved too)
  */
 import pkg from '../../package.json';
 import { rockerFromCoilover } from '../core/suspension/coilover';
@@ -47,7 +48,7 @@ import type { TirModel } from '../core/tire/tir';
 import { parseAero, type AeroModel } from '../core/vehicle/aero';
 import {
   defaultDesign, mergedCorners, layoutOf, rootOf, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META, SPRING_KEYS, SPRING_META,
-  DAMPER_KEYS, DAMPER_META, STEER_KEYS, STEER_META, TIRE_KEYS, TIRE_META, VEHICLE_KEYS, VEHICLE_META,
+  DAMPER_KEYS, DAMPER_META, STEER_KEYS, STEER_META, MECH_STEER_KEYS, TIRE_KEYS, TIRE_META, VEHICLE_KEYS, VEHICLE_META,
   DEFAULT_LINKS, DEFAULT_SETTINGS, SHARED_META, defaultShared, defaultOptimizerSetup, defaultVehicleOptimizerSetup, defaultGrip, GRIP_KEYS, GRIP_META,
   defaultTireGrip, MF_KEYS, MF_META, RIDE_KEYS, DAMPER_TWO_STAGE_KEYS, SETUP_STEPS, AERO_KEYS, AERO_META, defaultAero, BRAKE_KEYS, BRAKE_META, defaultBrakes, TOW_KEYS, TOW_META, defaultTow,
   type VehicleOptimizerSetup, type HeldDimension, newDimId,
@@ -56,7 +57,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 22;
+export const FORMAT_VERSION = 23;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -92,6 +93,8 @@ export interface ProjectFile {
   activeCorner: CornerId;
   vehicle: { fields: Record<string, FieldJson>; autoPreload: boolean; cornerLoadMode: 'vehicle' | 'manual' };
   steering: Record<string, FieldJson>;
+  /** The other steering mechanism's own ratio and limit (format 23). */
+  steeringSaved?: Record<string, Record<string, FieldJson>>;
   motion: { droop: number; bump: number; driver: DesignState['driver'] };
   shared: Record<Axle, {
     antiRollBar: SharedDesign['antiRollBar']; heaveSpring: SharedDesign['heaveSpring'];
@@ -168,6 +171,7 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
     activeCorner: d.activeCorner,
     vehicle: { fields: mapFields(VEHICLE_KEYS, d.vehicle), autoPreload: d.autoPreload, cornerLoadMode: d.cornerLoadMode },
     steering: mapFields(STEER_KEYS, d.steer),
+    steeringSaved: Object.fromEntries(Object.entries(d.steerSaved).map(([m, rec]) => [m, mapFields(MECH_STEER_KEYS, rec!)])),
     motion: { droop: d.droop, bump: d.bump, driver: d.driver },
     shared: Object.fromEntries((['front', 'rear'] as const).map((a) => {
       const sh = d.shared[a];
@@ -316,6 +320,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   20: (f) => ({ ...f, formatVersion: 21 }),
   // 21 → 22: no trailer.
   21: (f) => ({ ...f, formatVersion: 22 }),
+  // 22 → 23: no saved values for the other steering mechanism.
+  22: (f) => ({ ...f, formatVersion: 23 }),
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */
@@ -695,6 +701,10 @@ export function importProject(data: unknown): ImportResult {
     presetId: typeof f.presetId === 'string' ? f.presetId : 'custom',
     ...corners.FL, // replaced with the active corner's root below
     // The variable ratio came with format 20: older files keep a constant ratio quietly.
+    // Format 23: the other mechanism's own steering values (older files: none, quietly).
+    steerSaved: Object.fromEntries(Object.entries(isObj(f.steeringSaved) ? f.steeringSaved : {})
+      .filter(([m, rec]) => (m === 'rack' || m === 'arm') && isObj(rec))
+      .map(([m, rec]) => [m, readRecord(rec, MECH_STEER_KEYS, (k) => STEER_META[k].quantity, def.steer, `steering (${m})`, warnings)])) as DesignState['steerSaved'],
     steer: (() => {
       const w: string[] = [];
       const r = readRecord(f.steering, STEER_KEYS, (k) => STEER_META[k].quantity, def.steer, 'steering', w);

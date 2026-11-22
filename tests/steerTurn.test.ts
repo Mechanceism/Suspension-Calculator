@@ -113,3 +113,29 @@ describe('steering mechanisms', () => {
     expect(steeringWheelAngle(30, { cFactor: 60, rackLimit: 30 })).toBeCloseTo(180, 9);
   });
 });
+
+describe('each steering mechanism keeps its own values', () => {
+  it('switching rack ↔ arm puts each one\'s ratio and limit back; saved with the project', async () => {
+    const { useApp } = await import('../src/app/store');
+    const { serializeProject, importProject } = await import('../src/app/project');
+    const s = () => useApp.getState();
+    s().setSteerField('cFactor', '50');
+    s().setSteerField('rackLimit', '35');
+    s().setSteerMechanism('arm');
+    expect(s().steer.cFactor.value).toBe(360); // first time: typical arm values
+    s().setSteerField('cFactor', '20');
+    s().setSteerField('cFactorLock', '28');
+    s().setSteerMechanism('rack');
+    expect(s().steer.cFactor.value).toBe(50);
+    expect(s().steer.rackLimit.value).toBe(35);
+    expect(s().steer.cFactorLock.value).toBe(0);
+    s().setSteerMechanism('arm');
+    expect(s().steer.cFactor.value).toBe(20);
+    expect(s().steer.cFactorLock.value).toBe(28);
+    // The rack's values travel with the project while the arm is in use.
+    const back = importProject(JSON.parse(JSON.stringify(serializeProject(s() as never, 'S'))));
+    expect(back.design.steerSaved.rack?.cFactor.value).toBe(50);
+    expect(back.design.steer.cFactor.value).toBe(20);
+    s().setSteerMechanism('rack');
+  });
+});

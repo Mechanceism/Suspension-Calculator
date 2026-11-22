@@ -135,6 +135,9 @@ export const DAMPER_META: Record<DamperKey, { label: string; quantity: Quantity;
 
 /** Steering system and tire-force inputs (docs/MATH.md § Steering). */
 export const STEER_KEYS = ['cFactor', 'cFactorLock', 'rackLimit', 'lateral', 'longitudinal', 'pneumaticTrail', 'mu'] as const;
+/** Steering values that belong to a mechanism (their units change with it): each mechanism keeps its own. */
+export const MECH_STEER_KEYS = ['cFactor', 'cFactorLock', 'rackLimit'] as const;
+export type MechSteerKey = (typeof MECH_STEER_KEYS)[number];
 export type SteerKey = (typeof STEER_KEYS)[number];
 export const STEER_META: Record<SteerKey, { label: string; quantity: Quantity; unit: string; initial: number; hint?: string }> = {
   cFactor: { label: 'Rack travel per steering-wheel rev', quantity: 'length', unit: 'mm/rev', initial: 75 },
@@ -909,6 +912,11 @@ export interface DesignState {
   /** Damper force curve (linear or two-stage). */
   damperMode: DamperMode;
   steer: Record<SteerKey, Field>;
+  /**
+   * Each steering mechanism's own ratio and limit (rack mm, arm degrees), kept while the other one is in
+   * use and put back when switching to it again.
+   */
+  steerSaved: Partial<Record<SteerMechanism, Record<MechSteerKey, Field>>>;
   tireModel: TireModelKind;
   tire: Record<TireKey, Field>;
   volumeChange: boolean;
@@ -999,7 +1007,7 @@ export function vehicleStaticLoads(
 
 /** The design part of the app state (what a file saves). */
 export const pickDesign = (s: DesignState): DesignState => ({
-  presetId: s.presetId, geom: s.geom, spring: s.spring, damper: s.damper, bumpStop: s.bumpStop, damperMode: s.damperMode, steer: s.steer,
+  presetId: s.presetId, geom: s.geom, spring: s.spring, damper: s.damper, bumpStop: s.bumpStop, damperMode: s.damperMode, steer: s.steer, steerSaved: s.steerSaved,
   tireModel: s.tireModel, tire: s.tire, volumeChange: s.volumeChange, tireSizeText: s.tireSizeText,
   droop: s.droop, bump: s.bump, driver: s.driver,
   corners: s.corners, links: s.links, settings: s.settings, activeCorner: s.activeCorner,
@@ -1068,6 +1076,7 @@ export function defaultDesign(presetId = 'C'): DesignState {
     presetId,
     ...design,
     steer: Object.fromEntries(STEER_KEYS.map((k) => [k, field(STEER_META[k].initial, STEER_META[k].quantity)])) as Record<SteerKey, Field>,
+    steerSaved: {},
     droop: 50,
     bump: 50,
     driver: 'wheelCenter',
@@ -1510,14 +1519,20 @@ export const useApp = create<AppState>((set, get) => ({
   },
   setSteerMechanism: (m) => {
     const s = get();
-    if ((s.geom.steerMechanism ?? 'rack') === m) return;
+    const from = s.geom.steerMechanism ?? 'rack';
+    if (from === m) return;
     s.updateDesigns('both', (d) => ({ ...d, geom: { ...d.geom, steerMechanism: m } }));
-    // The input's units change: start from typical values (arm: 1 : 1 like ATV handlebars, ±40°).
+    // The ratio and limit belong to the mechanism (mm vs degrees): keep the current ones with it and put
+    // back the other mechanism's own (first time: typical values; arm 1 : 1 like ATV handlebars, ±40°).
     const f = (v: number) => ({ text: String(v), value: v });
-    set({ steer: { ...get().steer, cFactor: f(m === 'arm' ? 360 : 75), cFactorLock: f(0), rackLimit: f(m === 'arm' ? 40 : 30) }, rack: 0 });
+    const keep = Object.fromEntries(MECH_STEER_KEYS.map((k) => [k, s.steer[k]])) as Record<MechSteerKey, Field>;
+    const saved = s.steerSaved[m];
+    const back = saved ?? { cFactor: f(m === 'arm' ? 360 : 75), cFactorLock: f(0), rackLimit: f(m === 'arm' ? 40 : 30) };
+    set({ steer: { ...get().steer, ...back }, steerSaved: { ...s.steerSaved, [from]: keep }, rack: 0 });
+    const what = `${back.cFactor.value} ${m === 'arm' ? '°' : 'mm'}/rev, ±${back.rackLimit.value} ${m === 'arm' ? '°' : 'mm'}`;
     get().notify(m === 'arm'
-      ? 'Steering arm / plate: the inner tie-rod joints swing about the arm\'s pivot axis (FL_Str_Piv1–2). The steering input is now the arm angle (°): 360 °/rev = 1 : 1 (ATV handlebars), a steering box is about 20 °/rev. Limit ±40°.'
-      : 'Rack: the steering input is rack travel (mm) again (75 mm/rev, ±30 mm).', 'info');
+      ? `Steering arm / plate: the inner tie-rod joints swing about the arm's pivot axis (FL_Str_Piv1–2). The steering input is the arm angle (°): ${saved ? 'your arm values are back' : 'typical values'} (${what}). The rack's values are kept for switching back.`
+      : `Rack: the steering input is rack travel (mm): ${saved ? 'your rack values are back' : 'typical values'} (${what}). The arm's values are kept for switching back.`, 'info');
   },
   setRackSide: (ahead) => {
     const geom = get().geom;

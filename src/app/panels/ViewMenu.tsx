@@ -21,10 +21,13 @@ const CONSTRUCTION: { key: VisKey; label: string; color: string }[] = [
   { key: 'steeringAxis', label: 'Steering axis', color: COLORS.steering },
   { key: 'icConstruction', label: 'Front-view IC lines', color: COLORS.ic },
   { key: 'rollCenter', label: 'Roll center', color: COLORS.rc },
-  { key: 'ackermann', label: 'Ackermann lines (Vehicle view)', color: COLORS.steering },
+  { key: 'ackermann', label: 'Ackermann lines (Vehicle view; drag to move the tie-rod joints)', color: COLORS.steering },
+  { key: 'cg', label: 'CG, sprung (Vehicle view)', color: '#ffffff' },
+  { key: 'arb', label: 'Anti-roll bar links (Vehicle view)', color: '#c77dff' },
+  { key: 'markerLabels', label: 'Marker labels (Vehicle view: CG, roll centers, Ackermann…)', color: '#ffffff' },
   { key: 'ground', label: 'Ground plane', color: COLORS.ground },
   { key: 'datum', label: 'Origin axes', color: '#ffffff' },
-  { key: 'labels', label: 'Point labels', color: '#ffffff' },
+  { key: 'labels', label: 'Point labels (and ball joints in the Vehicle view)', color: '#ffffff' },
   { key: 'dimensions', label: 'Held dimensions', color: '#ffd60a' },
 ];
 

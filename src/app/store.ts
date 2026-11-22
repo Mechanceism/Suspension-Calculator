@@ -190,6 +190,7 @@ export interface EditableGeometry {
 export const VIS_KEYS = [
   'chassis', 'uca', 'lca', 'upright', 'tieRod', 'wheel',
   'spring', 'patch', 'steeringAxis', 'icConstruction', 'rollCenter', 'ground', 'datum', 'labels', 'dimensions', 'ackermann',
+  'cg', 'arb', 'markerLabels',
 ] as const;
 export type VisKey = (typeof VIS_KEYS)[number];
 
@@ -633,6 +634,8 @@ export interface AppState extends DesignState {
   setSpringLayout(layout: SpringLayout): void;
   /** Rocker layout: move the pushrod's lower end to an arm or the knuckle. */
   setPushrodOn(on: ArmChoice): void;
+  /** Set a point of any corner's design (the active one or another), mm in that corner's own frame. */
+  setCornerPoint(id: CornerId, key: PointKey, v: Vec3): void;
   /** Custom linkage: replace its bodies and joints (one undo step). */
   setCustom(c: CustomLinkage): void;
   /** Change the active design's suspension type (convertGeometry). */
@@ -1205,7 +1208,7 @@ export const useApp = create<AppState>((set, get) => ({
   visibility: {
     chassis: true, uca: true, lca: true, upright: true, tieRod: true, wheel: true, spring: true,
     patch: true, steeringAxis: true, icConstruction: true, rollCenter: true, ground: true, datum: true, labels: params.get('labels') === '1',
-    dimensions: true, ackermann: true,
+    dimensions: true, ackermann: true, cg: true, arb: true, markerLabels: true,
   },
   projection: params.get('projection') === 'perspective' ? 'perspective' : 'orthographic',
   focus: 'corner',
@@ -1654,6 +1657,16 @@ export const useApp = create<AppState>((set, get) => ({
       : 'Coilover: from the pushrod\'s lower end up to where the rocker pivot was.', 'info');
   },
   setCustom: (c) => set({ geom: { ...get().geom, custom: c }, presetId: 'custom' }),
+  setCornerPoint: (id, key, v) => {
+    const s = get();
+    const root = rootOf(id, s.links);
+    if (root === rootOf(s.activeCorner, s.links)) {
+      set({ geom: { ...s.geom, points: { ...s.geom.points, [key]: fields(v) } }, presetId: 'custom' });
+      return;
+    }
+    const c = s.corners[root];
+    set({ corners: { ...s.corners, [root]: { ...c, geom: { ...c.geom, points: { ...c.geom.points, [key]: fields(v) } } } }, presetId: 'custom' });
+  },
   setPushrodOn: (on) => {
     const geom = get().geom;
     if ((geom.pushrodOn ?? 'lca') === on) return;

@@ -72,7 +72,7 @@ export interface VehicleModel {
    * Classic Ackermann lines (vehicle frame, sprung): each front steering axis (at the tie-rod height) through
    * its outer tie-rod joint, and where they cross (null = parallel). 100 % Ackermann: on the rear axle.
    */
-  ackermannLines: { kL: Vec3; tL: Vec3; kR: Vec3; tR: Vec3; cross: { x: number; z: number } | null } | null;
+  ackermannLines: AckermannAxle[];
   /** Longitudinal (braking) load transfer onto the front axle vs. static, N. */
   frontLoadGain: number;
   /** Classic geometric anti-dive (front) and anti-lift (rear) under braking, % (side-view IC, brake mount, bias). */
@@ -152,7 +152,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
       error: setup.error, result: null, corners: {}, staticLoads: { FL: 0, FR: 0, RL: 0, RR: 0 }, groundY: 0,
       rollCenters: { front: null, rear: null }, rideHeight: { front: NaN, rear: NaN },
       transfer: { front: { total: 0, geometric: 0, elastic: 0 }, rear: { total: 0, geometric: 0, elastic: 0 }, lltdFront: NaN },
-      rollStiffness: { front: NaN, rear: NaN }, rollGradient: NaN, ackermannLines: null,
+      rollStiffness: { front: NaN, rear: NaN }, rollGradient: NaN, ackermannLines: [],
       rolloverG: NaN, sprungCgWorld: null, wheelbase, accel: { lateral: 0, longitudinal: 0 }, frontLoadGain: NaN, antiDive: NaN, antiLift: NaN, antiSquat: NaN, antiLiftAccel: NaN,
     };
     if (!setup.all || !setup.built) return empty;
@@ -321,19 +321,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
           ? { front: rollStiffness(front.elastic, trackF, (res.pose.roll * 180) / Math.PI), rear: rollStiffness(rear.elastic, trackR, (res.pose.roll * 180) / Math.PI) }
           : { front: NaN, rear: NaN },
         rollGradient: Math.abs(lateralG) > 0.02 ? Math.abs((res.pose.roll * 180) / Math.PI / lateralG) : NaN,
-        ackermannLines: (() => {
-          const arm = (id: CornerId) => {
-            const v = views[id];
-            if (!v) return null;
-            const p = v.state.points, pl = placement(id, wheelbase);
-            const lo = p.steerLower, up = p.steerUpper, t = p.trOuter;
-            const f = Math.abs(up.y - lo.y) > 1e-9 ? (t.y - lo.y) / (up.y - lo.y) : 0;
-            return { k: pl.point(vec3(lo.x + f * (up.x - lo.x), t.y, lo.z + f * (up.z - lo.z))), t: pl.point(t) };
-          };
-          const L = arm('FL'), R = arm('FR');
-          if (!L || !R) return null;
-          return { kL: L.k, tL: L.t, kR: R.k, tR: R.t, cross: ackermannLinesCross(L.k, L.t, R.k, R.t) };
-        })(),
+        ackermannLines: ackermannAxles(views, s.settings, wheelbase),
         rolloverG: (0.5 * (trackF + trackR)) / (2 * v.cgY.value),
         frontLoadGain: res.corners.FL.tireLoad + res.corners.FR.tireLoad - frontStatic,
         antiDive: antiOf(['FL', 'FR'], bias, 1),
@@ -354,3 +342,40 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
 }
 
 export { isFront };
+
+/** One axle's Ackermann lines (vehicle frame, design-frame points of the solved corners). */
+export interface AckermannAxle {
+  axle: 'front' | 'rear';
+  /** Per steered corner: its steering axis at the outer tie-rod joint's height (k) and that joint (t). */
+  lines: { id: CornerId; k: Vec3; t: Vec3 }[];
+  /** Where the two lines cross in top view (null: one line, or parallel). */
+  cross: { x: number; z: number } | null;
+  /** Where they should cross for classic Ackermann: the other axle's center, or midway when both axles steer. */
+  target: { x: number; z: number; label: string };
+}
+
+/**
+ * Classic Ackermann check for every steered corner, per axle: from its steering axis through its steering
+ * arm's outer joint (top view). A non-steered corner has no line.
+ */
+export function ackermannAxles(views: Partial<Record<CornerId, VehicleCornerView>>, settings: Record<CornerId, { steered: boolean }>, wheelbase: number): AckermannAxle[] {
+  const arm = (id: CornerId) => {
+    const v = views[id];
+    if (!v || !settings[id].steered) return null;
+    const p = v.state.points, pl = placement(id, wheelbase);
+    const lo = p.steerLower, up = p.steerUpper, t = p.trOuter;
+    const f = Math.abs(up.y - lo.y) > 1e-9 ? (t.y - lo.y) / (up.y - lo.y) : 0;
+    return { id, k: pl.point(vec3(lo.x + f * (up.x - lo.x), t.y, lo.z + f * (up.z - lo.z))), t: pl.point(t) };
+  };
+  const frontSteers = settings.FL.steered || settings.FR.steered, rearSteers = settings.RL.steered || settings.RR.steered;
+  const out: AckermannAxle[] = [];
+  for (const [axle, l, r] of [['front', 'FL', 'FR'], ['rear', 'RL', 'RR']] as const) {
+    const lines = [arm(l), arm(r)].filter((x): x is NonNullable<typeof x> => !!x);
+    if (!lines.length) continue;
+    const cross = lines.length === 2 ? ackermannLinesCross(lines[0]!.k, lines[0]!.t, lines[1]!.k, lines[1]!.t) : null;
+    const target = frontSteers && rearSteers ? { x: 0, z: -wheelbase / 2, label: 'Midway (both axles steer)' }
+      : axle === 'front' ? { x: 0, z: -wheelbase, label: 'Rear axle center' } : { x: 0, z: 0, label: 'Front axle center' };
+    out.push({ axle, lines, cross, target });
+  }
+  return out;
+}

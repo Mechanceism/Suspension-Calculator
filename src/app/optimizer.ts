@@ -101,6 +101,7 @@ export function trailerOf(s: Pick<AppState, 'tow'>): TrailerSpec | undefined {
   return {
     mass: t.trailerMass.value, tongueShare: t.tongueShare.value / 100, hitchHeight: t.hitchHeight.value, hitchBehindRear: t.hitchBehindRear.value,
     hitchToAxle: t.hitchToAxle.value, cgHeight: t.trailerCgHeight.value, brakeShare: t.trailerBrakes.value / 100, yawRadius: t.trailerYawRadius.value,
+    ...(t.tongueLimit.value > 0 ? { tongueLimit: t.tongueLimit.value * 9.80665 } : {}),
   };
 }
 

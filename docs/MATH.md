@@ -473,7 +473,7 @@ Off by default. On (Vehicle → Inputs → *Towing*): a trailer on a ball hitch 
   - cornering, the tires give the trailer's tongue share of side force, mostly at the rear;
   - a test with handling is driven within 0.6 m of the line.
 - In the browser: 400 kg at 10 % → 392 N tongue load; braking at 0.5 g → 1961 N push and 556 N on the tongue.
-- Still to come: a tongue-weight limit check.
+- **Tongue weight checks** (pass rules): *Hitch overloaded* (Fail) when the load on the hitch ball, V above (static tongue weight plus braking / accelerating / bumps), exceeds the hitch's rating (Towing → *Hitch rating*, kg; 0 = none); *Light tongue* (Warning) when the static tongue share is below 10 % (adjustable: a trailer then tends to sway). Checked in every state and over time. Tested: a rating just above the static load passes cruising and fails braking; 5 % tongue warns. Format 33.
 
 ### Trailer sway ✅ (`src/core/tests/trailerSway.ts`)
 In tests with *Ride over time* and *Handling* (the driver steering), the trailer is a second yawing body on the hitch ball with its own axle and tires. Car frame (x forward, y left); articulation φ = trailer heading − car heading; r_t = r + φ̇. The hitch is c behind the car's CG, the trailer's CG d = L_t·(1 − τ) behind the hitch, its axle L_t. Unknowns: v̇, ṙ, ṙ_t and F (the hitch's side force on the trailer, along its left axis n = (−sin φ, cos φ)). The pull along its axis e = (cos φ, sin φ) is F_t = m_t·a_x, less the trailer brakes' share when braking.

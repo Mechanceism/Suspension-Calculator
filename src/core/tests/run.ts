@@ -97,6 +97,7 @@ export function stateFacts(p: VehicleProblem, asm: AssembledVehicle, st: RoadSta
     weight: p.mass * G * st.gravityScale, brakeForce: p.mass * G * st.brakingG,
     requiredG: Math.hypot(st.lateralG, along) / Math.max(st.gravityScale, 1e-6),
     availableG: availableG(p, asm), steer,
+    ...(p.trailer ? { hitch: { load: result?.hitch ? -result.hitch.force.y : NaN, limit: p.trailer.tongueLimit ?? 0, share: p.trailer.tongueShare } } : {}),
   };
 }
 

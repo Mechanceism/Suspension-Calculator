@@ -60,7 +60,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 32;
+export const FORMAT_VERSION = 33;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -358,6 +358,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   30: (f) => ({ ...f, formatVersion: 31 }),
   // 31 → 32: arm bushings at their typical stiffness (absent = typical).
   31: (f) => ({ ...f, formatVersion: 32 }),
+  // 32 → 33: a trailer gets no hitch rating (no limit).
+  32: (f) => ({ ...f, formatVersion: 33, ...(isObj(f.tow) && isObj(f.tow.fields) ? { tow: { ...f.tow, fields: { ...f.tow.fields, tongueLimit: { text: '0', value: 0 } } } } : {}) }),
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */

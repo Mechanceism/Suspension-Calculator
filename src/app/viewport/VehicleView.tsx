@@ -17,7 +17,7 @@ import { CORNER_IDS, placement, poseFns, type CornerId } from '../../core/vehicl
 import { useApp, FORCE_KEYS, FORCE_META, type ForceKey } from '../store';
 import type { VehicleModel, VehicleCornerView } from '../useVehicle';
 import { CameraRig, DevProjectBridge, ViewButtons, useMiddleDoubleClick, type FocusTarget } from './Viewport';
-import { COLORS } from './Scene';
+import { COLORS, CustomDrawing } from './Scene';
 import { Joint, Seg, Polyline, Tri, Wheel, PatchMesh, Coilover, Arrow } from './primitives';
 
 /** One corner drawn in the vehicle frame. Right corners are mirrored point-by-point (a negative
@@ -45,7 +45,8 @@ function CornerDrawing({ view, onOpen, active, wheelbase }: { view: VehicleCorne
       {vis.lca && sh.lca.map(([a, b], i) => <Seg key={i} a={a} b={b} color={COLORS.lca} width={w} />)}
       {vis.upright && <Polyline pts={sh.upright} color={COLORS.upright} width={w} />}
       {vis.upright && <Seg a={foot} b={p.wheelCenter} color={COLORS.upright} width={w} />}
-      {vis.tieRod && !['beam4', 'beam3', 'beamLeaf', 'twistBeam'].includes(view.state.kind) && <Seg a={p.trInner} b={p.trOuter} color={COLORS.tieRod} width={w} />}
+      {view.state.kind === 'custom' && raw.customJoints && <CustomDrawing p={{ ...p, customJoints: raw.customJoints.map((j) => ({ ...j, pts: j.pts.map((q) => pl.point(q)) })) }} width={w} />}
+      {vis.tieRod && !['beam4', 'beam3', 'beamLeaf', 'twistBeam', 'custom'].includes(view.state.kind) && <Seg a={p.trInner} b={p.trOuter} color={COLORS.tieRod} width={w} />}
       {vis.spring && p.damperChassis && p.damperArm && <Coilover a={p.damperChassis} b={p.damperArm} color={COLORS.spring} radius={22} coils={7} />}
       {vis.spring && p.rockerPivot1 && p.rockerPivot2 && p.pushrodUpper && p.pushrodLower && p.damperArm && (
         <>
@@ -53,8 +54,8 @@ function CornerDrawing({ view, onOpen, active, wheelbase }: { view: VehicleCorne
           <Seg a={p.pushrodLower} b={p.pushrodUpper} color={COLORS.tieRod} width={w} />
         </>
       )}
-      {(vis.uca || vis.upright) && view.state.kind !== 'macpherson' && <Joint p={p.ucaOut} color={COLORS.uca} r={8} />}
-      {(vis.lca || vis.upright) && <Joint p={p.lcaOut} color={COLORS.lca} r={8} />}
+      {(vis.uca || vis.upright) && view.state.kind !== 'macpherson' && view.state.kind !== 'custom' && <Joint p={p.ucaOut} color={COLORS.uca} r={8} />}
+      {(vis.lca || vis.upright) && view.state.kind !== 'custom' && <Joint p={p.lcaOut} color={COLORS.lca} r={8} />}
       {vis.wheel && <Wheel
         center={p.wheelCenter} axis={axis} radius={view.profile.radius} width={view.profile.width}
         rimRadius={view.profile.rimRadius} color={active ? '#ffffff' : COLORS.wheel} simple={simpleTire}

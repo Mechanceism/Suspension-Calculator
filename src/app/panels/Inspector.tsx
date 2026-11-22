@@ -8,6 +8,7 @@ import { toGeometry } from '../store';
 import { componentDefs, family, ownersOf, pointLabel } from '../components';
 import { SUSPENSION_KINDS, SUSPENSION_LABELS, isBeam, type SuspensionKind } from '../../core/suspension/doubleWishbone';
 import { coiloverGeometry, setCoilover, moveAlongArm } from '../../core/suspension/coilover';
+import { LinkageEditor } from './LinkageEditor';
 import { parseValue } from '../../core/units/units';
 import type { Vec3 } from '../../core/math/vec3';
 
@@ -361,6 +362,7 @@ export function Inspector({ model }: { model: Model }) {
     return (
       <div className="inspector empty">
         <SuspensionTypeRow />
+        <LinkageEditor />
         <p><b>Click a part or a joint</b> in the viewport to edit it here.</p>
         <ul className="hint-list">
           <li>Parts show their dimensions, settings and connected parts.</li>

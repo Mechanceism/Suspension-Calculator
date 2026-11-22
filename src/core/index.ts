@@ -32,6 +32,7 @@ export * from './suspension/derived';
 export * from './suspension/coilover';
 export * from './suspension/solidAxle';
 export * from './suspension/twistBeam';
+export * from './suspension/customLinkage';
 export * from './tests/segments';
 export * from './tests/run';
 export * from './tests/checks';

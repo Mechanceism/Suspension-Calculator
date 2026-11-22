@@ -41,6 +41,7 @@
 import pkg from '../../package.json';
 import { rockerFromCoilover } from '../core/suspension/coilover';
 import { SUSPENSION_KINDS, type SuspensionKind } from '../core/suspension/doubleWishbone';
+import type { CustomLinkage, CustomJoint } from '../core/suspension/customLinkage';
 import { parseValue, type Quantity } from '../core/units/units';
 import { CORNER_IDS, type CornerId } from '../core/vehicle/vehicle';
 import { DIM_MEASURES } from '../core/suspension/dimensions';
@@ -59,7 +60,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 26;
+export const FORMAT_VERSION = 27;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -76,6 +77,8 @@ export interface CornerJson {
   springLayout?: 'coilover' | 'rocker';
   pushrodOn?: 'lca' | 'uca' | 'upright';
   steerMechanism?: 'rack' | 'arm';
+  /** Custom linkage (format 27; mm). */
+  custom?: unknown;
   spring: Record<string, FieldJson>;
   damper: { fields: Record<string, FieldJson>; bumpStop: boolean; mode?: 'linear' | 'twoStage' };
   tire: { model: DesignState['tireModel']; volumeChange: boolean; sizeText: string; fields: Record<string, FieldJson> };
@@ -152,6 +155,7 @@ function cornerToJson(id: CornerId, c: CornerDesign): CornerJson {
     scalars: Object.fromEntries(SCALAR_KEYS.map((k) => [cornerParam(id, SCALAR_META[k].name), fj(c.geom.scalars[k])])),
     damperArm: c.geom.damperArm,
     springLayout: layoutOf(c.geom), pushrodOn: c.geom.pushrodOn ?? 'lca', steerMechanism: c.geom.steerMechanism ?? 'rack',
+    ...(c.geom.custom ? { custom: JSON.parse(JSON.stringify(c.geom.custom)) as unknown } : {}),
     spring: mapFields(SPRING_KEYS, c.spring),
     damper: { fields: mapFields(DAMPER_KEYS, c.damper), bumpStop: c.bumpStop, mode: c.damperMode },
     tire: { model: c.tireModel, volumeChange: c.volumeChange, sizeText: c.tireSizeText, fields: mapFields(TIRE_KEYS, c.tire) },
@@ -330,6 +334,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   24: (f) => ({ ...f, formatVersion: 25 }),
   // 25 → 26: a trailer gets the default yaw radius of gyration (for sway).
   25: (f) => ({ ...f, formatVersion: 26, ...(isObj(f.tow) && isObj(f.tow.fields) ? { tow: { ...f.tow, fields: { ...f.tow.fields, trailerYawRadius: { text: '1350', value: 1350 } } } } : {}) }),
+  // 26 → 27: no custom linkages (nothing to change).
+  26: (f) => ({ ...f, formatVersion: 27 }),
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */
@@ -565,6 +571,29 @@ function readRecord<K extends string>(
   return Object.fromEntries(keys.map((k) => [k, readField(obj[k], quantity(k), defaults[k], `${section}.${k}`, warnings)])) as Record<K, Field>;
 }
 
+/** A custom linkage from a file: bodies, joints with numeric points (anything malformed is dropped with a warning). */
+function readCustom(raw: unknown, where: string, w: string[]): CustomLinkage | undefined {
+  if (raw === undefined) return undefined;
+  if (!isObj(raw)) { w.push(`${where}: not a linkage, ignored`); return undefined; }
+  const num = (x: unknown) => (typeof x === 'number' && Number.isFinite(x) ? x : NaN);
+  const vec = (v: unknown) => (isObj(v) ? { x: num(v.x), y: num(v.y), z: num(v.z) } : null);
+  const ok = (v: { x: number; y: number; z: number } | null): v is { x: number; y: number; z: number } => !!v && [v.x, v.y, v.z].every(Number.isFinite);
+  const bodies = (Array.isArray(raw.bodies) ? raw.bodies : []).filter(isObj)
+    .filter((b) => typeof b.id === 'string' && typeof b.name === 'string').map((b) => ({ id: b.id as string, name: b.name as string }));
+  const joints: CustomJoint[] = [];
+  for (const j of Array.isArray(raw.joints) ? raw.joints : []) {
+    if (!isObj(j)) continue;
+    const kind = j.kind === 'ball' || j.kind === 'hinge' || j.kind === 'rod' ? j.kind : null;
+    const p = vec(j.p), q = vec(j.q);
+    if (!kind || typeof j.id !== 'string' || typeof j.a !== 'string' || typeof j.b !== 'string' || !ok(p) || (kind !== 'ball' && !ok(q))) {
+      w.push(`${where}: a joint couldn't be read, dropped`);
+      continue;
+    }
+    joints.push({ id: j.id, kind, name: typeof j.name === 'string' ? j.name : j.id, a: j.a, b: j.b, p, ...(kind !== 'ball' && ok(q) ? { q } : {}) });
+  }
+  return { bodies, joints, ...(typeof raw.damperBody === 'string' ? { damperBody: raw.damperBody } : {}) };
+}
+
 /** Steering-arm pivot 120 mm ahead of the inner tie-rod joint (for files from before format 20). */
 function withPivotDefaults(points: CornerDesign['geom']['points'], missing: boolean): CornerDesign['geom']['points'] {
   if (!missing) return points;
@@ -623,7 +652,8 @@ function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: str
       steerMechanism: c.steerMechanism === 'arm' ? 'arm' : 'rack',
       springLayout: c.springLayout === 'rocker' ? 'rocker' : 'coilover',
       pushrodOn: c.pushrodOn === 'uca' || c.pushrodOn === 'upright' ? c.pushrodOn : 'lca',
-      damperArm: c.damperArm === 'uca' || c.damperArm === 'upright' ? c.damperArm : 'lca', kind: (SUSPENSION_KINDS as string[]).includes(c.type as string) ? c.type as SuspensionKind : 'doubleWishbone' },
+      damperArm: c.damperArm === 'uca' || c.damperArm === 'upright' ? c.damperArm : 'lca', kind: (SUSPENSION_KINDS as string[]).includes(c.type as string) ? c.type as SuspensionKind : 'doubleWishbone',
+      ...(() => { const cl = readCustom(c.custom, `${id}.custom`, w); return cl ? { custom: cl } : {}; })() },
     spring: readRecord(c.spring, SPRING_KEYS, (k) => SPRING_META[k].quantity, def.spring, `${id}.spring`, w),
     // Damping rates are new in format 8: older files take the defaults quietly.
     damper: (() => {

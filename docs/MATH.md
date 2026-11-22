@@ -78,6 +78,7 @@ Every type is the same kind of relation system on the same point names; `kind` p
 | Solid axle, 4-link / 3-link + Panhard rod (`src/core/suspension/solidAxle.ts`) | the axle (both wheels) | four rods with ball ends (4-link: lower and upper per side; 3-link: lower per side, one upper in the middle, a Panhard rod), two travels (left, right) = 6 | none (doesn't steer here) |
 | Solid axle on leaf springs | the axle (both wheels) | the SAE 3-link equivalent: per side a link from ¼ of the way from the front eye to the seat, a stiff center link that keeps the axle's pitch, a long virtual lateral link at seat height = 4, two travels = 6 | none |
 | Twist beam (`src/core/suspension/twistBeam.ts`) | each arm (with its hub) | two parameters, heave θ and twist ψ, from the two travels (Newton, 2 × 2); as a corner: the arm's revolute on the bushing line 5, travel 1 = 6 | none |
+| Custom linkage (`src/core/suspension/customLinkage.ts`) | the knuckle + any bodies you add | ball joints 3, hinges 5, rods 1 each, travel 1: 6 · bodies + 1 | from the motion: the knuckle's screw axis when the rack moves |
 | No suspension (rigid, e.g. a kart) | upright (on a carrier that only takes the travel input as a vertical shift) | kingpin revolute 5 (`UCA_Out` top, `LCA_Out` bottom), tie rod 1 = 6 | the kingpin |
 
 - **MacPherson:** the strut is the spring / damper: `Dmp_Chs` = top mount, `Dmp_Arm` = a point on the strut axis fixed to the upright (the upper arm's points are unused). Motion ratio ≈ 1 (the strut shortens about as much as the wheel rises).
@@ -107,6 +108,27 @@ Every type is the same kind of relation system on the same point names; `kind` p
   - **Results:** roll center from the roll axis (bushing → shear center) as for a single arm; side-view IC at the bushing (heave); roll camber from the twist motion (not from the heave camber gain, which is 0). Preset *TB*: roll center 200 · 600 / 1560 = 77 mm, roll camber 0.62 °/°.
   - **Whole car:** the twist beam is tabulated like a solid axle (each wheel's material contact follows its own arm), so the two rear wheels are coupled. The beam's twist stiffness is the axle's anti-roll bar (Shared components); switching to a twist beam starts it at 15 N/mm at the wheel if the axle has none.
   - **Tested:** any pair of travels is reached; heave keeps camber and toe; with the shear center level with the bushings it is two trailing arms (no roll camber); the corner's roll center and side-view IC match the hand values; a car with it at the rear settles and corners; in the browser it passes the Balanced test.
+- **Custom linkage:** your own bodies and joints (Inspector → *Linkage*, with nothing selected).
+  - **Joints:** between the frame, the steering rack, the knuckle (which carries the wheel) and any bodies you add:
+    - a **ball joint** (a shared point; 3 equations);
+    - a **hinge / bushing** (a common axis through two points; 5);
+    - a **rod** (a fixed-length link with ball ends; 1).
+  - **Freedom:** a corner needs exactly one free motion with the steering held, 6 · moving bodies − equations = 1. The editor counts it and says what to add or remove, and finds bodies joined to nothing.
+  - **Results from the motion itself**, at each solved state, by central differences (two extra solves each):
+    - Instant axis: the knuckle's twist (ω, v) for ±0.25 mm of travel. As for the multilink: the planes through two points on the steering axis normal to their velocities, so the bump-steer part is left out; components within the differencing noise snap to zero (an axis along the car has SVSA ∞).
+    - Steering axis: the knuckle's screw axis for ±0.1 mm of rack, between the ground and 150 mm above the wheel center. It is taken with the wheel center held at its height; for a double wishbone this is within ~0.5 mm of the ball-joint line (KPI and caster agree to 0.01°). Without a rod or joint to the rack, the corner doesn't steer.
+    - So camber / toe curves, KPI, caster, scrub, trail, the instant centers and the roll center work as for the built-in types.
+  - **Coilover:** `Dmp_Chs` on the frame, `Dmp_Arm` on the body you choose.
+  - **Whole car:** like any other type: tables, the vehicle solve, ride, handling, tests and the optimizer (its free points are the hub and coilover points; the linkage's own points are edited in the Linkage editor).
+  - **Switching to it** starts from the current arms (hinged arm bodies, ball joints to the knuckle, the tie rod as a rod from the rack), so it moves the same. Switching away and back keeps your linkage. Saved with the project (format 27).
+  - **Tested:**
+    - built from a double wishbone it matches camber and toe to 1e−8, KPI and caster to 0.001 rad, and the roll center and FVSA;
+    - five rods reproduce the multilink;
+    - a layout of its own (a lower arm with two rods to the knuckle top) solves, cambers and steers;
+    - under- and over-constrained or unconnected linkages are explained;
+    - a car with it in front corners;
+    - it saves and loads.
+  - **In the browser:** the readouts match the double wishbone's (roll center 49.9 vs 50.0 mm).
 - **No suspension:** no spring or damper. The vehicle solve holds the corner's travel at 0 and the ride model drops its travel degree of freedom, so only the tire is compliant. Body roll then comes from the tires alone: 0.09° at 0.8 g on the default car made rigid, with roll stiffness ≈ 3 500 N·m/° per axle. In the Corner view, travel lifts the whole corner with no camber or toe change, and there is no roll center.
 - **Switching type** keeps the lower arm, tie rod, hub and tire. To MacPherson: the strut's lower point goes inboard of the tire, between the ball joints; the top mount goes 330 mm above the upper ball joint and 60 mm inboard. To multilink: each link's upright end slides 35 mm inboard along its own line, so each pair still passes through the old ball joint. That gives the same virtual pivots and instant axis, so the motion is the same at ride height and within a few hundredths of a degree through travel. Back to a double wishbone: the links rejoin at their virtual pivot; a strut becomes a coilover on the lower arm.
 

@@ -41,6 +41,19 @@ function withSprings(damperArm: ArmChoice, kind: SuspensionKind, layout: 'coilov
 }
 
 function kindDefs(damperArm: ArmChoice, kind: SuspensionKind): Record<ComponentId, ComponentDef & { absent?: boolean }> {
+  if (kind === 'custom') {
+    // The linkage's own bodies and joints are edited in the Linkage editor (Inspector, nothing selected).
+    return {
+      chassis: { id: 'chassis', label: 'Chassis / frame', points: ['dmpChassis'], parents: [] },
+      uca: { id: 'uca', label: 'Linkage bodies (Linkage editor)', points: [], parents: ['chassis'], absent: true },
+      lca: { id: 'lca', label: 'Linkage bodies (Linkage editor)', points: [], parents: ['chassis'], absent: true },
+      rack: { id: 'rack', label: 'Steering', points: [], parents: ['chassis'], absent: true },
+      tieRod: { id: 'tieRod', label: 'Rods (Linkage editor)', points: [], parents: ['rack'], absent: true },
+      upright: { id: 'upright', label: 'Knuckle', points: ['wheelCenter'], parents: ['chassis'] },
+      wheel: { id: 'wheel', label: 'Wheel & tire', points: ['wheelCenter'], parents: ['upright'] },
+      spring: { id: 'spring', label: 'Coilover (spring/damper)', points: ['dmpChassis', 'dmpArm'], parents: ['chassis', 'upright'] },
+    };
+  }
   if (kind === 'twistBeam' || kind === 'beamLeaf') {
     const tb = kind === 'twistBeam';
     return {

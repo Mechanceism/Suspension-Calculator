@@ -18,7 +18,41 @@ export interface LinkageShape {
   axis: [Vec3, Vec3];
 }
 
+/** A custom linkage to draw: each moving body's joint points (a star from its centroid), rods, hinge axes on the frame. */
+export interface CustomShape {
+  bodies: { id: string; pts: Vec3[]; centroid: Vec3 }[];
+  rods: { a: Vec3; b: Vec3; steering: boolean }[];
+  frameHinges: [Vec3, Vec3][];
+  balls: Vec3[];
+}
+
+export function customShape(p: CornerPoints): CustomShape | null {
+  const js = p.customJoints;
+  if (!js) return null;
+  const fixed = (b: string) => b === 'chassis' || b === 'rack';
+  const by = new Map<string, Vec3[]>();
+  const put = (b: string, q: Vec3) => { if (fixed(b)) return; if (!by.has(b)) by.set(b, []); by.get(b)!.push(q); };
+  const rods: CustomShape['rods'] = [], frameHinges: [Vec3, Vec3][] = [], balls: Vec3[] = [];
+  for (const j of js) {
+    if (j.kind === 'rod') { rods.push({ a: j.pts[0]!, b: j.pts[1]!, steering: j.a === 'rack' || j.b === 'rack' }); put(j.a, j.pts[0]!); put(j.b, j.pts[1]!); continue; }
+    for (const q of j.pts) { put(j.a, q); put(j.b, q); }
+    if (j.kind === 'hinge') { if (fixed(j.a) || fixed(j.b)) frameHinges.push([j.pts[0]!, j.pts[1]!]); }
+    else balls.push(j.pts[0]!);
+  }
+  put('upright', p.wheelCenter);
+  const bodies = [...by.entries()].map(([id, pts]) => {
+    const c = pts.reduce((a, q) => ({ x: a.x + q.x / pts.length, y: a.y + q.y / pts.length, z: a.z + q.z / pts.length }), { x: 0, y: 0, z: 0 });
+    return { id, pts, centroid: c };
+  });
+  return { bodies, rods, frameHinges, balls };
+}
+
 export function linkageShape(p: CornerPoints, kind: SuspensionKind): LinkageShape {
+  if (kind === 'custom') {
+    // Drawn from customShape; the upright outline is the knuckle's joint points.
+    const up = customShape(p)?.bodies.find((b) => b.id === 'upright')?.pts ?? [p.wheelCenter];
+    return { ucaTri: null, lcaTri: null, uca: [], lca: [], upright: up.length > 2 ? [...up.filter((q) => q !== p.wheelCenter), up.find((q) => q !== p.wheelCenter)!] : up, axis: [p.steerLower, p.steerUpper] };
+  }
   if (kind === 'macpherson') {
     const lower = p.strutLower ?? p.damperArm ?? p.wheelCenter;
     return {

@@ -24,8 +24,12 @@ function focusSphere(model: Model, focus: FocusKey, radius: number): { center: V
   if (!s) return null;
   const p = s.points;
   const trail = s.kind === 'twistBeam' || s.kind === 'beamLeaf';
+  const cpts = s.kind === 'custom' ? (p.customJoints ?? []).flatMap((j) => j.pts) : [];
   const top = { x: p.wheelCenter.x, y: p.wheelCenter.y + radius, z: p.wheelCenter.z };
-  const groups: Record<FocusKey, Vec3[]> = trail ? {
+  const groups: Record<FocusKey, Vec3[]> = s.kind === 'custom' ? {
+    corner: [...cpts, p.contact, top], wheel: [p.wheelCenter, p.contact, top], upright: [p.wheelCenter, ...cpts], uca: cpts, lca: cpts,
+    tieRod: cpts, rack: cpts, chassis: cpts, spring: p.damperChassis && p.damperArm ? [p.damperChassis, p.damperArm] : [p.wheelCenter], contact: [p.contact],
+  } : trail ? {
     corner: [p.lcaFwd, p.lcaAft, p.lcaOut, p.contact, top], wheel: [p.wheelCenter, p.contact, top],
     upright: [p.lcaOut, p.wheelCenter], uca: [p.lcaOut], lca: [p.lcaFwd, p.lcaAft, p.lcaOut], tieRod: [p.wheelCenter], rack: [p.wheelCenter],
     chassis: [p.lcaFwd, p.lcaAft], spring: p.damperChassis && p.damperArm ? [p.damperChassis, p.damperArm] : [p.lcaOut], contact: [p.contact],

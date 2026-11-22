@@ -88,7 +88,25 @@ export function characteristics(state: CornerState): Characteristics {
   let instantAxis: Line | null = null;
   let axisTrace: Vec3 | null = null;
   if (state.axle) return beamCharacteristics(state, camber, toe);
-  if (state.kind === 'rigid') { /* no suspension motion: no instant axis */ } else if (state.kind === 'singleArm' || state.kind === 'twistBeam') {
+  if (state.kind === 'rigid') { /* no suspension motion: no instant axis */ } else if (state.kind === 'custom') {
+    // Custom linkage: from the knuckle's motion in travel, as for the multilink: planes through two points
+    // on the steering axis normal to their velocities (leaves out the bump-steer part); else its screw axis.
+    const tw = p.travelTwist;
+    const vel = (q: Vec3) => (tw ? add(tw.v, cross(tw.w, q)) : null);
+    const vu = vel(p.steerUpper), vl = vel(p.steerLower);
+    if (vu && vl && length(vu) > 1e-12 && length(vl) > 1e-12) {
+      ucaPlane = { point: p.steerUpper, normal: normalize(vu) };
+      // Planes parallel to within the differencing noise are parallel (no instant axis: e.g. SVSA ∞).
+      const nl = normalize(vl);
+      if (length(cross(ucaPlane.normal, nl)) > 1e-5) instantAxis = intersectPlanes(ucaPlane, { point: p.steerLower, normal: nl });
+    }
+    if (!ucaPlane && p.axisA && p.axisB) instantAxis = lineThrough(p.axisA, p.axisB);
+    // Components within the differencing noise are zero (an axis along the car has no side-view IC).
+    if (instantAxis) {
+      const d = instantAxis.dir, snap = (x: number) => (Math.abs(x) < 1e-6 ? 0 : x);
+      instantAxis = { point: instantAxis.point, dir: normalize(vec3(snap(d.x), snap(d.y), snap(d.z))) };
+    }
+  } else if (state.kind === 'singleArm' || state.kind === 'twistBeam') {
     // The arm swings about its frame pivots: that line is the instant axis (fixed to the frame).
     instantAxis = lineThrough(p.lcaFwd, p.lcaAft);
     axisTrace = instantAxis.dir;

@@ -173,7 +173,8 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         const axleShared = s.shared[isFront(id) ? 'front' : 'rear'];
         const dl = axleShared.antiRollBar === 'torsionBar'
           ? vec3(axleShared.dropLink[0].value, axleShared.dropLink[1].value, axleShared.dropLink[2].value) : null;
-        const key = `${cornerRack.toFixed(3)}|${range[0]}|${range[1]}|${dl ? `${dl.x},${dl.y},${dl.z}` : '-'}`;
+        const dlOn = axleShared.dropLinkOn ?? 'lca';
+        const key = `${cornerRack.toFixed(3)}|${range[0]}|${range[1]}|${dl ? `${dl.x},${dl.y},${dl.z},${dlOn}` : '-'}`;
         const mu = d.spring.unsprungMass.value;
         const rigid = b.corner.kind === 'rigid';
         // A solid axle: one table over both wheels' travel (cached with the design), preload from its heave ratio.
@@ -197,7 +198,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         } else {
           let t = byRack.get(key);
           if (!t) {
-            t = new CornerTable(b.corner, cornerRack, range, 41, dl ? { body: 'lca', point: dl } : undefined);
+            t = new CornerTable(b.corner, cornerRack, range, 41, dl ? { body: dlOn, point: dl } : undefined);
             byRack.set(key, t);
             if (byRack.size > 24) byRack.delete(byRack.keys().next().value!);
           }
@@ -254,7 +255,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         const patch = contactPatch(wcWorld, axisWorld, { point: vec3(0, res.corners[c.id].groundY, 0), normal: Y_AXIS }, b.profile, 24);
         const axleShared = s.shared[isFront(c.id) ? 'front' : 'rear'];
         const dropLink = axleShared.antiRollBar === 'torsionBar'
-          ? b.corner.pointOn(state, 'lca', vec3(axleShared.dropLink[0].value, axleShared.dropLink[1].value, axleShared.dropLink[2].value))
+          ? b.corner.pointOn(state, axleShared.dropLinkOn ?? 'lca', vec3(axleShared.dropLink[0].value, axleShared.dropLink[1].value, axleShared.dropLink[2].value))
           : null;
         views[c.id] = { id: c.id, root: rootOf(c.id, s.links), rack: racks[c.id], state, chars: characteristics(state), patch, axisWorld, profile: b.profile, dropLink, unsprungMass: c.unsprungMass };
       }

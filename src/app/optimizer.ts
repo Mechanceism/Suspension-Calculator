@@ -256,6 +256,7 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
     ...(trailerOf(s) ? { trailer: trailerOf(s)! } : {}),
     shared: { front: toAxleShared(s.shared.front), rear: toAxleShared(s.shared.rear) },
     dropLinks: { front: dl(s.shared.front), rear: dl(s.shared.rear) },
+    dropLinkOn: { front: s.shared.front.dropLinkOn ?? 'lca', rear: s.shared.rear.dropLinkOn ?? 'lca' },
     droop: Math.abs(s.droop), bump: Math.abs(s.bump),
     cases: { lateralG: Math.max(0, o.lateralG.value), brakingG: Math.max(0, o.brakingG.value), accelG: Math.max(0, o.accelG.value) },
     states: o.caseSource && (o.caseSource === 'all' || s.tests.some((x) => x.id === o.caseSource))

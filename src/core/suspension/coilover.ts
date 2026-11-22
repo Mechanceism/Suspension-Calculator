@@ -4,9 +4,9 @@
  * mount positions; the lower mount stays put except when moving it along the arm (then the whole coilover
  * moves with it, keeping its length and angles).
  */
-import { type Vec3, vec3, add, sub, scale, dot, length, normalize } from '../math/vec3';
+import { type Vec3, vec3, add, sub, scale, dot, length, normalize, rejectFrom } from '../math/vec3';
 import { armMetrics } from './armGeometry';
-import type { ArmPoints } from './doubleWishbone';
+import type { ArmPoints, DoubleWishboneGeometry } from './doubleWishbone';
 
 export interface CoiloverGeometry {
   /** Mount to mount, mm. */
@@ -94,4 +94,28 @@ export function rockerFromCoilover(chassis: Vec3, lower: Vec3, body: 'uca' | 'lc
     if (best) break;
   }
   return best!;
+}
+
+/**
+ * Rocker ratio: the spring end's lever about the rocker's pivot axis ÷ the pushrod end's (their distances
+ * from the axis), with both levers (mm). NaN without a rocker.
+ */
+export function rockerRatio(g: DoubleWishboneGeometry): { ratio: number; pushrodLever: number; springLever: number } {
+  const r = g.rocker;
+  if (!r || !g.damper) return { ratio: NaN, pushrodLever: NaN, springLever: NaN };
+  const u = normalize(sub(r.pivot2, r.pivot1));
+  const lever = (q: Vec3) => length(rejectFrom(sub(q, r.pivot1), u));
+  const lp = lever(r.pushrodUpper), ls = lever(g.damper.armPoint);
+  return { ratio: lp > 1e-9 ? ls / lp : NaN, pushrodLever: lp, springLever: ls };
+}
+
+/** How far the spring's rocker end must move (along its arm, away from / toward the axis) for a rocker ratio. */
+export function rockerRatioMove(g: DoubleWishboneGeometry, ratio: number): Vec3 | null {
+  const r = g.rocker, now = rockerRatio(g);
+  if (!r || !g.damper || !(ratio > 0) || !(now.pushrodLever > 1e-9) || !(now.springLever > 1e-9)) return null;
+  const u = normalize(sub(r.pivot2, r.pivot1));
+  const rel = sub(g.damper.armPoint, r.pivot1);
+  const along = scale(u, dot(rel, u));
+  const moved = add(r.pivot1, add(along, scale(sub(rel, along), (ratio * now.pushrodLever) / now.springLever)));
+  return sub(moved, g.damper.armPoint);
 }

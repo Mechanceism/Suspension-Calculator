@@ -11,7 +11,7 @@
 import { vec3, Y_AXIS, type Vec3 } from '../math/vec3';
 import type { SteeringSpec } from '../tests/steer';
 import type { AeroModel } from '../vehicle/aero';
-import { DoubleWishbone, isBeam, solidAxleOf, twistBeamOf, type DoubleWishboneGeometry } from '../suspension/doubleWishbone';
+import { DoubleWishbone, isBeam, solidAxleOf, twistBeamOf, type DoubleWishboneGeometry, type MountBody } from '../suspension/doubleWishbone';
 import type { TrailerSpec } from '../vehicle/towing';
 import { characteristics, deg, type Characteristics } from '../suspension/characteristics';
 import { fitFreeLength } from '../suspension/spring';
@@ -117,6 +117,8 @@ export interface VehicleProblem {
   autoPreload: boolean;
   shared: { front: AxleShared; rear: AxleShared };
   dropLinks: { front: Vec3 | null; rear: Vec3 | null };
+  /** What each axle's drop links are fixed to (default the lower arm). */
+  dropLinkOn?: { front?: MountBody; rear?: MountBody };
   droop: number;
   bump: number;
   /** Load cases (0 = off). Lateral is a left turn. */
@@ -276,10 +278,11 @@ export function assembleVehicle(p: VehicleProblem, geometries: Partial<Record<Co
       continue;
     }
     const dl = isFront(id) ? p.dropLinks.front : p.dropLinks.rear;
-    const key = `${root}|${dl ? `${dl.x},${dl.y},${dl.z}` : '-'}`;
+    const dlOn = (isFront(id) ? p.dropLinkOn?.front : p.dropLinkOn?.rear) ?? 'lca';
+    const key = `${root}|${dl ? `${dl.x},${dl.y},${dl.z},${dlOn}` : '-'}`;
     let table = tables.get(key);
     if (!table) {
-      try { table = new CornerTable(built.get(root)!, 0, range, n, dl ? { body: 'lca', point: dl } : undefined); } catch { return null; }
+      try { table = new CornerTable(built.get(root)!, 0, range, n, dl ? { body: dlOn, point: dl } : undefined); } catch { return null; }
       tables.set(key, table);
     }
     const freeLength = p.autoPreload && d.geometry.kind !== 'rigid' ? fitFreeLength(built.get(root)!, d.springRate, Math.max(0, loads[id] - d.unsprungMass * G)) : d.freeLength;

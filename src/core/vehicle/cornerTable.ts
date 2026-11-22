@@ -33,7 +33,7 @@ export interface CornerSampleAt {
 }
 
 export interface TrackedPoint {
-  body: 'uca' | 'lca' | 'upright';
+  body: 'uca' | 'lca' | 'upright' | 'rocker';
   /** Design position, corner frame. */
   point: Vec3;
 }

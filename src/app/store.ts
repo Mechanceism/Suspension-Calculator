@@ -580,7 +580,7 @@ export interface AppState extends DesignState {
   setActiveCorner(id: CornerId): void;
   setLink(key: keyof CornerLinks, value: boolean): void;
   setCornerSetting<K extends keyof CornerSettings>(id: CornerId, key: K, value: CornerSettings[K]): void;
-  setShared(axle: Axle, patch: Partial<Pick<SharedDesign, 'antiRollBar' | 'heaveSpring'>>): void;
+  setShared(axle: Axle, patch: Partial<Pick<SharedDesign, 'antiRollBar' | 'heaveSpring' | 'dropLinkOn'>>): void;
   setSharedField(axle: Axle, key: SharedFieldKey, text: string): void;
   setDropLink(axle: Axle, axis: 0 | 1 | 2, text: string): void;
   setVehicleField(key: VehicleKey, text: string): void;
@@ -737,8 +737,10 @@ export interface SharedDesign {
   barRate: Field;
   /** Bar arm (lever) length, mm. */
   lever: Field;
-  /** Drop-link mount on the lower arm (corner frame; mirrored for the right side). */
+  /** Drop-link mount (corner frame; mirrored for the right side), on `dropLinkOn`. */
   dropLink: [Field, Field, Field];
+  /** What the drop link is fixed to: the lower arm (default), upper arm, knuckle or the rocker (pushrod layouts). */
+  dropLinkOn?: 'lca' | 'uca' | 'upright' | 'rocker';
   heaveSpring: 'none' | 'wheelRate';
   /** Heave spring rate at the wheel, N/mm. */
   heaveRate: Field;

@@ -60,7 +60,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 28;
+export const FORMAT_VERSION = 29;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -106,6 +106,8 @@ export interface ProjectFile {
   shared: Record<Axle, {
     antiRollBar: SharedDesign['antiRollBar']; heaveSpring: SharedDesign['heaveSpring'];
     fields: Record<string, FieldJson>; dropLink: { x: FieldJson; y: FieldJson; z: FieldJson };
+    /** Format 29: what the drop link is fixed to. */
+    dropLinkOn?: 'lca' | 'uca' | 'upright' | 'rocker';
   }>;
   /** Locked values (keys as in locks.ts). */
   locks: string[];
@@ -188,6 +190,7 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
         antiRollBar: sh.antiRollBar, heaveSpring: sh.heaveSpring,
         fields: { arbRate: fj(sh.arbRate), barRate: fj(sh.barRate), lever: fj(sh.lever), heaveRate: fj(sh.heaveRate) },
         dropLink: { x: fj(sh.dropLink[0]), y: fj(sh.dropLink[1]), z: fj(sh.dropLink[2]) },
+        ...(sh.dropLinkOn && sh.dropLinkOn !== 'lca' ? { dropLinkOn: sh.dropLinkOn } : {}),
       }];
     })) as unknown as ProjectFile['shared'],
     locks: Object.keys(d.locks).sort(),
@@ -341,6 +344,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   26: (f) => ({ ...f, formatVersion: 27 }),
   // 27 → 28: no steered solid axles, no Watt's linkage (nothing to change).
   27: (f) => ({ ...f, formatVersion: 28 }),
+  // 28 → 29: drop links on the lower arm (the only choice before).
+  28: (f) => ({ ...f, formatVersion: 29 }),
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */
@@ -693,6 +698,7 @@ function readShared(raw: unknown, axle: Axle, warnings: string[]): SharedDesign 
     lever: readField(fields.lever, SHARED_META.lever.quantity, def.lever, `shared.${axle}.lever`, warnings),
     heaveRate: readField(fields.heaveRate, SHARED_META.heaveRate.quantity, def.heaveRate, `shared.${axle}.heaveRate`, warnings),
     dropLink: (['x', 'y', 'z'] as const).map((k, i) => readField(dl[k], 'length', def.dropLink[i]!, `shared.${axle}.dropLink.${k}`, warnings)) as [Field, Field, Field],
+    ...(a.dropLinkOn === 'uca' || a.dropLinkOn === 'upright' || a.dropLinkOn === 'rocker' ? { dropLinkOn: a.dropLinkOn } : {}),
   };
 }
 

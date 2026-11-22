@@ -1,4 +1,4 @@
-import { useApp, layoutOf, rockerAllowed, type SpringLayout, SPRING_KEYS, SPRING_META, DAMPER_KEYS, DAMPER_META, DAMPER_TWO_STAGE_KEYS, rootOf, type ArmChoice, type SpringKey } from '../store';
+import { useApp, layoutOf, rockerAllowed, toGeometry, type SpringLayout, SPRING_KEYS, SPRING_META, DAMPER_KEYS, DAMPER_META, DAMPER_TWO_STAGE_KEYS, rootOf, type ArmChoice, type SpringKey } from '../store';
 import { lockKeys } from '../locks';
 import type { Model } from '../useModel';
 import { FieldRows, fmt } from './FieldRows';
@@ -6,6 +6,9 @@ import { useState } from 'react';
 import { dampingRatio, dampingForRatio } from '../../core/suspension/spring';
 import { damperForce } from '../../core/vehicle/vehicle';
 import { damperOf } from '../optimizer';
+import { ValueInput } from './ValueInput';
+import { parseValue } from '../../core/units/units';
+import { rockerRatio, rockerRatioMove } from '../../core/suspension/coilover';
 
 /** Spring layout, rate, free length (+ fit) and the corner-load inputs it carries. */
 export function SpringFields({ keys = SPRING_KEYS }: { keys?: readonly SpringKey[] }) {
@@ -29,6 +32,7 @@ export function SpringFields({ keys = SPRING_KEYS }: { keys?: readonly SpringKey
           {rockerAllowed(kind) && <option value="rocker">Pushrod / pullrod + rocker</option>}
         </select>
       </div>
+      {layout === 'rocker' && <RockerRatioRow />}
       {layout === 'rocker' && (
         <div className="row" title="What the pushrod's lower end is fixed to (moving it keeps its spot on the arm)">
           <span className="muted">Pushrod lower end on</span>
@@ -169,3 +173,35 @@ function DamperCurve() {
     </svg>
   );
 }
+
+/**
+ * Rocker ratio: the spring end's lever about the rocker's pivot axis ÷ the pushrod end's (each its distance
+ * from the axis). Typing a ratio slides the spring's rocker end along its arm (same direction from the
+ * axis) and moves the coilover's frame end with it, so the coilover keeps its length and angle.
+ */
+function RockerRatioRow() {
+  const geom = useApp((s) => s.geom);
+  const g = toGeometry(geom);
+  if (!g.rocker || !g.damper) return null;
+  const { ratio, pushrodLever: lp, springLever: ls } = rockerRatio(g);
+  const commit = (text: string) => {
+    const v = parseValue(text, 'ratio');
+    const d = v.ok ? rockerRatioMove(g, v.value) : null;
+    if (!d) { useApp.getState().notify('Enter a rocker ratio above 0.', 'warn'); return; }
+    const s = useApp.getState();
+    const pts = s.geom.points;
+    s.setPointsAxis(([0, 1, 2] as const).flatMap((a) => [
+      { key: 'dmpArm' as const, axis: a, value: Number((pts.dmpArm[a].value + [d.x, d.y, d.z][a]!).toFixed(4)) },
+      { key: 'dmpChassis' as const, axis: a, value: Number((pts.dmpChassis[a].value + [d.x, d.y, d.z][a]!).toFixed(4)) },
+    ]));
+  };
+  return (
+    <div className="row" title="Spring end's lever about the rocker pivot ÷ the pushrod end's. Above 1 the spring moves more than the pushrod. Typing a value slides the spring's rocker end along its arm (and the coilover with it, keeping its length).">
+      <span className="muted">Rocker ratio (spring ÷ pushrod lever)</span>
+      <ValueInput field={{ text: Number.isFinite(ratio) ? ratio.toFixed(3) : '', value: ratio }} unit="" width={64} onCommit={commit} />
+      <span className="muted small-text">{fmtMm(lp)} / {fmtMm(ls)} mm</span>
+    </div>
+  );
+}
+
+const fmtMm = (v: number) => (Number.isFinite(v) ? v.toFixed(0) : '—');

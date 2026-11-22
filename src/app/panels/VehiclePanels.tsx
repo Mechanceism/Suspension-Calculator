@@ -236,8 +236,17 @@ function SharedEditor({ axle }: { axle: Axle }) {
       {sh.antiRollBar === 'torsionBar' && (
         <>
           <FieldRows rows={[row('barRate'), row('lever')]} />
+          <div className="row" title="What the drop link is fixed to. On a pushrod layout's rocker the bar works through the rocker's motion ratio (on corners without a rocker it goes on the knuckle).">
+            <span className="muted">Drop link on</span>
+            <select value={sh.dropLinkOn ?? 'lca'} onChange={(e) => setShared(axle, { dropLinkOn: e.target.value as NonNullable<SharedDesign['dropLinkOn']> })}>
+              <option value="lca">Lower arm</option>
+              <option value="uca">Upper arm</option>
+              <option value="upright">Knuckle / upright</option>
+              <option value="rocker">Rocker (pushrod layouts)</option>
+            </select>
+          </div>
           <div className="row drop-link">
-            <span className="muted" title="Where the drop link attaches to the lower arm (corner frame; mirrored for the right side)">Drop link on LCA</span>
+            <span className="muted" title="Where the drop link attaches (corner frame; mirrored for the right side)">Drop link mount</span>
             {(['X', 'Y', 'Z'] as const).map((ax, i) => (
               <span key={ax} data-lock-key={`shared.${axle}.dropLink.${ax.toLowerCase()}`}>
                 <ValueInput field={sh.dropLink[i]!} unit="mm" width={58} onCommit={(t) => setDropLink(axle, i as 0 | 1 | 2, t)} lockKey={`shared.${axle}.dropLink.${ax.toLowerCase()}`} />

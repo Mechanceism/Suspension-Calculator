@@ -59,7 +59,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 25;
+export const FORMAT_VERSION = 26;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -328,6 +328,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   23: (f) => ({ ...f, formatVersion: 24 }),
   // 24 → 25: no brake fade.
   24: (f) => ({ ...f, formatVersion: 25 }),
+  // 25 → 26: a trailer gets the default yaw radius of gyration (for sway).
+  25: (f) => ({ ...f, formatVersion: 26, ...(isObj(f.tow) && isObj(f.tow.fields) ? { tow: { ...f.tow, fields: { ...f.tow.fields, trailerYawRadius: { text: '1350', value: 1350 } } } } : {}) }),
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */

@@ -40,6 +40,7 @@ export * from './tests/steer';
 export * from './tests/ride';
 export * from './tests/score';
 export * from './tests/handling';
+export * from './tests/trailerSway';
 export * from './vehicle/aero';
 export * from './vehicle/brakes';
 export * from './vehicle/brakeThermal';

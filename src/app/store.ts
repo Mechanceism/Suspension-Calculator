@@ -828,7 +828,7 @@ export const defaultBrakes = (): BrakeSettings => ({
 });
 
 /** Towing inputs (docs/MATH.md § Towing). */
-export const TOW_KEYS = ['trailerMass', 'tongueShare', 'hitchHeight', 'hitchBehindRear', 'hitchToAxle', 'trailerCgHeight', 'trailerBrakes'] as const;
+export const TOW_KEYS = ['trailerMass', 'tongueShare', 'hitchHeight', 'hitchBehindRear', 'hitchToAxle', 'trailerCgHeight', 'trailerBrakes', 'trailerYawRadius'] as const;
 export type TowKey = (typeof TOW_KEYS)[number];
 export const TOW_META: Record<TowKey, { label: string; quantity: Quantity; unit: string; initial: number; hint?: string }> = {
   trailerMass: { label: 'Trailer mass (loaded)', quantity: 'mass', unit: 'kg', initial: 400 },
@@ -838,6 +838,7 @@ export const TOW_META: Record<TowKey, { label: string; quantity: Quantity; unit:
   hitchToAxle: { label: 'Hitch ball to the trailer axle', quantity: 'length', unit: 'mm', initial: 3000 },
   trailerCgHeight: { label: 'Trailer CG height', quantity: 'length', unit: 'mm', initial: 700, hint: 'Above the ground; above the hitch, braking presses the tongue down more' },
   trailerBrakes: { label: 'Trailer brakes (share of its braking)', quantity: 'ratio', unit: '%', initial: 0, hint: '0 = none: the trailer pushes the car when braking; 100 = it stops itself' },
+  trailerYawRadius: { label: 'Trailer yaw radius of gyration', quantity: 'length', unit: 'mm', initial: 1350, hint: 'For sway (tests with Ride over time and the driver steering): √(yaw inertia ÷ mass) about its CG. A box trailer ≈ 0.3 × its length; heavy ends make it larger and the trailer sway sooner' },
 };
 export interface TowSettings extends Record<TowKey, Field> { on: boolean }
 export const defaultTow = (): TowSettings => ({

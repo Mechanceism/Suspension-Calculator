@@ -29,6 +29,8 @@ export interface TrailerSpec {
   cgHeight: number;
   /** Share of the trailer's own braking its brakes make (0 = none: the trailer pushes the car). */
   brakeShare: number;
+  /** Trailer's yaw radius of gyration about its CG, mm (sway; default 0.45 × hitch to axle). */
+  yawRadius?: number;
 }
 
 /** Hitch position in the vehicle frame (mm) for a ground height and wheelbase. */

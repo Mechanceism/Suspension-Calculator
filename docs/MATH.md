@@ -429,7 +429,7 @@ Off by default. On (Vehicle → Inputs → *Towing*): a trailer on a ball hitch 
   - drive / braking: tire net g − F_z / (m·g)
   - side force: m·a_y − F_x
   - front / rear split from the yaw balance about the front axle: F_rear · (−L) + F_x · z_hitch = m·a_y·z_cg, so the rear tires take more.
-- Handling over time: the trailer's tongue share of mass follows the car sideways, F_x = −m_t·τ·ΣF_tires / (m + m_t·τ), and yaws it about the CG.
+- Handling over time, below walking pace (3 m/s): the trailer's tongue share of mass follows the car sideways, F_x = −m_t·τ·ΣF_tires / (m + m_t·τ), and yaws it about the CG. Faster, the trailer is its own body (sway, below).
 - Results: tongue load, push / pull and side force at the hitch.
 - Tested:
   - the hitch forces by hand; the tongue weight adds to the tire loads (the rear gains more than it, the front loses some, since the hitch is behind the rear axle);
@@ -437,7 +437,31 @@ Off by default. On (Vehicle → Inputs → *Towing*): a trailer on a ball hitch 
   - cornering, the tires give the trailer's tongue share of side force, mostly at the rear;
   - a test with handling is driven within 0.6 m of the line.
 - In the browser: 400 kg at 10 % → 392 N tongue load; braking at 0.5 g → 1961 N push and 556 N on the tongue.
-- Still to come: trailer sway (the trailer as its own body in the handling model), a tongue-weight limit check.
+- Still to come: a tongue-weight limit check.
+
+### Trailer sway ✅ (`src/core/tests/trailerSway.ts`)
+In tests with *Ride over time* and *Handling* (the driver steering), the trailer is a second yawing body on the hitch ball with its own axle and tires. Car frame (x forward, y left); articulation φ = trailer heading − car heading; r_t = r + φ̇. The hitch is c behind the car's CG, the trailer's CG d = L_t·(1 − τ) behind the hitch, its axle L_t. Unknowns: v̇, ṙ, ṙ_t and F (the hitch's side force on the trailer, along its left axis n = (−sin φ, cos φ)). The pull along its axis e = (cos φ, sin φ) is F_t = m_t·a_x, less the trailer brakes' share when braking.
+
+    car lateral       m (v̇ + u r) = ΣF_y + m g_bank − F cos φ − F_t sin φ
+    car yaw           I ṙ = M_z + c (F cos φ + F_t sin φ)
+    trailer lateral   m_t (a_hitch · n − d ṙ_t) = F + Y_t + m_t g_bank cos φ,   a_hitch = (a_x + c r², v̇ + u r − c ṙ)
+    trailer yaw       I_t ṙ_t = d F − (L_t − d) Y_t                 I_t = m_t k² (k = yaw radius of gyration)
+    trailer tires     Y_t = μ F_z tanh(C α / (μ F_z)),  C = 7 F_z /rad,  F_z = m_t g (1 − τ),  α from the axle's velocity
+
+- **Solving:** a 4 × 4 linear solve per sub-step; the car's state then takes the solved accelerations, and the trailer integrates r_t and φ.
+- **Jackknife effect:** braking without trailer brakes, F_t < 0 pushes along the trailer's axis, and F_t sin φ turns the car.
+- **Sway** is measured against a kinematic trailer driven by the same car (its axle never slips sideways): φ̇_k = (−u sin φ_k + (v − c r) cos φ_k) / L_t − r. The tires' steady slip offset is removed by a 1 s low pass:
+  - sway = |(φ − φ_k) − LP(φ − φ_k)|;
+  - more than 30° from the kinematic trailer = jackknifed.
+- **New pass rule** *Trailer sway* (Fail above ±5° by default, or on a jackknife).
+- **Results:** in playback, the trailer's articulation and sway, and the trailer drawn behind the car on the track map.
+- **Input:** *Trailer yaw radius of gyration* (default 1350 mm; ≈ 0.3 × a box trailer's length). Format 26; older files with a trailer get the default quietly.
+- **Tested:**
+  - a well-loaded trailer (12 %) at 15 m/s swings under 2.5° through an S-bend and settles;
+  - in a slow steady turn it sits at the kinematic articulation, sin φ + c_r κ cos φ = −L_t κ (c_r = hitch behind the rear axle), within 10 %;
+  - less tongue weight or more speed sways more;
+  - a negative tongue weight at 25 m/s fails *Trailer sway* and jackknifes.
+- **In the browser:** the HUD and the track map show the trailer.
 
 ## Aerodynamics ✅ (`src/core/vehicle/aero.ts`)
 Off by default (negligible for slow cars). On: forces on the **body**, never through the tires, at the car's speed V (tests: each moment's speed; Vehicle view: the *Speed* slider) and air density ρ (from altitude and temperature: standard-atmosphere pressure, dry air).

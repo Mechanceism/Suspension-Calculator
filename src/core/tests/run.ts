@@ -287,7 +287,7 @@ export interface PlaybackFrame {
   /** Ride over time (Phase B): the body pose, each travel (mm) and tire load (N) at this moment. */
   ride?: { pose: ChassisPose; travel: Record<CornerId, number>; tireLoad: Record<CornerId, number> };
   /** Handling (Phase C): distance off the path (m, + left), sideslip (deg), yaw rate (rad/s), mean steer angle (deg), at full lock. */
-  handling?: { pathError: number; sideslip: number; yawRate: number; steer: number; atLock: boolean; path: { x: number; y: number } };
+  handling?: { pathError: number; sideslip: number; yawRate: number; steer: number; atLock: boolean; path: { x: number; y: number }; trailer?: { articulation: number; sway: number } };
 }
 
 /**

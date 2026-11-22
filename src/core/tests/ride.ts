@@ -34,6 +34,7 @@ import { localPatch } from '../tire/geometry';
 import { tireForce } from '../tire/model';
 import { segmentLatG, roadEffective, G, type RoadState } from './segments';
 import { wheelHeights } from './road';
+import { swayTrailer, newSwayState, coupleTrailer, stepTrailer, followTrailer, swayOf, type SwayState } from './trailerSway';
 import { classifyState, worstSeverity, PROFILES, type Finding } from './checks';
 import { steerForTurn, steeringWheelAngle, type SteerNeed } from './steer';
 import {
@@ -84,6 +85,8 @@ export interface RideMeasures {
   heaveAccRms: number;
   /** Time driven, s. */
   duration: number;
+  /** Towing with handling: the largest trailer sway (deg). */
+  maxSway?: number;
   /** Handling (driver steering): largest distance off the path (m) and largest sideslip (deg). */
   maxPathError?: number;
   maxSideslip?: number;
@@ -175,7 +178,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
   const gripTime = o.gripTime ?? 0.1;
   const handling = !!o.handling;
   // Driven by a driver, a moment at full lock (catching a slide) isn't a failure; running off the line is.
-  const INSTANT = new Set(['wheelLift', 'bumpStop', 'bottoming', 'rollover', 'noSolution', ...(handling ? ['pathError', 'spin'] : ['steerLimit'])]);
+  const INSTANT = new Set(['wheelLift', 'bumpStop', 'bottoming', 'rollover', 'noSolution', ...(handling ? ['pathError', 'spin', 'trailerSway'] : ['steerLimit'])]);
   if (!(total > 0)) return { frames, findings, metrics: { ...NO_METRICS } };
   // The path's curvature at a distance along the whole test (1/m, + = left); past the end, the last segment's.
   const starts: number[] = [];
@@ -242,7 +245,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
   }])) as Record<CornerId, TireNow>;
   let tires = tireNow(steady.corners);
   let H: HandlingState | null = null;
-  let maxPathError = 0, maxSideslip = 0;
+  let maxPathError = 0, maxSideslip = 0, maxSway = 0;
   /** Forces of the tires on the handling state; in the slow (kinematic) mode, what the motion needs. */
   const handlingNow = (u: number, grav: number): HandlingForces => {
     const wheels = wheelAngles(car!.table, H!.rack, H!.delta);
@@ -255,21 +258,37 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
   /** Advance the planar state by h (two sub-steps) and learn the understeer; returns the forces at the start. */
   const trailer = p.trailer;
   const hitchZ = trailer ? (-p.wheelbase - trailer.hitchBehindRear - asm.cg.z) / 1000 : 0; // m from the CG (negative: behind)
-  /** Towing: the hitch's side force, F = −m_t·τ·a with a = (ΣF_tires + F) / m (the trailer follows the car). */
-  const withHitch = (fh: HandlingForces): HandlingForces => {
+  // Trailer sway: with a driver steering, the trailer is its own yawing body (trailerSway.ts).
+  const tw = trailer && car ? swayTrailer(trailer, -hitchZ * 1000) : null;
+  const TS: SwayState | null = tw ? newSwayState() : null;
+  let rtdot = 0;
+  /**
+   * Towing: the hitch's side force. Above walking pace the coupled car + trailer accelerations (returned as
+   * the forces that give them); slower, F = −m_t·τ·a with a = (ΣF_tires + F) / m (the trailer follows).
+   */
+  const withHitch = (fh: HandlingForces, u = 0, grav = 0, ax = 0): HandlingForces => {
     if (!trailer || !car) return fh;
+    if (tw && TS && H && u >= KINEMATIC_SPEED) {
+      const a = coupleTrailer(tw, TS, { m: car.mass, I: car.yawInertia }, u, H.v, H.r, ax, grav, fh.sumFy, fh.mz);
+      rtdot = a.rtdot;
+      return { ...fh, sumFy: car.mass * (a.vdot + u * H.r - grav), mz: car.yawInertia * a.rdot, tireFy: fh.sumFy };
+    }
     const mt = trailer.mass * Math.min(1, Math.max(0, trailer.tongueShare));
     const F = (-mt * fh.sumFy) / (car.mass + mt);
     return { ...fh, sumFy: fh.sumFy + F, mz: fh.mz + hitchZ * F, tireFy: fh.sumFy };
   };
-  const advance = (u: number, S: number, grav: number, h: number, kAt: (s: number) => number): HandlingForces => {
+  const advance = (u: number, S: number, grav: number, h: number, kAt: (s: number) => number, ax = 0): HandlingForces => {
     const cmd = driverCommand(car!, H!, u, kAt, S, grav, o.driver);
     const kap = kAt(S);
     let first: HandlingForces | null = null;
     for (let sub = 0; sub < 2; sub++) {
-      const fh = withHitch(handlingNow(u, grav));
+      const fh = withHitch(handlingNow(u, grav), u, grav, ax);
       if (!first) first = fh;
       stepHandling(car!, H!, u, kap, fh, grav, cmd, h / 2, o.driver);
+      if (tw && TS) {
+        if (u >= KINEMATIC_SPEED) stepTrailer(tw, TS, u, H!.v, H!.r, rtdot, h / 2);
+        else followTrailer(tw, TS, u, H!.v, H!.r, h / 2);
+      }
     }
     const ayT = (first!.tireFy ?? first!.sumFy) / (car!.mass * G);
     if (u >= KINEMATIC_SPEED && Math.abs(ayT) > 0.15) {
@@ -382,7 +401,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       let ayH: number | undefined;
       if (H) {
         const grav = G * Math.sin(kin.bank) * Math.cos(kin.grade);
-        hf = advance(kin.v, starts[i]! + kin.s, grav, h, kappaAt);
+        hf = advance(kin.v, starts[i]! + kin.s, grav, h, kappaAt, kin.ax * G);
         ayH = (hf.sumFy / car!.mass + grav) / (G * Math.max(Math.cos(kin.bank), 0.1));
       }
       const input = inputAt(kin, ayH);
@@ -467,7 +486,9 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
         : p.steering && sg.path !== 'straight'
           ? steerForTurn(asm.built, p.roots, p.steering, p.wheelbase, sg.path, sg.radius, Math.round(slipDifference(result) / 8.7e-4) * 8.7e-4) : null;
       st.rack = steer?.rackUsed ?? 0;
-      const hd = H ? { pathError: H.eY, sideslip: kin.v >= KINEMATIC_SPEED ? beta : 0, atLock: H.atLock } : undefined;
+      const sw = TS ? swayOf(TS) : null;
+      if (sw) maxSway = Math.max(maxSway, sw.sway * DEG);
+      const hd = H ? { pathError: H.eY, sideslip: kin.v >= KINEMATIC_SPEED ? beta : 0, atLock: H.atLock, ...(sw && TS ? { sway: sw.sway * DEG, jackknife: sw.jackknife, articulation: TS.phi * DEG } : {}) } : undefined;
       const fnd = classifyState({ ...stateFacts(p, asm, st, result, steer), handling: hd }, checks).filter((x) => x.check !== 'beyondGrip');
       // Spells: a check that holds now continues (or starts) its spell; others end theirs.
       const now2 = new Set<string>();
@@ -496,7 +517,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
         t, segment: i, s: kin.s, speed: kin.v, ay, ax: kin.ax, grade: kin.grade, bank: kin.bank, groundOffset: offsets,
         pos: { x: x2d - off * Math.sin(heading), y: y2d + off * Math.cos(heading), z: 0 }, heading: heading + (H?.ePsi ?? 0),
         rack: H ? H.rack : steer?.rackUsed ?? 0, severity: worstSeverity(fnd),
-        ...(H ? { handling: { pathError: H.eY, sideslip: beta, yawRate: H.r, steer: H.delta * DEG, atLock: H.atLock, path: { x: x2d, y: y2d } } } : {}),
+        ...(H ? { handling: { pathError: H.eY, sideslip: beta, yawRate: H.r, steer: H.delta * DEG, atLock: H.atLock, path: { x: x2d, y: y2d }, ...(sw && TS ? { trailer: { articulation: TS.phi * DEG, sway: sw.sway * DEG } } : {}) } } : {}),
         utilization: Object.fromEntries(CORNER_IDS.map((id) => [id, result.grip?.corners[id].utilization ?? NaN])) as Record<CornerId, number>,
         findings: fnd.filter((x) => x.severity !== 'pass').map((x) => x.text),
         ride: {
@@ -521,6 +542,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     loadVariation: Math.sqrt(loadVarSum / Math.max(1, metricCount * 4)),
     heaveAccRms: Math.sqrt(accSum / nAcc),
     ...(H ? { maxPathError, maxSideslip } : {}),
+    ...(TS ? { maxSway } : {}),
   };
   return { frames, findings, metrics };
 

@@ -332,11 +332,19 @@ export function useModel(): Model {
       parkingWheelTorque: mech.kind === 'arm' ? (parkT / (((1 / cLocal) * 360) / Math.abs(dHeading))) / 1000 : (parkRack * cLocal) / (2 * Math.PI) / 1000,
     };
     };
-    const steering = interacting && lastSlow.current.steering ? lastSlow.current.steering : computeSteering();
+    // A beam axle doesn't steer here: no steering readout.
+    const steering = corner.solidAxle || corner.twistBeam ? null : interacting && lastSlow.current.steering ? lastSlow.current.steering : computeSteering();
     if (!interacting) {
       lastSlow.current = { wheelRate: springInfo?.wheelRate ?? NaN, tireRate: springInfo?.tireRate ?? Infinity, steering };
     }
 
+    // A twist beam cambers differently in roll (each arm about bushing → shear center) than in heave.
+    let rollCamberGain: number | null = null;
+    if (corner.twistBeam) {
+      const tb = corner.twistBeam, q = state.inputs.travel;
+      const cam = (l: number, r: number) => { const w = tb.solve({ left: l, right: r }).left; return deg(Math.asin(Math.max(-1, Math.min(1, -w.spinAxis.y)))); };
+      rollCamberGain = (cam(q + h, q - h) - cam(q - h, q + h)) / (2 * h);
+    }
     return {
       travel, state, chars, loaded, spring: springInfo, steering, loadFactor: effFactor, tireLoad: effTireLoad,
       camberGain: (deg(plus.camber) - deg(minus.camber)) / (2 * h),
@@ -345,7 +353,7 @@ export function useModel(): Model {
       kpiGain: (deg(plus.kpi) - deg(minus.kpi)) / (2 * h),
       trackChange: (plus.halfTrack - minus.halfTrack) / (2 * h),
       rcMigration: plus.rollCenterHeight !== null && minus.rollCenterHeight !== null ? (plus.rollCenterHeight - minus.rollCenterHeight) / (2 * h) : NaN,
-      rollCamber: rollCamber((deg(plus.camber) - deg(minus.camber)) / (2 * h), chars.halfTrack),
+      rollCamber: rollCamber(rollCamberGain ?? (deg(plus.camber) - deg(minus.camber)) / (2 * h), chars.halfTrack),
     };
   }, [live, sweep, sliderTravel, rack, driver, mode, factor, spec, ws, droop, bump, tireSetup, spring, steer, cFactor, damperLimits, interacting]);
 
@@ -356,7 +364,7 @@ export function useModel(): Model {
   const curTireLoad = Math.round(current?.tireLoad ?? spring.cornerLoad.value);
   const steerSweep = useMemo<SteerSample[]>(() => {
     const corner = built.corner;
-    if (!corner || !current) return [];
+    if (!corner || !current || corner.solidAxle || corner.twistBeam) return [];
     if (interacting) return lastSteerSweep.current;
     const armAngle = armKey / 1e5;
     const n = 25;

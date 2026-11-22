@@ -13,7 +13,7 @@ import { deg } from '../../core/suspension/characteristics';
 import {
   useApp, VEHICLE_KEYS, VEHICLE_META, CORNER_NAMES, SHARED_META, rootOf,
   type CornerLinks, type DiffType, type Axle, type SharedDesign,
-  BRAKE_KEYS, BRAKE_META, TOW_KEYS, TOW_META,
+  BRAKE_KEYS, BRAKE_META, FADE_KEYS, FADE_META, TOW_KEYS, TOW_META,
 } from '../store';
 import type { BrakeMount } from '../../core/vehicle/vehicle';
 import { ValueInput } from './ValueInput';
@@ -294,11 +294,11 @@ export function VehicleResults({ model }: { model: VehicleModel | null }) {
           { label: 'Roll center height, rear', value: fmt(model.rollCenters.rear?.h, 1), unit: 'mm' },
           { label: 'Roll center lateral, front', value: fmt(model.rollCenters.front?.x, 1), unit: 'mm', hint: '+ = left of centerline' },
           { label: 'Rollover threshold (rigid)', value: fmt(model.rolloverG, 2), unit: 'g', hint: 'half track ÷ CG height' },
-          {
-            label: 'Ackermann lines cross', unit: 'mm',
-            value: !model.ackermannLines ? '—' : !model.ackermannLines.cross ? 'parallel' : fmt(model.ackermannLines.cross.z + model.wheelbase, 0),
-            hint: 'Top view: lines from each front steering axis through its steering arm\'s outer joint (View → Ackermann lines). Distance of their crossing ahead of the rear axle (+) or behind it (−). Classic 100 % Ackermann: 0 (on the rear axle). Parallel = parallel steer. A rule for near straight ahead: Ackermann % in the Corner view shows what the linkage really does.',
-          },
+          ...model.ackermannLines.map((a) => ({
+            label: `Ackermann lines cross, ${a.axle}`, unit: 'mm',
+            value: a.lines.length < 2 ? 'one steered wheel' : !a.cross ? 'parallel' : fmt(a.axle === 'front' ? a.cross.z - a.target.z : a.target.z - a.cross.z, 0),
+            hint: `Top view: lines from each steered wheel's steering axis through its steering arm's outer joint (View → Ackermann lines). Distance of their crossing past (+) or short of (−) the ${a.target.label.toLowerCase()}, where classic 100 % Ackermann puts it. Parallel = parallel steer. Drag the crossing or a line's handle in the Vehicle view to move the outer tie-rod joints. A rule for near straight ahead: Ackermann % in the Corner view shows what the linkage really does.`,
+          })),
         ]} />
       </Section>
       <Section title="Lateral load transfer">
@@ -478,6 +478,7 @@ function BrakePanel() {
   const b = useApp((s) => s.brakes);
   const setB = useApp((s) => s.setBrakes);
   const setF = useApp((s) => s.setBrakeField);
+  const setFade = useApp((s) => s.setFadeField);
   const disp = useDisplay();
   const st = useApp.getState();
   const brk = brakesOf(st);
@@ -503,6 +504,8 @@ function BrakePanel() {
               { label: 'Hydraulic bias (front share)', value: fmt(brk.capacity.bias * 100, 1), unit: '%' },
             ]} />
           )}
+          <label className="check-row" title="Tests heat the rotors with every stop (and cool them with the air); hot pads lose grip, so a long or repeated stop can need more pedal force than the driver has."><input type="checkbox" checked={b.fade} onChange={(e) => setB({ fade: e.target.checked })} /> Brake fade in tests (rotors heat up, pads lose grip when hot)</label>
+          {b.fade && <FieldRows rows={FADE_KEYS.map((k) => ({ label: FADE_META[k].label, field: b[k], unit: FADE_META[k].unit, hint: FADE_META[k].hint, onCommit: (t: string) => setFade(k, t) }))} />}
         </>
       )}
     </>

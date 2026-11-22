@@ -10,7 +10,7 @@ export type Severity = 'pass' | 'warn' | 'fail';
 
 export type CheckId =
   | 'nearLimit' | 'understeer' | 'oversteer' | 'wheelspin' | 'absActive' | 'lockup' | 'speedNotReached'
-  | 'bumpStop' | 'bottoming' | 'wheelLift' | 'rollover' | 'noSolution' | 'beyondGrip' | 'steerLimit' | 'pathError' | 'spin' | 'brakeLimit';
+  | 'bumpStop' | 'bottoming' | 'wheelLift' | 'rollover' | 'noSolution' | 'beyondGrip' | 'steerLimit' | 'pathError' | 'spin' | 'brakeLimit' | 'brakeFade' | 'trailerSway';
 
 export interface CheckSetting {
   severity: Severity;
@@ -44,6 +44,8 @@ export const CHECK_META: Record<CheckId, CheckMeta> = {
   rollover: { label: 'Rollover', hint: 'Cornering g beyond the rigid rollover threshold (half track ÷ CG height).', fixed: true },
   noSolution: { label: 'No solution', hint: "The car can't settle in this state.", fixed: true },
   brakeLimit: { label: 'Brakes too weak', hint: 'With the brake hydraulics modeled: the braking asked needs more pedal force than the driver applies (line pressure, pistons, pads, rotors). Bigger pistons / rotors, a smaller master cylinder, a booster or more pedal ratio help.' },
+  trailerSway: { label: 'Trailer sway', hint: 'Towing, driving over time with the driver steering: the trailer swings side to side about the line it would follow without tire slip by more than this (or jackknifes). More tongue weight, a lighter or shorter trailer (less yaw inertia), a longer hitch-to-axle distance or a lower speed help.', threshold: { label: 'allowed', unit: '°' } },
+  brakeFade: { label: 'Brake fade', hint: 'With brake fade modeled: the rotors are hot enough that the pads have lost more than this share of their grip. If the faded brakes can no longer make the braking asked, it counts as Brakes too weak. Heavier rotors, more cooling, or pads that fade hotter help.', threshold: { label: 'allowed pad grip loss', unit: '%' } },
   pathError: { label: 'Off the line', hint: 'Driving over time with the driver steering: the car is further than this from the path (runs wide or cuts in).', threshold: { label: 'allowed', unit: 'm' } },
   spin: { label: 'Spin / slide', hint: 'Driving over time with the driver steering: the car\'s sideslip angle (how far it points away from where it travels) is beyond this.', threshold: { label: 'allowed', unit: '°' } },
   steerLimit: { label: 'Steering lock', hint: 'The turn is tighter than the steering allows: its road-wheel angle (atan(wheelbase ÷ radius), plus the front − rear tire slip angle at speed) needs more rack travel than the rack limit, or no wheel steers.' },
@@ -68,6 +70,8 @@ const base: CheckProfile = {
   steerLimit: { severity: 'fail' },
   pathError: { severity: 'fail', threshold: 1 },
   brakeLimit: { severity: 'fail' },
+  brakeFade: { severity: 'warn', threshold: 10 },
+  trailerSway: { severity: 'fail', threshold: 5 },
   spin: { severity: 'fail', threshold: 12 },
 };
 
@@ -108,7 +112,7 @@ export interface StateFacts {
   /** Steering the turn needs (turns only). */
   steer?: SteerNeed | null;
   /** Handling over time (driver steering): distance off the path (m, + = left), sideslip (deg), steering at full lock. */
-  handling?: { pathError: number; sideslip: number; atLock: boolean };
+  handling?: { pathError: number; sideslip: number; atLock: boolean; sway?: number; jackknife?: boolean; articulation?: number };
 }
 
 const pct = (x: number) => `${(x * 100).toFixed(0)}%`;
@@ -135,6 +139,8 @@ export function classifyState(f: StateFacts, profile: CheckProfile): Finding[] {
     const allowed = profile.pathError?.threshold ?? 1;
     if (Math.abs(hd.pathError) > allowed) add('pathError', `${Math.abs(hd.pathError).toFixed(2)} m off the line (${hd.pathError > 0 ? 'left' : 'right'} of the path)${hd.atLock ? ', steering at full lock' : ''}`);
     if (Math.abs(hd.sideslip) > (profile.spin?.threshold ?? 12)) add('spin', `Sideslip ${Math.abs(hd.sideslip).toFixed(1)}°: the car slides sideways / spins`);
+    if (hd.jackknife) add('trailerSway', `The trailer jackknifes (articulation ${Math.abs(hd.articulation ?? 0).toFixed(0)}°)`);
+    else if (hd.sway !== undefined && hd.sway > (profile.trailerSway?.threshold ?? 5)) add('trailerSway', `Trailer sway ±${hd.sway.toFixed(1)}°`);
   }
   if (!r || !r.converged) { add('noSolution', "The car can't settle in this state"); return out; }
   const g = r.grip;
@@ -177,6 +183,29 @@ export function classifyState(f: StateFacts, profile: CheckProfile): Finding[] {
   if (atLimit.length) add('bottoming', `${atLimit.map((id) => `${id} ${r.corners[id].status === 'bump-limit' ? 'bottoms out' : 'tops out'}`).join(', ')}`, atLimit);
   const lifted = CORNER_IDS.filter((id) => r.corners[id].tireLoad < 25);
   if (lifted.length) add('wheelLift', `${lifted.join(', ')} lifts off the ground`, lifted);
+  return out;
+}
+
+/**
+ * Brake fade at a solved state (rotor temperatures and pad-friction factors per axle; the hydraulics'
+ * cold capacity per axle): a warning when the pads have lost more than the allowed share, and Brakes too
+ * weak when the faded brakes can't make the braking the state asks (and the cold ones could).
+ */
+export function fadeFindings(
+  r: VehicleResult | null, fade: { temp: { front: number; rear: number }; factor: { front: number; rear: number } },
+  limit: { front: number; rear: number; maxPedal: number }, profile: CheckProfile,
+): Finding[] {
+  const out: Finding[] = [];
+  const add = (check: CheckId, text: string) => { const severity = sevOf(profile, check); if (severity !== 'pass') out.push({ check, severity, text }); };
+  const loss = 1 - Math.min(fade.factor.front, fade.factor.rear);
+  const temps = `rotors ${fade.temp.front.toFixed(0)} °C front, ${fade.temp.rear.toFixed(0)} °C rear`;
+  if (loss * 100 > (profile.brakeFade?.threshold ?? 10)) add('brakeFade', `Brakes fading: ${temps}; the pads have lost ${pct(1 - fade.factor.front)} / ${pct(1 - fade.factor.rear)} of their grip`);
+  if (r?.converged && !r.unmet.brakeCapacity) {
+    const demand = { front: -(r.corners.FL.brakeForce + r.corners.FR.brakeForce), rear: -(r.corners.RL.brakeForce + r.corners.RR.brakeForce) };
+    const need = (d: number, c: number) => (d > 1e-9 ? (c > 0 ? (d / c) * limit.maxPedal : Infinity) : 0);
+    const needed = Math.max(need(demand.front, limit.front * fade.factor.front), need(demand.rear, limit.rear * fade.factor.rear));
+    if (needed > limit.maxPedal * (1 + 1e-6)) add('brakeLimit', `Brake fade: hot (${temps}) the brakes can't make this braking; it needs ${Number.isFinite(needed) ? needed.toFixed(0) : '∞'} N of pedal force, the most is ${limit.maxPedal.toFixed(0)} N`);
+  }
   return out;
 }
 

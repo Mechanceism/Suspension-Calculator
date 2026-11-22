@@ -23,7 +23,17 @@ function focusSphere(model: Model, focus: FocusKey, radius: number): { center: V
   const s = model.current?.state;
   if (!s) return null;
   const p = s.points;
-  const groups: Record<FocusKey, Vec3[]> = {
+  const trail = s.kind === 'twistBeam' || s.kind === 'beamLeaf';
+  const cpts = s.kind === 'custom' ? (p.customJoints ?? []).flatMap((j) => j.pts) : [];
+  const top = { x: p.wheelCenter.x, y: p.wheelCenter.y + radius, z: p.wheelCenter.z };
+  const groups: Record<FocusKey, Vec3[]> = s.kind === 'custom' ? {
+    corner: [...cpts, p.contact, top], wheel: [p.wheelCenter, p.contact, top], upright: [p.wheelCenter, ...cpts], uca: cpts, lca: cpts,
+    tieRod: cpts, rack: cpts, chassis: cpts, spring: p.damperChassis && p.damperArm ? [p.damperChassis, p.damperArm] : [p.wheelCenter], contact: [p.contact],
+  } : trail ? {
+    corner: [p.lcaFwd, p.lcaAft, p.lcaOut, p.contact, top], wheel: [p.wheelCenter, p.contact, top],
+    upright: [p.lcaOut, p.wheelCenter], uca: [p.lcaOut], lca: [p.lcaFwd, p.lcaAft, p.lcaOut], tieRod: [p.wheelCenter], rack: [p.wheelCenter],
+    chassis: [p.lcaFwd, p.lcaAft], spring: p.damperChassis && p.damperArm ? [p.damperChassis, p.damperArm] : [p.lcaOut], contact: [p.contact],
+  } : {
     corner: [...(s.kind === 'macpherson' ? [p.steerUpper] : s.kind === 'rigid' || s.kind === 'singleArm' ? [p.ucaOut] : [p.ucaFwd, p.ucaAft, p.ucaOut]), ...(s.kind === 'rigid' ? [] : [p.lcaFwd, p.lcaAft]), p.lcaOut, p.trInner, p.trOuter, p.contact,
       { x: p.wheelCenter.x, y: p.wheelCenter.y + radius, z: p.wheelCenter.z }],
     wheel: [p.wheelCenter, p.contact, { x: p.wheelCenter.x, y: p.wheelCenter.y + radius, z: p.wheelCenter.z }],

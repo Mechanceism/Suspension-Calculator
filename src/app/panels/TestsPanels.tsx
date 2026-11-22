@@ -623,7 +623,7 @@ export function TestResults() {
       <EstimatedNote />
       {stale && <p className="hint warn-text">The design changed since this run: run again.</p>}
       <table className="corner-table test-table">
-        <thead><tr><th>#</th><th>Segment</th><th title="Worst tire grip use">Grip</th><th /></tr></thead>
+        <thead><tr><th>#</th><th>Segment</th><th title="Worst tire grip use">Grip</th>{r.segments.some((s) => s.brakeTemp) && <th title="Brake fade: rotor temperature at the end of the segment, front / rear">Brakes</th>}<th /></tr></thead>
         <tbody>
           {r.segments.map((s) => {
             const def = test.segments[s.index];
@@ -632,6 +632,7 @@ export function TestResults() {
                 <td>{s.index + 1}</td>
                 <td>{def?.name ?? ''}</td>
                 <td>{Number.isFinite(s.maxUtilization) ? `${fmt(s.maxUtilization * 100, 0)} %` : '—'}</td>
+                {s.brakeTemp && <td className="small-text">{disp.format(s.brakeTemp.end.front, '°C', 0)} / {disp.format(s.brakeTemp.end.rear, '°C', 0)}</td>}
                 <td>{SEV_ICON[s.severity]}</td>
               </tr>
             );

@@ -6,18 +6,23 @@
 import { linkageShape } from './linkageShape';
 import type { CornerPoints } from '../../core/suspension/doubleWishbone';
 import { useDisplay } from '../units';
-import { useMemo, useRef, type RefObject } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
+import { useMemo, useRef, useState, type RefObject } from 'react';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Grid, OrthographicCamera, PerspectiveCamera } from '@react-three/drei';
 import { switchWorkspace } from './SafeHtml';
 import * as THREE from 'three';
 import { vec3, add, sub, scale, normalize, type Vec3 } from '../../core/math/vec3';
 import { closestPointOnLine, lineThrough } from '../../core/math/geom';
-import { CORNER_IDS, placement, poseFns, type CornerId } from '../../core/vehicle/vehicle';
-import { useApp, FORCE_KEYS, FORCE_META, type ForceKey } from '../store';
-import type { VehicleModel, VehicleCornerView } from '../useVehicle';
+import { CORNER_IDS, placement, poseFns, isLeft, type CornerId } from '../../core/vehicle/vehicle';
+import { useApp, FORCE_KEYS, FORCE_META, mergedCorners, rootOf, layoutOf, activePointKeys, POINT_NAMES, type ForceKey, type VisKey, type PointKey } from '../store';
+import { useShallow } from 'zustand/react/shallow';
+import { STATE_KEY } from '../anchors';
+import { VehicleMoveGizmo, AxisGizmo } from './JointGizmo';
+import { SafeHtml as Html } from './SafeHtml';
+import { pointAxisLocked } from '../locks';
+import type { VehicleModel, VehicleCornerView, AckermannAxle } from '../useVehicle';
 import { CameraRig, DevProjectBridge, ViewButtons, useMiddleDoubleClick, type FocusTarget } from './Viewport';
-import { COLORS } from './Scene';
+import { COLORS, CustomDrawing } from './Scene';
 import { Joint, Seg, Polyline, Tri, Wheel, PatchMesh, Coilover, Arrow } from './primitives';
 
 /** One corner drawn in the vehicle frame. Right corners are mirrored point-by-point (a negative
@@ -45,7 +50,8 @@ function CornerDrawing({ view, onOpen, active, wheelbase }: { view: VehicleCorne
       {vis.lca && sh.lca.map(([a, b], i) => <Seg key={i} a={a} b={b} color={COLORS.lca} width={w} />)}
       {vis.upright && <Polyline pts={sh.upright} color={COLORS.upright} width={w} />}
       {vis.upright && <Seg a={foot} b={p.wheelCenter} color={COLORS.upright} width={w} />}
-      {vis.tieRod && <Seg a={p.trInner} b={p.trOuter} color={COLORS.tieRod} width={w} />}
+      {view.state.kind === 'custom' && raw.customJoints && <CustomDrawing p={{ ...p, customJoints: raw.customJoints.map((j) => ({ ...j, pts: j.pts.map((q) => pl.point(q)) })) }} width={w} />}
+      {vis.tieRod && !['beam4', 'beam3', 'beamLeaf', 'twistBeam', 'custom'].includes(view.state.kind) && <Seg a={p.trInner} b={p.trOuter} color={COLORS.tieRod} width={w} />}
       {vis.spring && p.damperChassis && p.damperArm && <Coilover a={p.damperChassis} b={p.damperArm} color={COLORS.spring} radius={22} coils={7} />}
       {vis.spring && p.rockerPivot1 && p.rockerPivot2 && p.pushrodUpper && p.pushrodLower && p.damperArm && (
         <>
@@ -53,8 +59,8 @@ function CornerDrawing({ view, onOpen, active, wheelbase }: { view: VehicleCorne
           <Seg a={p.pushrodLower} b={p.pushrodUpper} color={COLORS.tieRod} width={w} />
         </>
       )}
-      {(vis.uca || vis.upright) && view.state.kind !== 'macpherson' && <Joint p={p.ucaOut} color={COLORS.uca} r={8} />}
-      {(vis.lca || vis.upright) && <Joint p={p.lcaOut} color={COLORS.lca} r={8} />}
+      {(vis.uca || vis.upright) && view.state.kind !== 'macpherson' && view.state.kind !== 'custom' && <Joint p={p.ucaOut} color={COLORS.uca} r={8} />}
+      {(vis.lca || vis.upright) && view.state.kind !== 'custom' && <Joint p={p.lcaOut} color={COLORS.lca} r={8} />}
       {vis.wheel && <Wheel
         center={p.wheelCenter} axis={axis} radius={view.profile.radius} width={view.profile.width}
         rimRadius={view.profile.rimRadius} color={active ? '#ffffff' : COLORS.wheel} simple={simpleTire}
@@ -176,6 +182,8 @@ function VehicleScene({ model, arrows }: { model: VehicleModel; arrows: ForceArr
   const rcF = model.rollCenters.front;
   const rcR = model.rollCenters.rear;
   const open = (id: CornerId) => { setActiveCorner(id); switchWorkspace('corner'); };
+  const frame = useRef<THREE.Group>(null);
+  const measureMode = useApp((s) => s.measureMode);
   return (
     <group>
       <ambientLight intensity={0.8} />
@@ -187,9 +195,10 @@ function VehicleScene({ model, arrows }: { model: VehicleModel; arrows: ForceArr
         />
       )}
       {/* Chassis (everything sprung) moves with the solved pose. */}
-      <group position={[0, pose.heave, 0]} rotation={euler}>
+      <group ref={frame} position={[0, pose.heave, 0]} rotation={euler}>
         {vis.chassis && <Frame model={model} />}
-        {vis.ackermann && <AckermannLines model={model} />}
+        {vis.ackermann && <AckermannLines model={model} frame={frame} />}
+        <VehiclePoints model={model} frame={frame} />
         {CORNER_IDS.map((id) => {
           const v = model.corners[id];
           if (!v) return null;
@@ -202,8 +211,10 @@ function VehicleScene({ model, arrows }: { model: VehicleModel; arrows: ForceArr
         return patch?.inContact ? <PatchMesh key={id} outline={patch.outline} centroid={patch.centroid!} color={COLORS.patch} /> : null;
       })}
       <ForceArrows arrows={arrows} />
-      <AntiRollBars model={model} />
-      {model.sprungCgWorld && <Joint p={model.sprungCgWorld} color="#ffffff" r={16} />}
+      {vis.arb && <AntiRollBars model={model} />}
+      {measureMode && <VehicleMeasurePicks model={model} />}
+      <VehicleMeasure model={model} />
+      {vis.cg && model.sprungCgWorld && <Joint p={model.sprungCgWorld} color="#ffffff" r={16} />}
       {vis.rollCenter && rcF && rcR && (
         <>
           <Joint p={vec3(rcF.x, rcF.y, 0)} color={COLORS.rc} r={10} />
@@ -215,28 +226,321 @@ function VehicleScene({ model, arrows }: { model: VehicleModel; arrows: ForceArr
   );
 }
 
+/** A sphere to drag across a horizontal plane in the chassis frame (the plane at its height when grabbed). */
+function GroundHandle({ p, color, r, frame, onStart, onDrag, onSelect }: {
+  p: Vec3; color: string; r: number; frame: RefObject<THREE.Group | null>;
+  onStart: () => boolean; onDrag: (at: { x: number; z: number }) => void;
+  /** A click without dragging (e.g. to show its X / Y / Z arrows). */
+  onSelect?: () => void;
+}) {
+  const controls = useThree((s) => s.controls) as unknown as { enabled: boolean } | null;
+  const drag = useRef<{ y: number; moved: boolean } | null>(null);
+  const [hover, setHover] = useState(false);
+  const hit = (ray: THREE.Ray, y: number) => {
+    const m = frame.current ? frame.current.matrixWorld.clone().invert() : new THREE.Matrix4();
+    const local = ray.clone().applyMatrix4(m);
+    const out = new THREE.Vector3();
+    return local.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -y), out) ? { x: out.x, z: out.z } : null;
+  };
+  return (
+    <mesh
+      position={[p.x, p.y, p.z]}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        if (!onStart()) return;
+        (e.target as unknown as Element).setPointerCapture(e.pointerId);
+        drag.current = { y: p.y, moved: false };
+        if (controls) controls.enabled = false;
+        useApp.getState().set('interacting', true);
+      }}
+      onPointerMove={(e) => {
+        if (!drag.current) return;
+        e.stopPropagation();
+        const at = hit(e.ray, drag.current.y);
+        if (at && (drag.current.moved || Math.hypot(at.x - p.x, at.z - p.z) > r)) { drag.current.moved = true; onDrag(at); }
+      }}
+      onPointerUp={(e) => {
+        if (!drag.current) return;
+        e.stopPropagation();
+        (e.target as unknown as Element).releasePointerCapture(e.pointerId);
+        const clicked = !drag.current.moved;
+        drag.current = null;
+        if (controls) controls.enabled = true;
+        useApp.getState().set('interacting', false);
+        if (clicked) onSelect?.();
+      }}
+      onPointerOver={(e) => { e.stopPropagation(); setHover(true); document.body.style.cursor = 'grab'; }}
+      onPointerOut={() => { setHover(false); document.body.style.cursor = ''; }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <sphereGeometry args={[hover ? r * 1.35 : r, 16, 12]} />
+      <meshBasicMaterial color={hover ? '#ffffff' : color} depthTest={false} transparent />
+    </mesh>
+  );
+}
+
+const xzDist = (a: Vec3, b: Vec3) => Math.hypot(a.x - b.x, a.z - b.z);
+
+/** Where an axle's Ackermann lines end: at their crossing when within reach, else a little past the target. */
+export function ackermannEnds(a: AckermannAxle, L: number) {
+  const y = a.lines.reduce((s, l) => s + l.t.y, 0) / a.lines.length;
+  const near = a.cross && Math.abs(a.cross.z) < 4 * L ? a.cross : null;
+  const endZ = near ? near.z : a.target.z + (a.axle === 'front' ? -300 : 300);
+  const ends = a.lines.map((l) => {
+    const dz = l.t.z - l.k.z;
+    const f = Math.abs(dz) > 1e-9 ? (endZ - l.k.z) / dz : 0;
+    return vec3(l.k.x + f * (l.t.x - l.k.x), y, endZ);
+  });
+  return { y, near, ends };
+}
+
 /**
- * Classic Ackermann check, top view: from each front steering axis through its steering arm's outer joint,
- * to where the lines cross (or past the rear axle when they don't); the rear axle's center is marked.
+ * Classic Ackermann check, top view, for every steered corner: from its steering axis through its
+ * steering arm's outer joint, to where an axle's lines cross (or past the target when they don't), with
+ * the target marked. Drag a line's handle, or the crossing, to move the outer tie-rod joints: each arm
+ * turns about its steering axis (keeping its length). Corners sharing a design move mirrored, so the
+ * crossing of a linked pair stays on the centerline.
  */
-function AckermannLines({ model }: { model: VehicleModel }) {
-  const a = model.ackermannLines;
-  if (!a) return null;
+function AckermannLines({ model, frame }: { model: VehicleModel; frame: RefObject<THREE.Group | null> }) {
   const L = model.wheelbase;
-  const y = (a.tL.y + a.tR.y) / 2;
-  // Draw to the crossing when it is within reach, otherwise a little past the rear axle.
-  const reach = (k: Vec3, t: Vec3) => {
-    const dz = t.z - k.z;
-    const endZ = a.cross && Math.abs(a.cross.z) < 4 * L ? a.cross.z : -L - 300;
-    const s = Math.abs(dz) > 1e-9 ? (endZ - k.z) / dz : 0;
-    return vec3(k.x + s * (t.x - k.x), y, endZ);
+  const start = useRef<{ id: CornerId; root: CornerId; k: Vec3; t: Vec3; axis: [Vec3, Vec3]; design: Vec3 }[]>([]);
+  const crossAt = useRef<{ x: number; z: number }>({ x: 0, z: 0 });
+  const [selected, setSelected] = useState<'front' | 'rear' | null>(null);
+  if (!model.ackermannLines.length) return null;
+  /** Record where the arms start (design points); false (with a message) when a joint can't move. */
+  const begin = (ids: CornerId[], lead = '') => {
+    const s = useApp.getState();
+    const all = mergedCorners(s);
+    const out: typeof start.current = [];
+    for (const a of model.ackermannLines) for (const l of a.lines) {
+      if (!ids.includes(l.id)) continue;
+      const root = rootOf(l.id, s.links);
+      const g = all[root].geom;
+      if (([0, 2] as const).some((ax) => pointAxisLocked(s.locks, root, 'trOuter', ax, g.damperArm, g.kind, layoutOf(g), g.steerMechanism))) {
+        s.notify(`${l.id}'s outer tie-rod joint is locked (X or Z): unlock it to move it here.`, 'warn');
+        return false;
+      }
+      const p = g.points.trOuter;
+      out.push({ id: l.id, root, k: l.k, t: l.t, axis: l.axis, design: vec3(p[0].value, p[1].value, p[2].value) });
+    }
+    // Corners sharing a design move together, mirrored: say so.
+    const shared = CORNER_IDS.filter((c) => out.some((x) => x.root === rootOf(c, s.links) && x.id !== c) && !out.some((x) => x.id === c));
+    const also = shared.length ? `${shared.join(', ')} share${shared.length === 1 ? 's' : ''} these dimensions and move${shared.length === 1 ? 's' : ''} with ${shared.length === 1 ? 'it' : 'them'} (a left / right pair mirrored). Untick “same dimensions” (Corner view) to move a corner on its own.` : '';
+    if (lead || also) s.notify([lead, also].filter(Boolean).join(' '), 'info');
+    // Each design once (a linked pair: the other side follows).
+    start.current = out.filter((x, i) => out.findIndex((y) => y.root === x.root) === i);
+    return start.current.length > 0;
+  };
+  /** Turn each started arm about its steering axis so its line passes through `at` (top view). */
+  const aim = (at: { x: number; z: number }) => {
+    const s = useApp.getState();
+    for (const a of start.current) {
+      const u0 = { x: a.t.x - a.k.x, z: a.t.z - a.k.z }, len = Math.hypot(u0.x, u0.z);
+      let u1 = { x: at.x - a.k.x, z: at.z - a.k.z };
+      const n = Math.hypot(u1.x, u1.z);
+      if (n < 1 || len < 1e-6) continue;
+      u1 = { x: u1.x / n, z: u1.z / n };
+      if (u1.x * u0.x + u1.z * u0.z < 0) u1 = { x: -u1.x, z: -u1.z };
+      const d = vec3(a.k.x + u1.x * len - a.t.x, 0, a.k.z + u1.z * len - a.t.z);
+      const local = placement(a.id, L).dir(d); // mirrored for the right side (its own inverse)
+      s.setCornerPoint(a.id, 'trOuter', vec3(Number((a.design.x + local.x).toFixed(4)), a.design.y, Number((a.design.z + local.z).toFixed(4))));
+    }
+  };
+  /**
+   * Raise or lower the crossing: the started outer tie-rod joints move up together, and each arm turns
+   * about its (inclined) steering axis so its line still passes through the crossing in top view.
+   */
+  const lift = (dy: number) => {
+    const s = useApp.getState();
+    const c = crossAt.current;
+    for (const a of start.current) {
+      const [lo, up] = a.axis, y = a.t.y + dy;
+      const f = Math.abs(up.y - lo.y) > 1e-9 ? (y - lo.y) / (up.y - lo.y) : 0;
+      const k = vec3(lo.x + f * (up.x - lo.x), y, lo.z + f * (up.z - lo.z));
+      const len = Math.hypot(a.t.x - a.k.x, a.t.z - a.k.z);
+      let u = { x: c.x - k.x, z: c.z - k.z };
+      const n = Math.hypot(u.x, u.z);
+      if (n < 1 || len < 1e-6) continue;
+      u = { x: u.x / n, z: u.z / n };
+      if (u.x * (a.t.x - a.k.x) + u.z * (a.t.z - a.k.z) < 0) u = { x: -u.x, z: -u.z };
+      const local = placement(a.id, L).dir(vec3(k.x + u.x * len - a.t.x, dy, k.z + u.z * len - a.t.z));
+      s.setCornerPoint(a.id, 'trOuter', vec3(Number((a.design.x + local.x).toFixed(4)), Number((a.design.y + dy).toFixed(4)), Number((a.design.z + local.z).toFixed(4))));
+    }
   };
   return (
     <group>
-      <Seg a={a.kL} b={reach(a.kL, a.tL)} color={COLORS.steering} width={1.5} dashed />
-      <Seg a={a.kR} b={reach(a.kR, a.tR)} color={COLORS.steering} width={1.5} dashed />
-      <Joint p={vec3(0, y, -L)} color="#ffffff" r={9} />
-      {a.cross && Math.abs(a.cross.z) < 4 * L && <Joint p={vec3(a.cross.x, y, a.cross.z)} color={COLORS.steering} r={10} />}
+      {model.ackermannLines.map((a) => {
+        const { y, near, ends } = ackermannEnds(a, L);
+        const s = useApp.getState();
+        const pairLinked = a.lines.length === 2 && rootOf(a.lines[0]!.id, s.links) === rootOf(a.lines[1]!.id, s.links);
+        return (
+          <group key={a.axle}>
+            {a.lines.map((l, i) => {
+              const e = ends[i]!;
+              const handle = add(l.t, scale(sub(e, l.t), 0.35));
+              return (
+                <group key={l.id}>
+                  <Seg a={l.k} b={e} color={COLORS.steering} width={1.5} dashed />
+                  {xzDist(e, l.t) > 1 && (
+                    <GroundHandle p={vec3(handle.x, y, handle.z)} color={COLORS.steering} r={13} frame={frame}
+                      onStart={() => begin([l.id])} onDrag={aim} />
+                  )}
+                </group>
+              );
+            })}
+            <Joint p={vec3(a.target.x, y, a.target.z)} color="#ffffff" r={9} />
+            {near && a.lines.length === 2 && (() => {
+              const ids = a.lines.map((l) => l.id);
+              const sideways = `The ${a.axle} left and right are mirrored, so their lines cross on the centerline: moving the crossing sideways would make them differ. Untick “${a.axle === 'front' ? 'Front' : 'Rear'} left / right same dimensions” (Corner view) to move it sideways.`;
+              const startAt = () => { crossAt.current = { x: near.x, z: near.z }; return begin(ids); };
+              return (
+                <>
+                  <GroundHandle p={vec3(near.x, y, near.z)} color={COLORS.steering} r={16} frame={frame}
+                    onStart={() => begin(ids, pairLinked ? 'Dragging keeps the mirrored crossing on the centerline (forward / back only); click it for up / down arrows.' : '')}
+                    onDrag={(at) => aim(pairLinked ? { x: 0, z: at.z } : at)}
+                    onSelect={() => setSelected(selected === a.axle ? null : a.axle)} />
+                  {selected === a.axle && (
+                    <AxisGizmo at={vec3(near.x, y, near.z)} frame={frame} axes={[
+                      { locked: pairLinked, lockedText: sideways, onStart: startAt, onDelta: (d) => aim({ x: crossAt.current.x + d, z: crossAt.current.z }) },
+                      { onStart: startAt, onDelta: lift },
+                      { onStart: startAt, onDelta: (d) => aim({ x: crossAt.current.x, z: crossAt.current.z + d }) },
+                    ]} />
+                  )}
+                </>
+              );
+            })()}
+          </group>
+        );
+      })}
+    </group>
+  );
+}
+
+/** Where a vehicle-view measure pick is, world (null when it can't be found now). */
+function vehicleAnchor(model: VehicleModel, id: string): Vec3 | null {
+  const r = model.result;
+  if (!r) return null;
+  const P = poseFns(r.pose);
+  if (id === 'cg') return model.sprungCgWorld;
+  if (id === 'rcF') return model.rollCenters.front ? vec3(model.rollCenters.front.x, model.rollCenters.front.y, 0) : null;
+  if (id === 'rcR') return model.rollCenters.rear ? vec3(model.rollCenters.rear.x, model.rollCenters.rear.y, -model.wheelbase) : null;
+  const [c, key] = id.split('.') as [CornerId, string];
+  if (!CORNER_IDS.includes(c)) return null;
+  if (key === 'contact') return r.corners[c].contact;
+  const v = model.corners[c];
+  const q = v?.state.points[STATE_KEY[key as PointKey]] as Vec3 | undefined;
+  return q ? P.point(placement(c, model.wheelbase).point(q)) : null;
+}
+
+const anchorName = (id: string) => {
+  if (id === 'cg') return 'CG (sprung)';
+  if (id === 'rcF') return 'Roll center, front';
+  if (id === 'rcR') return 'Roll center, rear';
+  const [c, key] = id.split('.');
+  return key === 'contact' ? `${c} contact` : (POINT_NAMES[key as PointKey] ?? key).replace(/^FL_/, `${c}_`);
+};
+
+/** The vehicle-view measurement: distance and ΔX/ΔY/ΔZ (vehicle axes) between two picks, live. */
+function VehicleMeasure({ model }: { model: VehicleModel }) {
+  const m = useApp((s) => s.vehicleMeasure);
+  const disp = useDisplay();
+  const [a, b] = m.map((id) => vehicleAnchor(model, id));
+  if (!a) return null;
+  if (!b) return <Joint p={a} color="#ffffff" r={13} />;
+  const d = sub(b, a);
+  const mid = add(a, scale(d, 0.5));
+  return (
+    <group>
+      <Seg a={a} b={b} color="#ffffff" width={2} />
+      <Joint p={a} color="#ffffff" r={10} />
+      <Joint p={b} color="#ffffff" r={10} />
+      <Html position={[mid.x, mid.y, mid.z]} style={{ pointerEvents: 'none' }}>
+        <div className="measure-label">
+          <b>{disp.format(Math.hypot(d.x, d.y, d.z), 'mm', 1)}</b>
+          <div>ΔX {disp.format(d.x, 'mm', 1)} · ΔY {disp.format(d.y, 'mm', 1)} · ΔZ {disp.format(d.z, 'mm', 1)}</div>
+          <div className="muted">{anchorName(m[0]!)} → {anchorName(m[1]!)}</div>
+        </div>
+      </Html>
+    </group>
+  );
+}
+
+/** A clickable point in the vehicle view: selects it for moving, or adds it to the measurement. */
+function VPick({ p, color, r, onPick }: { p: Vec3; color: string; r: number; onPick: () => void }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <mesh
+      position={[p.x, p.y, p.z]}
+      onClick={(e) => { e.stopPropagation(); onPick(); }}
+      onPointerOver={(e) => { e.stopPropagation(); setHover(true); document.body.style.cursor = 'pointer'; }}
+      onPointerOut={() => { setHover(false); document.body.style.cursor = ''; }}
+    >
+      <sphereGeometry args={[hover ? r * 1.4 : r, 14, 10]} />
+      <meshBasicMaterial color={hover ? '#ffffff' : color} depthTest={false} transparent opacity={0.9} />
+    </mesh>
+  );
+}
+
+/**
+ * Every corner's hardpoints, pickable (in the posed chassis frame): click to make that corner active and
+ * select the point; the gizmo then moves it. With 📏 Measure on, clicks pick measure points instead.
+ */
+function VehiclePoints({ model, frame }: { model: VehicleModel; frame: RefObject<THREE.Group | null> }) {
+  const measureMode = useApp((s) => s.measureMode);
+  const selection = useApp((s) => s.selection);
+  const active = useApp((s) => s.activeCorner);
+  const vis = useApp((s) => s.visibility);
+  const designs = useApp(useShallow((s) => ({ geom: s.geom, corners: s.corners, links: s.links, activeCorner: s.activeCorner })));
+  const all = mergedCorners(designs as never);
+  const L = model.wheelbase;
+  const pick = (id: CornerId, key: PointKey) => {
+    const s = useApp.getState();
+    if (s.measureMode) { s.addVehicleMeasure(`${id}.${key}`); return; }
+    if (s.activeCorner !== id) s.setActiveCorner(id);
+    useApp.getState().select({ kind: 'point', id: key });
+  };
+  const sel = !measureMode && selection?.kind === 'point' ? selection.id : null;
+  const v = model.corners[active];
+  const selAt = sel && v ? (v.state.points[STATE_KEY[sel]] as Vec3 | undefined) : undefined;
+  const mirrored = !isLeft(active);
+  return (
+    <group>
+      {CORNER_IDS.map((id) => {
+        const cv = model.corners[id];
+        if (!cv) return null;
+        const g = all[rootOf(id, designs.links)].geom;
+        const keys = activePointKeys(g.kind ?? 'doubleWishbone', layoutOf(g), g.steerMechanism ?? 'rack');
+        const pl = placement(id, L);
+        return keys.map((k) => {
+          const q = cv.state.points[STATE_KEY[k]] as Vec3 | undefined;
+          if (!q || (k === 'wheelCenter' && !vis.wheel)) return null;
+          return <VPick key={`${id}-${k}`} p={pl.point(q)} color={id === active ? '#ffd166' : '#8a93a3'} r={id === active ? 8 : 6} onPick={() => pick(id, k)} />;
+        });
+      })}
+      {sel && selAt && (
+        <VehicleMoveGizmo
+          ids={[sel]} at={placement(active, L).point(selAt)} frame={frame} mirrored={mirrored}
+          onStart={() => {
+            const s = useApp.getState();
+            const root = rootOf(active, s.links);
+            const shared = CORNER_IDS.filter((c) => c !== active && rootOf(c, s.links) === root);
+            if (shared.length) s.notify(`${shared.join(', ')} share${shared.length === 1 ? 's' : ''} ${active}'s dimensions and move${shared.length === 1 ? 's' : ''} with it (a left / right pair mirrored). Untick “same dimensions” (Corner view) to move ${active} on its own.`, 'info');
+          }}
+        />
+      )}
+    </group>
+  );
+}
+
+/** Measure picks that aren't hardpoints: the contact patches, CG and roll centers (world). */
+function VehicleMeasurePicks({ model }: { model: VehicleModel }) {
+  const add2 = useApp((s) => s.addVehicleMeasure);
+  const r = model.result;
+  if (!r) return null;
+  return (
+    <group>
+      {CORNER_IDS.map((id) => <VPick key={id} p={r.corners[id].contact} color={COLORS.patch} r={9} onPick={() => add2(`${id}.contact`)} />)}
+      {(['cg', 'rcF', 'rcR'] as const).map((id) => { const q = vehicleAnchor(model, id); return q ? <VPick key={id} p={q} color="#ffffff" r={10} onPick={() => add2(id)} /> : null; })}
     </group>
   );
 }
@@ -244,12 +548,42 @@ function AckermannLines({ model }: { model: VehicleModel }) {
 interface OverlayLabel { key: string; text: string; pos: Vec3; className?: string }
 
 /** Screen-space labels for the vehicle view (positions follow the 3D points every frame). */
-function overlayLabels(model: VehicleModel | null, arrows: ForceArrow[], showValues: boolean, k: number): OverlayLabel[] {
+function overlayLabels(model: VehicleModel | null, arrows: ForceArrow[], showValues: boolean, k: number, vis: Record<VisKey, boolean>, active: CornerId): OverlayLabel[] {
   if (!model?.result) return [];
   const out: OverlayLabel[] = showValues
     ? arrows.map((a) => ({ key: a.key, text: a.label, pos: add(a.from, scale(a.vec, k)), className: a.kind }))
     : [];
-  if (model.sprungCgWorld) out.push({ key: 'cg', text: 'CG (sprung)', pos: model.sprungCgWorld, className: 'cg' });
+  const P = poseFns(model.result.pose);
+  const L = model.wheelbase;
+  const mark = (key: string, text: string, pos: Vec3) => out.push({ key, text, pos, className: 'cg' });
+  if (vis.markerLabels) {
+    if (vis.cg && model.sprungCgWorld) mark('cg', 'CG (sprung)', model.sprungCgWorld);
+    const rcF = model.rollCenters.front, rcR = model.rollCenters.rear;
+    if (vis.rollCenter && rcF && rcR) {
+      mark('rcF', 'Roll center, front', vec3(rcF.x, rcF.y, 0));
+      mark('rcR', 'Roll center, rear', vec3(rcR.x, rcR.y, -L));
+    }
+    if (vis.ackermann) {
+      for (const a of model.ackermannLines) {
+        const { y, near } = ackermannEnds(a, L);
+        mark(`ackT-${a.axle}`, `${a.target.label} (100 % Ackermann, ${a.axle})`, P.point(vec3(a.target.x, y, a.target.z)));
+        if (near && a.lines.length === 2) mark(`ackX-${a.axle}`, `Ackermann lines cross, ${a.axle} (drag)`, P.point(vec3(near.x, y, near.z)));
+      }
+    }
+    if (vis.arb) {
+      for (const [l, r, name] of [['FL', 'FR', 'front'], ['RL', 'RR', 'rear']] as const) {
+        const a = model.corners[l]?.dropLink, b = model.corners[r]?.dropLink;
+        if (a && b) mark(`arb-${name}`, `Anti-roll bar links, ${name}`, P.point(placement(l, L).point(a)));
+      }
+    }
+  }
+  // Ball joints of the active corner (the dots on each corner) with Point labels on.
+  const v = model.corners[active];
+  if (vis.labels && v && v.state.kind !== 'custom') {
+    const pl = placement(active, L), p = v.state.points;
+    if (v.state.kind !== 'macpherson') mark('ubj', `${active} upper ball joint`, P.point(pl.point(p.ucaOut)));
+    mark('lbj', `${active} lower ball joint`, P.point(pl.point(p.lcaOut)));
+  }
   return out;
 }
 
@@ -318,7 +652,9 @@ export function VehicleViewport({ model }: { model: VehicleModel | null }) {
   const k = useApp((s) => s.forceScale);
   const showValues = useApp((s) => s.forceValues);
   const arrows = useMemo(() => forceList(model ?? ({} as VehicleModel)).filter((a) => vis[a.kind]), [model, vis]);
-  const labels = useMemo(() => overlayLabels(model, arrows, showValues, k), [model, arrows, showValues, k]);
+  const visAll = useApp((s) => s.visibility);
+  const active = useApp((s) => s.activeCorner);
+  const labels = useMemo(() => overlayLabels(model, arrows, showValues, k, visAll, active), [model, arrows, showValues, k, visAll, active]);
   const layer = useRef<HTMLDivElement>(null);
   const onMiddle = useMiddleDoubleClick();
   // Force labels are written in N; show them in the display force unit.
@@ -326,7 +662,8 @@ export function VehicleViewport({ model }: { model: VehicleModel | null }) {
   const forceText = (t: string) => t.replace(/(-?\d+(?:\.\d+)?) N\b/g, (_, n: string) => disp.format(Number(n), 'N', 0));
   return (
     <div className="viewport" onMouseDown={onMiddle}>
-      <Canvas key={projection} dpr={[1, 2]} style={{ position: 'absolute', inset: 0 }}>
+      <Canvas key={projection} dpr={[1, 2]} style={{ position: 'absolute', inset: 0 }}
+        onPointerMissed={(e) => { const s = useApp.getState(); if (e.type === 'click' && !s.measureMode) s.select(null); }}>
         <color attach="background" args={[bg]} />
         {projection === 'orthographic'
           ? <OrthographicCamera makeDefault position={[0, 300, 8000]} zoom={0.3} near={1} far={200000} />
@@ -339,9 +676,9 @@ export function VehicleViewport({ model }: { model: VehicleModel | null }) {
       <div className="label-layer" ref={layer}>
         {labels.map((l) => <div key={l.key} className={`load-label floating ${l.className ?? ''}`}>{forceText(l.text)}</div>)}
       </div>
-      <ViewButtons measure={false} />
+      <ViewButtons />
       <ForceToggles />
-      <div className="viewport-hint">Double-click a corner to edit it · arrows start where each force acts</div>
+      <div className="viewport-hint">Click a joint to move it (linked corners move mirrored) · 📏 Measure between any points · double-click a corner to edit it in the Corner view · arrows start where each force acts</div>
       {model?.error && <div className="viewport-error">{model.error}</div>}
     </div>
   );

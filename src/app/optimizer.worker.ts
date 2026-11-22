@@ -4,7 +4,7 @@ import { optimizeCorner, type CornerProblem } from '../core/optimize/corner';
 import { optimizeVehicle, vehicleSensitivity, type VehicleProblem } from '../core/optimize/vehicle';
 import { tuneRates, type RateVar, type RateTest } from '../core/optimize/rates';
 import { fitTire, type TireSample } from '../core/tire/fit';
-import { runTest, playbackFrames, type TestRunOptions } from '../core/tests/run';
+import { runTest, playbackFrames, withBrakeTemps, type TestRunOptions } from '../core/tests/run';
 import { rideRun } from '../core/tests/ride';
 import type { SegmentSpec } from '../core/tests/segments';
 
@@ -22,7 +22,7 @@ self.onmessage = (e: MessageEvent<Job>) => {
     const j = e.data;
     if (j.kind === 'playback') {
       const geometries = Object.fromEntries(Object.entries(j.problem.designs).map(([r, d]) => [r, d!.geometry]));
-      self.postMessage({ type: 'done', result: j.ride ? rideRun(j.problem, geometries, j.segments, { handling: !!j.handling }).frames : playbackFrames(j.problem, geometries, j.segments) });
+      self.postMessage({ type: 'done', result: j.ride ? withBrakeTemps(j.problem, rideRun(j.problem, geometries, j.segments, { handling: !!j.handling }).frames) : playbackFrames(j.problem, geometries, j.segments) });
       return;
     }
     if (j.kind === 'tirefit') {

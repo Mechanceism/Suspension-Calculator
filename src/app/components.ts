@@ -41,6 +41,46 @@ function withSprings(damperArm: ArmChoice, kind: SuspensionKind, layout: 'coilov
 }
 
 function kindDefs(damperArm: ArmChoice, kind: SuspensionKind): Record<ComponentId, ComponentDef & { absent?: boolean }> {
+  if (kind === 'custom') {
+    // The linkage's own bodies and joints are edited in the Linkage editor (Inspector, nothing selected).
+    return {
+      chassis: { id: 'chassis', label: 'Chassis / frame', points: ['dmpChassis'], parents: [] },
+      uca: { id: 'uca', label: 'Linkage bodies (Linkage editor)', points: [], parents: ['chassis'], absent: true },
+      lca: { id: 'lca', label: 'Linkage bodies (Linkage editor)', points: [], parents: ['chassis'], absent: true },
+      rack: { id: 'rack', label: 'Steering', points: [], parents: ['chassis'], absent: true },
+      tieRod: { id: 'tieRod', label: 'Rods (Linkage editor)', points: [], parents: ['rack'], absent: true },
+      upright: { id: 'upright', label: 'Knuckle', points: ['wheelCenter'], parents: ['chassis'] },
+      wheel: { id: 'wheel', label: 'Wheel & tire', points: ['wheelCenter'], parents: ['upright'] },
+      spring: { id: 'spring', label: 'Coilover (spring/damper)', points: ['dmpChassis', 'dmpArm'], parents: ['chassis', 'upright'] },
+    };
+  }
+  if (kind === 'twistBeam' || kind === 'beamLeaf') {
+    const tb = kind === 'twistBeam';
+    return {
+      chassis: { id: 'chassis', label: 'Chassis / frame', points: tb ? ['lcaFwd', 'dmpChassis'] : ['lcaFwd', 'lcaAft'], parents: [] },
+      uca: { id: 'uca', label: 'Upper arm (none)', points: [], parents: ['chassis'], absent: true },
+      lca: { id: 'lca', label: tb ? 'Trailing arm and beam' : 'Leaf spring', points: tb ? ['lcaFwd', 'lcaAft', 'lcaOut'] : ['lcaFwd', 'lcaOut', 'lcaAft'], parents: ['chassis'] },
+      rack: { id: 'rack', label: 'Steering (none)', points: [], parents: ['chassis'], absent: true },
+      tieRod: { id: 'tieRod', label: 'Tie rod (none)', points: [], parents: ['rack'], absent: true },
+      upright: { id: 'upright', label: tb ? 'Hub on the arm' : 'Axle housing', points: tb ? ['lcaOut', 'wheelCenter', 'dmpArm'] : ['lcaOut', 'wheelCenter'], parents: ['lca'] },
+      wheel: { id: 'wheel', label: 'Wheel & tire', points: ['wheelCenter'], parents: ['upright'] },
+      spring: tb ? { id: 'spring', label: 'Coilover (spring/damper)', points: ['dmpChassis', 'dmpArm'], parents: ['chassis', 'upright'] }
+        : { id: 'spring', label: 'Leaf rate at the seat (spring / damper)', points: [], parents: ['lca'], absent: true },
+    };
+  }
+  if (kind === 'beam4' || kind === 'beam3') {
+    const ph = kind === 'beam3';
+    return {
+      chassis: { id: 'chassis', label: 'Chassis / frame', points: ['lcaFwd', 'ucaFwd', 'dmpChassis', ...(ph ? ['phChs' as const] : [])], parents: [] },
+      uca: { id: 'uca', label: ph ? 'Upper center link' : 'Upper links', points: ['ucaFwd', 'ucaOut'], parents: ['chassis'] },
+      lca: { id: 'lca', label: ph ? 'Lower links and Panhard rod' : 'Lower links', points: ['lcaFwd', 'lcaOut', ...(ph ? ['phChs' as const, 'phAxle' as const] : [])], parents: ['chassis'] },
+      rack: { id: 'rack', label: 'Steering (none)', points: [], parents: ['chassis'], absent: true },
+      tieRod: { id: 'tieRod', label: 'Tie rod (none)', points: [], parents: ['rack'], absent: true },
+      upright: { id: 'upright', label: 'Axle housing', points: ['lcaOut', 'ucaOut', 'wheelCenter', 'dmpArm', ...(ph ? ['phAxle' as const] : [])], parents: ['uca', 'lca'] },
+      wheel: { id: 'wheel', label: 'Wheel & tire', points: ['wheelCenter'], parents: ['upright'] },
+      spring: { id: 'spring', label: 'Coilover (spring/damper)', points: ['dmpChassis', 'dmpArm'], parents: ['chassis', 'upright'] },
+    };
+  }
   if (kind === 'macpherson') {
     return {
       chassis: { id: 'chassis', label: 'Chassis / frame', points: ['lcaFwd', 'lcaAft', 'dmpChassis'], parents: [] },
@@ -127,11 +167,16 @@ export const POINT_LABELS: Record<PointKey, string> = {
   ucaOut2: 'Upper rear link, upright end', lcaOut2: 'Lower rear link, upright end',
   rkrPiv1: 'Rocker pivot (front)', rkrPiv2: 'Rocker pivot (rear)', prArm: 'Pushrod lower end', prRkr: 'Pushrod end on the rocker',
   strPiv1: 'Steering arm pivot axis (bottom)', strPiv2: 'Steering arm pivot axis (top)',
+  phChs: 'Panhard rod, frame end', phAxle: 'Panhard rod, axle end',
 };
 
 const KIND_LABELS: Partial<Record<SuspensionKind, Partial<Record<PointKey, string>>>> = {
   macpherson: { dmpChassis: 'Strut top mount', dmpArm: 'Strut lower point (on the upright)' },
   rigid: { ucaOut: 'Kingpin top', lcaOut: 'Kingpin bottom' },
+  twistBeam: { lcaFwd: 'Arm bushing (frame)', lcaAft: 'Beam shear center (centerline)', lcaOut: 'Arm at the axle', dmpArm: 'Coilover arm mount' },
+  beamLeaf: { lcaFwd: 'Leaf front eye (frame)', lcaOut: 'Leaf spring seat (on the axle)', lcaAft: 'Leaf rear shackle (frame)' },
+  beam4: { lcaFwd: 'Lower link, frame end', lcaOut: 'Lower link, axle end', ucaFwd: 'Upper link, frame end', ucaOut: 'Upper link, axle end', dmpArm: 'Coilover axle mount' },
+  beam3: { lcaFwd: 'Lower link, frame end', lcaOut: 'Lower link, axle end', ucaFwd: 'Upper center link, frame end', ucaOut: 'Upper center link, axle end', dmpArm: 'Coilover axle mount' },
   singleArm: { lcaFwd: 'Arm front pivot (frame)', lcaAft: 'Arm rear pivot (frame)', lcaOut: 'Kingpin bottom (on the arm)', ucaOut: 'Kingpin top (on the arm)', dmpArm: 'Coilover lower mount' },
   multilink: {
     ucaFwd: 'Upper front link, chassis', ucaOut: 'Upper front link, upright end', ucaAft: 'Upper rear link, chassis',

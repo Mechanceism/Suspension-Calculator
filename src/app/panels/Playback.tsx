@@ -96,6 +96,13 @@ function TrackMap({ frames, current }: { frames: PlaybackFrame[]; current: Playb
       {current && (
         <g transform={`translate(${px(current.pos.x)},${py(current.pos.y)}) rotate(${(-current.heading * 180) / Math.PI})`}>
           <polygon points="7,0 -5,-4 -5,4" fill="#ffffff" stroke="#16191e" strokeWidth={1} />
+          {current.handling?.trailer && (
+            // The trailer behind the hitch, turned by its articulation (not to scale).
+            <g transform={`translate(-5,0) rotate(${-current.handling.trailer.articulation})`}>
+              <line x1={0} y1={0} x2={-7} y2={0} stroke="#ffffff" strokeWidth={1.2} />
+              <rect x={-17} y={-3.5} width={10} height={7} fill={current.handling.trailer.sway > 5 ? '#e5534b' : '#c9d1d9'} stroke="#16191e" strokeWidth={0.8} />
+            </g>
+          )}
         </g>
       )}
     </svg>
@@ -202,6 +209,8 @@ export function PlaybackBar({ test }: { test: TestDesign | null }) {
             {' · grip '}{CORNER_IDS.map((id) => (
               <span key={id} className={cur.utilization[id] > 1 ? 'bad-text' : cur.utilization[id] > 0.9 ? 'warn-text' : ''}> {id} {fmt(cur.utilization[id] * 100, 0)}%</span>
             ))}
+            {cur.handling?.trailer && <span title="Trailer: articulation (its heading vs the car's) and sway (its swing about the line it would follow without tire slip)"> · trailer {fmt(cur.handling.trailer.articulation, 1)}° · sway <span className={cur.handling.trailer.sway > 5 ? 'bad-text' : cur.handling.trailer.sway > 2.5 ? 'warn-text' : ''}>{fmt(cur.handling.trailer.sway, 1)}°</span></span>}
+            {cur.brakeTemp && <span title="Brake fade: rotor temperature front / rear"> · brakes {disp.format(cur.brakeTemp.front, '°C', 0)} / {disp.format(cur.brakeTemp.rear, '°C', 0)}</span>}
             {cur.findings.length > 0 && <span style={{ color: SEV_COLOR[cur.severity] }}> · {cur.findings[0]}</span>}
           </div>
         ) : (

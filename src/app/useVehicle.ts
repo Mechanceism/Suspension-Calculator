@@ -16,6 +16,8 @@ import { fitFreeLength } from '../core/suspension/spring';
 import { contactPatch, type ContactPatch, type TireProfile } from '../core/tire/geometry';
 import type { TireForceModel } from '../core/tire/model';
 import { CornerTable } from '../core/vehicle/cornerTable';
+import { AxleTable, AxleCornerTable } from '../core/vehicle/axleTable';
+import type { CornerTableLike } from '../core/vehicle/vehicle';
 import {
   CORNER_IDS, isLeft, isFront, placement, poseFns, solveVehicle, vehicleAt, designGroundY, axleRollCenter,
   type CornerId, type VehicleResult, type ChassisPose, type VehicleCorner, type AxleShared,
@@ -70,7 +72,7 @@ export interface VehicleModel {
    * Classic Ackermann lines (vehicle frame, sprung): each front steering axis (at the tie-rod height) through
    * its outer tie-rod joint, and where they cross (null = parallel). 100 % Ackermann: on the rear axle.
    */
-  ackermannLines: { kL: Vec3; tL: Vec3; kR: Vec3; tR: Vec3; cross: { x: number; z: number } | null } | null;
+  ackermannLines: AckermannAxle[];
   /** Longitudinal (braking) load transfer onto the front axle vs. static, N. */
   frontLoadGain: number;
   /** Classic geometric anti-dive (front) and anti-lift (rear) under braking, % (side-view IC, brake mount, bias). */
@@ -117,6 +119,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
   const brakingG = road.brakingG;
   const accelG = road.accelG;
   const tableCache = useRef(new WeakMap<object, Map<string, CornerTable>>());
+  const axleCache = useRef(new WeakMap<object, Map<string, AxleTable>>());
   const lastPose = useRef<ChassisPose | undefined>(undefined);
 
   // Corners: linked corners share a design object (and so a DoubleWishbone and its tables).
@@ -149,7 +152,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
       error: setup.error, result: null, corners: {}, staticLoads: { FL: 0, FR: 0, RL: 0, RR: 0 }, groundY: 0,
       rollCenters: { front: null, rear: null }, rideHeight: { front: NaN, rear: NaN },
       transfer: { front: { total: 0, geometric: 0, elastic: 0 }, rear: { total: 0, geometric: 0, elastic: 0 }, lltdFront: NaN },
-      rollStiffness: { front: NaN, rear: NaN }, rollGradient: NaN, ackermannLines: null,
+      rollStiffness: { front: NaN, rear: NaN }, rollGradient: NaN, ackermannLines: [],
       rolloverG: NaN, sprungCgWorld: null, wheelbase, accel: { lateral: 0, longitudinal: 0 }, frontLoadGain: NaN, antiDive: NaN, antiLift: NaN, antiSquat: NaN, antiLiftAccel: NaN,
     };
     if (!setup.all || !setup.built) return empty;
@@ -171,19 +174,37 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         const dl = axleShared.antiRollBar === 'torsionBar'
           ? vec3(axleShared.dropLink[0].value, axleShared.dropLink[1].value, axleShared.dropLink[2].value) : null;
         const key = `${cornerRack.toFixed(3)}|${range[0]}|${range[1]}|${dl ? `${dl.x},${dl.y},${dl.z}` : '-'}`;
-        let table = byRack.get(key);
-        if (!table) {
-          table = new CornerTable(b.corner, cornerRack, range, 41, dl ? { body: 'lca', point: dl } : undefined);
-          byRack.set(key, table);
-          if (byRack.size > 24) byRack.delete(byRack.keys().next().value!);
-        }
         const mu = d.spring.unsprungMass.value;
         const rigid = b.corner.kind === 'rigid';
-        const freeLength = s.autoPreload && !rigid
-          ? fitFreeLength(b.corner, d.spring.springRate.value, Math.max(0, staticLoads[id] - mu * G))
-          : d.spring.freeLength.value;
+        // A solid axle: one table over both wheels' travel (cached with the design), preload from its heave ratio.
+        let axleRef: { table: AxleTable; side: 'L' | 'R' } | undefined;
+        let table: CornerTableLike | undefined;
+        let freeLength = d.spring.freeLength.value;
+        const coupled = b.corner.solidAxle ?? b.corner.twistBeam;
+        if (coupled) {
+          const akey = `axle|${range[0]}|${range[1]}`;
+          let at = axleCache.current.get(b.corner)?.get(akey);
+          if (!at) {
+            at = new AxleTable(coupled, range, 17);
+            axleCache.current.set(b.corner, new Map([[akey, at]]));
+          }
+          const side = isLeft(id) ? 'L' : 'R';
+          axleRef = { table: at, side };
+          table = new AxleCornerTable(at, side);
+          const s0 = at.at(side, 0, 0), mr = -(s0.dL + s0.dLX);
+          if (s.autoPreload && Number.isFinite(s0.L) && mr > 1e-6) freeLength = s0.L + Math.max(0, staticLoads[id] - mu * G) / mr / d.spring.springRate.value;
+        } else {
+          let t = byRack.get(key);
+          if (!t) {
+            t = new CornerTable(b.corner, cornerRack, range, 41, dl ? { body: 'lca', point: dl } : undefined);
+            byRack.set(key, t);
+            if (byRack.size > 24) byRack.delete(byRack.keys().next().value!);
+          }
+          table = t;
+          if (s.autoPreload && !rigid) freeLength = fitFreeLength(b.corner, d.spring.springRate.value, Math.max(0, staticLoads[id] - mu * G));
+        }
         corners.push({
-          id, table, unsprungMass: mu, ...(rigid ? { rigid: true } : {}), tire: { profile: b.profile, model: b.model, ...(tireFileRear && !isFront(id) ? { grip: tireGripFor({ tireGrip: gripFields, tireFile, tireFileRear }, 'rear') } : {}) }, brake: s.settings[id].brake, abs: s.settings[id].abs,
+          id, table: table!, ...(axleRef ? { axle: axleRef } : {}), unsprungMass: mu, ...(rigid ? { rigid: true } : {}), tire: { profile: b.profile, model: b.model, ...(tireFileRear && !isFront(id) ? { grip: tireGripFor({ tireGrip: gripFields, tireFile, tireFileRear }, 'rear') } : {}) }, brake: s.settings[id].brake, abs: s.settings[id].abs,
           drive: s.settings[id].powered ? s.settings[id].drive : 'none',
           spring: {
             rate: d.spring.springRate.value, freeLength,
@@ -300,19 +321,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
           ? { front: rollStiffness(front.elastic, trackF, (res.pose.roll * 180) / Math.PI), rear: rollStiffness(rear.elastic, trackR, (res.pose.roll * 180) / Math.PI) }
           : { front: NaN, rear: NaN },
         rollGradient: Math.abs(lateralG) > 0.02 ? Math.abs((res.pose.roll * 180) / Math.PI / lateralG) : NaN,
-        ackermannLines: (() => {
-          const arm = (id: CornerId) => {
-            const v = views[id];
-            if (!v) return null;
-            const p = v.state.points, pl = placement(id, wheelbase);
-            const lo = p.steerLower, up = p.steerUpper, t = p.trOuter;
-            const f = Math.abs(up.y - lo.y) > 1e-9 ? (t.y - lo.y) / (up.y - lo.y) : 0;
-            return { k: pl.point(vec3(lo.x + f * (up.x - lo.x), t.y, lo.z + f * (up.z - lo.z))), t: pl.point(t) };
-          };
-          const L = arm('FL'), R = arm('FR');
-          if (!L || !R) return null;
-          return { kL: L.k, tL: L.t, kR: R.k, tR: R.t, cross: ackermannLinesCross(L.k, L.t, R.k, R.t) };
-        })(),
+        ackermannLines: ackermannAxles(views, s.settings, wheelbase),
         rolloverG: (0.5 * (trackF + trackR)) / (2 * v.cgY.value),
         frontLoadGain: res.corners.FL.tireLoad + res.corners.FR.tireLoad - frontStatic,
         antiDive: antiOf(['FL', 'FR'], bias, 1),
@@ -333,3 +342,40 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
 }
 
 export { isFront };
+
+/** One axle's Ackermann lines (vehicle frame, design-frame points of the solved corners). */
+export interface AckermannAxle {
+  axle: 'front' | 'rear';
+  /** Per steered corner: its steering axis at the outer tie-rod joint's height (k) and that joint (t). */
+  lines: { id: CornerId; k: Vec3; t: Vec3; axis: [Vec3, Vec3] }[];
+  /** Where the two lines cross in top view (null: one line, or parallel). */
+  cross: { x: number; z: number } | null;
+  /** Where they should cross for classic Ackermann: the other axle's center, or midway when both axles steer. */
+  target: { x: number; z: number; label: string };
+}
+
+/**
+ * Classic Ackermann check for every steered corner, per axle: from its steering axis through its steering
+ * arm's outer joint (top view). A non-steered corner has no line.
+ */
+export function ackermannAxles(views: Partial<Record<CornerId, VehicleCornerView>>, settings: Record<CornerId, { steered: boolean }>, wheelbase: number): AckermannAxle[] {
+  const arm = (id: CornerId) => {
+    const v = views[id];
+    if (!v || !settings[id].steered) return null;
+    const p = v.state.points, pl = placement(id, wheelbase);
+    const lo = p.steerLower, up = p.steerUpper, t = p.trOuter;
+    const f = Math.abs(up.y - lo.y) > 1e-9 ? (t.y - lo.y) / (up.y - lo.y) : 0;
+    return { id, k: pl.point(vec3(lo.x + f * (up.x - lo.x), t.y, lo.z + f * (up.z - lo.z))), t: pl.point(t), axis: [pl.point(lo), pl.point(up)] as [Vec3, Vec3] };
+  };
+  const frontSteers = settings.FL.steered || settings.FR.steered, rearSteers = settings.RL.steered || settings.RR.steered;
+  const out: AckermannAxle[] = [];
+  for (const [axle, l, r] of [['front', 'FL', 'FR'], ['rear', 'RL', 'RR']] as const) {
+    const lines = [arm(l), arm(r)].filter((x): x is NonNullable<typeof x> => !!x);
+    if (!lines.length) continue;
+    const cross = lines.length === 2 ? ackermannLinesCross(lines[0]!.k, lines[0]!.t, lines[1]!.k, lines[1]!.t) : null;
+    const target = frontSteers && rearSteers ? { x: 0, z: -wheelbase / 2, label: 'Midway (both axles steer)' }
+      : axle === 'front' ? { x: 0, z: -wheelbase, label: 'Rear axle center' } : { x: 0, z: 0, label: 'Front axle center' };
+    out.push({ axle, lines, cross, target });
+  }
+  return out;
+}

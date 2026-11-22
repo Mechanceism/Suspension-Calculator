@@ -75,6 +75,10 @@ Every type is the same kind of relation system on the same point names; `kind` p
 | MacPherson strut | LCA, upright (with the strut tube) | revolute 5, ball joint 3, **strut axis through the top mount** 2 (the top mount is a point on the chassis that must stay on the line through the strut's two upright-fixed points; the strut slides and turns on it), tie rod 1, travel 1 = 12 | LBJ – strut top mount |
 | Multilink (5 links) | upright | five rods with ball ends, each a fixed length between a chassis point and an upright point (upper front / rear, lower front / rear, tie rod or toe link) 5, travel 1 = 6 | virtual: through the points where each pair of links passes closest |
 | Single arm (swing / trailing arm; knuckle on the arm) | arm, upright | arm revolute on the frame pivots 5, kingpin revolute between arm and knuckle 5 (`UCA_Out` top, `LCA_Out` bottom, both fixed to the arm), tie rod 1, travel 1 = 12 | the kingpin on the arm (tilts with the arm) |
+| Solid axle, 4-link / 3-link + Panhard rod (`src/core/suspension/solidAxle.ts`) | the axle (both wheels) | four rods with ball ends (4-link: lower and upper per side; 3-link: lower per side, one upper in the middle, a Panhard rod), two travels (left, right) = 6 | none (doesn't steer here) |
+| Solid axle on leaf springs | the axle (both wheels) | the SAE 3-link equivalent: per side a link from ¼ of the way from the front eye to the seat, a stiff center link that keeps the axle's pitch, a long virtual lateral link at seat height = 4, two travels = 6 | none |
+| Twist beam (`src/core/suspension/twistBeam.ts`) | each arm (with its hub) | two parameters, heave θ and twist ψ, from the two travels (Newton, 2 × 2); as a corner: the arm's revolute on the bushing line 5, travel 1 = 6 | none |
+| Custom linkage (`src/core/suspension/customLinkage.ts`) | the knuckle + any bodies you add | ball joints 3, hinges 5, rods 1 each, travel 1: 6 · bodies + 1 | from the motion: the knuckle's screw axis when the rack moves |
 | No suspension (rigid, e.g. a kart) | upright (on a carrier that only takes the travel input as a vertical shift) | kingpin revolute 5 (`UCA_Out` top, `LCA_Out` bottom), tie rod 1 = 6 | the kingpin |
 
 - **MacPherson:** the strut is the spring / damper: `Dmp_Chs` = top mount, `Dmp_Arm` = a point on the strut axis fixed to the upright (the upper arm's points are unused). Motion ratio ≈ 1 (the strut shortens about as much as the wheel rises).
@@ -85,6 +89,46 @@ Every type is the same kind of relation system on the same point names; `kind` p
   - Angled: semi-trailing.
 
   Bump steer depends on how close the inner tie-rod joint is to the pivot line. The coilover mounts on the arm or the knuckle. Switching from a double wishbone puts the kingpin through the old ball joints, so KPI and caster stay the same.
+- **Solid axle:** one rigid axle carries both wheels; the links leave it two freedoms, the left and right wheel travel.
+  - **Results:** roll center = the axle's front-view instant center when it rolls relative to the body (left up, right down), e.g. the Panhard rod's height. Side-view IC = its instant center in heave (where the link lines cross in side view). Also roll steer (axle yaw per degree of axle roll), wind-up (pitch per mm of heave) and the Panhard rod's sideways shift.
+  - **Whole car** (`src/core/vehicle/axleTable.ts`): the axle is tabulated over a grid of both travels (tensor Catmull–Rom with both partial derivatives); each wheel is a corner whose motion also depends on the other side's travel. Its forces do virtual work on both travels (*cross work*), so the two travels settle together in the steady solve. In the ride model they are coupled through the forces, the dampers, the axle's mass and tire damping. Preload is fitted with the axle's heave motion ratio, −(∂L/∂q_own + ∂L/∂q_other).
+  - **In the app:** the type spans the axle: left and right share the design, and an axle that shared its design with the other axle gets its own first. Point names: lower link `LCA_Fwd` (frame) → `LCA_Out` (axle); upper link(s) `UCA_Fwd` → `UCA_Out` (4-link: per side; 3-link: in the middle); Panhard rod `PH_Chs` → `PH_Axle`; coilovers `Dmp_Chs` → `Dmp_Arm` on the axle. Switching to it builds working links from the hub (the coilover keeps its length). The Corner view shows the left wheel as the axle heaves, with the whole axle drawn. Presets *A4*, *A3*.
+  - **Tested:**
+    - kinematics: the 3-link + Panhard roll center is at the rod's height, the side-view IC is at the link lines' crossing, each wheel tilts with the axle in roll, angled links give roll steer, a missing link is caught;
+    - whole car: a 3-link + Panhard rear settles at design height, corners about its roll center (a bigger share of the rear transfer goes through the links), and a bump under one rear wheel moves the other;
+    - in the browser, switching the rear to a solid axle passes the Balanced test.
+  - **Cost:** about twice an independent corner pair per state.
+  - **Still to come:** a steered beam axle (kingpins on the axle ends), Watt's linkage.
+- **Leaf springs:** the leaf both locates and springs the axle. Points: front eye `LCA_Fwd`, spring seat `LCA_Out` (on the axle), rear shackle `LCA_Aft`.
+  - **Model:** the SAE 3-link equivalent. The front half of the leaf acts like a link from a pivot a quarter of the way from the eye to the seat, so the seat moves on a ¾-length arc. A stiff center link parallel to those links keeps the axle's pitch (no kinematic wind-up). The leaves are stiff sideways: a long virtual lateral link at seat height, so the roll center ≈ the seat height. The leaf rate acts as a vertical spring at each seat (rate = the design's spring rate, the leaf rate at the seat; its installed length = the coilover's, so free length, damper stroke and bump stop still fit).
+  - **Everything else** is the solid axle above (the car, the ride model, the app). Preset *LF*.
+  - **Tested:** roll center at the seat height, no wind-up, the spring shortens by the travel; a car with it at the rear corners; in the browser it passes the Balanced test.
+- **Twist beam:** two trailing arms, each on a bushing (`LCA_Fwd`), joined by a beam that is stiff in bending and soft in torsion. Its shear center `LCA_Aft` sits on the centerline. Coilovers `Dmp_Chs` → `Dmp_Arm` on the arms.
+  - **Model:** the usual kinematic one, with two parameters. In heave θ both arms swing about the line through the two bushings: plain trailing arms, no camber or toe change. In twist ψ each arm turns about the line from its bushing to the shear center (where that point is after the heave), the left by ψ and the right by −ψ. So in roll each wheel moves like a semi-trailing arm about bushing → shear center: moving the shear center back (or down) adds roll camber, roll steer and roll center height. θ and ψ come from the two travels by Newton (2 × 2, numeric Jacobian).
+  - **Results:** roll center from the roll axis (bushing → shear center) as for a single arm; side-view IC at the bushing (heave); roll camber from the twist motion (not from the heave camber gain, which is 0). Preset *TB*: roll center 200 · 600 / 1560 = 77 mm, roll camber 0.62 °/°.
+  - **Whole car:** the twist beam is tabulated like a solid axle (each wheel's material contact follows its own arm), so the two rear wheels are coupled. The beam's twist stiffness is the axle's anti-roll bar (Shared components); switching to a twist beam starts it at 15 N/mm at the wheel if the axle has none.
+  - **Tested:** any pair of travels is reached; heave keeps camber and toe; with the shear center level with the bushings it is two trailing arms (no roll camber); the corner's roll center and side-view IC match the hand values; a car with it at the rear settles and corners; in the browser it passes the Balanced test.
+- **Custom linkage:** your own bodies and joints (Inspector → *Linkage*, with nothing selected).
+  - **Joints:** between the frame, the steering rack, the knuckle (which carries the wheel) and any bodies you add:
+    - a **ball joint** (a shared point; 3 equations);
+    - a **hinge / bushing** (a common axis through two points; 5);
+    - a **rod** (a fixed-length link with ball ends; 1).
+  - **Freedom:** a corner needs exactly one free motion with the steering held, 6 · moving bodies − equations = 1. The editor counts it and says what to add or remove, and finds bodies joined to nothing.
+  - **Results from the motion itself**, at each solved state, by central differences (two extra solves each):
+    - Instant axis: the knuckle's twist (ω, v) for ±0.25 mm of travel. As for the multilink: the planes through two points on the steering axis normal to their velocities, so the bump-steer part is left out; components within the differencing noise snap to zero (an axis along the car has SVSA ∞).
+    - Steering axis: the knuckle's screw axis for ±0.1 mm of rack, between the ground and 150 mm above the wheel center. It is taken with the wheel center held at its height; for a double wishbone this is within ~0.5 mm of the ball-joint line (KPI and caster agree to 0.01°). Without a rod or joint to the rack, the corner doesn't steer.
+    - So camber / toe curves, KPI, caster, scrub, trail, the instant centers and the roll center work as for the built-in types.
+  - **Coilover:** `Dmp_Chs` on the frame, `Dmp_Arm` on the body you choose.
+  - **Whole car:** like any other type: tables, the vehicle solve, ride, handling, tests and the optimizer (its free points are the hub and coilover points; the linkage's own points are edited in the Linkage editor).
+  - **Switching to it** starts from the current arms (hinged arm bodies, ball joints to the knuckle, the tie rod as a rod from the rack), so it moves the same. Switching away and back keeps your linkage. Saved with the project (format 27).
+  - **Tested:**
+    - built from a double wishbone it matches camber and toe to 1e−8, KPI and caster to 0.001 rad, and the roll center and FVSA;
+    - five rods reproduce the multilink;
+    - a layout of its own (a lower arm with two rods to the knuckle top) solves, cambers and steers;
+    - under- and over-constrained or unconnected linkages are explained;
+    - a car with it in front corners;
+    - it saves and loads.
+  - **In the browser:** the readouts match the double wishbone's (roll center 49.9 vs 50.0 mm).
 - **No suspension:** no spring or damper. The vehicle solve holds the corner's travel at 0 and the ride model drops its travel degree of freedom, so only the tire is compliant. Body roll then comes from the tires alone: 0.09° at 0.8 g on the default car made rigid, with roll stiffness ≈ 3 500 N·m/° per axle. In the Corner view, travel lifts the whole corner with no camber or toe change, and there is no roll center.
 - **Switching type** keeps the lower arm, tie rod, hub and tire. To MacPherson: the strut's lower point goes inboard of the tire, between the ball joints; the top mount goes 330 mm above the upper ball joint and 60 mm inboard. To multilink: each link's upright end slides 35 mm inboard along its own line, so each pair still passes through the old ball joint. That gives the same virtual pivots and instant axis, so the motion is the same at ride height and within a few hundredths of a degree through travel. Back to a double wishbone: the links rejoin at their virtual pivot; a strut becomes a coilover on the lower arm.
 
@@ -378,7 +422,22 @@ Off by default (the brakes can always make the braking asked; only grip limits i
 - **Pedal force needed** for a braking case: everything is linear in the pedal force, so per axle it is (demand ÷ capacity) × the most pedal force; the larger axle sets it. More than the most pedal force → the new pass rule **Brakes too weak** (Fail by default; no suspension change can fix it).
 - Defaults: 500 N pedal, 4 : 1, no booster, 3/4" master cylinder, 2 × 32 mm pistons per side front, 1 × 28 mm rear, μ 0.45, 100 / 90 mm effective radius. That gives 7.0 MPa, 7.8 / 2.7 kN per axle, 3.6 g of brake capacity on the default car and a 74 % hydraulic bias; a 1.2 g stop needs 262 N of pedal.
 - Tested: the hand-calculated pressure, torque and tire force; the balance-bar split; linear pedal force; a 1.2 g stop beyond weak brakes fails *Brakes too weak* and is fine with strong ones; the axle that needs more pedal sets the pedal force.
-- Still to come: brake fade (rotor temperature over a test, μ vs temperature).
+
+### Brake fade ✅ (`src/core/vehicle/brakeThermal.ts`)
+With the hydraulics on, *Brake fade in tests* heats the rotors through a test. One lumped rotor per wheel:
+
+    C dT/dt = P − hA(v) (T − T_air)       C = rotor mass · 460 J/(kg·K) (cast iron)
+    P       = braking force at the wheel · v   (all the braking energy into the rotor)
+    hA(v)   = cooling · (0.2 + 0.8 · v / 27.8 m/s)   (cooling given at 100 km/h; a fifth of it at a stop)
+    exact step for constant P, v:  T(t) = T∞ + (T0 − T∞) e^(−hA t / C),  T∞ = T_air + P / hA
+
+- **Pads:** μ = μ0 below the fade start, falling linearly to μ0 · (1 − loss) at the fade end, then staying there. Each axle's braking capacity scales with its pads.
+- **In a test:** each segment's brake energy per axle = the samples' mean braking force × the distance (∫ F v dt = ∫ F ds), over the segment's time (distance ÷ mean speed). Every sample is then checked at the hottest the segment gets (the larger of its start and end temperatures):
+  - **Brake fade** (Warning by default): the pads have lost more than the allowed share (10 %).
+  - **Brakes too weak** (Fail): the faded brakes can't make the braking at the most pedal force (when the cold ones could).
+- **Results:** the rotor temperatures (front / rear) at the end of each segment in the test table, and in playback (state-to-state playback integrates frame by frame with each frame's braking force; the ride over time estimates it from the deceleration and grade, m·g·(−a_x − sin grade), split by the brake bias).
+- **Defaults:** 2.5 / 2 kg rotors, 25 W/K cooling at 100 km/h, fade from 400 °C to 650 °C losing 40 %, air 20 °C, rotors at 50 °C at the start.
+- **Tested:** the exact step (steady temperature, time constant), the pad curve; a stop heats each rotor by its share of the kinetic energy; repeated hard stops on light rotors and early-fading pads build heat stop to stop, warn of fade and then fail *Brakes too weak* while the same test without fade passes; playback frames carry the temperatures; the project saves it, and older files load with it off (format 25). In the browser, the Balanced test on the default car with 0.8 kg rotors reaches 94 °C front.
 
 ## Towing (static) ✅ (`src/core/vehicle/towing.ts`)
 Off by default. On (Vehicle → Inputs → *Towing*): a trailer on a ball hitch behind the car that follows the car's accelerations (no sway). Its forces on the car at the hitch come from its own balance. m_t = trailer mass, τ = static tongue share (its CG sits τ·L_t ahead of its axle), L_t = hitch to axle, h_h and h_cg = hitch and CG heights, β = the share of its braking its own brakes make.
@@ -392,7 +451,7 @@ Off by default. On (Vehicle → Inputs → *Towing*): a trailer on a ball hitch 
   - drive / braking: tire net g − F_z / (m·g)
   - side force: m·a_y − F_x
   - front / rear split from the yaw balance about the front axle: F_rear · (−L) + F_x · z_hitch = m·a_y·z_cg, so the rear tires take more.
-- Handling over time: the trailer's tongue share of mass follows the car sideways, F_x = −m_t·τ·ΣF_tires / (m + m_t·τ), and yaws it about the CG.
+- Handling over time, below walking pace (3 m/s): the trailer's tongue share of mass follows the car sideways, F_x = −m_t·τ·ΣF_tires / (m + m_t·τ), and yaws it about the CG. Faster, the trailer is its own body (sway, below).
 - Results: tongue load, push / pull and side force at the hitch.
 - Tested:
   - the hitch forces by hand; the tongue weight adds to the tire loads (the rear gains more than it, the front loses some, since the hitch is behind the rear axle);
@@ -400,7 +459,31 @@ Off by default. On (Vehicle → Inputs → *Towing*): a trailer on a ball hitch 
   - cornering, the tires give the trailer's tongue share of side force, mostly at the rear;
   - a test with handling is driven within 0.6 m of the line.
 - In the browser: 400 kg at 10 % → 392 N tongue load; braking at 0.5 g → 1961 N push and 556 N on the tongue.
-- Still to come: trailer sway (the trailer as its own body in the handling model), a tongue-weight limit check.
+- Still to come: a tongue-weight limit check.
+
+### Trailer sway ✅ (`src/core/tests/trailerSway.ts`)
+In tests with *Ride over time* and *Handling* (the driver steering), the trailer is a second yawing body on the hitch ball with its own axle and tires. Car frame (x forward, y left); articulation φ = trailer heading − car heading; r_t = r + φ̇. The hitch is c behind the car's CG, the trailer's CG d = L_t·(1 − τ) behind the hitch, its axle L_t. Unknowns: v̇, ṙ, ṙ_t and F (the hitch's side force on the trailer, along its left axis n = (−sin φ, cos φ)). The pull along its axis e = (cos φ, sin φ) is F_t = m_t·a_x, less the trailer brakes' share when braking.
+
+    car lateral       m (v̇ + u r) = ΣF_y + m g_bank − F cos φ − F_t sin φ
+    car yaw           I ṙ = M_z + c (F cos φ + F_t sin φ)
+    trailer lateral   m_t (a_hitch · n − d ṙ_t) = F + Y_t + m_t g_bank cos φ,   a_hitch = (a_x + c r², v̇ + u r − c ṙ)
+    trailer yaw       I_t ṙ_t = d F − (L_t − d) Y_t                 I_t = m_t k² (k = yaw radius of gyration)
+    trailer tires     Y_t = μ F_z tanh(C α / (μ F_z)),  C = 7 F_z /rad,  F_z = m_t g (1 − τ),  α from the axle's velocity
+
+- **Solving:** a 4 × 4 linear solve per sub-step; the car's state then takes the solved accelerations, and the trailer integrates r_t and φ.
+- **Jackknife effect:** braking without trailer brakes, F_t < 0 pushes along the trailer's axis, and F_t sin φ turns the car.
+- **Sway** is measured against a kinematic trailer driven by the same car (its axle never slips sideways): φ̇_k = (−u sin φ_k + (v − c r) cos φ_k) / L_t − r. The tires' steady slip offset is removed by a 1 s low pass:
+  - sway = |(φ − φ_k) − LP(φ − φ_k)|;
+  - more than 30° from the kinematic trailer = jackknifed.
+- **New pass rule** *Trailer sway* (Fail above ±5° by default, or on a jackknife).
+- **Results:** in playback, the trailer's articulation and sway, and the trailer drawn behind the car on the track map.
+- **Input:** *Trailer yaw radius of gyration* (default 1350 mm; ≈ 0.3 × a box trailer's length). Format 26; older files with a trailer get the default quietly.
+- **Tested:**
+  - a well-loaded trailer (12 %) at 15 m/s swings under 2.5° through an S-bend and settles;
+  - in a slow steady turn it sits at the kinematic articulation, sin φ + c_r κ cos φ = −L_t κ (c_r = hitch behind the rear axle), within 10 %;
+  - less tongue weight or more speed sways more;
+  - a negative tongue weight at 25 m/s fails *Trailer sway* and jackknifes.
+- **In the browser:** the HUD and the track map show the trailer.
 
 ## Aerodynamics ✅ (`src/core/vehicle/aero.ts`)
 Off by default (negligible for slow cars). On: forces on the **body**, never through the tires, at the car's speed V (tests: each moment's speed; Vehicle view: the *Speed* slider) and air density ρ (from altitude and temperature: standard-atmosphere pressure, dry air).

@@ -87,7 +87,26 @@ export function characteristics(state: CornerState): Characteristics {
   let ucaPlane: Plane | null = null;
   let instantAxis: Line | null = null;
   let axisTrace: Vec3 | null = null;
-  if (state.kind === 'rigid') { /* no suspension motion: no instant axis */ } else if (state.kind === 'singleArm') {
+  if (state.axle) return beamCharacteristics(state, camber, toe);
+  if (state.kind === 'rigid') { /* no suspension motion: no instant axis */ } else if (state.kind === 'custom') {
+    // Custom linkage: from the knuckle's motion in travel, as for the multilink: planes through two points
+    // on the steering axis normal to their velocities (leaves out the bump-steer part); else its screw axis.
+    const tw = p.travelTwist;
+    const vel = (q: Vec3) => (tw ? add(tw.v, cross(tw.w, q)) : null);
+    const vu = vel(p.steerUpper), vl = vel(p.steerLower);
+    if (vu && vl && length(vu) > 1e-12 && length(vl) > 1e-12) {
+      ucaPlane = { point: p.steerUpper, normal: normalize(vu) };
+      // Planes parallel to within the differencing noise are parallel (no instant axis: e.g. SVSA ∞).
+      const nl = normalize(vl);
+      if (length(cross(ucaPlane.normal, nl)) > 1e-5) instantAxis = intersectPlanes(ucaPlane, { point: p.steerLower, normal: nl });
+    }
+    if (!ucaPlane && p.axisA && p.axisB) instantAxis = lineThrough(p.axisA, p.axisB);
+    // Components within the differencing noise are zero (an axis along the car has no side-view IC).
+    if (instantAxis) {
+      const d = instantAxis.dir, snap = (x: number) => (Math.abs(x) < 1e-6 ? 0 : x);
+      instantAxis = { point: instantAxis.point, dir: normalize(vec3(snap(d.x), snap(d.y), snap(d.z))) };
+    }
+  } else if (state.kind === 'singleArm' || state.kind === 'twistBeam') {
     // The arm swings about its frame pivots: that line is the instant axis (fixed to the frame).
     instantAxis = lineThrough(p.lcaFwd, p.lcaAft);
     axisTrace = instantAxis.dir;
@@ -111,7 +130,9 @@ export function characteristics(state: CornerState): Characteristics {
   }
 
   const frontViewIC = instantAxis ? intersectLinePlane(instantAxis, transversePlaneAt(cp.z)) : null;
-  const sideViewIC = instantAxis ? intersectLinePlane(instantAxis, longitudinalPlaneAt(wc.x)) : null;
+  // Twist beam in heave: both arms swing about the bushings' lateral line (the instant axis above is its roll axis).
+  const sideViewIC = state.kind === 'twistBeam' ? vec3(wc.x, p.lcaFwd.y, p.lcaFwd.z)
+    : instantAxis ? intersectLinePlane(instantAxis, longitudinalPlaneAt(wc.x)) : null;
 
   // Roll center (mirrored opposite corner → RC lies on x = 0).
   let rollCenterHeight: number | null = null;
@@ -149,6 +170,27 @@ export function characteristics(state: CornerState): Characteristics {
     const d = sub(p.damperArm, p.damperChassis);
     out.damperLength = Math.hypot(d.x, d.y, d.z);
   }
+  return out;
+}
+
+/** A solid axle's left wheel as a corner: the axle's roll center and side-view IC; no steering axis. */
+function beamCharacteristics(state: CornerState, camber: number, toe: number): Characteristics {
+  const p = state.points, a = state.axle!.chars, wc = p.wheelCenter, cp = p.contact;
+  const groundY = cp.y;
+  const sv = a.sideViewIC;
+  const sideViewIC = sv ? vec3(wc.x, sv.y, sv.z) : null;
+  const angle = (ref: Vec3) => (sideViewIC && Math.abs(ref.z - sideViewIC.z) > 1e-9 ? Math.atan((sideViewIC.y - ref.y) / (ref.z - sideViewIC.z)) : 0);
+  const rc = a.rollCenterHeight !== null && a.rollCenterX !== null ? vec3(a.rollCenterX, groundY + a.rollCenterHeight, cp.z) : null;
+  const out: Characteristics = {
+    camber, toe, caster: 0, kpi: 0, scrubRadius: NaN, mechanicalTrail: NaN, kingpinOffsetAtWheelCenter: NaN, casterOffsetAtWheelCenter: NaN,
+    wheelCenter: wc, contactPoint: cp, groundY, halfTrack: cp.x,
+    steeringAxis: lineThrough(cp, vec3(cp.x, cp.y + 1, cp.z)), steeringAxisAtGround: null,
+    // In roll the axle turns about the roll center itself: it is the front-view instant center.
+    instantAxis: null, frontViewIC: rc, fvsa: rc ? cp.x - rc.x : Infinity,
+    sideViewIC, svsa: sideViewIC ? cp.z - sideViewIC.z : Infinity,
+    rollCenterHeight: a.rollCenterHeight, antiAngleContact: angle(cp), antiAngleWheelCenter: angle(wc),
+  };
+  if (p.damperChassis && p.damperArm) out.damperLength = length(sub(p.damperArm, p.damperChassis));
   return out;
 }
 

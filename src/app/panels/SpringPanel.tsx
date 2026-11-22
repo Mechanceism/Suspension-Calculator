@@ -25,7 +25,7 @@ export function SpringFields({ keys = SPRING_KEYS }: { keys?: readonly SpringKey
       <div className="row" title="A coilover straight from the arm / knuckle to the frame, or a pushrod (pullrod) to a rocker on the frame with the spring on the rocker (the motion ratio then comes from the linkage)">
         <span className="muted">Layout</span>
         <select value={layout} disabled={!rockerAllowed(kind)} onChange={(e) => setSpringLayout(e.target.value as SpringLayout)}>
-          <option value="coilover">{kind === 'rigid' ? 'None (no suspension)' : kind === 'macpherson' ? 'Strut (upright → top mount)' : kind === 'multilink' ? 'Coilover, upright → chassis' : 'Coilover, arm → chassis'}</option>
+          <option value="coilover">{kind === 'beamLeaf' ? 'Leaf springs (rate at the seat)' : kind === 'rigid' ? 'None (no suspension)' : kind === 'macpherson' ? 'Strut (upright → top mount)' : kind === 'multilink' ? 'Coilover, upright → chassis' : 'Coilover, arm → chassis'}</option>
           {rockerAllowed(kind) && <option value="rocker">Pushrod / pullrod + rocker</option>}
         </select>
       </div>

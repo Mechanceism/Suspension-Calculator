@@ -11,13 +11,14 @@ import { segmentStates, segmentLatG, roadEffective, G, type RoadState, type Segm
 import { wheelHeights } from './road';
 import { steerForTurn, type SteerNeed } from './steer';
 import { rideOn, type RideMeasures } from './ride';
-import { classifyState, worstSeverity, PROFILES, type CheckProfile, type Finding, type Severity } from './checks';
+import { classifyState, fadeFindings, worstSeverity, PROFILES, type CheckProfile, type Finding, type Severity } from './checks';
+import { brakeStep, padFactors, type AxleTemps } from '../vehicle/brakeThermal';
 
 export interface StateResult {
   state: RoadState;
   converged: boolean;
   pose: ChassisPose | null;
-  corners: Record<CornerId, { tireLoad: number; lateralForce: number; longitudinalForce: number; travel: number; status: CornerStatus; inclination: number; onBumpStop: boolean }> | null;
+  corners: Record<CornerId, { tireLoad: number; lateralForce: number; longitudinalForce: number; brakeForce: number; travel: number; status: CornerStatus; inclination: number; onBumpStop: boolean }> | null;
   grip: GripSummary | null;
   findings: Finding[];
   severity: Severity;
@@ -46,6 +47,8 @@ export interface SegmentResult {
   lifted?: StateResult[];
   /** Passes as steady states but fails over time (ride: bumps, transients). */
   rideFail?: boolean;
+  /** Brake fade modeled: rotor temperatures at the start and end of the segment, °C. */
+  brakeTemp?: { start: AxleTemps; end: AxleTemps };
 }
 
 export interface TestRunOptions {
@@ -129,10 +132,15 @@ function evalState(p: VehicleProblem, asm: AssembledVehicle, st: RoadState, chec
   const r = e.result;
   const corners = Object.fromEntries(CORNER_IDS.map((id) => {
     const c = r.corners[id];
-    return [id, { tireLoad: c.tireLoad, lateralForce: c.lateralForce, longitudinalForce: c.longitudinalForce, travel: c.travel, status: c.status, inclination: c.inclination, onBumpStop: c.onBumpStop }];
+    return [id, { tireLoad: c.tireLoad, lateralForce: c.lateralForce, longitudinalForce: c.longitudinalForce, brakeForce: c.brakeForce, travel: c.travel, status: c.status, inclination: c.inclination, onBumpStop: c.onBumpStop }];
   })) as StateResult['corners'];
-  return { state: st, converged: true, pose: r.pose, corners, grip: r.grip ?? null, findings, severity, passed: severity !== 'fail', steer };
+  const out: StateResult = { state: st, converged: true, pose: r.pose, corners, grip: r.grip ?? null, findings, severity, passed: severity !== 'fail', steer };
+  rawResults.set(out, r);
+  return out;
 }
+
+/** The full solve behind each state result (for checks made after the solve, e.g. brake fade). */
+const rawResults = new WeakMap<StateResult, VehicleResult>();
 
 const dedupe = (fs: Finding[]): Finding[] => {
   const seen = new Map<string, Finding>();
@@ -161,6 +169,31 @@ export function runTest(
   const states: StateResult[] = [];
   const segs: SegmentResult[] = [];
   let guess: ChassisPose | undefined;
+  // Brake fade: the rotors heat through the test (both hydraulics and fade modeled).
+  const th = p.brakeLimit ? p.brakeThermal : undefined;
+  let temp: AxleTemps | null = th ? { front: th.start, rear: th.start } : null;
+  const fadeOf = (rs: StateResult[], seg: TestSegmentSpec, checks: CheckProfile): { start: AxleTemps; end: AxleTemps } | undefined => {
+    if (!th || !temp || !p.brakeLimit) return undefined;
+    // Energy into the brakes ≈ the samples' mean braking force × the distance (∫ F v dt = ∫ F ds).
+    const ok = rs.filter((r) => r.corners);
+    const mean = (f: (r: StateResult) => number) => (ok.length ? ok.reduce((a, r) => a + f(r), 0) / ok.length : 0);
+    const force = { front: mean((r) => -(r.corners!.FL.brakeForce + r.corners!.FR.brakeForce)), rear: mean((r) => -(r.corners!.RL.brakeForce + r.corners!.RR.brakeForce)) };
+    const v = Math.max(0.1, (seg.v0 + seg.v1) / 2), T = seg.distance / v;
+    const start = temp, end = brakeStep(th, temp, force, v, T);
+    temp = end;
+    // Check every sample at the hottest the segment gets.
+    const peak = { front: Math.max(start.front, end.front), rear: Math.max(start.rear, end.rear) };
+    const fade = { temp: peak, factor: padFactors(th, peak) };
+    for (const r of rs) {
+      const st = rawResults.get(r);
+      const extra = fadeFindings(st ?? null, fade, p.brakeLimit, checks);
+      if (!extra.length) continue;
+      r.findings = [...r.findings, ...extra];
+      r.severity = worstSeverity(r.findings);
+      r.passed = r.severity !== 'fail';
+    }
+    return { start, end };
+  };
   segments.forEach((seg, i) => {
     const checks = seg.checks ?? PROFILES.default.checks;
     const rs = segmentStates(seg, i, 1, dimsOf(p, asm)).map((st) => {
@@ -168,6 +201,7 @@ export function runTest(
       if (r.pose) guess = r.pose;
       return r;
     });
+    const brakeTemp = fadeOf(rs, seg, checks);
     states.push(...rs);
     const findings = dedupe(rs.flatMap((r) => r.findings));
     const severity = worstSeverity(findings);
@@ -177,6 +211,7 @@ export function runTest(
       impossible: findings.some((f) => f.check === 'beyondGrip'),
       // The sample needing the most steering.
       steer: rs.reduce<SteerNeed | null>((a, x) => (x.steer && (!a || Math.abs(x.steer.wheelAngle) > Math.abs(a.wheelAngle)) ? x.steer : a), null),
+      ...(brakeTemp ? { brakeTemp } : {}),
     };
     if (!res.passed && (opts.onFail === 'lift' || opts.speedLimits)) {
       res.speedLimit = speedLimitOf(p, asm, seg, i, checks);
@@ -187,7 +222,7 @@ export function runTest(
   let ride: TestRun['ride'];
   if (opts.ride) {
     const rr = rideOn(p, asm, segments, { handling: !!opts.handling });
-    ride = { frames: rr.frames, metrics: rr.metrics, ...(rr.error ? { error: rr.error } : {}) };
+    ride = { frames: withBrakeTemps(p, rr.frames), metrics: rr.metrics, ...(rr.error ? { error: rr.error } : {}) };
     segs.forEach((sr, i) => {
       // Add what only shows over time (the steady samples already report the rest).
       const steadyKeys = new Set(sr.findings.map((f) => `${f.check}|${(f.corners ?? []).join(',')}`));
@@ -202,6 +237,25 @@ export function runTest(
   }
   const severity = worstSeverity(segs.flatMap((s) => s.findings));
   return { severity, passed: severity !== 'fail', states, segments: segs, ...(ride ? { ride } : {}) };
+}
+
+/**
+ * Rotor temperatures for frames that don't carry them (the ride over time): the braking force from each
+ * frame's deceleration and grade, m·g·(−a_x − sin grade), split by the brake bias (no drag), integrated
+ * frame to frame. Frames are returned unchanged when fade isn't modeled.
+ */
+export function withBrakeTemps(p: VehicleProblem, frames: PlaybackFrame[]): PlaybackFrame[] {
+  const th = p.brakeLimit ? p.brakeThermal : undefined;
+  if (!th || !frames.length || frames.every((f) => f.brakeTemp)) return frames;
+  const bias = Math.min(1, Math.max(0, p.brakeBias ?? 0.6));
+  let temp: AxleTemps = { front: th.start, rear: th.start };
+  return frames.map((f, i) => {
+    const out = { ...f, brakeTemp: temp };
+    const dt = i + 1 < frames.length ? Math.max(0, frames[i + 1]!.t - f.t) : 0;
+    const F = Math.max(0, p.mass * G * (-f.ax - Math.sin(f.grade)));
+    temp = brakeStep(th, temp, { front: F * bias, rear: F * (1 - bias) }, f.speed, dt);
+    return out;
+  });
 }
 
 /** Wheelbase and half track of the assembled car, mm. */
@@ -228,10 +282,12 @@ export interface PlaybackFrame {
   severity: Severity;
   utilization: Record<CornerId, number>;
   findings: string[];
+  /** Brake fade modeled: rotor temperatures at this moment, °C. */
+  brakeTemp?: AxleTemps;
   /** Ride over time (Phase B): the body pose, each travel (mm) and tire load (N) at this moment. */
   ride?: { pose: ChassisPose; travel: Record<CornerId, number>; tireLoad: Record<CornerId, number> };
   /** Handling (Phase C): distance off the path (m, + left), sideslip (deg), yaw rate (rad/s), mean steer angle (deg), at full lock. */
-  handling?: { pathError: number; sideslip: number; yawRate: number; steer: number; atLock: boolean; path: { x: number; y: number } };
+  handling?: { pathError: number; sideslip: number; yawRate: number; steer: number; atLock: boolean; path: { x: number; y: number }; trailer?: { articulation: number; sway: number } };
 }
 
 /**
@@ -253,6 +309,8 @@ export function playbackFrames(
   const frames: PlaybackFrame[] = [];
   let x = 0, y = 0, z = 0, heading = 0, t0 = 0;
   let guess: ChassisPose | undefined;
+  const th = p.brakeLimit ? p.brakeThermal : undefined;
+  let temp: AxleTemps | null = th ? { front: th.start, rear: th.start } : null;
   segments.forEach((sg, i) => {
     const T = durations[i]!;
     if (!(T > 0)) return;
@@ -278,11 +336,21 @@ export function playbackFrames(
       const st: RoadState = { name: `${i + 1}@${sAlong.toFixed(1)}m`, segment: i, speed: v, ay, ax, at: sAlong, ...roadEffective(ay, ax, sg.grade, sg.bank), groundOffset: ground, grade: sg.grade, bank: sg.bank };
       const r = evalState(p, asm, st, checks, guess, sg);
       if (r.pose) guess = r.pose;
+      let brakeTemp: AxleTemps | undefined;
+      if (th && temp && p.brakeLimit) {
+        const c = r.corners;
+        const force = c ? { front: -(c.FL.brakeForce + c.FR.brakeForce), rear: -(c.RL.brakeForce + c.RR.brakeForce) } : { front: 0, rear: 0 };
+        const extra = fadeFindings(rawResults.get(r) ?? null, { temp, factor: padFactors(th, temp) }, p.brakeLimit, checks);
+        if (extra.length) { r.findings = [...r.findings, ...extra]; r.severity = worstSeverity(r.findings); }
+        brakeTemp = temp;
+        temp = brakeStep(th, temp, force, v, Math.min(dt, T - tt));
+      }
       frames.push({
         t: t0 + tt, segment: i, s: sAlong, speed: v, ay, ax, grade: sg.grade, bank: sg.bank, groundOffset: ground,
         pos: { x, y, z }, heading, rack: r.steer?.rackUsed ?? 0, severity: r.severity,
         utilization: Object.fromEntries(CORNER_IDS.map((id) => [id, r.grip?.corners[id].utilization ?? NaN])) as Record<CornerId, number>,
         findings: r.findings.filter((f) => f.severity !== 'pass').map((f) => f.text),
+        ...(brakeTemp ? { brakeTemp } : {}),
       });
     }
     t0 += T;

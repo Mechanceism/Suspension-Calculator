@@ -5,7 +5,8 @@
 import { create } from 'zustand';
 import { parseValue, formatValue, type Quantity } from '../core/units/units';
 import { vec3, type Vec3 } from '../core/math/vec3';
-import { DoubleWishbone, spinAxisFromCamberToe, SUSPENSION_LABELS, virtualPivot, type DoubleWishboneGeometry, type TravelDriver, type SuspensionKind } from '../core/suspension/doubleWishbone';
+import { customFromWishbone, type CustomLinkage } from '../core/suspension/customLinkage';
+import { DoubleWishbone, spinAxisFromCamberToe, SUSPENSION_LABELS, virtualPivot, isBeam, type DoubleWishboneGeometry, type TravelDriver, type SuspensionKind } from '../core/suspension/doubleWishbone';
 import { SAMPLE_LAYOUTS, SAMPLE_SPRING, PRESET_LAYOUTS } from '../examples/sampleLayouts';
 import { fitFreeLength } from '../core/suspension/spring';
 import { rockerFromCoilover } from '../core/suspension/coilover';
@@ -32,7 +33,7 @@ export interface Field {
 }
 
 /** Hardpoints of every suspension type (each type uses some of them: activePointKeys). */
-export const POINT_KEYS = ['ucaFwd', 'ucaAft', 'ucaOut', 'lcaFwd', 'lcaAft', 'lcaOut', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm', 'ucaOut2', 'lcaOut2', 'rkrPiv1', 'rkrPiv2', 'prArm', 'prRkr', 'strPiv1', 'strPiv2'] as const;
+export const POINT_KEYS = ['ucaFwd', 'ucaAft', 'ucaOut', 'lcaFwd', 'lcaAft', 'lcaOut', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm', 'ucaOut2', 'lcaOut2', 'rkrPiv1', 'rkrPiv2', 'prArm', 'prRkr', 'strPiv1', 'strPiv2', 'phChs', 'phAxle'] as const;
 /** Steering mechanism: a rack (input = rack travel, mm) or a steering arm / plate on a pivot (input = its angle, °). */
 export type SteerMechanism = 'rack' | 'arm';
 /** Spring layout: a coilover between the frame and an arm / the knuckle, or a pushrod / pullrod and rocker. */
@@ -49,6 +50,7 @@ export const POINT_NAMES: Record<PointKey, string> = {
   ucaOut2: 'FL_UCA_Out2', lcaOut2: 'FL_LCA_Out2',
   rkrPiv1: 'FL_Rkr_Piv1', rkrPiv2: 'FL_Rkr_Piv2', prArm: 'FL_PR_Arm', prRkr: 'FL_PR_Rkr',
   strPiv1: 'FL_Str_Piv1', strPiv2: 'FL_Str_Piv2',
+  phChs: 'FL_PH_Chs', phAxle: 'FL_PH_Axle',
 };
 
 /** Parameter name of a hardpoint or scalar for a corner (FL_UCA_Fwd → RR_UCA_Fwd). */
@@ -181,11 +183,14 @@ export interface EditableGeometry {
   scalars: Record<ScalarKey, Field>;
   /** Which arm the coilover's lower mount is attached to. */
   damperArm: ArmChoice;
+  /** Custom linkage: its bodies and joints (mm; kept when switching to another type and back). */
+  custom?: CustomLinkage;
 }
 
 export const VIS_KEYS = [
   'chassis', 'uca', 'lca', 'upright', 'tieRod', 'wheel',
   'spring', 'patch', 'steeringAxis', 'icConstruction', 'rollCenter', 'ground', 'datum', 'labels', 'dimensions', 'ackermann',
+  'cg', 'arb', 'markerLabels',
 ] as const;
 export type VisKey = (typeof VIS_KEYS)[number];
 
@@ -209,6 +214,8 @@ export function editableFromLayout(id: string): EditableGeometry {
       lcaOut2: fields(g.lca.out2 ?? g.lca.out),
       ...rockerDefaults(g.damper?.chassis ?? vec3(300, 380, 30), g.damper?.armPoint ?? vec3(480, 45, 30), g.rocker),
       ...steerArmDefaults(g),
+      phChs: fields(g.panhard?.chassis ?? vec3(-(g.wheel.center.x - 250), g.wheel.center.y + 60, g.wheel.center.z - 80)),
+      phAxle: fields(g.panhard?.axle ?? vec3(g.wheel.center.x - 200, g.wheel.center.y + 60, g.wheel.center.z - 80)),
     },
     steerMechanism: g.steering?.kind === 'arm' ? 'arm' : 'rack',
     springLayout: g.rocker ? 'rocker' : 'coilover',
@@ -245,7 +252,7 @@ export function steerArmDefaults(g: DoubleWishboneGeometry): Record<'strPiv1' | 
 }
 
 /** Rocker layouts are for types with an arm or knuckle to push from. */
-export const rockerAllowed = (kind: SuspensionKind) => kind !== 'macpherson' && kind !== 'rigid';
+export const rockerAllowed = (kind: SuspensionKind) => kind !== 'macpherson' && kind !== 'rigid' && !isBeam(kind);
 export const layoutOf = (e: Pick<EditableGeometry, 'kind' | 'springLayout'>): SpringLayout => (e.springLayout === 'rocker' && rockerAllowed(e.kind ?? 'doubleWishbone') ? 'rocker' : 'coilover');
 
 export function toGeometry(e: EditableGeometry): DoubleWishboneGeometry {
@@ -263,6 +270,8 @@ export function toGeometry(e: EditableGeometry): DoubleWishboneGeometry {
     lca: { fwd: p('lcaFwd'), aft: p('lcaAft'), out: p('lcaOut'), ...(ml ? { out2: p('lcaOut2') } : {}) },
     tieRod: { inner: p('trInner'), outer: p('trOuter') },
     ...(e.steerMechanism === 'arm' ? { steering: { kind: 'arm' as const, pivot1: p('strPiv1'), pivot2: p('strPiv2') } } : {}),
+    ...(kind === 'beam3' ? { panhard: { chassis: p('phChs'), axle: p('phAxle') } } : {}),
+    ...(kind === 'custom' && e.custom ? { custom: e.custom } : {}),
     wheel: {
       center: vec3(hub.x - et * spinAxis.x, hub.y - et * spinAxis.y, hub.z - et * spinAxis.z),
       spinAxis,
@@ -311,6 +320,11 @@ export function activePointKeys(kind: SuspensionKind, layout: SpringLayout = 'co
 function kindPointKeys(kind: SuspensionKind): PointKey[] {
   if (kind === 'macpherson') return ['lcaFwd', 'lcaAft', 'lcaOut', 'dmpChassis', 'dmpArm', 'trInner', 'trOuter', 'wheelCenter'];
   if (kind === 'rigid') return ['ucaOut', 'lcaOut', 'trInner', 'trOuter', 'wheelCenter'];
+  if (kind === 'beam4') return ['lcaFwd', 'lcaOut', 'ucaFwd', 'ucaOut', 'wheelCenter', 'dmpChassis', 'dmpArm'];
+  if (kind === 'beamLeaf') return ['lcaFwd', 'lcaOut', 'lcaAft', 'wheelCenter'];
+  if (kind === 'custom') return ['wheelCenter', 'dmpChassis', 'dmpArm'];
+  if (kind === 'twistBeam') return ['lcaFwd', 'lcaAft', 'lcaOut', 'wheelCenter', 'dmpChassis', 'dmpArm'];
+  if (kind === 'beam3') return ['lcaFwd', 'lcaOut', 'ucaFwd', 'ucaOut', 'phChs', 'phAxle', 'wheelCenter', 'dmpChassis', 'dmpArm'];
   if (kind === 'singleArm') return ['lcaFwd', 'lcaAft', 'lcaOut', 'ucaOut', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm'];
   if (kind === 'multilink') return ['ucaFwd', 'ucaOut', 'ucaAft', 'ucaOut2', 'lcaFwd', 'lcaOut', 'lcaAft', 'lcaOut2', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm'];
   return ['ucaFwd', 'ucaAft', 'ucaOut', 'lcaFwd', 'lcaAft', 'lcaOut', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm'];
@@ -329,6 +343,53 @@ export function convertGeometry(e: EditableGeometry, kind: SuspensionKind): Edit
   const pts = { ...e.points };
   const put = (k: PointKey, v: Vec3) => { pts[k] = fields(v); };
   const ubj = p('ucaOut'), lbj = p('lcaOut'), hub = p('wheelCenter');
+  // New coilovers keep the old one's installed length (so its damper stroke and bump stop still fit).
+  const coil = sub(p('dmpChassis'), p('dmpArm'));
+  const coilLen = Math.hypot(coil.x, coil.y, coil.z) || 350;
+  if (kind === 'custom') {
+    // Start from the linkage kept from before, or one that moves like the current arms (a double wishbone
+    // through the ball joints, the tie rod from the rack), with the coilover on the same body.
+    const c = e.custom ?? customFromWishbone(toGeometry({ ...e, kind: 'doubleWishbone', springLayout: 'coilover' }));
+    const damperBody = e.damperArm === 'uca' || e.damperArm === 'lca' ? e.damperArm : 'upright';
+    return { ...e, kind, points: pts, springLayout: 'coilover', custom: e.custom ? c : { ...c, damperBody } };
+  }
+  if (kind === 'twistBeam') {
+    // Trailing arms from a bushing ahead of the wheel, joined by a beam whose shear center sits on the
+    // centerline a little behind the bushings (roll camber / roll steer come from where it is).
+    const c = hub;
+    put('lcaFwd', vec3(c.x - 120, c.y - 40, c.z + 450)); put('lcaOut', vec3(c.x - 120, c.y - 40, c.z));
+    put('lcaAft', vec3(0, c.y - 40, c.z + 300));
+    put('dmpArm', vec3(c.x - 170, c.y - 40, c.z - 60)); put('dmpChassis', vec3(c.x - 170, c.y - 40 + coilLen, c.z - 80));
+    return { ...e, kind, points: pts, springLayout: 'coilover', damperArm: 'upright' };
+  }
+  if (kind === 'beamLeaf') {
+    // Leaf springs on a solid axle: spring seat on top of the axle, front eye and rear shackle 650 mm away.
+    const c = hub;
+    put('lcaOut', vec3(c.x - 150, c.y + 40, c.z)); put('lcaFwd', vec3(c.x - 150, c.y + 90, c.z + 650)); put('lcaAft', vec3(c.x - 150, c.y + 120, c.z - 650));
+    return { ...e, kind, points: pts, springLayout: 'coilover', damperArm: 'upright' };
+  }
+  if (isBeam(kind)) {
+    // A solid axle from the hub: lower trailing links ahead of the axle, upper links (4-link: angled in;
+    // 3-link: one in the middle) and, for the 3-link, a Panhard rod; coilovers on the axle.
+    const c = hub;
+    put('lcaOut', vec3(c.x - 150, c.y - 120, c.z)); put('lcaFwd', vec3(c.x - 150, c.y - 100, c.z + 550));
+    if (kind === 'beam4') { put('ucaOut', vec3(c.x - 350, c.y + 120, c.z + 20)); put('ucaFwd', vec3(120, c.y + 150, c.z + 420)); }
+    else { put('ucaOut', vec3(0, c.y + 130, c.z)); put('ucaFwd', vec3(0, c.y + 170, c.z + 400)); }
+    put('phAxle', vec3(c.x - 200, c.y + 60, c.z - 80)); put('phChs', vec3(-(c.x - 250), c.y + 60, c.z - 80));
+    put('dmpArm', vec3(c.x - 200, c.y + 30, c.z - 30)); put('dmpChassis', vec3(c.x - 200, c.y + 30 + coilLen, c.z - 30));
+    put('ucaAft', p('ucaFwd')); put('lcaAft', p('lcaFwd'));
+    return { ...e, kind, points: pts, springLayout: 'coilover', damperArm: 'upright' };
+  }
+  if (isBeam(from) || from === 'twistBeam') {
+    // Back to a corner type: arms from the sample layout's proportions around the hub.
+    const c = hub;
+    put('lcaOut', vec3(c.x - 40, c.y - 120, c.z)); put('ucaOut', vec3(c.x - 70, c.y + 160, c.z));
+    put('lcaFwd', vec3(c.x - 400, c.y - 115, c.z + 150)); put('lcaAft', vec3(c.x - 400, c.y - 115, c.z - 150));
+    put('ucaFwd', vec3(c.x - 350, c.y + 123, c.z + 150)); put('ucaAft', vec3(c.x - 350, c.y + 123, c.z - 150));
+    put('dmpArm', vec3(c.x - 112, c.y - 117, c.z + 30));
+    const up = vec3(-188, 337, 0), ul = Math.hypot(up.x, up.y);
+    put('dmpChassis', vec3(c.x - 112 + (up.x / ul) * coilLen, c.y - 117 + (up.y / ul) * coilLen, c.z + 30));
+  }
   if (kind === 'macpherson') {
     const w = mountedTireWidth(e.scalars);
     const lowerX = Math.min(ubj.x, hub.x - (Number.isFinite(w) ? w : 200) / 2 - 25);
@@ -462,6 +523,9 @@ export interface AppState extends DesignState {
   /** Point editor: move this joint along the line toward another one (also drives an extra drag arrow). */
   lineMove: { id: PointKey; toward: PointKey } | null;
   measure: AnchorId[];
+  /** Vehicle view measure: two picks like 'FL.wheelCenter', 'RR.contact', 'cg', 'rcF', 'rcR'. */
+  vehicleMeasure: string[];
+  addVehicleMeasure(a: string): void;
 
   /** Name of the open layout in the in-app library (null = untitled). */
   fileName: string | null;
@@ -516,7 +580,8 @@ export interface AppState extends DesignState {
   setAeroField(key: AeroKey, text: string): void;
   setAero(patch: Partial<Pick<AeroSettings, 'on' | 'file'>>): void;
   setBrakeField(key: BrakeKey, text: string): void;
-  setBrakes(patch: Partial<Pick<BrakeSettings, 'on' | 'dualMc' | 'useBias'>>): void;
+  setBrakes(patch: Partial<Pick<BrakeSettings, 'on' | 'fade' | 'dualMc' | 'useBias'>>): void;
+  setFadeField(key: FadeKey, text: string): void;
   setTowField(key: TowKey, text: string): void;
   setTow(patch: Partial<Pick<TowSettings, 'on'>>): void;
   /** Grip scale of a loaded file (λμ): side (LMUY) or braking / drive (LMUX). */
@@ -572,6 +637,10 @@ export interface AppState extends DesignState {
   setSpringLayout(layout: SpringLayout): void;
   /** Rocker layout: move the pushrod's lower end to an arm or the knuckle. */
   setPushrodOn(on: ArmChoice): void;
+  /** Set a point of any corner's design (the active one or another), mm in that corner's own frame. */
+  setCornerPoint(id: CornerId, key: PointKey, v: Vec3): void;
+  /** Custom linkage: replace its bodies and joints (one undo step). */
+  setCustom(c: CustomLinkage): void;
   /** Change the active design's suspension type (convertGeometry). */
   setSuspensionKind(kind: SuspensionKind): void;
   /** Set the free length so the static corner load sits at the design position (travel 0). */
@@ -749,9 +818,24 @@ export const BRAKE_META: Record<BrakeKey, { label: string; quantity: Quantity; u
   rotorRF: { label: 'Effective rotor radius, front', quantity: 'length', unit: 'mm', initial: 100, hint: 'Rotor center to the middle of the pad' },
   rotorRR: { label: 'Effective rotor radius, rear', quantity: 'length', unit: 'mm', initial: 90 },
 };
-export interface BrakeSettings extends Record<BrakeKey, Field> {
+/** Brake fade inputs (docs/MATH.md § Brakes, fade): rotors heat through a test, pads lose grip when hot. */
+export const FADE_KEYS = ['rotorMassF', 'rotorMassR', 'cooling', 'fadeStart', 'fadeEnd', 'fadeLoss', 'fadeAir', 'fadeStartTemp'] as const;
+export type FadeKey = (typeof FADE_KEYS)[number];
+export const FADE_META: Record<FadeKey, { label: string; quantity: Quantity; unit: string; initial: number; hint?: string }> = {
+  rotorMassF: { label: 'Rotor mass, front (each)', quantity: 'mass', unit: 'kg', initial: 2.5, hint: 'Heavier rotors heat up less per stop (road-car front rotors ≈ 6–10 kg, small race cars ≈ 1.5–3 kg)' },
+  rotorMassR: { label: 'Rotor mass, rear (each)', quantity: 'mass', unit: 'kg', initial: 2 },
+  cooling: { label: 'Cooling per rotor at 100 km/h', quantity: 'ratio', unit: 'W/K', initial: 25, hint: 'Heat carried away per °C above the air (a fifth of it at a stop). Solid rotor ≈ 15–25, vented ≈ 30–50, more with ducts' },
+  fadeStart: { label: 'Pads start to fade at', quantity: 'temperature', unit: '°C', initial: 400, hint: 'Street pads ≈ 300–400 °C, race pads ≈ 550–700 °C' },
+  fadeEnd: { label: 'Fully faded at', quantity: 'temperature', unit: '°C', initial: 650 },
+  fadeLoss: { label: 'Pad grip lost when fully faded', quantity: 'ratio', unit: '%', initial: 40 },
+  fadeAir: { label: 'Air temperature', quantity: 'temperature', unit: '°C', initial: 20 },
+  fadeStartTemp: { label: 'Rotor temperature at the start of a test', quantity: 'temperature', unit: '°C', initial: 50 },
+};
+export interface BrakeSettings extends Record<BrakeKey, Field>, Record<FadeKey, Field> {
   /** Model the brake hydraulics (off = the brakes are always strong enough). */
   on: boolean;
+  /** Model brake fade in tests (with the hydraulics). */
+  fade: boolean;
   /** Two master cylinders on a balance bar (else one tandem master cylinder). */
   dualMc: boolean;
   /** Use the hydraulics' front / rear split as the brake bias. */
@@ -759,11 +843,12 @@ export interface BrakeSettings extends Record<BrakeKey, Field> {
 }
 export const defaultBrakes = (): BrakeSettings => ({
   ...(Object.fromEntries(BRAKE_KEYS.map((k) => [k, field(BRAKE_META[k].initial, BRAKE_META[k].quantity)])) as Record<BrakeKey, Field>),
-  on: false, dualMc: false, useBias: false,
+  ...(Object.fromEntries(FADE_KEYS.map((k) => [k, field(FADE_META[k].initial, FADE_META[k].quantity)])) as Record<FadeKey, Field>),
+  on: false, fade: false, dualMc: false, useBias: false,
 });
 
 /** Towing inputs (docs/MATH.md § Towing). */
-export const TOW_KEYS = ['trailerMass', 'tongueShare', 'hitchHeight', 'hitchBehindRear', 'hitchToAxle', 'trailerCgHeight', 'trailerBrakes'] as const;
+export const TOW_KEYS = ['trailerMass', 'tongueShare', 'hitchHeight', 'hitchBehindRear', 'hitchToAxle', 'trailerCgHeight', 'trailerBrakes', 'trailerYawRadius'] as const;
 export type TowKey = (typeof TOW_KEYS)[number];
 export const TOW_META: Record<TowKey, { label: string; quantity: Quantity; unit: string; initial: number; hint?: string }> = {
   trailerMass: { label: 'Trailer mass (loaded)', quantity: 'mass', unit: 'kg', initial: 400 },
@@ -773,6 +858,7 @@ export const TOW_META: Record<TowKey, { label: string; quantity: Quantity; unit:
   hitchToAxle: { label: 'Hitch ball to the trailer axle', quantity: 'length', unit: 'mm', initial: 3000 },
   trailerCgHeight: { label: 'Trailer CG height', quantity: 'length', unit: 'mm', initial: 700, hint: 'Above the ground; above the hitch, braking presses the tongue down more' },
   trailerBrakes: { label: 'Trailer brakes (share of its braking)', quantity: 'ratio', unit: '%', initial: 0, hint: '0 = none: the trailer pushes the car when braking; 100 = it stops itself' },
+  trailerYawRadius: { label: 'Trailer yaw radius of gyration', quantity: 'length', unit: 'mm', initial: 1350, hint: 'For sway (tests with Ride over time and the driver steering): √(yaw inertia ÷ mass) about its CG. A box trailer ≈ 0.3 × its length; heavy ends make it larger and the trailer sway sooner' },
 };
 export interface TowSettings extends Record<TowKey, Field> { on: boolean }
 export const defaultTow = (): TowSettings => ({
@@ -1125,7 +1211,7 @@ export const useApp = create<AppState>((set, get) => ({
   visibility: {
     chassis: true, uca: true, lca: true, upright: true, tieRod: true, wheel: true, spring: true,
     patch: true, steeringAxis: true, icConstruction: true, rollCenter: true, ground: true, datum: true, labels: params.get('labels') === '1',
-    dimensions: true, ackermann: true,
+    dimensions: true, ackermann: true, cg: true, arb: true, markerLabels: true,
   },
   projection: params.get('projection') === 'perspective' ? 'perspective' : 'orthographic',
   focus: 'corner',
@@ -1270,6 +1356,10 @@ export const useApp = create<AppState>((set, get) => ({
     set({ brakes: { ...b, [key]: parseField(text, BRAKE_META[key].quantity, b[key]) } });
   },
   setBrakes: (patch) => set({ brakes: { ...get().brakes, ...patch } }),
+  setFadeField: (key, text) => {
+    const b = get().brakes;
+    set({ brakes: { ...b, [key]: parseField(text, FADE_META[key].quantity, b[key]) } });
+  },
   setTowField: (key, text) => {
     const t = get().tow;
     set({ tow: { ...t, [key]: parseField(text, TOW_META[key].quantity, t[key]) } });
@@ -1477,7 +1567,13 @@ export const useApp = create<AppState>((set, get) => ({
     const st = get().steer;
     set({ steer: { ...st, [key]: parseField(text, STEER_META[key].quantity, st[key]) } });
   },
-  toggleMeasure: () => set({ measureMode: !get().measureMode, measure: [] }),
+  toggleMeasure: () => set({ measureMode: !get().measureMode, measure: [], vehicleMeasure: [] }),
+  vehicleMeasure: [],
+  addVehicleMeasure: (a) => {
+    const m = get().vehicleMeasure;
+    if (m.length === 1 && m[0] === a) { get().notify('That is the point you picked first: pick a different one to measure to.', 'warn'); return; }
+    set({ vehicleMeasure: m.length >= 2 ? [a] : [...m, a] });
+  },
   startMeasure: (ids) => set({ measureMode: true, measure: ids.slice(0, 2) }),
   lineMove: null,
   addMeasureAnchor: (a, at) => {
@@ -1569,6 +1665,17 @@ export const useApp = create<AppState>((set, get) => ({
       ? 'Pushrod + rocker: the pushrod starts at the old coilover mount and runs to a rocker near its top (levers square to their links, 60 / 50 mm); the spring keeps its length on the rocker. Move the points to shape the motion ratio.'
       : 'Coilover: from the pushrod\'s lower end up to where the rocker pivot was.', 'info');
   },
+  setCustom: (c) => set({ geom: { ...get().geom, custom: c }, presetId: 'custom' }),
+  setCornerPoint: (id, key, v) => {
+    const s = get();
+    const root = rootOf(id, s.links);
+    if (root === rootOf(s.activeCorner, s.links)) {
+      set({ geom: { ...s.geom, points: { ...s.geom.points, [key]: fields(v) } }, presetId: 'custom' });
+      return;
+    }
+    const c = s.corners[root];
+    set({ corners: { ...s.corners, [root]: { ...c, geom: { ...c.geom, points: { ...c.geom.points, [key]: fields(v) } } } }, presetId: 'custom' });
+  },
   setPushrodOn: (on) => {
     const geom = get().geom;
     if ((geom.pushrodOn ?? 'lca') === on) return;
@@ -1580,15 +1687,28 @@ export const useApp = create<AppState>((set, get) => ({
     set({ geom: { ...geom, pushrodOn: on, points: { ...geom.points, prArm: fields(moved) } }, presetId: 'custom' });
   },
   setSuspensionKind: (kind) => {
+    if ((get().geom.kind ?? 'doubleWishbone') === kind) return;
+    // A solid axle or twist beam belongs to one axle: if the rear shares the front's design, give this axle its own first.
+    if ((isBeam(kind) || kind === 'twistBeam') && get().links.rearFromFront) get().setLink('rearFromFront', false);
     const geom = get().geom;
-    if ((geom.kind ?? 'doubleWishbone') === kind) return;
     const next = convertGeometry(geom, kind);
     try { new DoubleWishbone(toGeometry(next)).design(); } catch (err) {
       get().notify(`Can't switch to ${SUSPENSION_LABELS[kind]}: ${err instanceof Error ? err.message : String(err)}`, 'error');
       return;
     }
     set({ geom: next, presetId: 'custom', spring: fittedSpring(next, get().spring), selection: null });
-    get().notify(`${SUSPENSION_LABELS[kind]}: ${kind === 'singleArm' ? 'the knuckle now rides on the lower arm, turning on a kingpin from the lower to the upper ball joint\'s position (both on the arm); the arm swings on its frame pivots. Move the pivots along the car for a swing arm, across it for a trailing arm.' : kind === 'rigid' ? 'the wheel turns on a fixed kingpin through the ball joints\' positions; no spring or travel (only the tire gives).' : kind === 'macpherson' ? 'a strut was placed from the upright (top mount above the upper ball joint); adjust its points.' : kind === 'multilink' ? `each link now ends at its own point on the upright (moved 35 mm along the link: the same motion at ride height, nearly the same through travel); move them to shape the motion.${geom.kind === 'doubleWishbone' || !geom.kind ? ' The coilover now mounts on the upright (a multilink has no arm body), so check its motion ratio.' : ''}` : 'the links rejoin at one ball joint per arm.'}`, 'info');
+    // A solid axle spans the axle: its left and right corners share the design.
+    if (isBeam(kind)) {
+      const front = get().activeCorner === 'FL' || get().activeCorner === 'FR';
+      get().setLink(front ? 'frontPair' : 'rearPair', true);
+    }
+    // A twist beam's beam twists like an anti-roll bar: start from a typical stiffness if the axle has none.
+    if (kind === 'twistBeam') {
+      const axle = get().activeCorner === 'FL' || get().activeCorner === 'FR' ? 'front' : 'rear';
+      const sh = get().shared[axle];
+      if (sh.antiRollBar === 'none') { get().setShared(axle, { antiRollBar: 'wheelRate' }); get().setSharedField(axle, 'arbRate', '15'); }
+    }
+    get().notify(`${SUSPENSION_LABELS[kind]}: ${kind === 'custom' ? 'edit its bodies and joints in the Linkage editor (Inspector, with nothing selected). It starts from the current arms as hinged bodies with ball joints to the knuckle and the tie rod as a rod from the rack, so it moves the same; add bodies, hinges, ball joints and rods to build anything with one free motion.' : kind === 'twistBeam' ? 'each hub is fixed to its trailing arm, which swings about the line from its bushing to the beam\'s shear center (on the centerline); the beam\'s twist stiffness is this axle\'s anti-roll bar (Shared components; started at 15 N/mm at the wheel if there was none). Moving the shear center back adds roll camber and roll steer.' : kind === 'beamLeaf' ? 'a solid axle on leaf springs (left and right now share this design): set the front eye, the spring seat on the axle and the rear shackle; the spring rate is the leaf rate at the seat. Roll center ≈ the seat height.' : isBeam(kind) ? `one axle carries both wheels (left and right now share this design). Lower links run forward from the axle, ${kind === 'beam4' ? 'the upper links angle in to locate it sideways' : 'one upper link in the middle and a Panhard rod locate it'}; coilovers sit on the axle. Move the link ends to shape it. A beam axle here doesn't steer.` : kind === 'singleArm' ? 'the knuckle now rides on the lower arm, turning on a kingpin from the lower to the upper ball joint\'s position (both on the arm); the arm swings on its frame pivots. Move the pivots along the car for a swing arm, across it for a trailing arm.' : kind === 'rigid' ? 'the wheel turns on a fixed kingpin through the ball joints\' positions; no spring or travel (only the tire gives).' : kind === 'macpherson' ? 'a strut was placed from the upright (top mount above the upper ball joint); adjust its points.' : kind === 'multilink' ? `each link now ends at its own point on the upright (moved 35 mm along the link: the same motion at ride height, nearly the same through travel); move them to shape the motion.${geom.kind === 'doubleWishbone' || !geom.kind ? ' The coilover now mounts on the upright (a multilink has no arm body), so check its motion ratio.' : ''}` : 'the links rejoin at one ball joint per arm.'}`, 'info');
   },
   fitSpring: () => {
     const s = get();

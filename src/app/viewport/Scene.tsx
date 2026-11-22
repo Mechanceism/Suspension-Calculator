@@ -4,7 +4,7 @@ import type { ThreeEvent } from '@react-three/fiber';
 import type * as THREE from 'three';
 import { vec3, sub, add, scale, normalize, length, type Vec3 } from '../../core/math/vec3';
 import { closestPointOnLine, lineThrough } from '../../core/math/geom';
-import type { CornerPoints, CornerState } from '../../core/suspension/doubleWishbone';
+import { isBeam, type CornerPoints, type CornerState } from '../../core/suspension/doubleWishbone';
 import type { Characteristics } from '../../core/suspension/characteristics';
 import type { LoadedCorner } from '../../core/suspension/loaded';
 import { anyAxisLocked } from '../locks';
@@ -14,7 +14,7 @@ import { STATE_KEY, anchorPosition } from '../anchors';
 import { Joint, Seg, Polyline, Tri, Wheel, Label, PatchMesh, Coilover, HitLink } from './primitives';
 import { MoveGizmo } from './JointGizmo';
 import { componentDefs } from '../components';
-import { linkageShape } from './linkageShape';
+import { linkageShape, customShape } from './linkageShape';
 import { MeasureOverlay } from './MeasureOverlay';
 import { DimensionsOverlay } from './DimensionsOverlay';
 
@@ -91,24 +91,53 @@ function Part({ id, children }: { id: ComponentId; children: (emphasis: number) 
 /** Width/colour emphasis for hover (1) and selection (2). */
 const em = (base: number, e: number) => base + e * 1.5;
 
+const BODY_COLORS = ['#8fbaff', '#5fd3c6', '#d7a2ff', '#ffd27f', '#ff9f80', '#a6e36b'];
+
+/** A custom linkage's bodies (stars from their centroids), rods, frame hinges and ball joints. */
+export function CustomDrawing({ p, width = 3, opacity = 1 }: { p: CornerState['points']; width?: number; opacity?: number }) {
+  const vis = useApp((s) => s.visibility);
+  const cs = customShape(p);
+  if (!cs) return null;
+  return (
+    <group>
+      {cs.bodies.filter((b) => b.id !== 'upright').map((b, i) => {
+        const color = BODY_COLORS[i % BODY_COLORS.length]!;
+        return (
+          <group key={b.id}>
+            {b.pts.length >= 3 && opacity === 1 && <Tri a={b.pts[0]!} b={b.pts[1]!} c={b.pts[2]!} color={color} opacity={0.22} />}
+            {b.pts.map((q, k) => <Seg key={k} a={b.centroid} b={q} color={color} width={width} opacity={opacity} />)}
+          </group>
+        );
+      })}
+      {cs.rods.map((r, i) => (vis.tieRod || !r.steering) && <Seg key={`r${i}`} a={r.a} b={r.b} color={r.steering ? COLORS.tieRod : COLORS.lca} width={width} opacity={opacity} />)}
+      {vis.chassis && cs.frameHinges.map(([a, b], i) => <Seg key={`h${i}`} a={a} b={b} color={COLORS.chassis} width={width + 1} opacity={opacity} />)}
+      {opacity === 1 && cs.balls.map((q, i) => <Joint key={`b${i}`} p={q} color={COLORS.uca} r={7} />)}
+      {opacity === 1 && cs.rods.flatMap((r, i) => [<Joint key={`ra${i}`} p={r.a} color={COLORS.chassis} r={5} />, <Joint key={`rb${i}`} p={r.b} color={COLORS.lca} r={5} />])}
+    </group>
+  );
+}
+
 function Linkage({ state, faint = false }: { state: CornerState; faint?: boolean }) {
   const vis = useApp((s) => s.visibility);
   const p = state.points;
   const sh = linkageShape(p, state.kind);
+  const custom = state.kind === 'custom';
   if (faint) {
     const o = 0.3;
     return (
       <group>
+        {custom && <CustomDrawing p={p} width={1} opacity={o} />}
         {vis.uca && sh.uca.map(([a, b], i) => <Seg key={i} a={a} b={b} color={COLORS.uca} width={1} opacity={o} />)}
         {vis.lca && sh.lca.map(([a, b], i) => <Seg key={i} a={a} b={b} color={COLORS.lca} width={1} opacity={o} />)}
         {vis.upright && <Polyline pts={sh.upright} color={COLORS.upright} width={1} opacity={o} />}
-        {vis.tieRod && <Seg a={p.trInner} b={p.trOuter} color={COLORS.tieRod} width={1} opacity={o} />}
+        {vis.tieRod && !isBeam(state.kind) && state.kind !== 'twistBeam' && !custom && <Seg a={p.trInner} b={p.trOuter} color={COLORS.tieRod} width={1} opacity={o} />}
         {vis.spring && p.damperChassis && p.damperArm && <Seg a={p.damperChassis} b={p.damperArm} color={COLORS.spring} width={1} opacity={o} />}
       </group>
     );
   }
   return (
     <group>
+      {custom && <CustomDrawing p={p} />}
       {vis.uca && sh.uca.length > 0 && (
         <Part id="uca">{(e) => (
           <>
@@ -122,7 +151,7 @@ function Linkage({ state, faint = false }: { state: CornerState; faint?: boolean
           </>
         )}</Part>
       )}
-      {vis.lca && (
+      {vis.lca && sh.lca.length > 0 && (
         <Part id="lca">{(e) => (
           <>
             {sh.lcaTri && <Tri a={sh.lcaTri[0]} b={sh.lcaTri[1]} c={sh.lcaTri[2]} color={e ? '#7fe3d8' : COLORS.lca} opacity={0.25 + e * 0.1} />}
@@ -138,14 +167,14 @@ function Linkage({ state, faint = false }: { state: CornerState; faint?: boolean
       {vis.upright && (
         <Part id="upright">{(e) => (
           <>
-            <Tri a={sh.upright[0]!} b={sh.upright[1]!} c={sh.upright[2]!} color={COLORS.upright} opacity={0.35 + e * 0.1} />
+            {sh.upright.length >= 3 && <Tri a={sh.upright[0]!} b={sh.upright[1]!} c={sh.upright[2]!} color={COLORS.upright} opacity={0.35 + e * 0.1} />}
             <Polyline pts={sh.upright} color={e === 2 ? COLORS.select : COLORS.upright} width={em(3, e)} />
             <Seg a={spindleFoot(p)} b={p.wheelCenter} color={e === 2 ? COLORS.select : COLORS.upright} width={em(3, e)} />
             <HitLink a={spindleFoot(p)} b={p.wheelCenter} radius={12} />
           </>
         )}</Part>
       )}
-      {vis.tieRod && (
+      {vis.tieRod && !isBeam(state.kind) && state.kind !== 'twistBeam' && !custom && (
         <Part id="tieRod">{(e) => (
           <>
             <Seg a={p.trInner} b={p.trOuter} color={e === 2 ? COLORS.select : COLORS.tieRod} width={em(3, e)} />
@@ -215,12 +244,14 @@ function Joints({ state, cur }: { state: CornerState; cur: Current }) {
   const p = state.points;
   return (
     <group>
-      {vis.chassis && (state.kind === 'rigid' ? ([] as const) : state.kind === 'macpherson' || state.kind === 'singleArm' ? (['lcaFwd', 'lcaAft'] as const) : (['ucaFwd', 'ucaAft', 'lcaFwd', 'lcaAft'] as const)).map((k) => <PickJoint key={k} id={k} p={p[k]} color={COLORS.chassis} />)}
-      {(vis.uca || vis.upright) && state.kind !== 'macpherson' && <PickJoint id="ucaOut" p={p.ucaOut} color={COLORS.uca} r={9} />}
-      {(vis.lca || vis.upright) && <PickJoint id="lcaOut" p={p.lcaOut} color={COLORS.lca} r={9} />}
+      {vis.chassis && (state.kind === 'custom' ? ([] as const) : state.kind === 'twistBeam' ? (['lcaFwd', 'lcaAft'] as const) : state.kind === 'beamLeaf' ? (['lcaFwd', 'lcaAft'] as const) : state.kind === 'beam4' || state.kind === 'beam3' ? (['lcaFwd', 'ucaFwd'] as const) : state.kind === 'rigid' ? ([] as const) : state.kind === 'macpherson' || state.kind === 'singleArm' ? (['lcaFwd', 'lcaAft'] as const) : (['ucaFwd', 'ucaAft', 'lcaFwd', 'lcaAft'] as const)).map((k) => <PickJoint key={k} id={k} p={p[k]} color={COLORS.chassis} />)}
+      {(vis.uca || vis.upright) && state.kind !== 'macpherson' && state.kind !== 'twistBeam' && state.kind !== 'beamLeaf' && state.kind !== 'custom' && <PickJoint id="ucaOut" p={p.ucaOut} color={COLORS.uca} r={9} />}
+      {(vis.lca || vis.upright) && state.kind !== 'custom' && <PickJoint id="lcaOut" p={p.lcaOut} color={COLORS.lca} r={9} />}
       {state.kind === 'multilink' && (vis.uca || vis.upright) && p.ucaOut2 && <PickJoint id="ucaOut2" p={p.ucaOut2} color={COLORS.uca} r={9} />}
       {state.kind === 'multilink' && (vis.lca || vis.upright) && p.lcaOut2 && <PickJoint id="lcaOut2" p={p.lcaOut2} color={COLORS.lca} r={9} />}
-      {vis.tieRod && <PickJoint id="trInner" p={p.trInner} color={COLORS.chassis} />}
+      {vis.tieRod && !isBeam(state.kind) && state.kind !== 'twistBeam' && state.kind !== 'custom' && <PickJoint id="trInner" p={p.trInner} color={COLORS.chassis} />}
+      {p.panhardChassis && <PickJoint id="phChs" p={p.panhardChassis} color={COLORS.chassis} />}
+      {p.panhardAxle && <PickJoint id="phAxle" p={p.panhardAxle} color={COLORS.lca} />}
       {vis.chassis && p.steerPivot1 && <PickJoint id="strPiv1" p={p.steerPivot1} color={COLORS.chassis} />}
       {vis.chassis && p.steerPivot2 && <PickJoint id="strPiv2" p={p.steerPivot2} color={COLORS.chassis} />}
       {vis.spring && p.damperChassis && <PickJoint id="dmpChassis" p={p.damperChassis} color={COLORS.chassis} />}
@@ -229,7 +260,7 @@ function Joints({ state, cur }: { state: CornerState; cur: Current }) {
       {vis.spring && p.rockerPivot2 && <PickJoint id="rkrPiv2" p={p.rockerPivot2} color={COLORS.chassis} />}
       {vis.spring && p.pushrodLower && <PickJoint id="prArm" p={p.pushrodLower} color={COLORS.tieRod} />}
       {vis.spring && p.pushrodUpper && <PickJoint id="prRkr" p={p.pushrodUpper} color={COLORS.spring} />}
-      {(vis.tieRod || vis.upright) && <PickJoint id="trOuter" p={p.trOuter} color={COLORS.tieRod} />}
+      {(vis.tieRod || vis.upright) && !isBeam(state.kind) && state.kind !== 'twistBeam' && state.kind !== 'custom' && <PickJoint id="trOuter" p={p.trOuter} color={COLORS.tieRod} />}
       {vis.wheel && <PickJoint id="wheelCenter" p={p.wheelCenter} color={COLORS.upright} r={6} />}
       {vis.wheel && <PickJoint id="contact" p={p.contact} color={COLORS.wheel} r={6} />}
       {/* Derived points are pickable for measuring. */}
@@ -250,25 +281,31 @@ function Chassis({ state, rackLimit, rackAxis }: { state: CornerState; rackLimit
   };
   // Chassis rails along the arms' pivot lines (a MacPherson has no upper arm: its rail is at the top mount).
   const rail = (q: Vec3) => ext(add(q, vec3(-120, 0, 120)), add(q, vec3(-120, 0, -120)));
-  const [u1, u2] = state.kind === 'rigid' ? rail(p.ucaOut) : state.kind === 'singleArm' ? ext(p.lcaFwd, p.lcaAft) : state.kind === 'macpherson' && p.strutTop ? ext(add(p.strutTop, vec3(0, 0, 120)), sub(p.strutTop, vec3(0, 0, 120))) : ext(p.ucaFwd, p.ucaAft);
-  const [l1, l2] = state.kind === 'rigid' ? rail(p.lcaOut) : ext(p.lcaFwd, p.lcaAft);
+  const beam = isBeam(state.kind) || state.kind === 'twistBeam';
+  const stub = (q: Vec3) => ext(add(q, vec3(0, 0, 60)), add(q, vec3(0, 0, -60)));
+  const [u1, u2] = state.kind === 'twistBeam' || state.kind === 'beamLeaf' ? stub(p.lcaFwd) : beam ? stub(p.ucaFwd) : state.kind === 'rigid' ? rail(p.ucaOut) : state.kind === 'singleArm' ? ext(p.lcaFwd, p.lcaAft) : state.kind === 'macpherson' && p.strutTop ? ext(add(p.strutTop, vec3(0, 0, 120)), sub(p.strutTop, vec3(0, 0, 120))) : ext(p.ucaFwd, p.ucaAft);
+  const [l1, l2] = state.kind === 'twistBeam' ? stub(p.lcaFwd) : state.kind === 'beamLeaf' ? stub(p.lcaAft) : beam ? stub(p.lcaFwd) : state.kind === 'rigid' ? rail(p.lcaOut) : ext(p.lcaFwd, p.lcaAft);
   const r1 = add(rackCenter, scale(rackAxis, -rackLimit));
   const r2 = add(rackCenter, scale(rackAxis, rackLimit));
   return (
     <group>
       <Part id="chassis">{(e) => (
         <>
-          <Seg a={u1} b={u2} color={e === 2 ? COLORS.select : COLORS.chassis} width={em(4, e)} />
-          <Seg a={l1} b={l2} color={e === 2 ? COLORS.select : COLORS.chassis} width={em(4, e)} />
-          <HitLink a={u1} b={u2} radius={14} />
-          <HitLink a={l1} b={l2} radius={14} />
+          {state.kind !== 'custom' && (
+            <>
+              <Seg a={u1} b={u2} color={e === 2 ? COLORS.select : COLORS.chassis} width={em(4, e)} />
+              <Seg a={l1} b={l2} color={e === 2 ? COLORS.select : COLORS.chassis} width={em(4, e)} />
+              <HitLink a={u1} b={u2} radius={14} />
+              <HitLink a={l1} b={l2} radius={14} />
+            </>
+          )}
           <Polyline
             pts={[vec3(0, 0, -400), vec3(0, 0, 400), vec3(0, 450, 400), vec3(0, 450, -400), vec3(0, 0, -400)]}
             color={COLORS.chassis} width={1} opacity={0.35}
           />
         </>
       )}</Part>
-      <Part id="rack">{(e) => p.steerPivot1 && p.steerPivot2 ? (
+      {!beam && state.kind !== 'custom' && <Part id="rack">{(e) => p.steerPivot1 && p.steerPivot2 ? (
         <>
           {/* Steering arm / plate: its pivot axis and the arm out to the inner tie-rod joint. */}
           <Seg a={p.steerPivot1} b={p.steerPivot2} color={e === 2 ? COLORS.select : COLORS.chassis} width={em(3, e)} />
@@ -280,7 +317,7 @@ function Chassis({ state, rackLimit, rackAxis }: { state: CornerState; rackLimit
           <Seg a={r1} b={r2} color={e === 2 ? COLORS.select : COLORS.chassis} width={em(2, e)} dashed={e === 0} />
           <HitLink a={r1} b={r2} radius={14} />
         </>
-      )}</Part>
+      )}</Part>}
     </group>
   );
 }

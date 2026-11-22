@@ -119,6 +119,54 @@ export const SAMPLE_TRAILING_ARM: DoubleWishboneGeometry = {
   damper: { chassis: vec3(470, 450, -60), arm: 'lca', armPoint: vec3(500, 60, -40) },
 };
 
+/**
+ * Sample solid rear axle, 3-link + Panhard rod: two lower trailing links, one upper link in the middle,
+ * the Panhard rod across at axle height (roll center ≈ its height, 260 mm), coilovers on the axle.
+ */
+export const SAMPLE_BEAM3: DoubleWishboneGeometry = {
+  kind: 'beam3',
+  uca: { fwd: vec3(0, 110, 400), aft: vec3(0, 110, 400), out: vec3(0, 160, 0) },
+  lca: { fwd: vec3(450, -40, 500), aft: vec3(450, -40, 500), out: vec3(450, -40, 0) },
+  panhard: { chassis: vec3(-450, 160, -50), axle: vec3(450, 160, -50) },
+  tieRod: { inner: vec3(200, 100, -120), outer: vec3(540, 100, -120) }, // unused
+  wheel: { center: WHEEL_CENTER, spinAxis: vec3(1, 0, 0), radius: WHEEL_RADIUS, width: 205 },
+  damper: { chassis: vec3(400, 500, -20), arm: 'upright', armPoint: vec3(400, 190, -20) },
+};
+
+/** Sample solid rear axle, 4-link: parallel lower trailing links, upper links angled in to locate it sideways. */
+export const SAMPLE_BEAM4: DoubleWishboneGeometry = {
+  kind: 'beam4',
+  uca: { fwd: vec3(120, 310, 420), aft: vec3(120, 310, 420), out: vec3(250, 280, 20) },
+  lca: { fwd: vec3(450, 60, 550), aft: vec3(450, 60, 550), out: vec3(450, 40, 0) },
+  tieRod: { inner: vec3(200, 100, -120), outer: vec3(540, 100, -120) }, // unused
+  wheel: { center: WHEEL_CENTER, spinAxis: vec3(1, 0, 0), radius: WHEEL_RADIUS, width: 205 },
+  damper: { chassis: vec3(400, 500, -30), arm: 'upright', armPoint: vec3(400, 190, -30) },
+};
+
+/**
+ * Sample twist beam (rear): trailing arms from bushings 450 mm ahead of the wheel, the beam's shear center on
+ * the centerline 150 mm behind the bushings (a little roll camber and roll steer); the beam's twist acts as
+ * the axle's anti-roll bar. Coilovers on the arms behind the wheel.
+ */
+export const SAMPLE_TWIST_BEAM: DoubleWishboneGeometry = {
+  kind: 'twistBeam',
+  uca: { fwd: vec3(250, 330, 150), aft: vec3(250, 330, -150), out: vec3(560, 300, -10) }, // unused
+  lca: { fwd: vec3(480, 100, 450), aft: vec3(0, 100, 300), out: vec3(480, 100, 0) },
+  tieRod: { inner: vec3(200, 100, -120), outer: vec3(540, 100, -120) }, // unused
+  wheel: { center: WHEEL_CENTER, spinAxis: vec3(1, 0, 0), radius: WHEEL_RADIUS, width: 205 },
+  damper: { chassis: vec3(430, 450, -80), arm: 'upright', armPoint: vec3(430, 100, -60) },
+};
+
+/** Sample solid rear axle on leaf springs: front eyes 650 mm ahead, shackles 650 mm behind, seats on top of the axle. */
+export const SAMPLE_LEAF: DoubleWishboneGeometry = {
+  kind: 'beamLeaf',
+  uca: { fwd: vec3(250, 330, 150), aft: vec3(250, 330, -150), out: vec3(560, 300, -10) }, // unused
+  lca: { fwd: vec3(450, 230, 650), aft: vec3(450, 260, -650), out: vec3(450, 180, 0) },
+  tieRod: { inner: vec3(200, 100, -120), outer: vec3(540, 100, -120) }, // unused
+  wheel: { center: WHEEL_CENTER, spinAxis: vec3(1, 0, 0), radius: WHEEL_RADIUS, width: 205 },
+  damper: { chassis: vec3(400, 500, -30), arm: 'upright', armPoint: vec3(400, 190, -30) }, // the leaf is the spring: this only sets its (virtual) installed length
+};
+
 /** Every preset the app offers: the double wishbone samples, then one of each other type. */
 export const PRESET_LAYOUTS: Layout[] = [
   ...SAMPLE_LAYOUTS,
@@ -126,4 +174,8 @@ export const PRESET_LAYOUTS: Layout[] = [
   { id: 'L', label: 'Multilink (5 links)', geometry: SAMPLE_MULTILINK },
   { id: 'S', label: 'Single arm: swing arm (long travel)', geometry: SAMPLE_SWING_ARM },
   { id: 'T', label: 'Single arm: trailing arm', geometry: SAMPLE_TRAILING_ARM },
+  { id: 'A4', label: 'Solid axle, 4-link', geometry: SAMPLE_BEAM4 },
+  { id: 'A3', label: 'Solid axle, 3-link + Panhard rod', geometry: SAMPLE_BEAM3 },
+  { id: 'TB', label: 'Twist beam', geometry: SAMPLE_TWIST_BEAM },
+  { id: 'LF', label: 'Solid axle on leaf springs', geometry: SAMPLE_LEAF },
 ];

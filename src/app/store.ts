@@ -18,6 +18,7 @@ import { GOAL_KINDS, GOAL_META, type GoalKind } from '../core/optimize/corner';
 import { VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, type VehicleGoalKind } from '../core/optimize/vehicle';
 import { DEFAULT_GRIP } from '../core/tire/grip';
 import { DEFAULT_MF, type MFCoeffs } from '../core/tire/magicFormula';
+import type { TirModel } from '../core/tire/tir';
 import type { DimMeasure } from '../core/suspension/dimensions';
 import type { TestDesign } from './tests';
 
@@ -326,6 +327,10 @@ export interface AppState extends DesignState {
   updateVehicleOptimizer(fn: (o: VehicleOptimizerSetup) => VehicleOptimizerSetup): void;
   setGripField(key: GripKey, text: string): void;
   setTireGripField(key: MFKey, text: string): void;
+  /** Use a tire model from a `.tir` file (null = back to the simple coefficients). */
+  setTireFile(m: TirModel | null): void;
+  /** Grip scale of the loaded file (λμ): side (LMUY) or braking / drive (LMUX). */
+  setTireScale(key: 'LMUY' | 'LMUX', value: number): void;
   resetTireGrip(): void;
   /** Write vehicle-optimized coordinates into each corner design (Undo keeps the previous geometry). */
   applyVehicleOptimized(updates: { root: CornerId; key: PointKey; axis: 0 | 1 | 2; value: number }[]): void;
@@ -650,6 +655,8 @@ export interface DesignState {
   grip: Record<GripKey, Field>;
   /** Tire grip model (Magic Formula coefficients). */
   tireGrip: Record<MFKey, Field>;
+  /** A tire model loaded from a `.tir` file: used instead of the simple coefficients while set. */
+  tireFile: TirModel | null;
   /** Held dimensions between two points (Measure → set, hold). Kept like CAD sketch dimensions. */
   dimensions: HeldDimension[];
   /** Tests (chains of segments) for the Tests workspace. */
@@ -705,7 +712,7 @@ export const pickDesign = (s: DesignState): DesignState => ({
   droop: s.droop, bump: s.bump, driver: s.driver,
   corners: s.corners, links: s.links, settings: s.settings, activeCorner: s.activeCorner,
   vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode, shared: s.shared, locks: s.locks,
-  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, tireGrip: s.tireGrip, dimensions: s.dimensions, tests: s.tests,
+  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, tireGrip: s.tireGrip, tireFile: s.tireFile, dimensions: s.dimensions, tests: s.tests,
 });
 
 /** The default layout (File → New). */
@@ -784,6 +791,7 @@ export function defaultDesign(presetId = 'C'): DesignState {
     vehicleOptimizer: defaultVehicleOptimizerSetup(),
     grip: defaultGrip(),
     tireGrip: defaultTireGrip(),
+    tireFile: null,
     dimensions: [],
     tests: [],
   };
@@ -922,6 +930,12 @@ export const useApp = create<AppState>((set, get) => ({
     set({ tireGrip: { ...g, [key]: parseField(text, MF_META[key].quantity, g[key]) } });
   },
   resetTireGrip: () => set({ tireGrip: defaultTireGrip() }),
+  setTireFile: (m) => set({ tireFile: m }),
+  setTireScale: (key, value) => {
+    const f = get().tireFile;
+    if (!f || !(value > 0)) return;
+    set({ tireFile: { ...f, p: { ...f.p, [key]: value } } });
+  },
   vehOptUndo: null,
   dimViolations: [],
   holdDimension: (d) => {

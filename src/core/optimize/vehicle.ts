@@ -16,7 +16,7 @@ import { fitFreeLength } from '../suspension/spring';
 import type { TireProfile } from '../tire/geometry';
 import type { TireForceModel } from '../tire/model';
 import { patchGrip, DEFAULT_GRIP, type GripModel, type PatchGrip } from '../tire/grip';
-import { DEFAULT_MF, type MFCoeffs } from '../tire/magicFormula';
+import { DEFAULT_MF, type TireGrip } from '../tire/magicFormula';
 import { CornerTable } from '../vehicle/cornerTable';
 import {
   CORNER_IDS, isFront, placement, poseFns, solveVehicle, staticCornerLoads, designGroundY,
@@ -115,7 +115,7 @@ export interface VehicleProblem {
   /** Contact-patch pressure model (contact-area goal). */
   grip?: GripModel;
   /** Tire grip model (Magic Formula): grip, slip and pass / fail. */
-  tireGrip?: MFCoeffs;
+  tireGrip?: TireGrip;
   keepClose?: number;
   maxIterations?: number;
   /** Gradient runs: 1 = from the current design only; more = also from the best DOE samples (wider search). */

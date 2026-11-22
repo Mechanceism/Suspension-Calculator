@@ -1,10 +1,12 @@
 /**
- * Tire grip model editor (Magic Formula): the coefficients (basic first, the rest under Advanced), live
+ * Tire grip model editor (Magic Formula): the simple model's coefficients (basic first, the rest under
+ * Advanced) or a model imported from a .tir file (with its grip scales), live
  * curves of force ÷ load vs slip angle and slip ratio, and what they mean at the nominal load (peak μ,
  * best lean, sliding share). The contact-patch pressure model below it only feeds the contact-area goal.
  */
-import { useMemo } from 'react';
-import { mfLateral, mfLongitudinal, mfPeaks, mfPeakSlips, type MFCoeffs } from '../../core/tire/magicFormula';
+import { useMemo, useRef, useState } from 'react';
+import { mfLateral, mfLongitudinal, mfPeaks, mfPeakSlips, nominalLoad, type TireGrip } from '../../core/tire/magicFormula';
+import { parseTir, type TirModel } from '../../core/tire/tir';
 import { useApp, MF_KEYS, MF_META, GRIP_META, type MFKey } from '../store';
 import { tireGripOf } from '../optimizer';
 import { FieldRows, fmt } from './FieldRows';
@@ -41,56 +43,96 @@ function Plot({ series, xMax, xLabel, xFmt }: { series: Series[]; xMax: number; 
 
 const LOADS = [{ k: 0.5, color: '#7fd1c7' }, { k: 1, color: '#e4e7ec' }, { k: 1.5, color: '#c3a6ff' }];
 
-function curves(m: MFCoeffs) {
+function curves(m: TireGrip) {
+  const fz0 = nominalLoad(m);
   const n = 60;
   const lat: Series[] = LOADS.map(({ k, color }) => ({
     label: `${k} × Fz0, level`, color,
-    pts: Array.from({ length: n + 1 }, (_, i) => { const a = (15 * i) / n; return [a, mfLateral(m, a * DEG, { fz: k * m.fz0 }) / (k * m.fz0)] as [number, number]; }),
+    pts: Array.from({ length: n + 1 }, (_, i) => { const a = (15 * i) / n; return [a, mfLateral(m, a * DEG, { fz: k * fz0 }) / (k * fz0)] as [number, number]; }),
   }));
   for (const [lean, dash, label] of [[2, '4 3', 'Fz0, leaning 2° into the turn'], [-2, '1 3', 'Fz0, leaning 2° out of the turn']] as const) {
     lat.push({
       label, color: '#ffd166', dash,
-      pts: Array.from({ length: n + 1 }, (_, i) => { const a = (15 * i) / n; return [a, mfLateral(m, a * DEG, { fz: m.fz0, gamma: lean * DEG }) / m.fz0] as [number, number]; }),
+      pts: Array.from({ length: n + 1 }, (_, i) => { const a = (15 * i) / n; return [a, mfLateral(m, a * DEG, { fz: fz0, gamma: lean * DEG }) / fz0] as [number, number]; }),
     });
   }
   const lon: Series[] = LOADS.map(({ k, color }) => ({
     label: `${k} × Fz0`, color,
-    pts: Array.from({ length: n + 1 }, (_, i) => { const s = (0.3 * i) / n; return [s, mfLongitudinal(m, s, { fz: k * m.fz0 }) / (k * m.fz0)] as [number, number]; }),
+    pts: Array.from({ length: n + 1 }, (_, i) => { const s = (0.3 * i) / n; return [s, mfLongitudinal(m, s, { fz: k * fz0 }) / (k * fz0)] as [number, number]; }),
   }));
   return { lat, lon };
 }
 
 /** The best lean toward the turn (deg) at the nominal load, and the peak there. */
-function bestLean(m: MFCoeffs) {
+function bestLean(m: TireGrip) {
+  const fz0 = nominalLoad(m);
   let best = 0, peak = -Infinity;
-  for (let g = -6; g <= 6; g += 0.05) {
-    const y = mfPeaks(m, { fz: m.fz0, gamma: g * DEG }).y;
+  for (let g = -6; g <= 6; g += 0.1) {
+    const y = mfPeaks(m, { fz: fz0, gamma: g * DEG }).y;
     if (y > peak) { peak = y; best = g; }
   }
   return { best, peak };
 }
 
+/** Load a .tir file: parse, report, use it. */
+async function importTir(file: File) {
+  const s = useApp.getState();
+  const r = parseTir(await file.text(), file.name);
+  if (!r.model) { s.notify(`Couldn't use ${file.name}:\n${r.errors.join('\n')}`, 'error'); return; }
+  s.setTireFile(r.model);
+  s.notify(`Tire model from ${file.name} (MF ${r.model.version}, ${Object.keys(r.model.p).length} values).${r.warnings.length ? `\n${r.warnings.join('\n')}` : ''}`, r.warnings.length ? 'warn' : 'info');
+}
+
 export function TireGripFields() {
   const tireGrip = useApp((s) => s.tireGrip);
+  const tireFile = useApp((s) => s.tireFile);
   const grip = useApp((s) => s.grip);
   const setField = useApp((s) => s.setTireGripField);
   const setGripField = useApp((s) => s.setGripField);
+  const setTireFile = useApp((s) => s.setTireFile);
+  const setTireScale = useApp((s) => s.setTireScale);
   const reset = useApp((s) => s.resetTireGrip);
-  const m = useMemo(() => tireGripOf(tireGrip), [tireGrip]);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [lastFile, setLastFile] = useState<TirModel | null>(null);
+  const m = useMemo(() => tireGripOf(tireGrip, tireFile), [tireGrip, tireFile]);
+  const fz0 = nominalLoad(m);
   const plots = useMemo(() => curves(m), [m]);
   const info = useMemo(() => {
-    const pk = mfPeaks(m, { fz: m.fz0 });
-    const half = mfPeaks(m, { fz: 0.5 * m.fz0 });
-    const slips = mfPeakSlips(m, { fz: m.fz0 });
+    const pk = mfPeaks(m, { fz: fz0 });
+    const half = mfPeaks(m, { fz: 0.5 * fz0 });
+    const slips = mfPeakSlips(m, { fz: fz0 });
     return { pk, half, slips, lean: bestLean(m) };
-  }, [m]);
+  }, [m, fz0]);
   const row = (k: MFKey) => ({ label: MF_META[k].label, field: tireGrip[k], unit: MF_META[k].unit, hint: MF_META[k].hint, onCommit: (t: string) => setField(k, t) });
+  const scaleRow = (key: 'LMUY' | 'LMUX', label: string, hint: string) => {
+    const v = tireFile?.p[key] ?? 1;
+    return { label, field: { text: String(v), value: v }, unit: '×', hint, onCommit: (t: string) => { const n = Number(t); if (n > 0) setTireScale(key, n); } };
+  };
+  const leanGain = (info.lean.peak / info.pk.y - 1) * 100;
+  const shown = tireFile ?? lastFile;
   return (
     <div className="tire-grip">
-      <p className="hint">
-        <b>Magic Formula</b> (Pacejka). The coefficients are <b>generic</b>: a plausible tire, not fitted to a real one. Enter your
-        tire's values when you have them (a .tir import / data fit comes later).
-      </p>
+      <div className="jm-row" title="The simple model has generic, editable coefficients. A .tir file is a fitted Magic Formula model of a real tire (MF 6.1 / 6.2 or 5.2).">
+        <span className="muted">Model</span>
+        <button className={`chip${!tireFile ? ' on' : ''}`} onClick={() => { if (tireFile) { setLastFile(tireFile); setTireFile(null); } }}>Simple (generic)</button>
+        {shown && (
+          <button className={`chip${tireFile ? ' on' : ''}`} onClick={() => { if (!tireFile && lastFile) setTireFile(lastFile); }}>{shown.name}</button>
+        )}
+        <button className="chip" onClick={() => fileInput.current?.click()} title="Load a .tir file (Magic Formula tire property file)">Import .tir</button>
+        <input ref={fileInput} type="file" accept=".tir,.TIR,.txt" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) void importTir(f); e.target.value = ''; }} />
+      </div>
+      {tireFile ? (
+        <p className="hint">
+          <b>{tireFile.name}</b>: Magic Formula {tireFile.version} (FITTYP {tireFile.fittyp || '—'}), nominal load {fmt(tireFile.fnomin, 0)} N
+          {tireFile.nompres > 0 ? `, nominal pressure ${fmt(tireFile.nompres, 0)} kPa` : ''}, {Object.keys(tireFile.p).length} values. Saved in your project.
+          Forces use the full model; the car uses each tire&apos;s peak in the direction it pushes (both directions averaged, since left and right tires are mirror images).
+        </p>
+      ) : (
+        <p className="hint">
+          <b>Magic Formula</b> (Pacejka), simple form. The coefficients are <b>generic</b>: a plausible tire, not fitted to a real one.
+          Enter your tire&apos;s values, or <b>Import .tir</b> to use a fitted model of your tire.
+        </p>
+      )}
       <div className="tire-plots">
         <div>
           <div className="small-text muted">Side force ÷ load vs slip angle</div>
@@ -106,24 +148,38 @@ export function TireGripFields() {
         <span><i className="dash" />Fz0 leaning 2° into / out of the turn</span>
       </p>
       <p className="small-text">
-        At Fz0: peak side μ <b>{fmt(info.pk.y / m.fz0, 2)}</b> (at half load {fmt(info.half.y / (0.5 * m.fz0), 2)}) at {fmt(info.slips.alpha / DEG, 1)}° slip
-        {' '}· sliding keeps {fmt(info.pk.slideY * 100, 0)} % · best lean {fmt(info.lean.best, 1)}° into the turn (+{fmt((info.lean.peak / info.pk.y - 1) * 100, 1)} %)
-        {' '}· peak braking μ {fmt(info.pk.x / m.fz0, 2)}, locked keeps {fmt(info.pk.slideX * 100, 0)} %
+        At Fz0 ({fmt(fz0, 0)} N): peak side μ <b>{fmt(info.pk.y / fz0, 2)}</b> (at half load {fmt(info.half.y / (0.5 * fz0), 2)}) at {fmt(info.slips.alpha / DEG, 1)}° slip
+        {' '}· sliding keeps {fmt(info.pk.slideY * 100, 0)} % · best lean {fmt(Math.abs(info.lean.best), 1)}° {info.lean.best >= 0 ? 'into' : 'away from'} the turn ({leanGain >= 0 ? '+' : ''}{fmt(leanGain, 1)} %)
+        {' '}· peak braking μ {fmt(info.pk.x / fz0, 2)}, locked keeps {fmt(info.pk.slideX * 100, 0)} %
       </p>
-      <FieldRows rows={MF_KEYS.filter((k) => MF_META[k].basic).map(row)} />
-      <details className="tire-advanced">
-        <summary>Advanced coefficients</summary>
-        <FieldRows rows={MF_KEYS.filter((k) => !MF_META[k].basic).map(row)} />
-      </details>
-      <div className="jm-row">
-        <button className="chip" onClick={() => { if (confirm('Reset every tire coefficient to the generic defaults?')) reset(); }}>Reset to generic</button>
-      </div>
+      {tireFile ? (
+        <>
+          <FieldRows rows={[
+            scaleRow('LMUY', 'Side grip scale (λμy)', 'Scales the peak side force (a test rig belt grips more than a road: try 0.6–0.8 for real surfaces). 1 = as fitted.'),
+            scaleRow('LMUX', 'Braking / drive grip scale (λμx)', 'Scales the peak braking / drive force. 1 = as fitted.'),
+          ]} />
+          <div className="jm-row">
+            <button className="chip" onClick={() => { if (confirm(`Stop using ${tireFile.name} and go back to the simple model?`)) { setLastFile(null); setTireFile(null); } }}>Remove the file</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <FieldRows rows={MF_KEYS.filter((k) => MF_META[k].basic).map(row)} />
+          <details className="tire-advanced">
+            <summary>Advanced coefficients</summary>
+            <FieldRows rows={MF_KEYS.filter((k) => !MF_META[k].basic).map(row)} />
+          </details>
+          <div className="jm-row">
+            <button className="chip" onClick={() => { if (confirm('Reset every tire coefficient to the generic defaults?')) reset(); }}>Reset to generic</button>
+          </div>
+        </>
+      )}
       <details className="tire-advanced">
         <summary>Contact patch (contact-area goal)</summary>
         <FieldRows rows={[{ label: GRIP_META.carcassShare.label, field: grip.carcassShare, unit: '', hint: GRIP_META.carcassShare.hint, onCommit: (t: string) => setGripField('carcassShare', t) }]} />
         <p className="hint">
           The patch shape and its pressure spread come from the tire geometry: they feed the <i>contact area</i> goal and the
-          pressure readouts. Grip, slip and pass / fail use the Magic Formula above.
+          pressure readouts. Grip, slip and pass / fail use the tire grip model above.
         </p>
       </details>
     </div>

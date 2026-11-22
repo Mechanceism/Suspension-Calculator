@@ -11,7 +11,7 @@
  */
 import { vec3, addScaled, dot, Y_AXIS, type Vec3 } from '../math/vec3';
 import { patchGrip, DEFAULT_GRIP, type GripModel, type PatchGrip } from '../tire/grip';
-import { mfPeaks, DEFAULT_MF, type MFCoeffs } from '../tire/magicFormula';
+import { mfPeaks, DEFAULT_MF, type TireGrip } from '../tire/magicFormula';
 import { solveLoadedHeight, type TireForceModel } from '../tire/model';
 import type { TireProfile } from '../tire/geometry';
 import { DoubleWishbone, type CornerState, type DoubleWishboneGeometry } from '../suspension/doubleWishbone';
@@ -89,7 +89,7 @@ export interface CornerProblem {
   /** Weight of the "prefer small changes" term (per 10 mm moved). */
   keepClose?: number;
   /** Tire, static corner load and grip model, for the contact-area and grip goals. */
-  tire?: { profile: TireProfile; model: TireForceModel; staticLoad: number; rollLoadFactor: number; grip?: GripModel; tireGrip?: MFCoeffs; pressure?: number };
+  tire?: { profile: TireProfile; model: TireForceModel; staticLoad: number; rollLoadFactor: number; grip?: GripModel; tireGrip?: TireGrip; pressure?: number };
   maxIterations?: number;
   /** Gradient runs: 1 = from the current design only; more = also from the best DOE samples (wider search). */
   starts?: number;

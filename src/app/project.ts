@@ -22,6 +22,7 @@
  *      contact-area goal); a format-8 friction coefficient μ ≠ 1 scales the peak μ's
  *  10  ride over time (Phase B): body roll and pitch inertia, tire damping (vehicle inputs)
  *  11  two-stage dampers (mode, high-speed rates, knees), optimizer search settings
+ *  12  tire model from a .tir file (its coefficients), when one is loaded
  */
 import pkg from '../../package.json';
 import { parseValue, type Quantity } from '../core/units/units';
@@ -29,6 +30,7 @@ import { CORNER_IDS, type CornerId } from '../core/vehicle/vehicle';
 import { DIM_MEASURES } from '../core/suspension/dimensions';
 import { newSegment, newTestId, newFeature, OFF, defaultChecks, type TestDesign, type TestSegment } from './tests';
 import { CHECK_IDS, CHECK_META, type CheckProfile } from '../core/tests/checks';
+import type { TirModel } from '../core/tire/tir';
 import {
   defaultDesign, mergedCorners, rootOf, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META, SPRING_KEYS, SPRING_META,
   DAMPER_KEYS, DAMPER_META, STEER_KEYS, STEER_META, TIRE_KEYS, TIRE_META, VEHICLE_KEYS, VEHICLE_META,
@@ -40,7 +42,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 11;
+export const FORMAT_VERSION = 12;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -91,6 +93,8 @@ export interface ProjectFile {
   grip: Record<string, FieldJson>;
   /** Tire grip model: Magic Formula coefficients (format 9). */
   tireGrip?: Record<string, FieldJson>;
+  /** Tire model loaded from a .tir file (format 12): its coefficients, by name. */
+  tireFile?: { name: string; fittyp: number; version: '6.1' | '5.2'; fnomin: number; nompres: number; p: Record<string, number> } | null;
   /** Tests (chains of segments). */
   tests?: unknown[];
   /** Held dimensions (points named per corner, e.g. FL_UCA_Fwd). */
@@ -164,6 +168,7 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
     },
     grip: mapFields(GRIP_KEYS, d.grip),
     tireGrip: mapFields(MF_KEYS, d.tireGrip),
+    tireFile: d.tireFile ? { name: d.tireFile.name, fittyp: d.tireFile.fittyp, version: d.tireFile.version, fnomin: d.tireFile.fnomin, nompres: d.tireFile.nompres, p: { ...d.tireFile.p } } : null,
     ...(include.tests ? { tests: JSON.parse(JSON.stringify(d.tests)) as unknown[] } : {}),
     dimensions: d.dimensions.map((x) => ({
       root: x.root, a: cornerParam(x.root, POINT_NAMES[x.a]), b: cornerParam(x.root, POINT_NAMES[x.b]),
@@ -258,6 +263,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   9: (f) => ({ ...f, formatVersion: 10 }),
   // 10 → 11: linear dampers (two-stage inputs take the generic defaults), local search.
   10: (f) => ({ ...f, formatVersion: 11 }),
+  // 11 → 12: no tire file (the simple tire model).
+  11: (f) => ({ ...f, formatVersion: 12 }),
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */
@@ -355,6 +362,17 @@ function readTests(raw: unknown, warnings: string[]): TestDesign[] {
     });
   }
   return out;
+}
+
+/** Read a saved .tir tire model; anything malformed is dropped with a warning (the simple model is used). */
+function readTireFile(raw: unknown, warnings: string[]): TirModel | null {
+  if (raw === undefined || raw === null) return null;
+  if (!isObj(raw) || !isObj(raw.p) || typeof raw.fnomin !== 'number' || !(raw.fnomin > 0)) { warnings.push('tire file: unreadable, using the simple tire model'); return null; }
+  const p = Object.fromEntries(Object.entries(raw.p).filter(([, v]) => typeof v === 'number' && Number.isFinite(v))) as Record<string, number>;
+  return {
+    kind: 'tir', name: typeof raw.name === 'string' ? raw.name : 'tire.tir', fittyp: typeof raw.fittyp === 'number' ? raw.fittyp : 61,
+    version: raw.version === '5.2' ? '5.2' : '6.1', fnomin: raw.fnomin, nompres: typeof raw.nompres === 'number' ? raw.nompres : 0, p,
+  };
 }
 
 /** Read held dimensions; unknown points or measures are dropped with a warning. */
@@ -611,6 +629,7 @@ export function importProject(data: unknown): ImportResult {
     grip: isObj(f.grip) ? readRecord(f.grip, GRIP_KEYS, (k) => GRIP_META[k].quantity, defaultGrip(), 'grip', warnings) : defaultGrip(),
     // Missing coefficients take the generic defaults quietly (a migrated file carries only the ones it changed).
     tireGrip: isObj(f.tireGrip) ? readRecord(f.tireGrip, MF_KEYS, (k) => MF_META[k].quantity, defaultTireGrip(), 'tire grip', []) : defaultTireGrip(),
+    tireFile: readTireFile(f.tireFile, warnings),
     dimensions: readDimensions(f.dimensions, warnings),
     tests: readTests(f.tests, warnings),
   };

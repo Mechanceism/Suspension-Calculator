@@ -19,7 +19,7 @@ import { localPatch, type TireProfile } from '../tire/geometry';
 import { tireForce, solveLoadedHeight, type TireForceModel } from '../tire/model';
 import { springForce, type SpringSpec } from '../suspension/spring';
 import type { CornerTable } from './cornerTable';
-import { mfPeaks, mfSlipAngle, mfSlipRatio, type MFCoeffs } from '../tire/magicFormula';
+import { mfPeaks, mfSlipAngle, mfSlipRatio, type TireGrip } from '../tire/magicFormula';
 
 export type CornerId = 'FL' | 'FR' | 'RL' | 'RR';
 export const CORNER_IDS: CornerId[] = ['FL', 'FR', 'RL', 'RR'];
@@ -142,7 +142,7 @@ export interface VehicleInput {
    * use the same fraction of their grip (friction ellipse with their braking / drive force), and the
    * result reports grip use, slip angles and slip ratios. Without it, lateral force follows tire load.
    */
-  tireGrip?: MFCoeffs;
+  tireGrip?: TireGrip;
   /** Differential per axle for chassis-driven corners (default open). */
   diff?: { front?: DiffType; rear?: DiffType };
   /** Limited-slip torque bias ratio (default 2.5). */

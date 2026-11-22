@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { defaultDesign, type AppState } from '../src/app/store';
-import { serializeProject, importProject } from '../src/app/project';
+import { serializeProject, importProject, FORMAT_VERSION } from '../src/app/project';
 import { TEST_PRESETS, newTestId, segmentSpec, isOff } from '../src/app/tests';
 import { buildVehicleProblem } from '../src/app/optimizer';
 import { testStates } from '../src/core';
@@ -182,7 +182,7 @@ describe('priority ranks', () => {
     old.formatVersion = 9;
     for (const k of ['rollInertia', 'pitchInertia', 'tireDamping']) delete old.vehicle.fields[k];
     const back = importProject(old);
-    expect(back.warnings).toEqual(['Upgraded from file format 9 to 10.', 'Upgraded from file format 10 to 11.']);
+    expect(back.warnings).toEqual(Array.from({ length: FORMAT_VERSION - 9 }, (_, i) => `Upgraded from file format ${i + 9} to ${i + 10}.`));
     expect(back.design.vehicle.rollInertia.value).toBe(35);
   });
 

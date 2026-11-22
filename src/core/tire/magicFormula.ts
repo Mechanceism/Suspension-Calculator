@@ -21,6 +21,14 @@
  * The default coefficients are GENERIC (a plausible tire, not fitted to any real one).
  */
 
+import { tirLateralToward, tirLongitudinalToward, type TirModel } from './tir';
+
+/** The tire grip model: the simple generic subset (editable) or a full model loaded from a `.tir` file. */
+export type TireGrip = MFCoeffs | TirModel;
+const isTir = (m: TireGrip): m is TirModel => (m as TirModel).kind === 'tir';
+/** Nominal load of either model, N. */
+export const nominalLoad = (m: TireGrip) => (isTir(m) ? m.fnomin : m.fz0);
+
 export interface MFCoeffs {
   /** Nominal load Fz0, N. */
   fz0: number;
@@ -89,9 +97,13 @@ function peakSlip(c: Curve, max: number): number {
 }
 
 /** Lateral force at slip angle α (rad), N. */
-export const mfLateral = (m: MFCoeffs, alpha: number, i: MFInputs): number => curve(lateralCurve(m, i), alpha);
+export const mfLateral = (m: TireGrip, alpha: number, i: MFInputs): number => (isTir(m)
+  ? Math.sign(alpha || 1) * tirLateralToward(m, Math.abs(alpha), i.fz, Math.sign(alpha || 1) * (i.gamma ?? 0), i.pressure)
+  : curve(lateralCurve(m, i), alpha));
 /** Longitudinal force at slip ratio κ, N. */
-export const mfLongitudinal = (m: MFCoeffs, kappa: number, i: MFInputs): number => curve(longitudinalCurve(m, i), kappa);
+export const mfLongitudinal = (m: TireGrip, kappa: number, i: MFInputs): number => (isTir(m)
+  ? Math.sign(kappa || 1) * tirLongitudinalToward(m, Math.abs(kappa), i.fz, i.gamma ?? 0, i.pressure)
+  : curve(longitudinalCurve(m, i), kappa));
 
 export interface MFPeaks {
   /** Peak lateral force in the + direction (camber thrust included), N. */
@@ -109,7 +121,8 @@ export interface MFPeaks {
 const ALPHA_MAX = 1.2; // rad
 const KAPPA_MAX = 1.0;
 
-export function mfPeaks(m: MFCoeffs, i: MFInputs): MFPeaks {
+export function mfPeaks(m: TireGrip, i: MFInputs): MFPeaks {
+  if (isTir(m)) return tirPeaksCached(m, i);
   const cy = lateralCurve(m, i), cx = longitudinalCurve(m, i);
   const y = Math.max(0, curve(cy, peakSlip(cy, ALPHA_MAX)));
   const x = Math.max(0, curve(cx, peakSlip(cx, KAPPA_MAX)));
@@ -129,11 +142,95 @@ function invert(c: Curve, f: number, max: number): number {
 }
 
 /** Slip angle (rad) that gives lateral force fy, NaN beyond the peak. */
-export const mfSlipAngle = (m: MFCoeffs, fy: number, i: MFInputs): number => invert(lateralCurve(m, i), fy, ALPHA_MAX);
+export const mfSlipAngle = (m: TireGrip, fy: number, i: MFInputs): number => (isTir(m)
+  ? invertToward((a) => tirLateralToward(m, a, i.fz, i.gamma ?? 0, i.pressure), fy, TIR_ALPHA)
+  : invert(lateralCurve(m, i), fy, ALPHA_MAX));
 /** Slip ratio that gives longitudinal force fx, NaN beyond the peak. */
-export const mfSlipRatio = (m: MFCoeffs, fx: number, i: MFInputs): number => invert(longitudinalCurve(m, i), fx, KAPPA_MAX);
+export const mfSlipRatio = (m: TireGrip, fx: number, i: MFInputs): number => (isTir(m)
+  ? invertToward((k) => tirLongitudinalToward(m, k, i.fz, i.gamma ?? 0, i.pressure), fx, TIR_KAPPA)
+  : invert(longitudinalCurve(m, i), fx, KAPPA_MAX));
 
 /** Peak slip angle (rad) and slip ratio: past these the tire slides. */
-export function mfPeakSlips(m: MFCoeffs, i: MFInputs): { alpha: number; kappa: number } {
+export function mfPeakSlips(m: TireGrip, i: MFInputs): { alpha: number; kappa: number } {
+  if (isTir(m)) {
+    return {
+      alpha: scanPeak((a) => tirLateralToward(m, a, i.fz, i.gamma ?? 0, i.pressure), TIR_ALPHA).at,
+      kappa: scanPeak((k) => tirLongitudinalToward(m, k, i.fz, i.gamma ?? 0, i.pressure), TIR_KAPPA).at,
+    };
+  }
   return { alpha: peakSlip(lateralCurve(m, i), ALPHA_MAX), kappa: peakSlip(longitudinalCurve(m, i), KAPPA_MAX) };
+}
+
+// ---------------------------------------------------------------- .tir models: numeric peaks, cached
+
+const TIR_ALPHA = 0.6; // rad scanned for the side-force peak
+const TIR_KAPPA = 0.5;
+
+/** Largest value of f on [0, max] (scan, then golden-section refine). */
+function scanPeak(f: (x: number) => number, max: number, n = 60): { at: number; value: number } {
+  let bi = 0, bv = -Infinity;
+  for (let k = 0; k <= n; k++) { const v = f((max * k) / n); if (v > bv) { bv = v; bi = k; } }
+  let a = (max * Math.max(0, bi - 1)) / n, b = (max * Math.min(n, bi + 1)) / n;
+  const r = (Math.sqrt(5) - 1) / 2;
+  let c = b - r * (b - a), d = a + r * (b - a), fc = f(c), fd = f(d);
+  for (let it = 0; it < 30; it++) {
+    if (fc > fd) { b = d; d = c; fd = fc; c = b - r * (b - a); fc = f(c); } else { a = c; c = d; fc = fd; d = a + r * (b - a); fd = f(d); }
+  }
+  const at = (a + b) / 2, v = f(at);
+  return v >= bv ? { at, value: v } : { at: (max * bi) / n, value: bv };
+}
+
+/** Slip on the rising part of a toward-frame curve that gives |force| (sign of force); NaN past the peak. */
+function invertToward(f: (x: number) => number, force: number, max: number): number {
+  const target = Math.abs(force);
+  const pk = scanPeak(f, max);
+  if (target > pk.value + 1e-9) return NaN;
+  if (target <= f(0)) return 0;
+  let lo = 0, hi = pk.at;
+  for (let k = 0; k < 50; k++) { const mid = (lo + hi) / 2; if (f(mid) < target) lo = mid; else hi = mid; }
+  return Math.sign(force || 1) * (lo + hi) / 2;
+}
+
+function tirPeaksRaw(m: TirModel, fz: number, gamma: number, pressure?: number): MFPeaks {
+  const fy = (a: number) => tirLateralToward(m, a, fz, gamma, pressure);
+  const fx = (k: number) => tirLongitudinalToward(m, k, fz, gamma, pressure);
+  const py = scanPeak(fy, TIR_ALPHA), px = scanPeak(fx, TIR_KAPPA);
+  const h = 1e-4;
+  return {
+    y: Math.max(0, py.value), x: Math.max(0, px.value),
+    slideY: py.value > 0 ? Math.max(0, Math.min(1, fy(1.2) / py.value)) : 1,
+    slideX: px.value > 0 ? Math.max(0, Math.min(1, fx(1.0) / px.value)) : 1,
+    ky: (fy(h) - fy(-h)) / (2 * h), kx: (fx(h) - fx(0)) / h,
+  };
+}
+
+interface PeakTable { fzMax: number; gMax: number; nf: number; ng: number; data: MFPeaks[] }
+const tables = new WeakMap<TirModel, Map<string, PeakTable>>();
+const PEAK_KEYS = ['y', 'x', 'slideY', 'slideX', 'ky', 'kx'] as const;
+
+/** Peaks from a table over load (0 … 4·Fz0) and lean (±0.15 rad), per pressure: the car calls this a lot. */
+function tirPeaksCached(m: TirModel, i: MFInputs): MFPeaks {
+  let byP = tables.get(m);
+  if (!byP) { byP = new Map(); tables.set(m, byP); }
+  const pk = i.pressure !== undefined && Number.isFinite(i.pressure) ? i.pressure.toFixed(1) : '-';
+  let t = byP.get(pk);
+  if (!t) {
+    const nf = 25, ng = 13, fzMax = 4 * m.fnomin, gMax = 0.15;
+    const data: MFPeaks[] = [];
+    for (let a = 0; a < nf; a++) for (let b = 0; b < ng; b++) data.push(tirPeaksRaw(m, (fzMax * a) / (nf - 1) || 1, -gMax + (2 * gMax * b) / (ng - 1), i.pressure));
+    t = { fzMax, gMax, nf, ng, data };
+    byP.set(pk, t);
+  }
+  const fa = Math.min(t.nf - 1, Math.max(0, (Math.max(0, i.fz) / t.fzMax) * (t.nf - 1)));
+  const gb = Math.min(t.ng - 1, Math.max(0, (((i.gamma ?? 0) + t.gMax) / (2 * t.gMax)) * (t.ng - 1)));
+  const a0 = Math.min(t.nf - 2, Math.floor(fa)), b0 = Math.min(t.ng - 2, Math.floor(gb));
+  const u = fa - a0, v = gb - b0;
+  const at = (a: number, b: number) => t!.data[a * t!.ng + b]!;
+  const out = {} as MFPeaks;
+  for (const k of PEAK_KEYS) {
+    out[k] = (1 - u) * ((1 - v) * at(a0, b0)[k] + v * at(a0, b0 + 1)[k]) + u * ((1 - v) * at(a0 + 1, b0)[k] + v * at(a0 + 1, b0 + 1)[k]);
+  }
+  // Beyond 4·Fz0: scale the peaks with load.
+  if (i.fz > t.fzMax) { out.y *= i.fz / t.fzMax; out.x *= i.fz / t.fzMax; }
+  return out;
 }

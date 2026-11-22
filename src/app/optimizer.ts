@@ -11,7 +11,8 @@ import {
   type VehicleProblem, type VehicleReport, type VehicleVariable, type VehicleHold,
 } from '../core/optimize/vehicle';
 import type { GripModel } from '../core/tire/grip';
-import type { MFCoeffs } from '../core/tire/magicFormula';
+import type { MFCoeffs, TireGrip } from '../core/tire/magicFormula';
+import type { TirModel } from '../core/tire/tir';
 import type { TireForceModel } from '../core/tire/model';
 import { CORNER_IDS, tirePressure, type AxleShared, type CornerId, type DamperSpec } from '../core/vehicle/vehicle';
 import { vec3 } from '../core/math/vec3';
@@ -54,8 +55,9 @@ export const setupOf = (s: AppState): OptimizerSetup => s.optimizer[rootOf(s.act
 export const RIGID_TIRE: TireForceModel = { kind: 'stiffness', rate: 1e5 };
 
 /** Magic Formula coefficients from their fields. */
-export const tireGripOf = (g: Record<MFKey, Field>): MFCoeffs =>
-  Object.fromEntries(MF_KEYS.map((k) => [k, g[k].value])) as unknown as MFCoeffs;
+/** The tire grip model in use: a loaded `.tir` file, or the simple coefficients. */
+export const tireGripOf = (g: Record<MFKey, Field>, file?: TirModel | null): TireGrip =>
+  file ?? (Object.fromEntries(MF_KEYS.map((k) => [k, g[k].value])) as unknown as MFCoeffs);
 
 export const gripModelOf = (g: Record<GripKey, Field>): GripModel =>
   Object.fromEntries(GRIP_KEYS.map((k) => [k, g[k].value])) as unknown as GripModel;
@@ -110,7 +112,7 @@ export function buildProblem(s: AppState): BuiltProblem<CornerProblem> {
     geometry, droop: -Math.abs(s.droop), bump: Math.abs(s.bump), samples: 9,
     rackPositions: rack > 0 && s.settings[s.activeCorner].steered ? [-rack, rack] : [],
     rollAngle: o.rollAngle.value, goals, variables, holds: holdsFor(s, root), keepClose: Math.max(0, o.keepClose.value), starts: o.starts ?? 1,
-    tire: model ? { profile: toProfile(s.geom), model, staticLoad, rollLoadFactor: o.rollLoadFactor.value, grip: gripModelOf(s.grip), tireGrip: tireGripOf(s.tireGrip), pressure: tirePressure(model) } : undefined,
+    tire: model ? { profile: toProfile(s.geom), model, staticLoad, rollLoadFactor: o.rollLoadFactor.value, grip: gripModelOf(s.grip), tireGrip: tireGripOf(s.tireGrip, s.tireFile), pressure: tirePressure(model) } : undefined,
   };
   const blockers: string[] = [];
   if (!goals.length) blockers.push('Turn on at least one goal.');
@@ -182,7 +184,7 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
     cases: { lateralG: Math.max(0, o.lateralG.value), brakingG: Math.max(0, o.brakingG.value), accelG: Math.max(0, o.accelG.value) },
     states: o.caseSource && (o.caseSource === 'all' || s.tests.some((x) => x.id === o.caseSource))
       ? statesForTests(s.tests, o.caseSource, { wheelbase: v.wheelbase.value, halfTrack: Math.abs(toGeometry(all[rootOf('FL', s.links)].geom).wheel.center.x) }) : undefined,
-    goals, variables, holds, grip: gripModelOf(s.grip), tireGrip: tireGripOf(s.tireGrip), keepClose: Math.max(0, o.keepClose.value), starts: o.starts ?? 1,
+    goals, variables, holds, grip: gripModelOf(s.grip), tireGrip: tireGripOf(s.tireGrip, s.tireFile), keepClose: Math.max(0, o.keepClose.value), starts: o.starts ?? 1,
   };
   const blockers: string[] = [];
   if (!goals.length) blockers.push('Turn on at least one goal.');

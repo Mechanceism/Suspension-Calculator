@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { defaultDesign, defaultOptimizerSetup, type AppState, type DesignState } from '../src/app/store';
 import { buildProblem, buildVehicleProblem, varKey } from '../src/app/optimizer';
-import { serializeProject, importProject } from '../src/app/project';
+import { serializeProject, importProject, FORMAT_VERSION } from '../src/app/project';
 
 const f = (v: number) => ({ text: String(v), value: v });
 
@@ -45,7 +45,7 @@ describe('optimizer setup (app)', () => {
     d.vehicleOptimizer.lateralG = f(1.2);
     d.grip.sensitivity = f(0.25);
     const file = JSON.parse(JSON.stringify(serializeProject(d, 'Opt')));
-    expect(file.formatVersion).toBe(11);
+    expect(file.formatVersion).toBe(FORMAT_VERSION);
     const r = importProject(file);
     expect(r.warnings).toEqual([]);
     expect(r.design.optimizer).toEqual(d.optimizer);
@@ -60,7 +60,7 @@ describe('optimizer setup (app)', () => {
     delete file.vehicleOptimizer;
     delete file.grip;
     const r = importProject(file);
-    expect(r.warnings).toEqual(['Upgraded from file format 4 to 5.', 'Upgraded from file format 5 to 6.', 'Upgraded from file format 6 to 7.', 'Upgraded from file format 7 to 8.', 'Upgraded from file format 8 to 9.', 'Upgraded from file format 9 to 10.', 'Upgraded from file format 10 to 11.']);
+    expect(r.warnings).toEqual(Array.from({ length: FORMAT_VERSION - 4 }, (_, i) => `Upgraded from file format ${i + 4} to ${i + 5}.`));
     expect(r.design.optimizer).toEqual({});
     expect(r.design.vehicleOptimizer).toEqual(defaultDesign().vehicleOptimizer);
     expect(r.design.grip).toEqual(defaultDesign().grip);

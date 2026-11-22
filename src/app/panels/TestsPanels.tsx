@@ -494,7 +494,7 @@ export function TestsSidebar() {
               <tr title="Over time, a driver steers the car along the path (Phase C): each tire's side force from its slip angle, the car yaws and can slide. Checks how far it runs off the line and its sideslip (spin). Off: the car follows the path exactly.">
                 <td>Handling</td>
                 <td>
-                  <label className="check-label"><input type="checkbox" disabled={test.ride === false} checked={test.ride !== false && test.handling !== false} onChange={(e) => updateTest(test.id, (t) => ({ ...t, handling: e.target.checked }))} /> steered by a driver (Phase C)</label>
+                  <label className="check-label"><input type="checkbox" disabled={test.ride === false} checked={test.ride !== false && test.handling !== false} onChange={(e) => updateTest(test.id, (t) => ({ ...t, handling: e.target.checked }))} /> steered by a driver</label>
                 </td>
               </tr>
               <tr title="Report: show the failure. Driver lifts: also re-run the failing segment at the fastest speed that passes.">

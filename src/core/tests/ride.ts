@@ -325,17 +325,25 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       const s = cw0.s;
       const wc = cw0.wc;
       const dwc = P.rot(pl.dir(s.dwc));
+      // Solid axle: the wheel also moves with the other side's travel.
+      const kp = CORNER_IDS.indexOf(PARTNER[id]);
+      const sx = s as typeof s & { dwcX?: { x: number; y: number; z: number }; dLX?: number };
+      const dwcX = c.axle && sx.dwcX ? P.rot(pl.dir(sx.dwcX)) : null;
       const J = jac(wc);
-      // Wheel-center vertical velocity, m/s: body motion at the wheel + travel.
-      const vy = J[0][1] * vs[0]! + J[1][1] * vs[1]! + J[2][1] * vs[2]! + dwc.y * vs[3 + k]!;
+      // Wheel-center vertical velocity, m/s: body motion at the wheel + travel(s).
+      const vy = J[0][1] * vs[0]! + J[1][1] * vs[1]! + J[2][1] * vs[2]! + dwc.y * vs[3 + k]! + (dwcX ? dwcX.y * vs[3 + kp]! : 0);
       const tireExtra = ride.tireDamping * (gdot[id] - vy);
       const cw = tireExtra ? cornerWork(c, input, pose, f[id], shared, q(k), qo, tireExtra) : cw0;
       const dL = Number.isFinite(s.dL) ? s.dL : 0;
-      const Ldot = dL * vs[3 + k]!;
-      Q[3 + k] = cw.work - (c.damper ? dL * damperForce(c.damper, Ldot) : 0);
+      const dLX = dwcX && Number.isFinite(sx.dLX ?? NaN) ? sx.dLX! : 0;
+      const Ldot = dL * vs[3 + k]! + dLX * vs[3 + kp]!;
+      const fd = c.damper ? damperForce(c.damper, Ldot) : 0;
+      Q[3 + k]! += cw.work - dL * fd;
+      if (dwcX) Q[3 + kp]! += cw.cross - dLX * fd;
       res[id] = cornerResult(c, input, f[id], q(k), status[id], cw);
       const cols: (readonly [number, number, number] | undefined)[] = [J[0], J[1], J[2], undefined, undefined, undefined, undefined];
       cols[3 + k] = [dwc.x, dwc.y, dwc.z];
+      if (dwcX) cols[3 + kp] = [dwcX.x, dwcX.y, dwcX.z];
       addMass(c.unsprungMass, cols);
     });
     const body = bodyResidual(input, sp, fs, pose, res);

@@ -1,0 +1,126 @@
+/**
+ * Pre-computed solid-axle kinematics (L6): the axle solved once on a grid of left / right wheel travel and
+ * interpolated with a tensor Catmull–Rom spline (smooth values and both partial derivatives).
+ *
+ * Each wheel's sample is given in its corner's frame (the right wheel mirrored in X, as for independent
+ * corners), so the vehicle solve treats the two wheels as corners whose motion also depends on the other
+ * side's travel: `dwcX`, `dcpmX`, `dLX` are the derivatives with respect to the other side's travel.
+ */
+import { type Vec3, vec3, add, sub, normalize } from '../math/vec3';
+import { mulVec, transpose } from '../math/mat3';
+import type { SolidAxle, AxleState } from '../suspension/solidAxle';
+import type { CornerSampleAt } from './cornerTable';
+
+export interface AxleSampleAt extends CornerSampleAt {
+  /** Derivatives with respect to the other side's travel (per mm). */
+  dwcX: Vec3;
+  dcpmX: Vec3;
+  dLX: number;
+}
+
+/** Per wheel: wc(3) cp(3) axis(3) L(1) material-contact velocity w.r.t. left(3) and right(3) travel. */
+const W = 16;
+const mirror = (v: Vec3): Vec3 => vec3(-v.x, v.y, v.z);
+
+export class AxleTable {
+  readonly lo: number;
+  readonly hi: number;
+  private readonly step: number;
+  private readonly n: number;
+  private readonly data: Float64Array;
+
+  constructor(axle: SolidAxle, range: [number, number], n = 17) {
+    this.n = n;
+    this.lo = range[0];
+    this.hi = range[1];
+    this.step = (range[1] - range[0]) / (n - 1);
+    const qs = Array.from({ length: n }, (_, i) => range[0] + this.step * i);
+    // Solve the grid, warm-starting from the neighbour.
+    const states: AxleState[][] = [];
+    let rowStart = axle.design().poses;
+    for (let i = 0; i < n; i++) {
+      const row: AxleState[] = [];
+      let prev = rowStart;
+      for (let j = 0; j < n; j++) {
+        const s = axle.solve({ left: qs[i]!, right: qs[j]! }, prev);
+        if (s.solve.status !== 'converged' && s.solve.status !== 'singular') throw new Error(`The axle can't reach travel ${qs[i]!.toFixed(0)} / ${qs[j]!.toFixed(0)} mm`);
+        row.push(s);
+        prev = s.poses;
+      }
+      rowStart = row[0]!.poses;
+      states.push(row);
+    }
+    // Where an axle-fixed point (design-frame local position) is in a state.
+    const world = (s: AxleState, local: Vec3) => add(s.poses.axle!.position, mulVec(s.poses.axle!.rotation, local));
+    const localOf = (s: AxleState, p: Vec3) => mulVec(transpose(s.poses.axle!.rotation), sub(p, s.poses.axle!.position));
+    this.data = new Float64Array(n * n * 2 * W);
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        const s = states[i]![j]!;
+        for (const side of [0, 1] as const) {
+          const w = side === 0 ? s.left : s.right;
+          const L = s.springLength ? (side === 0 ? s.springLength.left : s.springLength.right) : NaN;
+          // Material point at the contact: follow it to the neighbours in each travel.
+          const loc = localOf(s, w.contact);
+          const d = (a: AxleState, b: AxleState, dq: number) => { const pa = world(a, loc), pb = world(b, loc); return vec3((pb.x - pa.x) / dq, (pb.y - pa.y) / dq, (pb.z - pa.z) / dq); };
+          const iA = Math.max(0, i - 1), iB = Math.min(n - 1, i + 1), jA = Math.max(0, j - 1), jB = Math.min(n - 1, j + 1);
+          let dL_ = d(states[iA]![j]!, states[iB]![j]!, qs[iB]! - qs[iA]!);
+          let dR_ = d(states[i]![jA]!, states[i]![jB]!, qs[jB]! - qs[jA]!);
+          let wc = w.center, cp = w.contact, ax = w.spinAxis;
+          if (side === 1) { wc = mirror(wc); cp = mirror(cp); ax = mirror(ax); dL_ = mirror(dL_); dR_ = mirror(dR_); }
+          this.data.set([wc.x, wc.y, wc.z, cp.x, cp.y, cp.z, ax.x, ax.y, ax.z, L, dL_.x, dL_.y, dL_.z, dR_.x, dR_.y, dR_.z], ((i * n + j) * 2 + side) * W);
+        }
+      }
+    }
+  }
+
+  /** One wheel at its own travel and the other side's (clamped to the grid). */
+  at(side: 'L' | 'R', qSelf: number, qOther: number): AxleSampleAt {
+    const qL = side === 'L' ? qSelf : qOther, qR = side === 'L' ? qOther : qSelf;
+    const s = side === 'L' ? 0 : 1;
+    const loc = (q: number) => {
+      const f = (Math.min(this.hi, Math.max(this.lo, q)) - this.lo) / this.step;
+      const i = Math.min(this.n - 2, Math.max(0, Math.floor(f)));
+      return { i, t: f - i };
+    };
+    const a = loc(qL), b = loc(qR);
+    const idx = (k: number) => Math.min(this.n - 1, Math.max(0, k));
+    const val = new Array<number>(W).fill(0), dA = new Array<number>(W).fill(0), dB = new Array<number>(W).fill(0);
+    // Catmull–Rom weights and their derivatives.
+    const w = (t: number) => [(-t + 2 * t * t - t * t * t) / 2, (2 - 5 * t * t + 3 * t * t * t) / 2, (t + 4 * t * t - 3 * t * t * t) / 2, (-t * t + t * t * t) / 2];
+    const wd = (t: number) => [(-1 + 4 * t - 3 * t * t) / 2, (-10 * t + 9 * t * t) / 2, (1 + 8 * t - 9 * t * t) / 2, (-2 * t + 3 * t * t) / 2];
+    const wa = w(a.t), wda = wd(a.t), wb = w(b.t), wdb = wd(b.t);
+    for (let u = 0; u < 4; u++) {
+      const ii = idx(a.i - 1 + u);
+      for (let v = 0; v < 4; v++) {
+        const jj = idx(b.i - 1 + v);
+        const base = ((ii * this.n + jj) * 2 + s) * W;
+        for (let k = 0; k < W; k++) {
+          const P = this.data[base + k]!;
+          val[k]! += wa[u]! * wb[v]! * P;
+          dA[k]! += wda[u]! * wb[v]! * P;
+          dB[k]! += wa[u]! * wdb[v]! * P;
+        }
+      }
+    }
+    for (let k = 0; k < W; k++) { dA[k]! /= this.step; dB[k]! /= this.step; }
+    const own = side === 'L' ? dA : dB, other = side === 'L' ? dB : dA;
+    const v3 = (arr: number[], o: number) => vec3(arr[o]!, arr[o + 1]!, arr[o + 2]!);
+    const wc = v3(val, 0);
+    // Material-contact velocities were stored per travel: left (10–12), right (13–15).
+    const cpmL = v3(val, 10), cpmR = v3(val, 13);
+    return {
+      wc, cp: v3(val, 3), axis: normalize(v3(val, 6)), L: val[9]!, ex: wc,
+      dwc: v3(own, 0), dcp: v3(own, 3), dcpm: side === 'L' ? cpmL : cpmR, dL: own[9]!, dex: v3(own, 0),
+      dwcX: v3(other, 0), dcpmX: side === 'L' ? cpmR : cpmL, dLX: other[9]!,
+    };
+  }
+}
+
+/** A one-travel view of an axle wheel (other side held at the same travel): for limits and quick looks. */
+export class AxleCornerTable {
+  constructor(readonly axle: AxleTable, readonly side: 'L' | 'R') {}
+  get lo() { return this.axle.lo; }
+  get hi() { return this.axle.hi; }
+  at(q: number): CornerSampleAt { return this.axle.at(this.side, q, q); }
+}

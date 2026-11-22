@@ -57,3 +57,52 @@ describe('solid axle', () => {
     expect(loose.solve({ left: 10, right: 10 }).solve.status).not.toBe('converged');
   });
 });
+
+describe('solid axle on the car', () => {
+  it('a 3-link + Panhard rear axle settles, corners about its roll center and couples the two wheels over a bump', async () => {
+    const { assembleVehicle, solveCase, rideRun, characteristics, DoubleWishbone, DEFAULT_MF } = await import('../src/core');
+    const { SAMPLE_LAYOUTS, SAMPLE_SPRING } = await import('../src/examples/sampleLayouts');
+    const C = SAMPLE_LAYOUTS.find((l) => l.id === 'C')!.geometry;
+    // The same ground as the front (wheel radius 260, center at y = 160): everything 140 mm lower than above.
+    const sh = (v: { x: number; y: number; z: number }) => vec3(v.x, v.y - 140, v.z);
+    const rear: SolidAxleGeometry = {
+      kind: 'solidAxle',
+      wheel: { center: vec3(600, 160, 0), spinAxis: vec3(1, 0, 0), radius: 260, width: 205 },
+      links: threeLink.links.map((l) => ({ ...l, chassis: sh(l.chassis), axle: sh(l.axle) })),
+      springs: { left: { chassis: vec3(400, 500, -20), axle: vec3(400, 190, -20) } },
+    };
+    const gas = { kind: 'gas' as const, volumeChange: true, volumeFactor: 1, conditions: { setPressure: 83, setAltitude: 0, setTemperature: 20, operatingAltitude: 0, operatingTemperature: 20 } };
+    const profile = { radius: 260, width: 205, shoulderRadius: 25, rimRadius: 165 };
+    const p = {
+      designs: { FL: { geometry: C, profile, model: gas, springRate: SAMPLE_SPRING.rate, freeLength: SAMPLE_SPRING.freeLength, unsprungMass: 12, damping: { bump: 1500, rebound: 2500 } } },
+      roots: { FL: 'FL', FR: 'FL', RL: 'FL', RR: 'FL' } as const,
+      settings: { FL: { brake: 'outboard', drive: 'none' }, FR: { brake: 'outboard', drive: 'none' }, RL: { brake: 'outboard', drive: 'chassis' }, RR: { brake: 'outboard', drive: 'chassis' } } as const,
+      mass: 300, cg: { x: 0, height: 280, z: -0.47 * 1550 }, wheelbase: 1550, brakeBias: 0.6, driveSplit: 0.5, autoPreload: true,
+      shared: { front: { antiRollBar: { kind: 'none' as const }, heaveSpring: { kind: 'none' as const } }, rear: { antiRollBar: { kind: 'none' as const }, heaveSpring: { kind: 'none' as const } } },
+      dropLinks: { front: null, rear: null }, droop: 40, bump: 40, cases: { lateralG: 0, brakingG: 0, accelG: 0 }, goals: [], variables: [],
+      steering: { steered: { FL: true, FR: true }, rackLimit: 30, cFactor: 75 }, ride: { rollInertia: 35, pitchInertia: 100, tireDamping: 100 }, tireGrip: DEFAULT_MF,
+      axles: { rear },
+    };
+    const asm = assembleVehicle(p as never, { FL: C })!;
+    expect(asm).not.toBeNull();
+    expect(asm.chars.RL.rollCenterHeight!).toBeCloseTo(260, 0); // the Panhard rod (y = 160) above the ground (y = −100)
+    const rest = solveCase(p as never, asm, { name: 'r', kind: 'state', g: 0, lateralG: 0, brakingG: 0, accelG: 0 })!.result;
+    expect(rest.converged).toBe(true);
+    for (const id of ['RL', 'RR'] as const) expect(Math.abs(rest.corners[id].travel)).toBeLessThan(1.5); // preload fitted
+    const turn = solveCase(p as never, asm, { name: 't', kind: 'state', g: 0.6, lateralG: 0.6, brakingG: 0, accelG: 0 })!.result;
+    expect(turn.converged).toBe(true);
+    expect(turn.corners.RR.tireLoad).toBeGreaterThan(turn.corners.RL.tireLoad);
+    // The rear wheels stay on one rigid axle: their camber to the body changes together, opposite signs.
+    expect(Math.sign(turn.corners.RL.travel)).toBe(-Math.sign(turn.corners.RR.travel));
+    // Rear geometric transfer through the high roll center: more of the rear transfer goes through the links than at the front.
+    const fr = characteristics(new DoubleWishbone(C).design()).rollCenterHeight!;
+    expect(asm.chars.RL.rollCenterHeight!).toBeGreaterThan(fr);
+    // A bump under one rear wheel moves the other rear wheel's load too (shared axle).
+    const bump = (side: 'RL' | 'RR') => rideRun(p as never, { FL: C }, [{ distance: 12, v0: 10, v1: 10, path: 'straight', radius: 0, grade: 0, bank: 0, bumps: { [side]: 25 } }], {});
+    const r = bump('RL');
+    expect(r.error).toBeUndefined();
+    const lastF = r.frames.at(-1)!;
+    expect(lastF.ride!.travel.RL - lastF.ride!.travel.RR).toBeGreaterThan(5);
+    expect(r.findings.flat().filter((f) => f.check === 'noSolution')).toEqual([]);
+  });
+});

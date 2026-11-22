@@ -20,8 +20,11 @@ import type { TireForceModel } from '../tire/model';
 import { patchGrip, DEFAULT_GRIP, type GripModel, type PatchGrip } from '../tire/grip';
 import { DEFAULT_MF, type TireGrip } from '../tire/magicFormula';
 import { CornerTable } from '../vehicle/cornerTable';
+import { AxleTable, AxleCornerTable } from '../vehicle/axleTable';
+import { SolidAxle, axleCharacteristics, type SolidAxleGeometry, type AxleState } from '../suspension/solidAxle';
+import { lineThrough } from '../math/geom';
 import {
-  CORNER_IDS, isFront, placement, poseFns, solveVehicle, staticCornerLoads, designGroundY,
+  CORNER_IDS, isFront, isLeft, placement, poseFns, solveVehicle, staticCornerLoads, designGroundY,
   type AxleShared, type BrakeMount, type CornerId, type DriveMount, type VehicleCorner, type VehicleResult, type ChassisPose, type DiffType, type VehicleInput, type DamperSpec,
 } from '../vehicle/vehicle';
 import { type LsqResult } from './leastSquares';
@@ -129,6 +132,11 @@ export interface VehicleProblem {
   brakeLimit?: { front: number; rear: number; maxPedal: number };
   /** Towing a trailer (static). */
   trailer?: TrailerSpec;
+  /**
+   * Solid (beam) axles: the axle's two corners are its wheels (their designs give the tires, springs and
+   * unsprung masses; their own linkage geometry is not used).
+   */
+  axles?: { front?: SolidAxleGeometry; rear?: SolidAxleGeometry };
   keepClose?: number;
   maxIterations?: number;
   /** Gradient runs: 1 = from the current design only; more = also from the best DOE samples (wider search). */
@@ -174,6 +182,24 @@ export interface AssembledVehicle {
   designState: Map<CornerId, ReturnType<DoubleWishbone['design']>>;
 }
 
+/** A solid-axle wheel's characteristics in its corner's frame (right wheel mirrored), for the rest of the car. */
+function axleWheelChars(s: AxleState, c: ReturnType<typeof axleCharacteristics>, side: 'L' | 'R'): Characteristics {
+  const m = (v: Vec3) => (side === 'R' ? vec3(-v.x, v.y, v.z) : v);
+  const w = side === 'L' ? s.left : s.right;
+  const wc = m(w.center), cp = m(w.contact);
+  const sv = c.sideViewIC;
+  const angle = (ref: Vec3) => (sv && Math.abs(ref.z - sv.z) > 1e-9 ? Math.atan((sv.y - ref.y) / (ref.z - sv.z)) : 0);
+  return {
+    camber: side === 'L' ? c.camber.left : c.camber.right, toe: side === 'L' ? c.toe.left : c.toe.right, caster: 0, kpi: 0,
+    scrubRadius: NaN, mechanicalTrail: NaN, kingpinOffsetAtWheelCenter: NaN, casterOffsetAtWheelCenter: NaN,
+    wheelCenter: wc, contactPoint: cp, groundY: cp.y, halfTrack: Math.abs(cp.x),
+    steeringAxis: lineThrough(cp, vec3(cp.x, cp.y + 1, cp.z)), steeringAxisAtGround: null,
+    instantAxis: null, frontViewIC: null, fvsa: Infinity,
+    sideViewIC: sv ? vec3(wc.x, sv.y, sv.z) : null, svsa: sv ? cp.z - sv.z : Infinity,
+    rollCenterHeight: c.rollCenterHeight, antiAngleContact: angle(cp), antiAngleWheelCenter: angle(wc),
+  };
+}
+
 export function assembleVehicle(p: VehicleProblem, geometries: Partial<Record<CornerId, DoubleWishboneGeometry>>): AssembledVehicle | null {
   const range: [number, number] = [-Math.abs(p.droop), Math.abs(p.bump)];
   const n = p.tableSamples ?? 21;
@@ -193,6 +219,23 @@ export function assembleVehicle(p: VehicleProblem, geometries: Partial<Record<Co
     chars[id] = characteristics(designState.get(p.roots[id])!);
     contactX[id] = chars[id].contactPoint.x;
   }
+  // Solid axles: build them, and give their wheels the characteristics the rest of the car reads.
+  const axles: Partial<Record<'front' | 'rear', { axle: SolidAxle; table: AxleTable; design: AxleState }>> = {};
+  for (const which of ['front', 'rear'] as const) {
+    const g = p.axles?.[which];
+    if (!g) continue;
+    try {
+      const axle = new SolidAxle(g);
+      const design = axle.design();
+      if (design.solve.status !== 'converged') return null;
+      axles[which] = { axle, table: new AxleTable(axle, range, Math.max(9, Math.min(21, n - 4))), design };
+      const ac = axleCharacteristics(axle, design);
+      for (const id of (which === 'front' ? ['FL', 'FR'] : ['RL', 'RR']) as CornerId[]) {
+        chars[id] = axleWheelChars(design, ac, isLeft(id) ? 'L' : 'R');
+        contactX[id] = chars[id].contactPoint.x;
+      }
+    } catch { return null; }
+  }
   const cgRel = vec3(p.cg.x, p.cg.height, p.cg.z);
   const loads = staticCornerLoads(p.mass, cgRel, p.wheelbase, contactX);
   const tables = new Map<string, CornerTable>();
@@ -200,6 +243,22 @@ export function assembleVehicle(p: VehicleProblem, geometries: Partial<Record<Co
   for (const id of CORNER_IDS) {
     const root = p.roots[id];
     const d = p.designs[root]!;
+    const ax = axles[isFront(id) ? 'front' : 'rear'];
+    if (ax) {
+      // A wheel of a solid axle: preload from the axle's heave motion ratio (both sides move together).
+      const side = isLeft(id) ? 'L' : 'R';
+      const s0 = ax.table.at(side, 0, 0);
+      const mr = -(s0.dL + s0.dLX);
+      const freeLength = p.autoPreload && Number.isFinite(s0.L) && mr > 1e-6 ? s0.L + Math.max(0, loads[id] - d.unsprungMass * G) / mr / d.springRate : d.freeLength;
+      corners.push({
+        id, table: new AxleCornerTable(ax.table, side), axle: { table: ax.table, side }, unsprungMass: d.unsprungMass,
+        tire: { profile: d.profile, model: d.model, ...(p.tireGripRear && !isFront(id) ? { grip: p.tireGripRear } : {}) },
+        brake: p.settings[id].brake, drive: p.settings[id].drive, abs: p.settings[id].abs ?? true,
+        spring: { rate: d.springRate, freeLength, ...(d.bumpStop ? { bumpStopLength: d.bumpStop.length, bumpStopRate: d.bumpStop.rate } : {}) },
+        ...(d.damping ? { damper: d.damping } : {}),
+      });
+      continue;
+    }
     const dl = isFront(id) ? p.dropLinks.front : p.dropLinks.rear;
     const key = `${root}|${dl ? `${dl.x},${dl.y},${dl.z}` : '-'}`;
     let table = tables.get(key);
@@ -216,8 +275,13 @@ export function assembleVehicle(p: VehicleProblem, geometries: Partial<Record<Co
     });
   }
   const groundY = designGroundY(CORNER_IDS.map((id) => {
-    const ds = designState.get(p.roots[id])!;
     const d = p.designs[p.roots[id]]!;
+    const ax = axles[isFront(id) ? 'front' : 'rear'];
+    if (ax) {
+      const w = isLeft(id) ? ax.design.left : ax.design.right;
+      return { contactY: w.contact.y, profile: d.profile, model: d.model, staticLoad: loads[id], tilt: w.spinAxis.y };
+    }
+    const ds = designState.get(p.roots[id])!;
     return { contactY: ds.points.contact.y, profile: d.profile, model: d.model, staticLoad: loads[id], tilt: ds.spinAxis.y };
   }));
   return { corners, groundY, cg: vec3(p.cg.x, groundY + p.cg.height, p.cg.z), chars, built, designState };
@@ -263,10 +327,9 @@ export function solveCase(p: VehicleProblem, asm: AssembledVehicle, c: CaseSpec,
   const g = {} as Record<CornerId, PatchGrip>;
   for (const id of CORNER_IDS) {
     const root = p.roots[id];
-    const st = asm.built.get(root)!.solve({ travel: result.corners[id].travel }, asm.designState.get(root)!.poses);
-    const pl = placement(id, p.wheelbase);
-    const wc = P.point(pl.point(st.points.wheelCenter));
-    const axis = P.rot(pl.dir(st.spinAxis));
+    // The solved wheel (world): wheel center and spin axis.
+    const wc = result.corners[id].wheelCenter;
+    const axis = result.corners[id].axisWorld;
     g[id] = patchGrip(wc, axis, { point: vec3(0, result.corners[id].groundY, 0), normal: Y_AXIS }, p.designs[root]!.profile, result.corners[id].tireLoad, grip);
   }
   return { name: c.name, kind: c.kind, g: c.g, state: c.state, result, grip: g };

@@ -20,7 +20,11 @@ import { solveLinear } from '../math/linalg';
 import { localPatch, type TireProfile } from '../tire/geometry';
 import { tireForce, solveLoadedHeight, type TireForceModel } from '../tire/model';
 import { springForce, type SpringSpec } from '../suspension/spring';
-import type { CornerTable } from './cornerTable';
+import type { CornerSampleAt } from './cornerTable';
+import type { AxleTable, AxleSampleAt } from './axleTable';
+
+/** What the vehicle solve needs of a corner's tabulated kinematics (independent corner or one wheel of a solid axle). */
+export interface CornerTableLike { readonly lo: number; readonly hi: number; at(q: number): CornerSampleAt }
 import { mfPeaks, mfSlipAngle, mfSlipRatio, type TireGrip } from '../tire/magicFormula';
 import { aeroForces, type AeroInput } from './aero';
 
@@ -42,7 +46,12 @@ export type DriveMount = 'none' | 'chassis' | 'hub';
 export interface VehicleCorner {
   id: CornerId;
   /** Tabulated kinematics. If an anti-roll bar uses drop links, the table tracks the drop-link mount. */
-  table: CornerTable;
+  table: CornerTableLike;
+  /**
+   * One wheel of a solid axle: its motion depends on both sides' travel (the table gives the derivatives
+   * with respect to the other side too), so the two wheels are always settled together.
+   */
+  axle?: { table: AxleTable; side: 'L' | 'R' };
   spring: SpringSpec;
   /** kg */
   unsprungMass: number;
@@ -348,7 +357,7 @@ export function cornerWork(
   const P = poseFns(pose);
   const inboard = c.brake === 'inboard';
   const hub = c.drive === 'hub';
-  const s = c.table.at(q);
+  const s: CornerSampleAt & Partial<Pick<AxleSampleAt, 'dwcX' | 'dcpmX' | 'dLX'>> = c.axle ? c.axle.table.at(c.axle.side, q, qOther) : c.table.at(q);
   const wc = P.point(pl.point(s.wc));
   const axis = P.rot(pl.dir(s.axis));
   // Tire forces work through the material point at the contact (not the lowest-point path).
@@ -377,7 +386,15 @@ export function cornerWork(
     - c.unsprungMass * f.aZ * dwc.z
     + (Number.isFinite(s.dL) ? fs * s.dL : 0)
     + fShared;
-  return { work, ft, fs, fShared, s, wc, axis, P, pl, gY };
+  // Solid axle: the same forces do work on the other side's travel too (the axle tilts / moves with it).
+  let cross = 0;
+  if (s.dwcX && s.dcpmX) {
+    const dcpX = P.rot(pl.dir(s.dcpmX)), dwcX = P.rot(pl.dir(s.dwcX));
+    cross = ft * dcpX.y + f.lateral * dcpX.x + f.brake * (inboard ? dwcX.z : dcpX.z) + f.drive * (hub ? dcpX.z : dwcX.z)
+      - c.unsprungMass * G * (input.gravityScale ?? 1) * dwcX.y - c.unsprungMass * input.lateralG * G * dwcX.x - c.unsprungMass * f.aZ * dwcX.z
+      + (Number.isFinite(s.dLX ?? NaN) ? fs * s.dLX! : 0);
+  }
+  return { work, cross, ft, fs, fShared, s, wc, axis, P, pl, gY };
 }
 
 export function cornerResult(c: VehicleCorner, input: VehicleInput, f: CornerLoads, q: number, status: CornerStatus, r: ReturnType<typeof cornerWork>): CornerResult {
@@ -421,8 +438,9 @@ function settleAxle(
   axle: AxleShared, guess: [number | undefined, number | undefined],
 ): [CornerResult, CornerResult] {
   const [a, b] = cs;
-  const wA = (qa: number, qb: number) => cornerWork(a, input, pose, f[0], { partner: b, axle }, qa, qb).work;
-  const wB = (qb: number, qa: number) => cornerWork(b, input, pose, f[1], { partner: a, axle }, qb, qa).work;
+  // Each travel's generalized force: its own wheel's, plus (solid axle) the other wheel's work on it.
+  const wA = (qa: number, qb: number) => cornerWork(a, input, pose, f[0], { partner: b, axle }, qa, qb).work + (b.axle ? cornerWork(b, input, pose, f[1], { partner: a, axle }, qb, qa).cross : 0);
+  const wB = (qb: number, qa: number) => cornerWork(b, input, pose, f[1], { partner: a, axle }, qb, qa).work + (a.axle ? cornerWork(a, input, pose, f[0], { partner: b, axle }, qa, qb).cross : 0);
   let qa = guess[0] ?? 0;
   let qb = guess[1] ?? 0;
   const clampA = (q: number) => Math.min(a.table.hi, Math.max(a.table.lo, q));
@@ -742,7 +760,7 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
       const cl = byId[l];
       const cr = byId[r];
       const axle = axleOf(l);
-      if (cl && cr && isCoupled(axle) && !cl.rigid && !cr.rigid) {
+      if (cl && cr && (isCoupled(axle) || cl.axle || cr.axle) && !cl.rigid && !cr.rigid) {
         const [rl, rr] = settleAxle([cl, cr], input, pose, [f[l], f[r]], axle, [cornerGuess[l], cornerGuess[r]]);
         corners[l] = rl; corners[r] = rr;
         continue;

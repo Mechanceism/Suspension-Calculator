@@ -30,6 +30,7 @@ export function SpringFields({ keys = SPRING_KEYS }: { keys?: readonly SpringKey
           <select value={damperArm} onChange={(e) => setDamperArm(e.target.value as ArmChoice)}>
             <option value="lca">Lower control arm</option>
             <option value="uca">Upper control arm</option>
+            <option value="upright">Upright / knuckle</option>
           </select>
         </div>
       )}

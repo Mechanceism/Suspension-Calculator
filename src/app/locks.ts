@@ -17,7 +17,7 @@ import {
   POINT_NAMES, SCALAR_META, SPRING_META, DAMPER_META, TIRE_META, VEHICLE_META, SHARED_META, STEER_META, CORNER_NAMES,
   forCorner, rootOf,
   type PointKey, type ComponentId, type CornerLinks, type Selection,
-activePointKeys, } from './store';
+activePointKeys, type ArmChoice, } from './store';
 import { componentDefs, ownersOf, POINT_LABELS } from './components';
 import type { SuspensionKind } from '../core/suspension/doubleWishbone';
 
@@ -35,16 +35,16 @@ export const lockKeys = {
  * Is this coordinate locked, directly or because a part it belongs to is locked? A point the corner's
  * suspension type doesn't use counts as locked (nothing may free it).
  */
-export function pointAxisLocked(locks: Locks, root: CornerId, k: PointKey, axis: 0 | 1 | 2, damperArm: 'lca' | 'uca', kind: SuspensionKind = 'doubleWishbone'): boolean {
+export function pointAxisLocked(locks: Locks, root: CornerId, k: PointKey, axis: 0 | 1 | 2, damperArm: ArmChoice, kind: SuspensionKind = 'doubleWishbone'): boolean {
   if (!activePointKeys(kind).includes(k)) return true;
   if (locks[lockKeys.point(root, k, axis)]) return true;
   return ownersOf(k, componentDefs(damperArm, kind)).some((c) => locks[lockKeys.part(root, c)]);
 }
 
-export const pointLocked = (locks: Locks, root: CornerId, k: PointKey, damperArm: 'lca' | 'uca', kind: SuspensionKind = 'doubleWishbone') =>
+export const pointLocked = (locks: Locks, root: CornerId, k: PointKey, damperArm: ArmChoice, kind: SuspensionKind = 'doubleWishbone') =>
   ([0, 1, 2] as const).every((a) => pointAxisLocked(locks, root, k, a, damperArm, kind));
 
-export const anyAxisLocked = (locks: Locks, root: CornerId, k: PointKey, damperArm: 'lca' | 'uca', kind: SuspensionKind = 'doubleWishbone') =>
+export const anyAxisLocked = (locks: Locks, root: CornerId, k: PointKey, damperArm: ArmChoice, kind: SuspensionKind = 'doubleWishbone') =>
   ([0, 1, 2] as const).some((a) => pointAxisLocked(locks, root, k, a, damperArm, kind));
 
 const DERIVED_LABELS: Record<string, string> = { length: 'length', inclination: 'pivot-axis inclination', planAngle: 'pivot-axis plan angle', frontViewAngle: 'front-view angle' };

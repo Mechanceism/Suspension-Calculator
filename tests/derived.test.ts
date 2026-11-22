@@ -107,3 +107,23 @@ describe('Ackermann lines', () => {
     expect(ackermannLinesCross(kL, { x: 550, z: -100 }, kR, { x: -550, z: -100 })).toBeNull();
   });
 });
+
+describe('coilover placement', () => {
+  it('length and angles round-trip; moving along the arm keeps the coilover', async () => {
+    const { coiloverGeometry, setCoilover, moveAlongArm, vec3: v } = await import('../src/core');
+    const lower = v(480, 45, 30), chassis = v(300, 380, 30);
+    const g = coiloverGeometry(chassis, lower);
+    expect(g.frontViewAngle * 180 / Math.PI).toBeCloseTo(Math.atan2(180, 335) * 180 / Math.PI, 9);
+    const top = setCoilover(chassis, lower, 'frontViewAngle', 10 * D);
+    const g2 = coiloverGeometry(top, lower);
+    expect(g2.frontViewAngle).toBeCloseTo(10 * D, 9);
+    expect(g2.length).toBeCloseTo(g.length, 9);
+    expect(g2.sideViewAngle).toBeCloseTo(g.sideViewAngle, 9);
+    const top3 = setCoilover(top, lower, 'length', 300);
+    expect(coiloverGeometry(top3, lower).length).toBeCloseTo(300, 9);
+    const arm = { fwd: v(200, 44.9, 150), aft: v(200, 44.9, -150), out: v(560, 40, 0) };
+    const m = moveAlongArm(chassis, lower, arm, 0.5);
+    expect(coiloverGeometry(m.chassis, m.lower, arm).alongArm).toBeCloseTo(0.5, 9);
+    expect(coiloverGeometry(m.chassis, m.lower).length).toBeCloseTo(g.length, 9);
+  });
+});

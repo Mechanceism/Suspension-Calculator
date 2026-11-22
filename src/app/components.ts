@@ -51,7 +51,7 @@ export function componentDefs(damperArm: ArmChoice, kind: SuspensionKind = 'doub
     lca: { id: 'lca', label: 'Lower control arm', points: ['lcaFwd', 'lcaAft', 'lcaOut', ...(damperArm === 'lca' ? ['dmpArm' as const] : [])], parents: ['chassis'] },
     rack: { id: 'rack', label: 'Steering rack', points: ['trInner'], parents: ['chassis'] },
     tieRod: { id: 'tieRod', label: 'Tie rod', points: ['trInner', 'trOuter'], parents: ['rack'] },
-    upright: { id: 'upright', label: 'Upright / knuckle', points: ['ucaOut', 'lcaOut', 'trOuter', 'wheelCenter'], parents: ['uca', 'lca', 'tieRod'] },
+    upright: { id: 'upright', label: 'Upright / knuckle', points: ['ucaOut', 'lcaOut', 'trOuter', 'wheelCenter', ...(damperArm === 'upright' ? ['dmpArm' as const] : [])], parents: ['uca', 'lca', 'tieRod'] },
     wheel: { id: 'wheel', label: 'Wheel & tire', points: ['wheelCenter'], parents: ['upright'] },
     spring: { id: 'spring', label: 'Coilover (spring/damper)', points: ['dmpChassis', 'dmpArm'], parents: ['chassis', damperArm] },
   };

@@ -97,7 +97,8 @@ export const SPRING_META: Record<SpringKey, { label: string; name: string; quant
   springRate: { label: 'Spring rate', name: 'FL_Sprg_Rate', quantity: 'rate', unit: 'N/mm' },
   freeLength: { label: 'Spring free length', name: 'FL_Sprg_FreeLen', quantity: 'length', unit: 'mm' },
 };
-export type ArmChoice = 'lca' | 'uca';
+/** Where a double wishbone's coilover lower mount is: an arm or the upright (knuckle). */
+export type ArmChoice = 'lca' | 'uca' | 'upright';
 export type CornerMode = 'kinematic' | 'loaded';
 const G = 9.80665;
 /** Load the spring carries: (corner load − unsprung weight) × load factor. */
@@ -190,7 +191,7 @@ export function editableFromLayout(id: string): EditableGeometry {
       lcaOut2: fields(g.lca.out2 ?? g.lca.out),
     },
     kind: g.kind ?? 'doubleWishbone',
-    damperArm: g.damper?.arm === 'uca' ? 'uca' : 'lca',
+    damperArm: g.damper?.arm === 'uca' || g.damper?.arm === 'upright' ? g.damper.arm : 'lca',
     scalars: {
       staticCamber: field(0, 'angle'),
       staticToe: field(0, 'angle'),
@@ -1354,8 +1355,14 @@ export const useApp = create<AppState>((set, get) => ({
     const g = toGeometry(geom);
     // Move the coilover as a unit: the arm mount goes to the same relative spot on the other arm and
     // the chassis mount follows by the same amount, so the installed length and angle (and therefore
-    // the damper stroke and bump-stop settings) stay valid.
-    const moved = transferArmPoint(g.damper!.armPoint, g[geom.damperArm], g[arm]);
+    // the damper stroke and bump-stop settings) stay valid. On the knuckle: a quarter of the way up from
+    // the lower ball joint, 35 mm inboard; from the knuckle to an arm: 80 % of the way out.
+    const from = geom.damperArm, bj = (a: 'uca' | 'lca') => g[a].out;
+    const moved = from !== 'upright' && arm !== 'upright'
+      ? transferArmPoint(g.damper!.armPoint, g[from], g[arm])
+      : arm === 'upright'
+        ? add(bj('lca'), vec3(0.25 * (bj('uca').x - bj('lca').x) - 35, 0.25 * (bj('uca').y - bj('lca').y), 0.25 * (bj('uca').z - bj('lca').z)))
+        : (() => { const a = g[arm]; const f = vec3((a.fwd.x + a.aft.x) / 2, (a.fwd.y + a.aft.y) / 2, (a.fwd.z + a.aft.z) / 2); return vec3(f.x + 0.8 * (a.out.x - f.x), f.y + 0.8 * (a.out.y - f.y) + 5, f.z + 0.8 * (a.out.z - f.z) + 30); })();
     const shift = sub(moved, g.damper!.armPoint);
     const chassisMount = add(g.damper!.chassis, shift);
     const next: EditableGeometry = {

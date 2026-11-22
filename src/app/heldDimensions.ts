@@ -8,7 +8,7 @@
  */
 import { resolveDimensions, type DimensionSpec, type DimMeasure } from '../core/suspension/dimensions';
 import type { HardpointId } from '../core/optimize/corner';
-import { useApp, rootOf, toGeometry, POINT_KEYS, type HeldDimension, type PointKey, type EditableGeometry, type Field } from './store';
+import { useApp, rootOf, toGeometry, POINT_KEYS, type HeldDimension, type PointKey, type EditableGeometry, type Field, type ArmChoice } from './store';
 import { STATE_KEY } from './anchors';
 import { pointAxisLocked } from './locks';
 import { componentDefs, POINT_LABELS } from './components';
@@ -26,7 +26,7 @@ export const dimensionLabel = (d: Pick<HeldDimension, 'a' | 'b' | 'measure'>) =>
 export const holdLabel = (travel: number | null) => (travel === null ? 'permanent' : travel === 0 ? 'at ride height' : `at ${travel} mm travel`);
 
 /** Rigid parts (points that keep their distances through travel). The chassis never moves in the corner frame. */
-function rigidGroups(damperArm: 'lca' | 'uca', kind: SuspensionKind = 'doubleWishbone'): { chassis: PointKey[]; moving: PointKey[][] } {
+function rigidGroups(damperArm: ArmChoice, kind: SuspensionKind = 'doubleWishbone'): { chassis: PointKey[]; moving: PointKey[][] } {
   const d = componentDefs(damperArm, kind);
   return {
     chassis: ['ucaFwd', 'ucaAft', 'lcaFwd', 'lcaAft', 'dmpChassis'],
@@ -38,7 +38,7 @@ function rigidGroups(damperArm: 'lca' | 'uca', kind: SuspensionKind = 'doubleWis
  * Can this dimension be held permanently (true at every travel)? Any measure between two chassis
  * points; a distance between two points of the same moving part. Everything else changes with travel.
  */
-export function permanentAllowed(a: PointKey, b: PointKey, measure: DimMeasure, damperArm: 'lca' | 'uca', kind: SuspensionKind = 'doubleWishbone'): { ok: boolean; why: string } {
+export function permanentAllowed(a: PointKey, b: PointKey, measure: DimMeasure, damperArm: ArmChoice, kind: SuspensionKind = 'doubleWishbone'): { ok: boolean; why: string } {
   const g = rigidGroups(damperArm, kind);
   if (g.chassis.includes(a) && g.chassis.includes(b)) return { ok: true, why: 'Both points are on the chassis, which does not move' };
   const part = g.moving.find((p) => p.includes(a) && p.includes(b));

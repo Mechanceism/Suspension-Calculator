@@ -7,6 +7,9 @@ import { lockKeys, pointAxisLocked } from '../locks';
 import { toGeometry } from '../store';
 import { componentDefs, family, ownersOf, pointLabel } from '../components';
 import { SUSPENSION_KINDS, SUSPENSION_LABELS, type SuspensionKind } from '../../core/suspension/doubleWishbone';
+import { coiloverGeometry, setCoilover, moveAlongArm } from '../../core/suspension/coilover';
+import { parseValue } from '../../core/units/units';
+import type { Vec3 } from '../../core/math/vec3';
 
 /** Components of the active design's suspension type. */
 function useDefs() {
@@ -108,6 +111,54 @@ function ArmSection({ arm, model }: { arm: 'uca' | 'lca'; model: Model }) {
         { label: 'Front-view angle (now)', value: fmt(live ? deg(live.frontViewAngle) : NaN, 2), unit: '°' },
       ]} />
       <p className="hint">Editing these moves the frame pivots so the upright and track width stay the same.</p>
+    </>
+  );
+}
+
+/**
+ * The coilover / strut as numbers: installed length, front- and side-view angle, and the lower mount's
+ * position along its arm. Editing keeps the lower mount (moving along the arm moves the whole coilover).
+ */
+function CoiloverPlacement() {
+  const geom = useApp((s) => s.geom);
+  const setPointsAxis = useApp((s) => s.setPointsAxis);
+  const notify = useApp((s) => s.notify);
+  const locks = useApp((s) => s.locks);
+  const root = useApp((s) => rootOf(s.activeCorner, s.links));
+  const g = toGeometry(geom);
+  const d = g.damper;
+  if (!d) return null;
+  const kind = geom.kind ?? 'doubleWishbone';
+  const arm = kind === 'doubleWishbone' && (geom.damperArm === 'uca' || geom.damperArm === 'lca') ? g[geom.damperArm] : kind === 'macpherson' ? undefined : undefined;
+  const c = coiloverGeometry(d.chassis, d.armPoint, arm);
+  const put = (moves: { key: 'dmpChassis' | 'dmpArm'; p: Vec3 }[]) => {
+    const updates = moves.flatMap(({ key, p }) => ([0, 1, 2] as const).map((axis) => ({ key, axis, value: [p.x, p.y, p.z][axis]! })));
+    const blocked = updates.filter((u) => Math.abs(u.value - geom.points[u.key][u.axis].value) > 1e-9 && pointAxisLocked(locks, root, u.key, u.axis, geom.damperArm, geom.kind));
+    if (blocked.length) { notify(`${blocked.map((u) => `${labelOf(u.key)} ${'XYZ'[u.axis]}`).join(', ')} locked: unlock to move the ${kind === 'macpherson' ? 'strut' : 'coilover'}.`, 'warn'); return; }
+    setPointsAxis(updates);
+  };
+  const angle = (which: 'frontViewAngle' | 'sideViewAngle') => (t: string) => {
+    const r = parseValue(t, 'angle'); if (!r.ok) return;
+    put([{ key: 'dmpChassis', p: setCoilover(d.chassis, d.armPoint, which, (r.value * Math.PI) / 180) }]);
+  };
+  const where = kind === 'macpherson' ? 'top mount' : 'chassis mount';
+  return (
+    <>
+      <FieldRows rows={[
+        { label: 'Installed length (mount to mount)', field: derivedField(c.length, 1), unit: 'mm', hint: `At ride height. Moves the ${where} along the axis; the lower mount stays.`, onCommit: (t: string) => { const r = parseValue(t, 'length'); if (r.ok && r.value > 0) put([{ key: 'dmpChassis', p: setCoilover(d.chassis, d.armPoint, 'length', r.value) }]); } },
+        { label: 'Front-view angle from vertical', field: derivedField(deg(c.frontViewAngle), 2), unit: '°', hint: `+ = top leans inboard. Swings the ${where} about the lower mount (length kept).`, onCommit: angle('frontViewAngle') },
+        { label: 'Side-view angle from vertical', field: derivedField(deg(c.sideViewAngle), 2), unit: '°', hint: `+ = top leans rearward. Swings the ${where} about the lower mount.`, onCommit: angle('sideViewAngle') },
+        ...(arm ? [{
+          label: 'Lower mount along the arm', field: derivedField(c.alongArm * 100, 1), unit: '%',
+          hint: '0 % = on the arm\'s pivot axis, 100 % = at the ball joint. Moves the whole coilover along the arm (length and angles kept); further out = higher motion ratio.',
+          onCommit: (t: string) => { const v = Number(t.replace('%', '')); if (Number.isFinite(v)) { const m = moveAlongArm(d.chassis, d.armPoint, arm, v / 100); put([{ key: 'dmpChassis', p: m.chassis }, { key: 'dmpArm', p: m.lower }]); } },
+        }] : []),
+      ]} />
+      <p className="hint">
+        {kind === 'macpherson' ? 'The strut is the spring / damper: its top mount and its point on the upright set the steering axis too.'
+          : kind === 'multilink' ? 'On a multilink the coilover mounts on the upright.'
+            : <>Lower mount on: <b>{geom.damperArm === 'upright' ? 'the knuckle' : geom.damperArm === 'uca' ? 'the upper arm' : 'the lower arm'}</b> (change in Spring &amp; load → Lower mount on).</>}
+      </p>
     </>
   );
 }
@@ -235,6 +286,7 @@ function ComponentInspector({ id, model }: { id: ComponentId; model: Model }) {
       )}
       {id === 'spring' && (
         <>
+          <Section title={kind === 'macpherson' ? 'Strut placement' : 'Coilover placement'}><CoiloverPlacement /></Section>
           <Section title="Spring"><SpringFields keys={['springRate', 'freeLength']} /></Section>
           <Section title="Damper & bump stop"><DamperFields model={model} /></Section>
           <Section title="Results"><SpringResults model={model} /></Section>

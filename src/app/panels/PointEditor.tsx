@@ -7,7 +7,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { vec3, sub, length, normalize, type Vec3 } from '../../core/math/vec3';
 import { parseValue, UNITS } from '../../core/units/units';
 import { alongLine } from '../../core/math/dimension';
-import { useApp, rootOf, POINT_KEYS, activePointKeys, type PointKey, type EditableGeometry } from '../store';
+import { useApp, rootOf, POINT_KEYS, activePointKeys, type PointKey, type EditableGeometry, type ArmChoice } from '../store';
 import { lockKeys, pointAxisLocked } from '../locks';
 import { componentDefs, pointLabel } from '../components';
 import type { SuspensionKind } from '../../core/suspension/doubleWishbone';
@@ -137,7 +137,7 @@ const PREFERRED: Partial<Record<PointKey, PointKey[]>> = {
 };
 
 /** Joints this point is connected to (shares a part with), for "move along the line toward…". */
-function neighbors(id: PointKey, damperArm: 'lca' | 'uca', kind: SuspensionKind): PointKey[] {
+function neighbors(id: PointKey, damperArm: ArmChoice, kind: SuspensionKind): PointKey[] {
   const out = new Set<PointKey>(PREFERRED[id] ?? []);
   for (const d of Object.values(componentDefs(damperArm, kind))) if (d.points.includes(id)) for (const p of d.points) if (p !== id) out.add(p);
   return [...out];

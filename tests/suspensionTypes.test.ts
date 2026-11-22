@@ -195,3 +195,21 @@ describe('switching a design\'s suspension type (app)', () => {
     expect(r.warnings.filter((w) => /Out2/.test(w))).toEqual([]);
   });
 });
+
+describe('coilover on the knuckle (double wishbone)', () => {
+  it('solves and gives a motion ratio near 1 (the knuckle moves about as much as the wheel)', async () => {
+    const { springLength } = await import('../src/core');
+    const g = SAMPLE_LAYOUTS.find((l) => l.id === 'C')!.geometry;
+    const lbj = g.lca.out, ubj = g.uca.out;
+    const lower = vec3(lbj.x + 0.25 * (ubj.x - lbj.x) - 35, lbj.y + 0.25 * (ubj.y - lbj.y), lbj.z);
+    const geo: DoubleWishboneGeometry = { ...g, damper: { chassis: vec3(lower.x - 100, lower.y + 330, lower.z), arm: 'upright', armPoint: lower } };
+    const c = new DoubleWishbone(geo);
+    const a = springLength(c.solve({ travel: -1 }))!, b = springLength(c.solve({ travel: 1 }))!;
+    const mr = Math.abs(b - a) / 2;
+    expect(mr).toBeGreaterThan(0.8);
+    expect(mr).toBeLessThan(1.05);
+    // On the lower arm it is lower (the mount moves less than the wheel).
+    const onArm = new DoubleWishbone(g);
+    expect(Math.abs(springLength(onArm.solve({ travel: 1 }))! - springLength(onArm.solve({ travel: -1 }))!) / 2).toBeLessThan(mr);
+  });
+});

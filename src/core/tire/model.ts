@@ -101,3 +101,23 @@ export function solveLoadedHeight(model: TireForceModel, profile: TireProfile, t
   const r = evalAt(h);
   return { centerHeight: h, ...r, bottomedOut: r.patch.bottomedOut };
 }
+
+/**
+ * Set pressure with no load (gauge, kPa) from a pressure measured with the tire carrying `load` (N) at the
+ * set conditions: the loaded tire's air volume is smaller, so its gauge reads higher than when it was
+ * unloaded (p · V constant at the same temperature). Fixed-point on the gas model; the stiffness model
+ * has no air, so the reading is returned as is.
+ */
+export function unloadedSetPressure(model: TireForceModel, profile: TireProfile, measuredGauge: number, load: number): number {
+  if (model.kind !== 'gas' || !model.volumeChange || !(load > 0)) return measuredGauge;
+  const c = model.conditions;
+  const at = (p: number): TireForceModel => ({ ...model, conditions: { ...c, setPressure: p, operatingAltitude: c.setAltitude, operatingTemperature: c.setTemperature } });
+  let p = measuredGauge;
+  for (let i = 0; i < 30; i++) {
+    const loaded = tireForce(at(p), profile, solveLoadedHeight(at(p), profile, 0, load).patch).pressureGauge ?? measuredGauge;
+    const next = p + (measuredGauge - loaded);
+    if (Math.abs(next - p) < 1e-6) return next;
+    p = next;
+  }
+  return p;
+}

@@ -653,10 +653,10 @@ export const defaultAero = (): AeroSettings => ({
 });
 
 /** Setup wizard steps, easy to hard. */
-export const SETUP_STEPS = ['type', 'tires', 'size', 'weight', 'unsprung', 'points', 'springs', 'dampers', 'steering', 'grip', 'inertia'] as const;
+export const SETUP_STEPS = ['type', 'drive', 'tires', 'size', 'weight', 'unsprung', 'points', 'springs', 'dampers', 'steering', 'grip', 'inertia'] as const;
 export type SetupStep = (typeof SETUP_STEPS)[number];
 export const SETUP_LABELS: Record<SetupStep, string> = {
-  type: 'Suspension type', tires: 'Wheels and tires', size: 'Track and wheelbase', weight: 'Weight and CG', unsprung: 'Unsprung weight',
+  type: 'Suspension type', drive: 'Steering, drive and brakes', tires: 'Wheels and tires', size: 'Track and wheelbase', weight: 'Weight and CG', unsprung: 'Unsprung weight',
   points: 'Suspension points', springs: 'Springs', dampers: 'Dampers and anti-roll bars', steering: 'Steering', grip: 'Tire grip', inertia: 'Body inertia',
 };
 

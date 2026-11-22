@@ -188,3 +188,17 @@ describe('tire size parsing', () => {
 });
 
 
+
+describe('set pressure measured under load', () => {
+  it('the unloaded set pressure, loaded again, reads the measured pressure (and is a little lower)', async () => {
+    const { unloadedSetPressure, solveLoadedHeight, tireForce } = await import('../src/core');
+    const profile = { radius: 260, width: 205, shoulderRadius: 25, rimRadius: 165 };
+    const gas = { kind: 'gas' as const, volumeChange: true, volumeFactor: 1, conditions: { setPressure: 83, setAltitude: 0, setTemperature: 20, operatingAltitude: 0, operatingTemperature: 20 } };
+    const p0 = unloadedSetPressure(gas, profile, 83, 800);
+    expect(p0).toBeLessThan(83);
+    expect(p0).toBeGreaterThan(70);
+    const m = { ...gas, conditions: { ...gas.conditions, setPressure: p0 } };
+    expect(tireForce(m, profile, solveLoadedHeight(m, profile, 0, 800).patch).pressureGauge!).toBeCloseTo(83, 3);
+    expect(unloadedSetPressure({ kind: 'stiffness', rate: 120 }, profile, 83, 800)).toBe(83);
+  });
+});

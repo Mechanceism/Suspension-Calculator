@@ -8,7 +8,7 @@ import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { create } from 'zustand';
 import { parseValue, type Quantity } from '../../core/units/units';
 import { parseTireSize } from '../../core/tire/size';
-import { tireRate } from '../../core/tire/model';
+import { tireRate, unloadedSetPressure } from '../../core/tire/model';
 import { DoubleWishbone, SUSPENSION_KINDS, SUSPENSION_LABELS, type SuspensionKind } from '../../core/suspension/doubleWishbone';
 import { springLength, dampingForRatio } from '../../core/suspension/spring';
 import { cgFromScales, springFromWeight, unsprungFromParts, estimateInertia, G, type CornerKg, type UnsprungParts } from '../../core/setup/measure';
@@ -107,6 +107,49 @@ const TypeStep: StepView = ({ apply }) => {
   );
 };
 
+/** Which corners steer, are powered and have brakes (and how). */
+const DriveStep: StepView = ({ apply }) => {
+  const settings = useApp((s) => s.settings);
+  const setSetting = useApp((s) => s.setCornerSetting);
+  const ids = ['FL', 'FR', 'RL', 'RR'] as const;
+  return (
+    <>
+      <p>Which wheels steer, which are driven, and which have brakes. These decide how the car turns, accelerates and stops in the tests.</p>
+      <table className="opt-table">
+        <thead><tr><th /><th>Steers</th><th>Powered</th><th>Drive</th><th>Brake</th><th>ABS</th></tr></thead>
+        <tbody>
+          {ids.map((id) => {
+            const c = settings[id];
+            return (
+              <tr key={id}>
+                <td><b>{id}</b></td>
+                <td><input type="checkbox" checked={c.steered} onChange={(e) => setSetting(id, 'steered', e.target.checked)} /></td>
+                <td><input type="checkbox" checked={c.powered} onChange={(e) => setSetting(id, 'powered', e.target.checked)} /></td>
+                <td>
+                  <select value={c.drive} disabled={!c.powered} onChange={(e) => setSetting(id, 'drive', e.target.value as 'chassis' | 'hub')} title="Chassis: a differential and halfshaft; hub: a motor in the wheel">
+                    <option value="chassis">Diff + halfshaft</option>
+                    <option value="hub">Hub motor</option>
+                  </select>
+                </td>
+                <td>
+                  <select value={c.brake} onChange={(e) => setSetting(id, 'brake', e.target.value as typeof c.brake)} title="Outboard: at the wheel (torque into the upright); inboard: on the chassis (e.g. at the diff)">
+                    <option value="outboard">At the wheel</option>
+                    <option value="inboard">Inboard</option>
+                    <option value="none">None</option>
+                  </select>
+                </td>
+                <td><input type="checkbox" checked={c.abs} disabled={c.brake === 'none'} onChange={(e) => setSetting(id, 'abs', e.target.checked)} /></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p className="hint">Changes apply right away. Brake bias and the drive split are on the weight page and in Vehicle → Inputs.</p>
+      <div className="jm-row"><button className="wide-btn primary" onClick={() => apply(() => {})}>That&apos;s my car: next</button></div>
+    </>
+  );
+};
+
 const TiresStep: StepView = ({ apply }) => {
   const front = designOf('front'), rear = designOf('rear');
   const [sizeF, setSizeF] = useState(front.tireSizeText || '');
@@ -119,16 +162,28 @@ const TiresStep: StepView = ({ apply }) => {
   const [rimR, setRimR] = useState(rimOf(rear));
   const [etF, setEtF] = useState(front.geom.scalars.wheelOffset.value || 0);
   const [etR, setEtR] = useState(rear.geom.scalars.wheelOffset.value || 0);
+  // When and how the pressure was set: cold, at some temperature and altitude, with or without load.
+  const [setT, setSetT] = useState(front.tire.setTemperature.value);
+  const [setAlt, setSetAlt] = useState(front.tire.setAltitude.value);
+  const [loadedReading, setLoadedReading] = useState(false);
   const okF = !!parseTireSize(sizeF), okR = same || !!parseTireSize(sizeR);
   const go = () => apply(() => {
     const s = useApp.getState();
+    const loads = vehicleStaticLoads(s.vehicle, mergedCorners(s), s.links);
     const set = (axle: TireAxle, text: string, p: number, rim: number, et: number) => {
       const size = parseTireSize(text)!;
       s.applyTireDims(axle, { outerDiameter: size.outerDiameter, width: size.sectionWidth, rimDiameter: size.rimDiameter });
-      useApp.getState().updateDesigns(axle, (d) => ({
-        ...d, tireSizeText: text, tire: { ...d.tire, pressure: f(p) },
-        geom: { ...d.geom, scalars: { ...d.geom.scalars, rimWidth: f(rim), wheelOffset: f(et) } },
-      }));
+      useApp.getState().updateDesigns(axle, (d) => {
+        const tire = { ...d.tire, setTemperature: f(setT), setAltitude: f(setAlt), pressure: f(p) };
+        const geom = { ...d.geom, scalars: { ...d.geom.scalars, rimWidth: f(rim), wheelOffset: f(et) } };
+        // Read with the car on the wheel: the model's set pressure is with no load (more air volume).
+        if (loadedReading) {
+          const model = toForceModel(d.tireModel, tire, d.volumeChange);
+          const load = loads[axle === 'rear' ? 'RL' : 'FL'];
+          if (model && load > 0) tire.pressure = f(Number(unloadedSetPressure(model, toProfile(geom), p, load).toFixed(2)));
+        }
+        return { ...d, tireSizeText: text, tire, geom };
+      });
     };
     if (same) set('both', sizeF, pF, rimF, etF);
     else { set('front', sizeF, pF, rimF, etF); set('rear', sizeR, pR, rimR, etR); }
@@ -143,6 +198,14 @@ const TiresStep: StepView = ({ apply }) => {
           {!same && <Row label="Rear tire size"><input className={`value-input wide-text${sizeR && !okR ? ' invalid' : ''}`} value={sizeR} onChange={(e) => setSizeR(e.target.value)} /></Row>}
           <Row label={same ? 'Pressure' : 'Front pressure'}><Num value={pF} unit="kPa" q="pressure" onChange={setPF} /></Row>
           {!same && <Row label="Rear pressure"><Num value={pR} unit="kPa" q="pressure" onChange={setPR} /></Row>}
+          <Row label="Pressure measured" hint="The model uses the pressure set cold with no load on the tire. Measured with the car sitting on it, the reading is a little higher (less air volume): it is converted.">
+            <select value={loadedReading ? 'loaded' : 'free'} onChange={(e) => setLoadedReading(e.target.value === 'loaded')}>
+              <option value="free">Cold, wheel off the ground (no load)</option>
+              <option value="loaded">Cold, with the car on its wheels</option>
+            </select>
+          </Row>
+          <Row label="Temperature when set" hint="Air (tire) temperature when the pressure was set, before driving"><Num value={setT} unit="°C" q="temperature" onChange={setSetT} /></Row>
+          <Row label="Altitude when set" hint="Gauge pressure depends on the outside air pressure"><Num value={setAlt} unit="m" q="altitude" onChange={setSetAlt} /></Row>
           <Row label={same ? 'Rim width' : 'Front rim width'} hint="The wheel's width (e.g. 7&quot; for a 7x13 wheel). A rim wider than the tire's measuring rim spreads the tire about 5 mm per ½&quot;."><Num value={rimF} unit="mm" q="length" onChange={setRimF} /></Row>
           {!same && <Row label="Rear rim width"><Num value={rimR} unit="mm" q="length" onChange={setRimR} /></Row>}
           <Row label={same ? 'Wheel offset (ET)' : 'Front wheel offset (ET)'} hint="Stamped on the wheel (ET35 = 35 mm). From the rim's centerline to the hub mounting face; + = the face is outboard of the centerline (the tire sits inboard)."><Num value={etF} unit="mm" q="length" onChange={setEtF} /></Row>
@@ -601,7 +664,7 @@ const InertiaStep: StepView = ({ apply }) => {
 };
 
 const VIEWS: Record<SetupStep, StepView> = {
-  type: TypeStep, tires: TiresStep, size: SizeStep, weight: WeightStep, unsprung: UnsprungStep,
+  type: TypeStep, drive: DriveStep, tires: TiresStep, size: SizeStep, weight: WeightStep, unsprung: UnsprungStep,
   points: PointsStep, springs: SpringsStep, dampers: DampersStep, steering: SteeringStep, grip: GripStep, inertia: InertiaStep,
 };
 

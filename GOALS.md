@@ -80,6 +80,19 @@ Calculating and visualizing come first. **Later:** export to modeling software (
 - **Dampers and the ride in the optimizer:** damper rates (and spring rates) as optimizer variables, and ride findings (wheel lift, bump-stop hits over time) as optimizer goals. The optimizer still works on steady states only, so a segment that fails only over time can't be fixed by *Optimize until it passes* yet.
 - **Digressive / multi-stage dampers** (knee speed, separate low / high speed rates) instead of one rate per direction.
 
+### Setup wizard: entering the car's values (noted 2026-11-22)
+Most inputs have to come from the user, and many are hard to find. A **value wizard** walks the user through them, starting with the easy values and leading to the harder ones. Every page allows "I don't know yet: use an estimate"; estimated values stay marked, so the results can say which of them they depend on. Proposed order:
+1. **Suspension type** for each of the four corners.
+2. **Wheels and tires:** wheel and tire sizes.
+3. **Overall size:** track width (tire to tire) and wheelbase (wheel center to wheel center).
+4. **Weight and CG:** enter the total weight and place the CG directly, or use the **corner-scale CG calculator** (the scale-weight CG utility from the notes): weigh the four corners on level ground for the CG's front / rear and left / right position, then lift one axle by a known height and weigh again for the CG height, giving the CG in 3D.
+5. **Unsprung weight:** tire, wheel, hub, brake and upright (plus a share of the arms, spring and damper), so the sprung / unsprung split and the sprung CG follow.
+6. **Suspension points:** the hardpoints of each corner (today's Corner view), with the steering rack.
+7. **Springs:** the rate from the spring's label, or a **spring-rate tool**: add a known weight to one corner of the parked car and measure the change in ride height; with the motion ratio from the geometry that gives the wheel rate and the spring rate.
+8. **Harder values:** dampers (generic, then the damper's settings or dyno curve), anti-roll bars, steering ratio and rack travel, tire pressures and tire data (generic, a `.tir` file, or fitted data), body inertias (estimated from the mass and size).
+
+**Future: phone companion app.** A separate app that runs on a phone and uses its sensors and cameras, with a physical touch point (probe) on the phone, so the user can touch points on the suspension and capture their real 3D positions to send to this tool.
+
 ### Future goals (noted 2026-11-22)
 - **Tire data for the grip model.** The Magic Formula is in (see above) with generic coefficients. Still to come: importing `.tir` coefficient files, fitting coefficients to measured data (e.g. TTC), and different tires front / rear.
 - **Aero.** Assumed negligible for now. When added: drag acts on the **body** as a braking force (not through the tires), and lift / downforce acts on the body at a center of pressure, so it can lift, lower, pitch or twist (roll / yaw moment) the body, and with that change tire loads and grip. Inputs: CdA, ClA (front/rear or center of pressure), air density; speed comes from the test segments.

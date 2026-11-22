@@ -43,7 +43,8 @@ export interface VehicleCorner {
   spring: SpringSpec;
   /** kg */
   unsprungMass: number;
-  tire: { profile: TireProfile; model: TireForceModel };
+  /** Tire geometry, vertical force model and, when this corner's tire differs from the car's, its grip model. */
+  tire: { profile: TireProfile; model: TireForceModel; grip?: TireGrip };
   /**
    * Brake mounting. Outboard: the brake torque is reacted by the upright, so the braking force acts
    * at the contact patch. Inboard: reacted by the chassis, so it acts at the wheel center.
@@ -753,12 +754,12 @@ export interface TireCaps {
  * camber only lowers the peak, so both lean directions are averaged.
  */
 export function capacities(input: VehicleInput, corners: Record<CornerId, CornerResult>, latSign: number): Record<CornerId, TireCaps> {
-  const m = input.tireGrip!;
   const out = {} as Record<CornerId, TireCaps>;
   for (const id of CORNER_IDS) out[id] = { y: 0, x: 0, slideY: 1, slideX: 1, fz: 0, gamma: 0 };
   for (const c of input.corners) {
     const r = corners[c.id];
     if (!r) continue;
+    const m = c.tire.grip ?? input.tireGrip!;
     const fz = Math.max(r.tireLoad, 0);
     const pressure = tirePressure(c.tire.model);
     // inclination: + = top toward the outboard side; the outboard side is +X for left corners.
@@ -777,11 +778,11 @@ export function capacities(input: VehicleInput, corners: Record<CornerId, Corner
 
 /** Grip use, slip states and what limits the car (see docs/MATH.md § Grip and slip). */
 export function gripSummary(input: VehicleInput, r: VehicleResult, cap: Record<CornerId, TireCaps>, frontShare: number, latTotal: number): GripSummary {
-  const m = input.tireGrip!;
   const latSign = Math.sign(latTotal);
   const byId = Object.fromEntries(input.corners.map((c) => [c.id, c])) as Partial<Record<CornerId, VehicleCorner>>;
   const corners = {} as Record<CornerId, CornerGrip>;
   for (const id of CORNER_IDS) {
+    const m = byId[id]?.tire.grip ?? input.tireGrip!;
     const c = r.corners[id];
     const k = cap[id];
     const Cy = Math.max(k.y, 1e-9), Cx = Math.max(k.x, 1e-9);

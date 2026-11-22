@@ -3,6 +3,7 @@ import { useApp } from '../store';
 import { listLayouts, removeLayout, hasLayout, type LibraryEntry } from '../library';
 import { useDirtyParts, newLayout, save, saveAs, openLayout, exportParts, importParts, exportSettings, importSettings, usePendingImport, setAfterSave, download, type Part } from '../fileActions';
 import { exportSettingsFile } from '../settingsFile';
+import { importTireFile } from '../tireActions';
 
 const when = (iso: string) => {
   const d = new Date(iso);
@@ -18,6 +19,7 @@ export function FileMenu() {
   const dirty = parts.model || parts.tests;
   const importInput = useRef<HTMLInputElement>(null);
   const settingsInput = useRef<HTMLInputElement>(null);
+  const tireInput = useRef<HTMLInputElement>(null);
   const importPart = useRef<Part>('all');
   const pickImport = (part: Part) => { importPart.current = part; importInput.current?.click(); };
   const root = useRef<HTMLDivElement>(null);
@@ -74,6 +76,7 @@ export function FileMenu() {
           <button role="menuitem" onClick={run(() => pickImport('all'))} title="Replace the model and the tests">Model and tests</button>
           <button role="menuitem" onClick={run(() => pickImport('model'))} title="Replace the model, keep the current tests">Model only</button>
           <button role="menuitem" onClick={run(() => pickImport('tests'))} title="Replace the current tests with those from a tests or project file">Tests only</button>
+          <button role="menuitem" onClick={run(() => tireInput.current?.click())} title="Use a fitted Magic Formula tire model (.tir file) for all four tires. Front and rear can differ: Optimize → Tire grip model">Tire (.tir)</button>
           <div className="menu-sep" />
           <div className="menu-head">Settings (units, view, pass-rule profiles)</div>
           <button role="menuitem" onClick={run(exportSettings)}>Export settings</button>
@@ -87,6 +90,10 @@ export function FileMenu() {
       <input
         ref={settingsInput} type="file" accept=".json,application/json" hidden
         onChange={(e) => { const f = e.target.files?.[0]; if (f) usePendingImport.setState({ file: f, part: 'settings' }); e.target.value = ''; }}
+      />
+      <input
+        ref={tireInput} type="file" accept=".tir,.TIR,.txt" hidden
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) usePendingImport.setState({ file: f, part: 'tire' }); e.target.value = ''; }}
       />
       <SaveAsDialog />
       <ImportPrompt />
@@ -126,8 +133,9 @@ function SaveAsDialog() {
   );
 }
 
-const REPLACES: Record<Part | 'settings', string> = {
+const REPLACES: Record<Part | 'settings' | 'tire', string> = {
   all: 'your current model and tests', model: 'your current model (the tests stay)', tests: 'your current tests', settings: 'your current settings (units, view options, pass-rule profiles)',
+  tire: 'the tire grip model of all four tires (the rest of the model stays)',
 };
 
 /** Before an import replaces something: save first, save as, overwrite, or cancel. */
@@ -139,9 +147,10 @@ function ImportPrompt() {
   const go = () => {
     close();
     if (part === 'settings') void importSettings(file);
+    else if (part === 'tire') void importTireFile(file, 'both');
     else void importParts(file, part);
   };
-  const unsaved = part === 'settings' ? false : (part !== 'tests' && parts.model) || (part !== 'model' && parts.tests);
+  const unsaved = part === 'settings' ? false : part === 'tire' ? parts.model : (part !== 'tests' && parts.model) || (part !== 'model' && parts.tests);
   const saveFirst = () => {
     if (part === 'settings') { exportSettings(); go(); return; }
     const s = useApp.getState();

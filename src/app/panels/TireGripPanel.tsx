@@ -6,9 +6,11 @@
  */
 import { useMemo, useRef, useState } from 'react';
 import { mfLateral, mfLongitudinal, mfPeaks, mfPeakSlips, nominalLoad, type TireGrip } from '../../core/tire/magicFormula';
-import { parseTir, type TirModel } from '../../core/tire/tir';
-import { useApp, MF_KEYS, MF_META, GRIP_META, type MFKey } from '../store';
-import { tireGripOf } from '../optimizer';
+import type { TirModel } from '../../core/tire/tir';
+import { useApp, MF_KEYS, MF_META, GRIP_META, type MFKey, type TireAxle } from '../store';
+import { tireGripFor } from '../optimizer';
+import { importTireFile, tirDimensions } from '../tireActions';
+import { TireFit } from './TireFitPanel';
 import { FieldRows, fmt } from './FieldRows';
 
 const DEG = Math.PI / 180;
@@ -74,27 +76,25 @@ function bestLean(m: TireGrip) {
   return { best, peak };
 }
 
-/** Load a .tir file: parse, report, use it. */
-async function importTir(file: File) {
-  const s = useApp.getState();
-  const r = parseTir(await file.text(), file.name);
-  if (!r.model) { s.notify(`Couldn't use ${file.name}:\n${r.errors.join('\n')}`, 'error'); return; }
-  s.setTireFile(r.model);
-  s.notify(`Tire model from ${file.name} (MF ${r.model.version}, ${Object.keys(r.model.p).length} values).${r.warnings.length ? `\n${r.warnings.join('\n')}` : ''}`, r.warnings.length ? 'warn' : 'info');
-}
-
 export function TireGripFields() {
   const tireGrip = useApp((s) => s.tireGrip);
   const tireFile = useApp((s) => s.tireFile);
+  const tireFileRear = useApp((s) => s.tireFileRear);
   const grip = useApp((s) => s.grip);
   const setField = useApp((s) => s.setTireGripField);
   const setGripField = useApp((s) => s.setGripField);
   const setTireFile = useApp((s) => s.setTireFile);
+  const setRearTireSame = useApp((s) => s.setRearTireSame);
   const setTireScale = useApp((s) => s.setTireScale);
   const reset = useApp((s) => s.resetTireGrip);
   const fileInput = useRef<HTMLInputElement>(null);
-  const [lastFile, setLastFile] = useState<TirModel | null>(null);
-  const m = useMemo(() => tireGripOf(tireGrip, tireFile), [tireGrip, tireFile]);
+  const split = tireFileRear !== null;
+  const [tab, setTab] = useState<'front' | 'rear'>('front');
+  const axle: 'front' | 'rear' = split ? tab : 'front';
+  const importAxle: TireAxle = split ? axle : 'both';
+  const file = axle === 'rear' ? (tireFileRear && tireFileRear !== 'simple' ? tireFileRear : null) : tireFile;
+  const [lastFile, setLastFile] = useState<Record<'front' | 'rear', TirModel | null>>({ front: null, rear: null });
+  const m = useMemo(() => tireGripFor({ tireGrip, tireFile, tireFileRear }, axle), [tireGrip, tireFile, tireFileRear, axle]);
   const fz0 = nominalLoad(m);
   const plots = useMemo(() => curves(m), [m]);
   const info = useMemo(() => {
@@ -105,32 +105,51 @@ export function TireGripFields() {
   }, [m, fz0]);
   const row = (k: MFKey) => ({ label: MF_META[k].label, field: tireGrip[k], unit: MF_META[k].unit, hint: MF_META[k].hint, onCommit: (t: string) => setField(k, t) });
   const scaleRow = (key: 'LMUY' | 'LMUX', label: string, hint: string) => {
-    const v = tireFile?.p[key] ?? 1;
-    return { label, field: { text: String(v), value: v }, unit: '×', hint, onCommit: (t: string) => { const n = Number(t); if (n > 0) setTireScale(key, n); } };
+    const v = file?.p[key] ?? 1;
+    return { label, field: { text: String(v), value: v }, unit: '×', hint, onCommit: (t: string) => { const n = Number(t); if (n > 0) setTireScale(key, n, axle); } };
   };
   const leanGain = (info.lean.peak / info.pk.y - 1) * 100;
-  const shown = tireFile ?? lastFile;
+  const shown = file ?? lastFile[axle];
+  const useSimple = () => {
+    if (!file) return;
+    setLastFile((l) => ({ ...l, [axle]: file }));
+    setTireFile(null, importAxle);
+  };
   return (
     <div className="tire-grip">
+      <div className="jm-row" title="Front and rear can use different tires (e.g. different sizes or compounds)">
+        <span className="muted">Tires</span>
+        {!split
+          ? <>
+              <span className="small-text">same front and rear</span>
+              <button className="chip" onClick={() => { setTireFile(tireFile, 'front'); setTab('rear'); }} title="Give the rear tires their own model (starts as a copy of the front)">Different rear tire</button>
+            </>
+          : <>
+              <button className={`chip${tab === 'front' ? ' on' : ''}`} onClick={() => setTab('front')}>Front</button>
+              <button className={`chip${tab === 'rear' ? ' on' : ''}`} onClick={() => setTab('rear')}>Rear</button>
+              <button className="chip" onClick={() => { if (confirm('Use the front tire model for the rear too?')) { setRearTireSame(); setTab('front'); } }}>Same as front</button>
+            </>}
+      </div>
       <div className="jm-row" title="The simple model has generic, editable coefficients. A .tir file is a fitted Magic Formula model of a real tire (MF 6.1 / 6.2 or 5.2).">
-        <span className="muted">Model</span>
-        <button className={`chip${!tireFile ? ' on' : ''}`} onClick={() => { if (tireFile) { setLastFile(tireFile); setTireFile(null); } }}>Simple (generic)</button>
+        <span className="muted">Model{split ? ` (${axle})` : ''}</span>
+        <button className={`chip${!file ? ' on' : ''}`} onClick={useSimple}>Simple (generic)</button>
         {shown && (
-          <button className={`chip${tireFile ? ' on' : ''}`} onClick={() => { if (!tireFile && lastFile) setTireFile(lastFile); }}>{shown.name}</button>
+          <button className={`chip${file ? ' on' : ''}`} onClick={() => { if (!file && lastFile[axle]) setTireFile(lastFile[axle], importAxle); }}>{shown.name}</button>
         )}
         <button className="chip" onClick={() => fileInput.current?.click()} title="Load a .tir file (Magic Formula tire property file)">Import .tir</button>
-        <input ref={fileInput} type="file" accept=".tir,.TIR,.txt" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) void importTir(f); e.target.value = ''; }} />
+        <input ref={fileInput} type="file" accept=".tir,.TIR,.txt" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) void importTireFile(f, importAxle); e.target.value = ''; }} />
       </div>
-      {tireFile ? (
+      {file ? (
         <p className="hint">
-          <b>{tireFile.name}</b>: Magic Formula {tireFile.version} (FITTYP {tireFile.fittyp || '—'}), nominal load {fmt(tireFile.fnomin, 0)} N
-          {tireFile.nompres > 0 ? `, nominal pressure ${fmt(tireFile.nompres, 0)} kPa` : ''}, {Object.keys(tireFile.p).length} values. Saved in your project.
+          <b>{file.name}</b>: Magic Formula {file.version} (FITTYP {file.fittyp || '—'}), nominal load {fmt(file.fnomin, 0)} N
+          {file.nompres > 0 ? `, nominal pressure ${fmt(file.nompres, 0)} kPa` : ''}, {Object.keys(file.p).length} values. Saved in your project.
           Forces use the full model; the car uses each tire&apos;s peak in the direction it pushes (both directions averaged, since left and right tires are mirror images).
+          {tirDimensions(file) && <> <button className="link-btn" onClick={() => useApp.getState().applyTireDims(importAxle, tirDimensions(file)!)}>Use the file&apos;s tire size</button></>}
         </p>
       ) : (
         <p className="hint">
           <b>Magic Formula</b> (Pacejka), simple form. The coefficients are <b>generic</b>: a plausible tire, not fitted to a real one.
-          Enter your tire&apos;s values, or <b>Import .tir</b> to use a fitted model of your tire.
+          Enter your tire&apos;s values, or <b>Import .tir</b> to use a fitted model of your tire.{split ? ' (The simple coefficients are shared by both axles.)' : ''}
         </p>
       )}
       <div className="tire-plots">
@@ -152,14 +171,14 @@ export function TireGripFields() {
         {' '}· sliding keeps {fmt(info.pk.slideY * 100, 0)} % · best lean {fmt(Math.abs(info.lean.best), 1)}° {info.lean.best >= 0 ? 'into' : 'away from'} the turn ({leanGain >= 0 ? '+' : ''}{fmt(leanGain, 1)} %)
         {' '}· peak braking μ {fmt(info.pk.x / fz0, 2)}, locked keeps {fmt(info.pk.slideX * 100, 0)} %
       </p>
-      {tireFile ? (
+      {file ? (
         <>
           <FieldRows rows={[
             scaleRow('LMUY', 'Side grip scale (λμy)', 'Scales the peak side force (a test rig belt grips more than a road: try 0.6–0.8 for real surfaces). 1 = as fitted.'),
             scaleRow('LMUX', 'Braking / drive grip scale (λμx)', 'Scales the peak braking / drive force. 1 = as fitted.'),
           ]} />
           <div className="jm-row">
-            <button className="chip" onClick={() => { if (confirm(`Stop using ${tireFile.name} and go back to the simple model?`)) { setLastFile(null); setTireFile(null); } }}>Remove the file</button>
+            <button className="chip" onClick={() => { if (confirm(`Stop using ${file.name} and go back to the simple model?`)) { setLastFile((l) => ({ ...l, [axle]: null })); setTireFile(null, importAxle); } }}>Remove the file</button>
           </div>
         </>
       ) : (
@@ -182,6 +201,7 @@ export function TireGripFields() {
           pressure readouts. Grip, slip and pass / fail use the tire grip model above.
         </p>
       </details>
+      <TireFit />
     </div>
   );
 }

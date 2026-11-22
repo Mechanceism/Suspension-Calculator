@@ -615,3 +615,9 @@ input[type='range']:disabled { opacity: 0.4; }
 .sens-bar.better { background: var(--ok); }
 .rate-tuning .check-label { margin-right: 10px; }
 .damper-plot { margin: 4px 0 6px; }
+
+/* Workspace switch centered in the top bar; while busy, the busy pill takes the note's place on the right. */
+.topbar { position: relative; }
+.topbar .workspace-switch { position: absolute; left: 50%; transform: translateX(-50%); margin-left: 0; }
+.busy-pill { margin-left: auto; max-width: 360px; }
+.busy-pill ~ .topbar-note { display: none; }

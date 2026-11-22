@@ -22,6 +22,7 @@ export * from './optimize/corner';
 export * from './tire/grip';
 export * from './tire/magicFormula';
 export * from './tire/tir';
+export * from './tire/fit';
 export * from './optimize/vehicle';
 export * from './optimize/search';
 export * from './optimize/rates';

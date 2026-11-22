@@ -116,6 +116,8 @@ export interface VehicleProblem {
   grip?: GripModel;
   /** Tire grip model (Magic Formula): grip, slip and pass / fail. */
   tireGrip?: TireGrip;
+  /** The rear tires' grip model when they differ from the front (default: the same). */
+  tireGripRear?: TireGrip;
   keepClose?: number;
   maxIterations?: number;
   /** Gradient runs: 1 = from the current design only; more = also from the best DOE samples (wider search). */
@@ -196,7 +198,7 @@ export function assembleVehicle(p: VehicleProblem, geometries: Partial<Record<Co
     }
     const freeLength = p.autoPreload ? fitFreeLength(built.get(root)!, d.springRate, Math.max(0, loads[id] - d.unsprungMass * G)) : d.freeLength;
     corners.push({
-      id, table, unsprungMass: d.unsprungMass, tire: { profile: d.profile, model: d.model },
+      id, table, unsprungMass: d.unsprungMass, tire: { profile: d.profile, model: d.model, ...(p.tireGripRear && !isFront(id) ? { grip: p.tireGripRear } : {}) },
       brake: p.settings[id].brake, drive: p.settings[id].drive, abs: p.settings[id].abs ?? true,
       spring: { rate: d.springRate, freeLength, ...(d.bumpStop ? { bumpStopLength: d.bumpStop.length, bumpStopRate: d.bumpStop.rate } : {}) },
       ...(d.damping ? { damper: d.damping } : {}),

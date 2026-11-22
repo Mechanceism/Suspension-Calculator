@@ -21,7 +21,7 @@ import {
 import type { SharedDesign } from './store';
 import { vec3, Y_AXIS, type Vec3 } from '../core/math/vec3';
 import { roadEffective } from '../core/tests/segments';
-import { tireGripOf } from './optimizer';
+import { tireGripFor } from './optimizer';
 
 const G = 9.80665;
 /** A "rigid" tire is modelled as a very stiff one so every corner has a defined tire force. */
@@ -95,6 +95,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
   const gripFields = useApp((st) => st.tireGrip);
   const rideView = useApp((st) => st.rideView);
   const tireFile = useApp((st) => st.tireFile);
+  const tireFileRear = useApp((st) => st.tireFileRear);
   // Grade and bank fold into what the tires must supply (see core/tests/segments.ts).
   const road = roadEffective(lateralGKin, longitudinalG, Math.atan(roadGrade / 100), (roadBank * Math.PI) / 180);
   const lateralG = road.lateralG;
@@ -165,7 +166,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
           ? fitFreeLength(b.corner, d.spring.springRate.value, Math.max(0, staticLoads[id] - mu * G))
           : d.spring.freeLength.value;
         corners.push({
-          id, table, unsprungMass: mu, tire: { profile: b.profile, model: b.model }, brake: s.settings[id].brake, abs: s.settings[id].abs,
+          id, table, unsprungMass: mu, tire: { profile: b.profile, model: b.model, ...(tireFileRear && !isFront(id) ? { grip: tireGripFor({ tireGrip: gripFields, tireFile, tireFileRear }, 'rear') } : {}) }, brake: s.settings[id].brake, abs: s.settings[id].abs,
           drive: s.settings[id].powered ? s.settings[id].drive : 'none',
           spring: {
             rate: d.spring.springRate.value, freeLength,
@@ -190,7 +191,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         corners, totalMass: v.mass.value, cg, wheelbase, groundY, lateralG, brakingG, brakeBias: bias,
         accelG, driveSplit: v.driveSplit.value / 100,
         shared: { front: toAxle(s.shared.front), rear: toAxle(s.shared.rear) },
-        gravityScale: road.gravityScale, groundOffset: wheelBumps, tireGrip: tireGripOf(gripFields, tireFile),
+        gravityScale: road.gravityScale, groundOffset: wheelBumps, tireGrip: tireGripFor({ tireGrip: gripFields, tireFile, tireFileRear }, 'front'),
         diff: { front: s.settings.FL.diff, rear: s.settings.RL.diff },
       };
       // Playback of the ride over time poses the car directly (body motion and travels from the simulation).
@@ -288,7 +289,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
     } catch (e) {
       return { ...empty, error: e instanceof Error ? e.message : String(e) };
     }
-  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, rack, lateralG, brakingG, accelG, road.gravityScale, wheelBumps, gripFields, rideView, tireFile]);
+  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, rack, lateralG, brakingG, accelG, road.gravityScale, wheelBumps, gripFields, rideView, tireFile, tireFileRear]);
 
   return result;
 }

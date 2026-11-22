@@ -13,6 +13,7 @@ import {
 import type { GripModel } from '../core/tire/grip';
 import type { MFCoeffs, TireGrip } from '../core/tire/magicFormula';
 import type { TirModel } from '../core/tire/tir';
+import type { TireSample, TireFitResult } from '../core/tire/fit';
 import type { TireForceModel } from '../core/tire/model';
 import { CORNER_IDS, tirePressure, type AxleShared, type CornerId, type DamperSpec } from '../core/vehicle/vehicle';
 import { vec3 } from '../core/math/vec3';
@@ -55,6 +56,12 @@ export const setupOf = (s: AppState): OptimizerSetup => s.optimizer[rootOf(s.act
 export const RIGID_TIRE: TireForceModel = { kind: 'stiffness', rate: 1e5 };
 
 /** Magic Formula coefficients from their fields. */
+/** The tire grip model of an axle: the rear's own setting, or the front / both-axle model. */
+export function tireGripFor(s: Pick<AppState, 'tireGrip' | 'tireFile' | 'tireFileRear'>, axle: 'front' | 'rear'): TireGrip {
+  if (axle === 'rear' && s.tireFileRear) return s.tireFileRear === 'simple' ? tireGripOf(s.tireGrip) : s.tireFileRear;
+  return tireGripOf(s.tireGrip, s.tireFile);
+}
+
 /** The tire grip model in use: a loaded `.tir` file, or the simple coefficients. */
 export const tireGripOf = (g: Record<MFKey, Field>, file?: TirModel | null): TireGrip =>
   file ?? (Object.fromEntries(MF_KEYS.map((k) => [k, g[k].value])) as unknown as MFCoeffs);
@@ -112,7 +119,7 @@ export function buildProblem(s: AppState): BuiltProblem<CornerProblem> {
     geometry, droop: -Math.abs(s.droop), bump: Math.abs(s.bump), samples: 9,
     rackPositions: rack > 0 && s.settings[s.activeCorner].steered ? [-rack, rack] : [],
     rollAngle: o.rollAngle.value, goals, variables, holds: holdsFor(s, root), keepClose: Math.max(0, o.keepClose.value), starts: o.starts ?? 1,
-    tire: model ? { profile: toProfile(s.geom), model, staticLoad, rollLoadFactor: o.rollLoadFactor.value, grip: gripModelOf(s.grip), tireGrip: tireGripOf(s.tireGrip, s.tireFile), pressure: tirePressure(model) } : undefined,
+    tire: model ? { profile: toProfile(s.geom), model, staticLoad, rollLoadFactor: o.rollLoadFactor.value, grip: gripModelOf(s.grip), tireGrip: tireGripFor(s, s.activeCorner === 'FL' || s.activeCorner === 'FR' ? 'front' : 'rear'), pressure: tirePressure(model) } : undefined,
   };
   const blockers: string[] = [];
   if (!goals.length) blockers.push('Turn on at least one goal.');
@@ -184,7 +191,7 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
     cases: { lateralG: Math.max(0, o.lateralG.value), brakingG: Math.max(0, o.brakingG.value), accelG: Math.max(0, o.accelG.value) },
     states: o.caseSource && (o.caseSource === 'all' || s.tests.some((x) => x.id === o.caseSource))
       ? statesForTests(s.tests, o.caseSource, { wheelbase: v.wheelbase.value, halfTrack: Math.abs(toGeometry(all[rootOf('FL', s.links)].geom).wheel.center.x) }) : undefined,
-    goals, variables, holds, grip: gripModelOf(s.grip), tireGrip: tireGripOf(s.tireGrip, s.tireFile), keepClose: Math.max(0, o.keepClose.value), starts: o.starts ?? 1,
+    goals, variables, holds, grip: gripModelOf(s.grip), tireGrip: tireGripFor(s, 'front'), ...(s.tireFileRear ? { tireGripRear: tireGripFor(s, 'rear') } : {}), keepClose: Math.max(0, o.keepClose.value), starts: o.starts ?? 1,
   };
   const blockers: string[] = [];
   if (!goals.length) blockers.push('Turn on at least one goal.');
@@ -292,3 +299,7 @@ export const runSensitivityJob = (problem: VehicleProblem, samples: number, onPr
 /** Tune springs / dampers / bars on the ride (Bayesian optimization), in the worker. */
 export const runRatesJob = (problem: VehicleProblem, tests: RateTest[], vars: RateVar[], budget: number, mode: 'pass' | 'improve', onProgress: (p: RateProgress) => void) =>
   progressJob<RateResult, RateProgress>({ kind: 'rates', problem, tests, vars, budget, mode }, onProgress);
+
+/** Fit a tire model to measured data, in the worker. */
+export const runTireFitJob = (samples: TireSample[], name: string, onProgress: (p: { stage: string; iteration: number }) => void) =>
+  progressJob<TireFitResult, { stage: string; iteration: number }>({ kind: 'tirefit', samples, name }, onProgress);

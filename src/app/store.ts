@@ -327,10 +327,14 @@ export interface AppState extends DesignState {
   updateVehicleOptimizer(fn: (o: VehicleOptimizerSetup) => VehicleOptimizerSetup): void;
   setGripField(key: GripKey, text: string): void;
   setTireGripField(key: MFKey, text: string): void;
-  /** Use a tire model from a `.tir` file (null = back to the simple coefficients). */
-  setTireFile(m: TirModel | null): void;
-  /** Grip scale of the loaded file (λμ): side (LMUY) or braking / drive (LMUX). */
-  setTireScale(key: 'LMUY' | 'LMUX', value: number): void;
+  /** Use a tire model from a `.tir` file (null = the simple coefficients) on both axles, the front or the rear. */
+  setTireFile(m: TirModel | null, axle?: TireAxle): void;
+  /** Rear tires the same as the front again. */
+  setRearTireSame(): void;
+  /** Grip scale of a loaded file (λμ): side (LMUY) or braking / drive (LMUX). */
+  setTireScale(key: 'LMUY' | 'LMUX', value: number, axle?: 'front' | 'rear'): void;
+  /** Set the tire size (mm) of the designs used on an axle (both = every design). */
+  applyTireDims(axle: TireAxle, dims: { outerDiameter?: number; width?: number; rimDiameter?: number }): void;
   resetTireGrip(): void;
   /** Write vehicle-optimized coordinates into each corner design (Undo keeps the previous geometry). */
   applyVehicleOptimized(updates: { root: CornerId; key: PointKey; axis: 0 | 1 | 2; value: number }[]): void;
@@ -526,6 +530,9 @@ export interface OptimizerSetup {
 }
 
 /** Whole-vehicle optimizer setup. */
+/** Which axle a tire setting is for. */
+export type TireAxle = 'both' | 'front' | 'rear';
+
 /** One rate change from the rate tuner. */
 export interface RateUpdate { root?: CornerId; axle?: Axle; section: 'spring' | 'damper' | 'shared'; key: string; value: number }
 
@@ -655,8 +662,10 @@ export interface DesignState {
   grip: Record<GripKey, Field>;
   /** Tire grip model (Magic Formula coefficients). */
   tireGrip: Record<MFKey, Field>;
-  /** A tire model loaded from a `.tir` file: used instead of the simple coefficients while set. */
+  /** A tire model loaded from a `.tir` file: used instead of the simple coefficients while set (front, or both axles). */
   tireFile: TirModel | null;
+  /** Rear tires: null = the same as the front, 'simple' = the simple coefficients, or their own file. */
+  tireFileRear: TirModel | 'simple' | null;
   /** Held dimensions between two points (Measure → set, hold). Kept like CAD sketch dimensions. */
   dimensions: HeldDimension[];
   /** Tests (chains of segments) for the Tests workspace. */
@@ -712,7 +721,7 @@ export const pickDesign = (s: DesignState): DesignState => ({
   droop: s.droop, bump: s.bump, driver: s.driver,
   corners: s.corners, links: s.links, settings: s.settings, activeCorner: s.activeCorner,
   vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode, shared: s.shared, locks: s.locks,
-  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, tireGrip: s.tireGrip, tireFile: s.tireFile, dimensions: s.dimensions, tests: s.tests,
+  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, tireGrip: s.tireGrip, tireFile: s.tireFile, tireFileRear: s.tireFileRear, dimensions: s.dimensions, tests: s.tests,
 });
 
 /** The default layout (File → New). */
@@ -792,6 +801,7 @@ export function defaultDesign(presetId = 'C'): DesignState {
     grip: defaultGrip(),
     tireGrip: defaultTireGrip(),
     tireFile: null,
+    tireFileRear: null,
     dimensions: [],
     tests: [],
   };
@@ -930,11 +940,42 @@ export const useApp = create<AppState>((set, get) => ({
     set({ tireGrip: { ...g, [key]: parseField(text, MF_META[key].quantity, g[key]) } });
   },
   resetTireGrip: () => set({ tireGrip: defaultTireGrip() }),
-  setTireFile: (m) => set({ tireFile: m }),
-  setTireScale: (key, value) => {
-    const f = get().tireFile;
-    if (!f || !(value > 0)) return;
-    set({ tireFile: { ...f, p: { ...f.p, [key]: value } } });
+  setTireFile: (m, axle = 'both') => {
+    if (axle === 'both') set({ tireFile: m, tireFileRear: null });
+    else if (axle === 'front') {
+      // The rear keeps what it had: if it followed the front, it keeps the old front tire.
+      const s = get();
+      set({ tireFile: m, tireFileRear: s.tireFileRear ?? s.tireFile ?? 'simple' });
+    } else set({ tireFileRear: m ?? 'simple' });
+  },
+  setRearTireSame: () => set({ tireFileRear: null }),
+  setTireScale: (key, value, axle = 'front') => {
+    if (!(value > 0)) return;
+    const s = get();
+    if (axle === 'rear' && s.tireFileRear && s.tireFileRear !== 'simple') { set({ tireFileRear: { ...s.tireFileRear, p: { ...s.tireFileRear.p, [key]: value } } }); return; }
+    if (s.tireFile) set({ tireFile: { ...s.tireFile, p: { ...s.tireFile.p, [key]: value } } });
+  },
+  applyTireDims: (axle, dims) => {
+    const s = get();
+    const merged = mergedCorners(s);
+    const activeRoot = rootOf(s.activeCorner, s.links);
+    const roots = new Set(CORNER_IDS.filter((id) => axle === 'both' || (axle === 'front') === (id === 'FL' || id === 'FR')).map((id) => rootOf(id, s.links)));
+    const corners = { ...s.corners };
+    let geom = s.geom;
+    const patch = (g: EditableGeometry): EditableGeometry => ({
+      ...g,
+      scalars: {
+        ...g.scalars,
+        ...(dims.outerDiameter ? { tireDiameter: field(Number(dims.outerDiameter.toFixed(1))) } : {}),
+        ...(dims.width ? { tireWidth: field(Number(dims.width.toFixed(1))) } : {}),
+        ...(dims.rimDiameter ? { rimDiameter: field(Number(dims.rimDiameter.toFixed(1))) } : {}),
+      },
+    });
+    for (const root of roots) {
+      if (root === activeRoot) geom = patch(geom);
+      else corners[root] = { ...merged[root], geom: patch(merged[root].geom) };
+    }
+    set({ corners, geom, presetId: 'custom' });
   },
   vehOptUndo: null,
   dimViolations: [],

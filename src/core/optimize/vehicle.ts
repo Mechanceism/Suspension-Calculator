@@ -243,7 +243,8 @@ export function assembleVehicle(p: VehicleProblem, geometries: Partial<Record<Co
     chars[id] = characteristics(designState.get(p.roots[id])!);
     contactX[id] = chars[id].contactPoint.x;
   }
-  // Solid axles: build them, and give their wheels the characteristics the rest of the car reads.
+  // Solid axles: build them, and give their wheels the characteristics the rest of the car reads. A drop-link
+  // anti-roll bar's mount is tracked on the axle (or each twist-beam arm).
   const axles: Partial<Record<'front' | 'rear', { axle: TwoTravelAxle; table: AxleTable; design: AxleState }>> = {};
   for (const which of ['front', 'rear'] as const) {
     // A beam-type design on this axle (the corner's root) makes it a solid axle too.
@@ -255,7 +256,7 @@ export function assembleVehicle(p: VehicleProblem, geometries: Partial<Record<Co
         const axle = new TwistBeam(twistBeamOf(rootG));
         const design = axle.design();
         if (design.solve.status !== 'converged') return null;
-        axles[which] = { axle, table: new AxleTable(axle, range, Math.max(9, Math.min(21, n - 4))), design };
+        axles[which] = { axle, table: new AxleTable(axle, range, Math.max(9, Math.min(21, n - 4)), 0, p.dropLinks[which] ?? undefined), design };
       } catch { return null; }
       continue;
     }
@@ -264,7 +265,7 @@ export function assembleVehicle(p: VehicleProblem, geometries: Partial<Record<Co
       const axle = new SolidAxle(g);
       const design = axle.design();
       if (design.solve.status !== 'converged') return null;
-      axles[which] = { axle, table: new AxleTable(axle, range, Math.max(9, Math.min(21, n - 4))), design };
+      axles[which] = { axle, table: new AxleTable(axle, range, Math.max(9, Math.min(21, n - 4)), 0, p.dropLinks[which] ?? undefined), design };
       const ac = axleCharacteristics(axle, design);
       for (const id of (which === 'front' ? ['FL', 'FR'] : ['RL', 'RR']) as CornerId[]) {
         chars[id] = axleWheelChars(design, ac, isLeft(id) ? 'L' : 'R');

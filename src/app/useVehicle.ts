@@ -184,10 +184,11 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         const coupled = b.corner.solidAxle ?? b.corner.twistBeam;
         if (coupled) {
           const axRack = b.corner.geometry.steeredAxle && s.settings[id].steered ? rack : 0;
-          const akey = `axle|${range[0]}|${range[1]}|${axRack}`;
+          // A drop-link anti-roll bar: the table tracks its mount on the axle (or on each twist-beam arm).
+          const akey = `axle|${range[0]}|${range[1]}|${axRack}|${dl ? `${dl.x},${dl.y},${dl.z}` : '-'}`;
           let at = axleCache.current.get(b.corner)?.get(akey);
           if (!at) {
-            at = new AxleTable(coupled, range, 17, axRack);
+            at = new AxleTable(coupled, range, 17, axRack, dl ?? undefined);
             axleCache.current.set(b.corner, new Map([[akey, at]]));
           }
           const side = isLeft(id) ? 'L' : 'R';

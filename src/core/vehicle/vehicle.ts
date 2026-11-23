@@ -359,7 +359,15 @@ function sharedForce(c: VehicleCorner, partnerC: VehicleCorner | undefined, axle
   let f = 0;
   const arb = axle.antiRollBar;
   if (arb.kind === 'wheelRate') f -= arb.rate * (q - qOther);
-  else if (arb.kind === 'torsionBar' && partnerC && arb.lever > 0) {
+  else if (arb.kind === 'torsionBar' && partnerC && arb.lever > 0 && c.axle && partnerC.axle && c.axle.table === partnerC.axle.table) {
+    // One axle (solid axle, twist beam): both mounts move with both travels. U = ½ k θ², θ = (Δy_self − Δy_other) / lever,
+    // so the force on this travel is −k θ / lever · (∂y_self/∂q_self − ∂y_other/∂q_self).
+    const t = c.axle.table, me = c.axle.side, it = partnerC.axle.side;
+    const a = t.at(me, q, qOther), b = t.at(it, qOther, q);
+    const a0 = t.at(me, 0, 0), b0 = t.at(it, 0, 0);
+    const twist = ((a.ex.y - a0.ex.y) - (b.ex.y - b0.ex.y)) / arb.lever;
+    f -= ((arb.barRate * twist) / arb.lever) * (a.dex.y - b.dexX.y);
+  } else if (arb.kind === 'torsionBar' && partnerC && arb.lever > 0) {
     // Twist = (drop-link mount height on this side − other side) / lever; torque = barRate · twist.
     const a = c.table.at(q);
     const b = partnerC.table.at(qOther);

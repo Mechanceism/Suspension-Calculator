@@ -71,7 +71,7 @@ Read this first when picking the work up again; the details of each item are in 
 | 13 | Vehicle optimizer: cornering-limit goal (axle saturation); braking-in-a-turn case; case weights | ✅ | 617b3a0 |
 | 14 | Basic car profiles: road car, FSAE car, kart, trophy truck (File → New from car profile) | ✅ | 1a45298 |
 | — | Fix: car "flipping" under hard braking (solver robustness) and the solid-axle preset crash | ✅ | cf7331c |
-| — | Fix (bug report): a solid axle / twist beam is one part under both wheels (one solve for both corners, drawn once, left / right always linked) | ✅ | (this commit) |
+| — | Fix (bug report): a solid axle / twist beam is one part under both wheels (one solve for both corners, drawn once, left / right always linked) | ✅ | 1defe8a |
 | **15** | **Enter hardpoints inside the setup wizard** | **next** | |
 | 16 | Export / integration (Phase 5: hardpoint CSV, Fusion parameters, Blender script, Fusion add-in) | skipped for now (user) | |
 | 17 | Phone companion app (probe to capture real 3D points) | skipped for now (user) | |

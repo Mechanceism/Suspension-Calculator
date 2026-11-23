@@ -62,6 +62,12 @@ export interface RideOptions {
   gripTime?: number;
   /** A driver steers the car along the path; tire side forces from slip angles (Phase C). */
   handling?: boolean;
+  /**
+   * With handling: the driver also works the throttle and brakes. The segments' speeds become targets; the
+   * driver accelerates / brakes toward them within what the tires can give with the cornering they do,
+   * and lifts when the car runs wide of the line. The car's speed and distance are then states.
+   */
+  driverSpeed?: boolean;
   driver?: DriverSpec;
 }
 
@@ -202,8 +208,11 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     const sg = segments[i]!;
     const T = durations[i]!;
     const a = (sg.v1 - sg.v0) / T;
-    const s = sg.v0 * tt + 0.5 * a * tt * tt;
-    const v = sg.v0 + a * tt;
+    return kinFrom(i, sg.v0 * tt + 0.5 * a * tt * tt, sg.v0 + a * tt, a, tt);
+  };
+  /** The road and accelerations at distance s along segment i, speed v, acceleration a (m/s²), tt s into it. */
+  const kinFrom = (i: number, s: number, v: number, a: number, tt: number) => {
+    const sg = segments[i]!;
     let k = segmentAccel(sg, v, a);
     // Ramp from the previous segment's end over the first `ramp` seconds.
     if (i > 0 && ramp > 0 && tt < ramp && durations[i - 1]! > 0) {
@@ -383,6 +392,11 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
 
   let t0 = 0, nextFrame = 0;
   let x2d = 0, y2d = 0, heading = 0;
+  // The driver working the pedals (driverSpeed): speed and distance as states, the profile as targets.
+  const drv = handling && !!o.driverSpeed;
+  let uDrv = segments[0]?.v0 ?? 0, sCarry = 0;
+  const muEst = steady.grip ? CORNER_IDS.reduce((a, id) => a + steady.grip!.corners[id].capacity, 0) / (p.mass * G * Math.max(in0.gravityScale ?? 1, 0.1)) : 1;
+  const canDrive = corners.some((c) => c.drive !== 'none'), canBrake = corners.some((c) => c.brake !== 'none');
   segments.forEach((sg, i) => {
     const T = durations[i]!;
     if (!(T > 0)) return;
@@ -393,9 +407,43 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     const nSteps = Math.max(1, Math.ceil(T / dt));
     const h = T / nSteps;
     let lastS = 0;
-    for (let n = 1; n <= nSteps; n++) {
+    // Driver speed control: the segment lasts until its distance is covered (at most a few times its nominal time).
+    const maxSteps = drv ? nSteps * 4 + Math.ceil(5 / h) : nSteps;
+    const aProf = sg.distance > 0 ? (sg.v1 * sg.v1 - sg.v0 * sg.v0) / (2 * sg.distance) : 0;
+    let sDrv = sCarry, segEnd = false, tEnd = T, lifted = 0, slowed = 0;
+    for (let n = 1; n <= maxSteps && !(drv && segEnd); n++) {
       const tt = n * h;
-      const kin = kinAt(i, tt);
+      let kin: ReturnType<typeof kinFrom>;
+      if (drv) {
+        // Target: the profile's speed here; command: the profile's acceleration plus a correction toward it.
+        // The driver never aims above what the tires can corner (0.95 μ g R) here, or than they can still
+        // brake down to it for a tighter bend up to 40 m ahead.
+        let vT = Math.sqrt(Math.max(0.01, sg.v0 * sg.v0 + 2 * aProf * Math.min(sDrv, sg.distance)));
+        const vSet = vT;
+        const aBrake = 0.8 * muEst * G;
+        for (let d = 0; d <= 40; d += 2) {
+          const kd = Math.abs(kappaAt(starts[i]! + sDrv + d));
+          if (kd > 1e-6) vT = Math.min(vT, Math.sqrt((0.95 * muEst * G) / kd + 2 * aBrake * d));
+        }
+        if (vT < vSet - 0.05) slowed += h;
+        let aCmd = aProf + 1.5 * (vT - uDrv);
+        // Running wide of the line (off it toward the outside of the turn): lift / brake to tighten the line.
+        const kap = kappaAt(starts[i]! + sDrv);
+        const wide = H && Math.abs(kap) > 1e-6 ? -Math.sign(kap) * H.eY : 0;
+        if (wide > 0.25) { aCmd = Math.min(aCmd, -G * Math.min(0.5, 0.15 + (wide - 0.25))); lifted += h; }
+        // Within the tires: what is left of their grip after the cornering, and only the pedals the car has.
+        const ayNow = (uDrv * uDrv * Math.abs(kap)) / G;
+        const axMax = G * Math.sqrt(Math.max(0, muEst * muEst - ayNow * ayNow));
+        aCmd = Math.max(canBrake ? -axMax : 0, Math.min(canDrive ? axMax : 0, aCmd));
+        uDrv = Math.max(0.5, uDrv + h * aCmd);
+        sDrv += h * uDrv;
+        segEnd = sDrv >= sg.distance || n === maxSteps;
+        if (segEnd) { tEnd = tt; sCarry = Math.max(0, sDrv - sg.distance); }
+        kin = kinFrom(i, Math.min(sDrv, sg.distance), uDrv, aCmd, tt);
+      } else {
+        kin = kinAt(i, tt);
+        segEnd = n === nSteps;
+      }
       // Handling: the tires' side forces now set the lateral acceleration the body feels.
       let hf: HandlingForces | null = null;
       let ayH: number | undefined;
@@ -448,7 +496,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       const t = t0 + tt;
       const beta = H ? Math.atan2(H.v, Math.max(kin.v, 0.5)) * DEG : 0;
       if (H) { maxPathError = Math.max(maxPathError, Math.abs(H.eY)); if (kin.v >= KINEMATIC_SPEED) maxSideslip = Math.max(maxSideslip, Math.abs(beta)); }
-      const isFrame = !(t + 1e-9 < nextFrame && n < nSteps);
+      const isFrame = !(t + 1e-9 < nextFrame && !segEnd);
       const isCheck = isFrame || t + 1e-9 >= nextCheck;
       if (!isCheck) continue;
       // Ride measures, accumulated at each check.
@@ -534,7 +582,13 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       const ft = sp2.firstT ?? 0;
       findings[i]!.push({ ...x, t: ft, text: `${x.text} (at ${ft.toFixed(1)} s${sp2.count > 1 ? `, ${sp2.count} times` : ''})` });
     }
-    t0 += T;
+    // The driver lifted and the car ended the segment well short of its speed: say so.
+    if (drv && (lifted > 0 || slowed > 0) && uDrv < sg.v1 - 0.5) {
+      const sev = (checks.speedNotReached ?? PROFILES.default.checks.speedNotReached).severity;
+      const why = lifted > 0 ? `lifted to stay on the line (${lifted.toFixed(1)} s)` : 'slowed for the turn (the tires cannot take it at the set speed)';
+      if (sev !== 'pass') findings[i]!.push({ check: 'speedNotReached', severity: sev, text: `The driver ${why}: ${(uDrv * 3.6).toFixed(0)} km/h at the end instead of ${(sg.v1 * 3.6).toFixed(0)}`, t: t0 + tEnd });
+    }
+    t0 += drv ? tEnd : T;
   });
   const nAcc = Math.max(1, metricCount);
   const metrics: RideMeasures = {

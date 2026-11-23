@@ -4,7 +4,7 @@
  */
 import { CORNER_IDS, type CornerId } from '../core/vehicle/vehicle';
 import { formatValue, type Quantity } from '../core/units/units';
-import { segmentStates, type PathKind, type RoadState, type CarDims } from '../core/tests/segments';
+import { segmentStates, type PathKind, type RoadState, type CarDims , racingLineRadius } from '../core/tests/segments';
 import type { RoadSpec } from '../core/tests/road';
 import type { TestSegmentSpec } from '../core/tests/run';
 import { PROFILES, cloneProfile, type CheckProfile } from '../core/tests/checks';
@@ -21,6 +21,8 @@ export interface TestSegment {
   path: PathKind;
   /** m */
   radius: Field;
+  /** Usable track width, m (racing line; '' or 0 = drive the drawn path). */
+  width?: Field;
   /** Overrides, g; text '' = off (computed from speed and radius / distance). */
   latG: Field;
   longG: Field;
@@ -79,6 +81,10 @@ export interface TestDesign {
   ride: boolean;
   /** Over time, a driver steers the car along the path (Phase C handling: slip angles, yaw, sideslip). */
   handling: boolean;
+  /** With handling: the driver also works the throttle and brakes (speeds are targets; slows for turns, lifts when wide). */
+  driverSpeed?: boolean;
+  /** Take the racing line through turns with a track width (a larger radius: outside – apex – outside). */
+  racingLine?: boolean;
 }
 
 export const defaultChecks = () => cloneProfile(PROFILES.default.checks);
@@ -214,7 +220,10 @@ export function segmentSpec(s: TestSegment, test?: TestDesign): TestSegmentSpec 
     v0: Math.max(0, s.speedStart.value),
     v1: Math.max(0, s.speedEnd.value),
     path: s.path,
-    radius: Math.max(s.radius.value, 0.01),
+    // The racing line (with a track width): the turn taken on the widest arc the width allows.
+    radius: Math.min(1e5, test?.racingLine && s.path !== 'straight' && s.width && s.width.value > 0
+      ? racingLineRadius(Math.max(s.radius.value, 0.01), Math.max(s.distance.value, 0.01), s.width.value)
+      : Math.max(s.radius.value, 0.01)),
     latG: isOff(s.latG) ? null : s.latG.value,
     longG: isOff(s.longG) ? null : s.longG.value,
     grade: Math.atan(s.grade.value / 100),

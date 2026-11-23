@@ -183,7 +183,7 @@ export async function tuneSpringsDampers(scope: Scope, active: TestDesign | null
     return null;
   }
   const rateTests: RateTest[] = tests.map((t) => ({
-    segments: t.segments.map((sg) => segmentSpec(sg, t)), weight: tests.length > 1 ? rankWeight(t.rank, tests.length) : 1, onFail: t.onFail, handling: t.handling !== false,
+    segments: t.segments.map((sg) => segmentSpec(sg, t)), weight: tests.length > 1 ? rankWeight(t.rank, tests.length) : 1, onFail: t.onFail, handling: t.handling !== false, driverSpeed: t.handling !== false && !!t.driverSpeed,
   }));
   const { problem } = buildVehicleProblem(s);
   let last: RateProgress | null = null;

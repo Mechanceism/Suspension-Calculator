@@ -333,7 +333,7 @@ export function runTestJob(problem: VehicleProblem, segments: SegmentSpec[], opt
 }
 
 /** Compute playback frames in the worker (`ride`: over time, Phase B, `handling`: steered by a driver, Phase C; otherwise steady states). */
-export function runPlaybackJob(problem: VehicleProblem, segments: SegmentSpec[], ride = false, handling = false): { done: Promise<PlaybackFrame[]>; cancel(): void } {
+export function runPlaybackJob(problem: VehicleProblem, segments: SegmentSpec[], ride = false, handling = false, driverSpeed = false): { done: Promise<PlaybackFrame[]>; cancel(): void } {
   const worker = new Worker(new URL('./optimizer.worker.ts', import.meta.url), { type: 'module' });
   const done = new Promise<PlaybackFrame[]>((res, rej) => {
     worker.onmessage = (e: MessageEvent) => {
@@ -343,7 +343,7 @@ export function runPlaybackJob(problem: VehicleProblem, segments: SegmentSpec[],
     };
     worker.onerror = (e) => { worker.terminate(); rej(new Error(e.message || 'Playback worker failed')); };
   });
-  worker.postMessage({ kind: 'playback', problem, segments, ride, handling });
+  worker.postMessage({ kind: 'playback', problem, segments, ride, handling, driverSpeed });
   return { done, cancel: () => worker.terminate() };
 }
 

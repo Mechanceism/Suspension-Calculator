@@ -1,3 +1,4 @@
+import { racingLineRadius } from '../../core/tests/segments';
 /**
  * Tests workspace (Phase A, quasi-static): build a test from segments (speed change over a distance,
  * straight / left / right turn, grade, bank, bumps), run it on the whole car, and see per segment
@@ -96,7 +97,7 @@ export function startTestRun(test: TestDesign) {
   run.cancel?.();
   const s = useApp.getState();
   const { problem } = buildVehicleProblem(s);
-  const job = runTestJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), { onFail: test.onFail, speedLimits: true, ride: test.ride !== false, handling: test.ride !== false && test.handling !== false });
+  const job = runTestJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), { onFail: test.onFail, speedLimits: true, ride: test.ride !== false, handling: test.ride !== false && test.handling !== false, driverSpeed: !!test.driverSpeed });
   const from = designRef(s);
   useRun.setState({ running: true, testId: test.id, error: null, cancel: job.cancel });
   return job.done
@@ -309,6 +310,12 @@ function SegmentEditor({ test, seg, index, wheelbase }: { test: TestDesign; seg:
                 <td><ValueInput field={seg.radius} unit="m" width={56} onCommit={(t) => upd((s) => ({ ...s, radius: parse(t, 'distance', s.radius) }))} /></td>
                 <td className="unit">{disp.conv('m').unit}</td><td />
               </tr>
+              <tr title="Usable track width for the racing line (the test's Racing line option): the turn is taken on the widest arc from the outside edge, past the inside at the apex, back out. Blank = drive the drawn path.">
+                <td>Track width</td>
+                <td><ValueInput field={seg.width ?? { text: '', value: 0 }} unit="m" width={56} onCommit={(t) => upd((s) => ({ ...s, width: t.trim() === '' ? undefined : parse(t, 'distance', s.width ?? { text: '', value: 0 }) }))} /></td>
+                <td className="unit">{disp.conv('m').unit}</td>
+                <td className="muted small-text">{test.racingLine && seg.width && seg.width.value > 0 ? `line R ${(() => { const r = racingLineRadius(seg.radius.value, seg.distance.value, seg.width.value); return Number.isFinite(r) ? disp.format(r, 'm', 0) : 'straight'; })()}` : ''}</td>
+              </tr>
               <tr title="Blank = speed² ÷ radius">
                 <td>Lateral g override</td>
                 <td><ValueInput field={seg.latG} unit="g" width={56} onCommit={(t) => upd((s) => ({ ...s, latG: parseOptional(t, s.latG) }))} /></td>
@@ -495,6 +502,12 @@ export function TestsSidebar() {
                 <td>Handling</td>
                 <td>
                   <label className="check-label"><input type="checkbox" disabled={test.ride === false} checked={test.ride !== false && test.handling !== false} onChange={(e) => updateTest(test.id, (t) => ({ ...t, handling: e.target.checked }))} /> steered by a driver</label>
+                  <label className="check-label" title="Take each turn on the racing line: the widest arc the segment's track width allows (outside at entry, inside at the apex, outside at exit), so a larger radius than the drawn path. Segments without a width follow the path.">
+                    <input type="checkbox" checked={!!test.racingLine} onChange={(e) => updateTest(test.id, (t) => ({ ...t, racingLine: e.target.checked }))} /> racing line (with track widths)
+                  </label>
+                  <label className="check-label" title="The driver also works the throttle and brakes: the segments' speeds become targets; the driver brakes ahead of bends the tires can't take at the set speed, lifts when the car runs wide, and accelerates within the grip left. Ending a segment well short of its speed is reported (Speed not reached).">
+                    <input type="checkbox" disabled={test.ride === false || test.handling === false} checked={test.ride !== false && test.handling !== false && !!test.driverSpeed} onChange={(e) => updateTest(test.id, (t) => ({ ...t, driverSpeed: e.target.checked }))} /> driver works the pedals
+                  </label>
                 </td>
               </tr>
               <tr title="Report: show the failure. Driver lifts: also re-run the failing segment at the fastest speed that passes.">

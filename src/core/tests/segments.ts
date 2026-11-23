@@ -189,3 +189,17 @@ export function segmentDuration(s: SegmentSpec): number {
   const v = (s.v0 + s.v1) / 2;
   return v > 0 ? s.distance / v : Infinity;
 }
+
+/**
+ * The racing line through a constant-radius turn (radius R along the centerline, arc length, usable track
+ * width w; m): the classic constant-radius line, in from the outside edge of the straight (tangent to it),
+ * touching the inside edge at the apex (mid-turn), out to the outside edge of the next straight. With
+ * θ = arc length ÷ R and c = cos(θ/2), the arc tangent to both outside edges and touching the inside one:
+ *   ρ = R + (w/2)(1 + c)/(1 − c)          (e.g. 90°, R 20 m, w 8 m → 43 m)
+ * w ≤ 0: R.
+ */
+export function racingLineRadius(R: number, arcLength: number, w: number): number {
+  if (!(w > 0) || !(R > 0)) return R;
+  const c = Math.cos(Math.min(arcLength / R, Math.PI * 0.999) / 2);
+  return R + (w / 2) * (1 + c) / Math.max(1 - c, 1e-9);
+}

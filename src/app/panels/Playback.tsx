@@ -60,7 +60,7 @@ async function computeFrames(test: TestDesign) {
     const handling = test.ride !== false && test.handling !== false;
     const reuse = test.ride !== false && fresh && (last.test === undefined || last.test === test) && last.result.ride?.frames.length && !!last.result.ride.frames[0]!.handling === handling ? last.result.ride.frames : null;
     const { problem } = buildVehicleProblem(s);
-    const frames = reuse ?? await runPlaybackJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), test.ride !== false, handling).done;
+    const frames = reuse ?? await runPlaybackJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), test.ride !== false, handling, handling && !!test.driverSpeed).done;
     usePlayback.setState({ frames, computing: false, t: 0 });
     if (frames[0]) applyFrame(frames[0]);
     return frames;

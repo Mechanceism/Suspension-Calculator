@@ -413,6 +413,7 @@ function readTests(raw: unknown, warnings: string[]): TestDesign[] {
         speedEnd: fieldOr(sr.speedEnd, 'speed', d.speedEnd, where('end speed')),
         path: sr.path === 'left' || sr.path === 'right' ? sr.path : 'straight',
         radius: fieldOr(sr.radius, 'distance', d.radius, where('radius')),
+        ...(isObj(sr.width) ? { width: fieldOr(sr.width, 'distance', { text: '', value: 0 }, where('track width')) } : {}),
         latG: fieldOr(sr.latG, 'ratio', OFF, where('lateral g')),
         longG: fieldOr(sr.longG, 'ratio', OFF, where('longitudinal g')),
         grade: fieldOr(sr.grade, 'percent', d.grade, where('grade')),
@@ -457,6 +458,8 @@ function readTests(raw: unknown, warnings: string[]): TestDesign[] {
       enabled: t.enabled !== false,
       ride: t.ride !== false,
       handling: t.handling !== false,
+      ...(t.driverSpeed === true ? { driverSpeed: true } : {}),
+      ...(t.racingLine === true ? { racingLine: true } : {}),
     });
   }
   return out;

@@ -12,7 +12,7 @@ import { CORNER_IDS, type CornerId } from '../../core/vehicle/vehicle';
 import { deg } from '../../core/suspension/characteristics';
 import { isOneAxle, SUSPENSION_LABELS } from '../../core/suspension/doubleWishbone';
 import { angleInput, ratioSpecOf,
-  useApp, VEHICLE_KEYS, VEHICLE_META, CORNER_NAMES, SHARED_META, rootOf, resolvedCorner,
+  useApp, VEHICLE_KEYS, VEHICLE_META, CORNER_NAMES, SHARED_META, rootOf, resolvedCorner, canSteer,
   type CornerLinks, type DiffType, type Axle, type SharedDesign,
   BRAKE_KEYS, BRAKE_META, FADE_KEYS, FADE_META, TOW_KEYS, TOW_META,
 } from '../store';
@@ -60,11 +60,10 @@ export function CornerSetup({ compact = false }: { compact?: boolean }) {
         {sharedWith.length > 0 && <> — dimensions shared with {sharedWith.join(', ')} (linked)</>}
       </p>
       <div className="setting-row">
-        <label className="check-inline">
-          <input type="checkbox" checked={settings[active].steered} onChange={(e) => setCornerSetting(active, 'steered', e.target.checked)} />
+        <label className="check-inline" title={canSteer(activeKind) ? undefined : "A twist beam doesn't steer: its hub is fixed to the trailing arm (no knuckle or tie rod)"}>
+          <input type="checkbox" checked={settings[active].steered} disabled={!canSteer(activeKind) && !settings[active].steered} onChange={(e) => setCornerSetting(active, 'steered', e.target.checked)} />
           Steers
         </label>
-        {settings[active].steered && activeKind === 'twistBeam' && <span className="hint" title="A twist beam's hub is fixed to its trailing arm: no knuckle or tie rod">(a twist beam doesn't steer)</span>}
         <label className="check-inline" title="Drive forces come later; this marks the corner as powered">
           <input type="checkbox" checked={settings[active].powered} onChange={(e) => setCornerSetting(active, 'powered', e.target.checked)} />
           Powered

@@ -43,7 +43,7 @@ Calculating and visualizing come first. **Later:** export to modeling software (
 ## Current status and handoff (2026-11-23)
 Read this first when picking the work up again; the details of each item are in the sections below and in [docs/MATH.md](docs/MATH.md).
 
-**Branch.** All work below is on `feature/pending-goals`, pushed to GitHub, **not merged to main yet** (main = `7d0bde0`, the merge of `feature/large-items`). Merge to main when the user asks (they merge at milestones). 384 tests pass (`npm test`, about 2.5 min); `npm run typecheck` is clean. Project file format: `FORMAT_VERSION = 36`.
+**Branch.** All work below is on `feature/pending-goals`, pushed to GitHub, **not merged to main yet** (main = `7d0bde0`, the merge of `feature/large-items`). Merge to main when the user asks (they merge at milestones). 386 tests pass (`npm test`, about 2.5 min); `npm run typecheck` is clean. Project file format: `FORMAT_VERSION = 36`.
 
 **How the user wants the work done.**
 - Finish one item at a time: implement, test (unit tests plus a check in the running app for anything visual), update the docs (docs/MATH.md, README.md, GOALS.md), then commit and push. Work through the pending list in order.
@@ -74,6 +74,7 @@ Read this first when picking the work up again; the details of each item are in 
 | — | Fix (bug report): a solid axle / twist beam is one part under both wheels (one solve for both corners, drawn once, left / right always linked) | ✅ | 1defe8a |
 | — | Fix (bug report): a steered leaf axle had no steering; ticking Steers on a solid axle makes it steered; a twist beam says it doesn't steer | ✅ | 7d8960d |
 | — | Fix: a drop-link anti-roll bar on a solid axle / twist beam acts through its mounts on the axle (was: at the wheel centers) | ✅ | 5f12613 |
+| — | Twist beam: steering turned off on choosing it, offered back after; no steering axis without steering; no stray motion trails | ✅ | (this commit) |
 | **15** | **Enter hardpoints inside the setup wizard** | **next** | |
 | 16 | Export / integration (Phase 5: hardpoint CSV, Fusion parameters, Blender script, Fusion add-in) | skipped for now (user) | |
 | 17 | Phone companion app (probe to capture real 3D points) | skipped for now (user) | |

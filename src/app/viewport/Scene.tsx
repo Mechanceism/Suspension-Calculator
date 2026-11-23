@@ -8,7 +8,7 @@ import { DoubleWishbone, isBeam, type CornerPoints, type CornerState } from '../
 import type { Characteristics } from '../../core/suspension/characteristics';
 import type { LoadedCorner } from '../../core/suspension/loaded';
 import { anyAxisLocked } from '../locks';
-import { layoutOf, useApp, mountedTireWidth, POINT_NAMES, forCorner, selectedPoints, rootOf, type AnchorId, type ComponentId, type PointKey } from '../store';
+import { layoutOf, activePointKeys, useApp, mountedTireWidth, POINT_NAMES, forCorner, selectedPoints, rootOf, type AnchorId, type ComponentId, type PointKey } from '../store';
 import type { Model, Sample, Current } from '../useModel';
 import { STATE_KEY, anchorPosition } from '../anchors';
 import { Joint, Seg, Polyline, Tri, Wheel, Label, PatchMesh, Coilover, HitLink } from './primitives';
@@ -416,7 +416,8 @@ function Construction({ state, chars, loaded }: { state: CornerState; chars: Cha
   const icNear = ic && length(sub(ic, cp)) < 20000 ? ic : null;
   const rc = chars.rollCenterHeight !== null ? vec3(0, chars.groundY + chars.rollCenterHeight, cp.z) : null;
   const axisTop = add(p.steerUpper, scale(sub(p.steerUpper, p.steerLower), 0.35));
-  const axisGround = loaded ? loaded.steeringAxisAtGround : chars.steeringAxisAtGround;
+  // A corner whose type doesn't steer (twist beam, unsteered solid axle) has no steering axis to show.
+  const axisGround = !chars.steeringAxisAtGround ? null : loaded ? loaded.steeringAxisAtGround : chars.steeringAxisAtGround;
   return (
     <group>
       {vis.steeringAxis && axisGround && (
@@ -444,9 +445,13 @@ function Construction({ state, chars, loaded }: { state: CornerState; chars: Cha
 }
 
 function Trails({ sweep }: { sweep: Sample[] }) {
+  // Only the points this type really has as moving joints (others, e.g. an unused upper ball joint on a
+  // MacPherson or twist beam, or a solid axle's tie rod when it doesn't steer, would leave stray trails).
+  const g = useApp((s) => s.geom);
+  const keys = new Set<string>(activePointKeys(g.kind ?? 'doubleWishbone', layoutOf(g), g.steerMechanism ?? 'rack', g.steeredAxle));
   return (
     <group>
-      {TRAIL_KEYS.map(({ key, color }) => (
+      {TRAIL_KEYS.filter(({ key }) => key === 'wheelCenter' || key === 'contact' || keys.has(key)).map(({ key, color }) => (
         <Polyline key={key} pts={sweep.map((s) => s.state.points[key] as Vec3)} color={color} width={2} opacity={0.9} />
       ))}
     </group>

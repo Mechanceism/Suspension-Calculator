@@ -55,16 +55,59 @@ describe('steering on every type', () => {
     expect(useApp.getState().geom.kind ?? 'doubleWishbone').toBe('doubleWishbone');
   });
 
-  it('a twist beam set to steer says it does not', async () => {
+  it('choosing a twist beam turns steering off on its corners; a type that steers offers it back', async () => {
     const { useApp, defaultDesign } = await import('../src/app/store');
-    useApp.setState({ ...defaultDesign() });
-    useApp.getState().setSuspensionKind('twistBeam'); // on the steered FL
-    expect(useApp.getState().notice?.kind).toBe('warn');
-    expect(useApp.getState().notice?.text).toMatch(/doesn't/);
-    useApp.setState({ ...defaultDesign() });
-    useApp.getState().setActiveCorner('RL');
+    useApp.setState({ ...defaultDesign() }); // FL and FR steer by default
+    useApp.getState().set('rack', 20);
     useApp.getState().setSuspensionKind('twistBeam');
-    useApp.getState().setCornerSetting('RL', 'steered', true);
+    let s = useApp.getState();
+    expect(s.settings.FL.steered).toBe(false);
+    expect(s.settings.FR.steered).toBe(false);
+    expect(s.rack).toBe(0);
+    expect(s.steerRemoved.sort()).toEqual(['FL', 'FR']);
+    expect(s.notice?.text).toMatch(/Steering turned off for FL, FR/);
+    // Ticking Steers on the twist beam is refused.
+    s.setCornerSetting('FL', 'steered', true);
+    expect(useApp.getState().settings.FL.steered).toBe(false);
     expect(useApp.getState().notice?.kind).toBe('warn');
+    // A type that steers: offered back (not forced).
+    useApp.getState().setSuspensionKind('macpherson');
+    s = useApp.getState();
+    expect(s.settings.FL.steered).toBe(false);
+    expect(s.notice?.action?.label).toMatch(/Add steering back/);
+    expect(s.steerRemoved).toEqual([]);
+    s.notice!.action!.run();
+    expect(useApp.getState().settings.FL.steered).toBe(true);
+    expect(useApp.getState().settings.FR.steered).toBe(true);
+    // Nothing more to offer next time.
+    useApp.getState().setSuspensionKind('doubleWishbone');
+    expect(useApp.getState().notice?.action).toBeUndefined();
+  });
+
+  it('back to a solid axle: adding steering back makes it a steered axle', async () => {
+    const { useApp, defaultDesign, resolvedCorner } = await import('../src/app/store');
+    useApp.setState({ ...defaultDesign() });
+    useApp.getState().setSuspensionKind('twistBeam');
+    useApp.getState().setSuspensionKind('beam3');
+    expect(resolvedCorner(useApp.getState(), 'FL').geom.steeredAxle).toBeFalsy();
+    useApp.getState().notice!.action!.run();
+    expect(resolvedCorner(useApp.getState(), 'FL').geom.steeredAxle).toBe(true);
+    expect(useApp.getState().settings.FR.steered).toBe(true);
+  });
+
+  it('the setup wizard switches types the same way (links an axle pair, steering off on a twist beam)', async () => {
+    const { useApp, defaultDesign, resolvedCorner } = await import('../src/app/store');
+    useApp.setState({ ...defaultDesign() });
+    useApp.getState().setLink('rearFromFront', false);
+    useApp.getState().setLink('rearPair', false);
+    useApp.getState().setSuspensionKindFor('RL', 'beam4');
+    let s = useApp.getState();
+    expect(s.activeCorner).toBe('FL'); // the corner being edited stays
+    expect(s.links.rearPair).toBe(true);
+    expect(resolvedCorner(s, 'RR').geom.kind).toBe('beam4');
+    s.setSuspensionKindFor('FL', 'twistBeam');
+    s = useApp.getState();
+    expect(s.settings.FL.steered || s.settings.FR.steered).toBe(false);
+    expect(resolvedCorner(s, 'FR').geom.kind).toBe('twistBeam');
   });
 });

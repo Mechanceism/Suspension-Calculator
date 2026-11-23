@@ -150,14 +150,17 @@ export function characteristics(state: CornerState): Characteristics {
   const sideAngle = (ref: Vec3) =>
     sideViewIC ? Math.atan((sideViewIC.y - ref.y) / (ref.z - sideViewIC.z)) : 0;
 
+  // A twist beam doesn't steer (the hub is fixed to its arm): no steering axis, as for an unsteered solid axle.
+  const steers = state.kind !== 'twistBeam';
+  const gs = steers ? g : null, ks = steers ? k : null;
   const out: Characteristics = {
-    camber, toe, caster, kpi,
-    scrubRadius: g ? cp.x - g.x : NaN,
-    mechanicalTrail: g ? g.z - cp.z : NaN,
-    kingpinOffsetAtWheelCenter: k ? wc.x - k.x : NaN,
-    casterOffsetAtWheelCenter: k ? k.z - wc.z : NaN,
+    camber, toe, caster: steers ? caster : 0, kpi: steers ? kpi : 0,
+    scrubRadius: gs ? cp.x - gs.x : NaN,
+    mechanicalTrail: gs ? gs.z - cp.z : NaN,
+    kingpinOffsetAtWheelCenter: ks ? wc.x - ks.x : NaN,
+    casterOffsetAtWheelCenter: ks ? ks.z - wc.z : NaN,
     wheelCenter: wc, contactPoint: cp, groundY, halfTrack: cp.x,
-    steeringAxis, steeringAxisAtGround: g,
+    steeringAxis, steeringAxisAtGround: gs,
     instantAxis, frontViewIC,
     fvsa: frontViewIC ? cp.x - frontViewIC.x : Infinity,
     sideViewIC,

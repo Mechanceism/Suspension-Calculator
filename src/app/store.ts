@@ -606,7 +606,10 @@ export interface AppState extends DesignState {
   /** Snapshots of the model and tests parts at the last save / export (unsaved-change tracking). */
   savedSnapshot: string | null;
   savedTests: string | null;
-  notice: { text: string; kind: 'info' | 'warn' | 'error' } | null;
+  /** A short message; `action` adds a button to it (e.g. "Add steering back"). */
+  notice: { text: string; kind: 'info' | 'warn' | 'error'; action?: NoticeAction } | null;
+  /** Corners whose steering was turned off because their type can't steer (offered back when it can again). */
+  steerRemoved: CornerId[];
   /** Save-as dialog open. */
   saveAsOpen: boolean;
 
@@ -680,7 +683,9 @@ export interface AppState extends DesignState {
   applyDesign(design: DesignState, fileName: string | null, savedModel: string | null, savedTests?: string | null): void;
   /** Mark parts saved (undefined = leave that part as it is). */
   markSaved(fileName: string | null, model?: string, tests?: string): void;
-  notify(text: string, kind?: 'info' | 'warn' | 'error'): void;
+  notify(text: string, kind?: 'info' | 'warn' | 'error', action?: NoticeAction): void;
+  /** Change the type of the design a corner uses (as the Inspector does for the corner being edited). */
+  setSuspensionKindFor(id: CornerId, kind: SuspensionKind): void;
   loadPreset(id: string): void;
   select(sel: Selection): void;
   /** Optimizer result shown as a ghost in the Corner view before applying (not saved). */
@@ -818,6 +823,12 @@ export interface CornerLinks {
 }
 
 /** The corner whose design a corner actually uses, following the links. */
+/** A button on a notice. */
+export interface NoticeAction { label: string; run: () => void }
+
+/** Whether a type can steer (a twist beam's hub is fixed to its arm). */
+export const canSteer = (kind: SuspensionKind | undefined) => kind !== 'twistBeam';
+
 export function rootOf(id: CornerId, links: CornerLinks): CornerId {
   switch (id) {
     case 'FL': return 'FL';
@@ -1331,6 +1342,7 @@ export const useApp = create<AppState>((set, get) => ({
   savedSnapshot: null,
   savedTests: null,
   notice: null,
+  steerRemoved: [],
   saveAsOpen: false,
 
   workspace: params.get('workspace') === 'vehicle' ? 'vehicle' : 'corner',
@@ -1582,6 +1594,10 @@ export const useApp = create<AppState>((set, get) => ({
   },
   setCornerSetting: (id, key, value) => {
     const s = get();
+    if (key === 'steered' && value && !canSteer(mergedCorners(s)[rootOf(id, s.links)].geom.kind)) {
+      s.notify(`${CORNER_NAMES[id]} is a twist beam, which doesn't steer (the hub is fixed to the trailing arm: no knuckle or tie rod). Choose a type that steers for it first.`, 'warn');
+      return;
+    }
     set({ settings: { ...s.settings, [id]: { ...s.settings[id], [key]: value } }, ...(key === 'steered' && !value && id === s.activeCorner ? { rack: 0 } : {}) });
     if (key !== 'steered' || !value) return;
     // A steered corner needs a type that steers: a solid axle gets its knuckles, a twist beam can't.
@@ -1594,8 +1610,6 @@ export const useApp = create<AppState>((set, get) => ({
         set({ corners: { ...get().corners, [root]: { ...get().corners[root], geom: next } } });
         get().notify(`${CORNER_NAMES[id]}: its solid axle is now a steered axle (knuckles on kingpins at the axle ends, a cross tie rod and a drag link) so it can steer.`, 'info');
       }
-    } else if (g.kind === 'twistBeam') {
-      get().notify(`${CORNER_NAMES[id]} is a twist beam, which doesn't steer (it has no knuckle or tie rod; the hub is fixed to the trailing arm). Choose a type that steers for this corner, e.g. a double wishbone, MacPherson strut or a steered solid axle.`, 'warn');
     }
   },
   setVehicleField: (key, text) => {
@@ -1604,11 +1618,17 @@ export const useApp = create<AppState>((set, get) => ({
   },
   applyDesign: (design, fileName, savedModel, savedTests = null) => set({
     ...design, ...design.corners[rootOf(design.activeCorner, design.links)], fileName, savedSnapshot: savedModel, savedTests, tireSizeError: null,
-    travel: 0, rack: 0, loadFactor: 1, mode: 'kinematic', playing: false, playingSteer: false,
+    travel: 0, rack: 0, loadFactor: 1, mode: 'kinematic', playing: false, playingSteer: false, steerRemoved: [],
     selection: null, measure: [], measureMode: false,
   }),
   markSaved: (fileName, model, tests) => set({ fileName, ...(model !== undefined ? { savedSnapshot: model } : {}), ...(tests !== undefined ? { savedTests: tests } : {}) }),
-  notify: (text, kind = 'info') => set({ notice: { text, kind } }),
+  notify: (text, kind = 'info', action) => set({ notice: { text, kind, ...(action ? { action } : {}) } }),
+  setSuspensionKindFor: (id, kind) => {
+    const prev = get().activeCorner;
+    if (prev !== id) get().setActiveCorner(id);
+    get().setSuspensionKind(kind);
+    if (get().activeCorner !== prev) get().setActiveCorner(prev);
+  },
 
   selection: null,
   leftTab: 'inspector',
@@ -1875,11 +1895,34 @@ export const useApp = create<AppState>((set, get) => ({
       const sh = get().shared[axle];
       if (sh.antiRollBar === 'none') { get().setShared(axle, { antiRollBar: 'wheelRate' }); get().setSharedField(axle, 'arbRate', '15'); }
     }
-    if (kind === 'twistBeam' && get().settings[get().activeCorner].steered) {
-      get().notify(`Twist beam: this corner is set to steer, but a twist beam doesn't (its hub is fixed to the trailing arm: no knuckle or tie rod). Untick "Steers" for it, or choose a type that steers.`, 'warn');
-      return;
+    // Steering: a type that can't steer (a twist beam) turns it off on its corners, remembered; choosing a
+    // type that steers again offers to add it back.
+    const st = get();
+    const ids = CORNER_IDS.filter((c) => rootOf(c, st.links) === rootOf(st.activeCorner, st.links));
+    let steerNote = '';
+    let action: NoticeAction | undefined;
+    if (!canSteer(kind)) {
+      const off = ids.filter((c) => st.settings[c].steered);
+      if (off.length) {
+        set({
+          settings: { ...st.settings, ...Object.fromEntries(off.map((c) => [c, { ...st.settings[c], steered: false }])) },
+          steerRemoved: [...new Set([...st.steerRemoved, ...off])], rack: 0, playingSteer: false,
+        });
+        steerNote = `
+
+Steering turned off for ${off.join(', ')}: a twist beam doesn't steer. Choosing a type that steers offers to add it back.`;
+      }
+    } else {
+      const back = st.steerRemoved.filter((c) => ids.includes(c));
+      if (back.length) {
+        set({ steerRemoved: st.steerRemoved.filter((c) => !back.includes(c)) });
+        steerNote = `
+
+${back.join(', ')} steered before the twist beam turned it off. This type steers: add steering back?`;
+        action = { label: `Add steering back (${back.join(', ')})`, run: () => { for (const c of back) get().setCornerSetting(c, 'steered', true); } };
+      }
     }
-    get().notify(`${SUSPENSION_LABELS[kind]}: ${kind === 'custom' ? 'edit its bodies and joints in the Linkage editor (Inspector, with nothing selected). It starts from the current arms as hinged bodies with ball joints to the knuckle and the tie rod as a rod from the rack, so it moves the same; add bodies, hinges, ball joints and rods to build anything with one free motion.' : kind === 'twistBeam' ? 'each hub is fixed to its trailing arm, which swings about the line from its bushing to the beam\'s shear center (on the centerline); the beam\'s twist stiffness is this axle\'s anti-roll bar (Shared components; started at 15 N/mm at the wheel if there was none). Moving the shear center back adds roll camber and roll steer.' : kind === 'beamLeaf' ? 'a solid axle on leaf springs (left and right now share this design): set the front eye, the spring seat on the axle and the rear shackle; the spring rate is the leaf rate at the seat. Roll center ≈ the seat height.' : isBeam(kind) ? `one axle carries both wheels (left and right now share this design). Lower links run forward from the axle, ${kind === 'beam4' ? 'the upper links angle in to locate it sideways' : kind === 'beamWatts' ? 'one upper link in the middle and a Watt\'s linkage locate it (its pivot on the axle moves straight up and down: no sideways shift)' : 'one upper link in the middle and a Panhard rod locate it'}; coilovers sit on the axle. Move the link ends to shape it. Steered (Inspector → Steered axle): knuckles on kingpins at the axle ends.` : kind === 'singleArm' ? 'the knuckle now rides on the lower arm, turning on a kingpin from the lower to the upper ball joint\'s position (both on the arm); the arm swings on its frame pivots. Move the pivots along the car for a swing arm, across it for a trailing arm.' : kind === 'rigid' ? 'the wheel turns on a fixed kingpin through the ball joints\' positions; no spring or travel (only the tire gives).' : kind === 'macpherson' ? 'a strut was placed from the upright (top mount above the upper ball joint); adjust its points.' : kind === 'multilink' ? `each link now ends at its own point on the upright (moved 35 mm along the link: the same motion at ride height, nearly the same through travel); move them to shape the motion.${geom.kind === 'doubleWishbone' || !geom.kind ? ' The coilover now mounts on the upright (a multilink has no arm body), so check its motion ratio.' : ''}` : 'the links rejoin at one ball joint per arm.'}`, 'info');
+    get().notify(`${SUSPENSION_LABELS[kind]}: ${kind === 'custom' ? 'edit its bodies and joints in the Linkage editor (Inspector, with nothing selected). It starts from the current arms as hinged bodies with ball joints to the knuckle and the tie rod as a rod from the rack, so it moves the same; add bodies, hinges, ball joints and rods to build anything with one free motion.' : kind === 'twistBeam' ? 'each hub is fixed to its trailing arm, which swings about the line from its bushing to the beam\'s shear center (on the centerline); the beam\'s twist stiffness is this axle\'s anti-roll bar (Shared components; started at 15 N/mm at the wheel if there was none). Moving the shear center back adds roll camber and roll steer.' : kind === 'beamLeaf' ? 'a solid axle on leaf springs (left and right now share this design): set the front eye, the spring seat on the axle and the rear shackle; the spring rate is the leaf rate at the seat. Roll center ≈ the seat height.' : isBeam(kind) ? `one axle carries both wheels (left and right now share this design). Lower links run forward from the axle, ${kind === 'beam4' ? 'the upper links angle in to locate it sideways' : kind === 'beamWatts' ? 'one upper link in the middle and a Watt\'s linkage locate it (its pivot on the axle moves straight up and down: no sideways shift)' : 'one upper link in the middle and a Panhard rod locate it'}; coilovers sit on the axle. Move the link ends to shape it. Steered (Inspector → Steered axle): knuckles on kingpins at the axle ends.` : kind === 'singleArm' ? 'the knuckle now rides on the lower arm, turning on a kingpin from the lower to the upper ball joint\'s position (both on the arm); the arm swings on its frame pivots. Move the pivots along the car for a swing arm, across it for a trailing arm.' : kind === 'rigid' ? 'the wheel turns on a fixed kingpin through the ball joints\' positions; no spring or travel (only the tire gives).' : kind === 'macpherson' ? 'a strut was placed from the upright (top mount above the upper ball joint); adjust its points.' : kind === 'multilink' ? `each link now ends at its own point on the upright (moved 35 mm along the link: the same motion at ride height, nearly the same through travel); move them to shape the motion.${geom.kind === 'doubleWishbone' || !geom.kind ? ' The coilover now mounts on the upright (a multilink has no arm body), so check its motion ratio.' : ''}` : 'the links rejoin at one ball joint per arm.'}${steerNote}`, 'info', action);
   },
   fitSpring: () => {
     const s = get();

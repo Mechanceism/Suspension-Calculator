@@ -219,7 +219,8 @@ export function Notice() {
   const notice = useApp((s) => s.notice);
   const set = useApp((s) => s.set);
   useEffect(() => {
-    if (!notice || notice.kind !== 'info') return;
+    // Info notices close by themselves, unless they offer something to do.
+    if (!notice || notice.kind !== 'info' || notice.action) return;
     const t = setTimeout(() => set('notice', null), 3500);
     return () => clearTimeout(t);
   }, [notice, set]);
@@ -227,6 +228,7 @@ export function Notice() {
   return (
     <div className={`notice notice-${notice.kind}`} role="status">
       <pre>{notice.text}</pre>
+      {notice.action && <button className="chip" onClick={() => { const a = notice.action!; set('notice', null); a.run(); }}>{notice.action.label}</button>}
       <button className="icon-btn" onClick={() => set('notice', null)} title="Dismiss">✕</button>
     </div>
   );

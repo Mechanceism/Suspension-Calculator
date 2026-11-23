@@ -43,7 +43,7 @@ Calculating and visualizing come first. **Later:** export to modeling software (
 ## Current status and handoff (2026-11-23)
 Read this first when picking the work up again; the details of each item are in the sections below and in [docs/MATH.md](docs/MATH.md).
 
-**Branch.** All work below is on `feature/pending-goals`, pushed to GitHub, **not merged to main yet** (main = `7d0bde0`, the merge of `feature/large-items`). Merge to main when the user asks (they merge at milestones). 386 tests pass (`npm test`, about 2.5 min); `npm run typecheck` is clean. Project file format: `FORMAT_VERSION = 36`.
+**Branch.** All work below is **merged to main** (`5b79062`, the merge of `feature/pending-goals`, 2026-11-23); no other branches are open. Start new work on a new branch from main and merge it when the user asks (they merge at milestones). 386 tests pass (`npm test`, about 2.5 min); `npm run typecheck` is clean. Project file format: `FORMAT_VERSION = 36`.
 
 **How the user wants the work done.**
 - Finish one item at a time: implement, test (unit tests plus a check in the running app for anything visual), update the docs (docs/MATH.md, README.md, GOALS.md), then commit and push. Work through the pending list in order.

@@ -814,9 +814,9 @@ export function rootOf(id: CornerId, links: CornerLinks): CornerId {
 export const CORNER_NAMES: Record<CornerId, string> = { FL: 'Front left', FR: 'Front right', RL: 'Rear left', RR: 'Rear right' };
 
 /** Vehicle inputs (L6). */
-export const VEHICLE_KEYS = ['mass', 'cgX', 'cgY', 'cgZ', 'wheelbase', 'brakeBias', 'driveSplit', 'rollInertia', 'pitchInertia', 'yawInertia', 'tireDamping'] as const;
+export const VEHICLE_KEYS = ['mass', 'cgX', 'cgY', 'cgZ', 'wheelbase', 'brakeBias', 'driveSplit', 'rollInertia', 'pitchInertia', 'yawInertia', 'tireDamping', 'relaxation'] as const;
 /** Vehicle inputs only the ride over time (Phase B) and handling (Phase C) use. */
-export const RIDE_KEYS = ['rollInertia', 'pitchInertia', 'yawInertia', 'tireDamping'] as const;
+export const RIDE_KEYS = ['rollInertia', 'pitchInertia', 'yawInertia', 'tireDamping', 'relaxation'] as const;
 export type VehicleKey = (typeof VEHICLE_KEYS)[number];
 export const VEHICLE_META: Record<VehicleKey, { label: string; quantity: Quantity; unit: string; hint?: string }> = {
   mass: { label: 'Total mass (incl. unsprung)', quantity: 'mass', unit: 'kg' },
@@ -830,6 +830,7 @@ export const VEHICLE_META: Record<VehicleKey, { label: string; quantity: Quantit
   pitchInertia: { label: 'Body pitch inertia', quantity: 'ratio', unit: 'kg·m²', hint: 'Sprung body about its CG, around the side-to-side axis (ride over time). About sprung mass × (0.35–0.45 × wheelbase)².' },
   yawInertia: { label: 'Yaw inertia (whole car)', quantity: 'ratio', unit: 'kg·m²', hint: 'About the CG, around the vertical axis (handling over time). About total mass × (0.45 × wheelbase)².' },
   tireDamping: { label: 'Tire damping', quantity: 'damping', unit: 'N·s/m', hint: 'Vertical damping of each tire (ride over time). Small: rubber and air damp little.' },
+  relaxation: { label: 'Tire relaxation length', quantity: 'length', unit: 'mm', hint: 'Handling over time: a tire\'s side force builds up over this distance rolled after its slip angle changes (≈ 0.5–1 × the tire radius for cars; 0 = at once). Slows the car\'s response to quick steering.' },
 };
 
 export type Workspace = 'corner' | 'vehicle' | 'tests';
@@ -1200,7 +1201,7 @@ export const defaultVehicle = (): Record<VehicleKey, Field> => ({
   rollInertia: field(35, 'ratio'),
   pitchInertia: field(100, 'ratio'),
   yawInertia: field(140, 'ratio'),
-  tireDamping: field(100, 'damping'),
+  tireDamping: field(100, 'damping'), relaxation: field(0),
 });
 
 export function defaultDesign(presetId = 'C'): DesignState {

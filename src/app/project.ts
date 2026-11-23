@@ -60,7 +60,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 33;
+export const FORMAT_VERSION = 34;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -360,6 +360,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   31: (f) => ({ ...f, formatVersion: 32 }),
   // 32 → 33: a trailer gets no hitch rating (no limit).
   32: (f) => ({ ...f, formatVersion: 33, ...(isObj(f.tow) && isObj(f.tow.fields) ? { tow: { ...f.tow, fields: { ...f.tow.fields, tongueLimit: { text: '0', value: 0 } } } } : {}) }),
+  // 33 → 34: tire relaxation off (0).
+  33: (f) => ({ ...f, formatVersion: 34 }),
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */
@@ -799,7 +801,7 @@ export function importProject(data: unknown): ImportResult {
       // Files before format 10 have no ride inputs: they take the defaults quietly.
       const w: string[] = [];
       const r = readRecord(vehicleRaw.fields, VEHICLE_KEYS, (k) => VEHICLE_META[k].quantity, def.vehicle, 'vehicle', w);
-      if (!olderThan4) warnings.push(...w.filter((x) => (original >= 10 || !RIDE_KEYS.some((k) => x.startsWith(`vehicle.${k}`))) && (original >= 17 || !x.startsWith('vehicle.yawInertia'))));
+      if (!olderThan4) warnings.push(...w.filter((x) => (original >= 10 || !RIDE_KEYS.some((k) => x.startsWith(`vehicle.${k}`))) && (original >= 17 || !x.startsWith('vehicle.yawInertia')) && (original >= 34 || !x.startsWith('vehicle.relaxation'))));
       return r;
     })(),
     autoPreload: typeof vehicleRaw.autoPreload === 'boolean' ? vehicleRaw.autoPreload : def.autoPreload,

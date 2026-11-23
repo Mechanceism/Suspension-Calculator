@@ -77,6 +77,8 @@ export interface RideSpec {
   tireDamping: number;
   /** Whole-car yaw inertia about the CG, kg·m² (handling; default ≈ mass × (0.45 × wheelbase)²). */
   yawInertia?: number;
+  /** Tire relaxation length, mm: the side force builds up over this distance rolled (handling; 0 = at once). */
+  relaxation?: number;
 }
 
 export interface VehicleDesignIn {

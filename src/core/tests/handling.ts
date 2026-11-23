@@ -135,6 +135,8 @@ export interface HandlingCar {
   pressure: Record<CornerId, number | undefined>;
   locks: Record<CornerId, boolean>;
   table: SteerTable;
+  /** Tire relaxation length, m (0 = the side force follows the slip angle at once). */
+  relaxation: number;
 }
 
 export function handlingCar(p: VehicleProblem, asm: AssembledVehicle, pressure: Record<CornerId, number | undefined>): HandlingCar {
@@ -150,7 +152,7 @@ export function handlingCar(p: VehicleProblem, asm: AssembledVehicle, pressure: 
   const L = Math.max(p.wheelbase / 1000, 0.1);
   const b = Math.min(L, Math.max(0, -(pos.RL.a + pos.RR.a) / 2));
   const yawInertia = p.ride?.yawInertia ?? p.mass * (0.45 * L) ** 2;
-  return { mass: p.mass, yawInertia: Math.max(yawInertia, 1), pos, L, b, grip, pressure, locks, table: steerTable(p, asm) };
+  return { mass: p.mass, yawInertia: Math.max(yawInertia, 1), pos, L, b, grip, pressure, locks, table: steerTable(p, asm), relaxation: Math.max(0, (p.ride?.relaxation ?? 0) / 1000) };
 }
 
 /** Planar state of the car. */
@@ -169,6 +171,11 @@ export interface HandlingState {
   want: number;
   /** Learned understeer, rad per g of lateral acceleration. */
   K: number;
+  /**
+   * Tire relaxation: each tire's slip angle as its force sees it (rad), lagging the geometric one over the
+   * relaxation length: dα'/dt = (u / σ)(α − α'). Absent = no lag yet.
+   */
+  alphaLag?: Record<CornerId, number>;
 }
 
 /** What each tire is doing now (from the ride model). */
@@ -181,6 +188,8 @@ export interface HandlingForces {
   wheels: Record<CornerId, number>;
   sumFy: number;
   mz: number;
+  /** Geometric slip angles (rad) when they differ from `alpha` (tire relaxation: `alpha` is the lagged one the force sees). */
+  alphaGeo?: Record<CornerId, number>;
   /** Towing: the tires' share of sumFy (sumFy then includes the hitch's side force). */
   tireFy?: number;
 }
@@ -190,6 +199,7 @@ export const KINEMATIC_SPEED = 3;
 /** Tire side forces and yaw moment at a state. */
 export function handlingForces(car: HandlingCar, st: HandlingState, u: number, tires: Record<CornerId, TireNow>, wheels: Record<CornerId, number>): HandlingForces {
   const fy = {} as Record<CornerId, number>, alpha = {} as Record<CornerId, number>;
+  const geo = {} as Record<CornerId, number>;
   let sumFy = 0, mz = 0;
   for (const id of CORNER_IDS) {
     const { a, y } = car.pos[id];
@@ -197,9 +207,12 @@ export function handlingForces(car: HandlingCar, st: HandlingState, u: number, t
     const d = wheels[id];
     const vx = Math.max(u - st.r * y, 0.5), vy = st.v + st.r * a;
     const al = d - Math.atan2(vy, vx);
-    alpha[id] = al;
+    geo[id] = al;
+    // With relaxation the force follows the lagged slip angle: that is the tire's slip angle.
+    const alF = car.relaxation > 0 && st.alphaLag ? st.alphaLag[id] : al;
+    alpha[id] = alF;
     const inp = { fz: Math.max(t.fz, 0), gamma: t.gammaLeft, pressure: car.pressure[id] };
-    let f = t.fz > 0 ? mfLateral(car.grip[id], al, inp) : 0;
+    let f = t.fz > 0 ? mfLateral(car.grip[id], alF, inp) : 0;
     // Friction ellipse with the braking / drive force (a locked wheel has no side grip).
     if (f && t.fx) {
       const cx = Math.max(mfPeaks(car.grip[id], inp).x, 1e-6);
@@ -212,7 +225,7 @@ export function handlingForces(car: HandlingCar, st: HandlingState, u: number, t
     sumFy += fyv;
     mz += a * fyv - y * fxv;
   }
-  return { fy, alpha, wheels, sumFy, mz };
+  return { fy, alpha, wheels, sumFy, mz, ...(car.relaxation > 0 ? { alphaGeo: geo } : {}) };
 }
 
 /** Lateral offset of the path D metres ahead, in the frame of its tangent here (m, + left). */
@@ -284,6 +297,13 @@ export function stepHandling(
     st.v = Math.max(-vMax, Math.min(vMax, st.v));
     const rMax = Math.abs(u * kappa) + 2;
     st.r = Math.max(-rMax, Math.min(rMax, st.r));
+  }
+  // Tire relaxation: the lagged slip angles move toward the geometric ones over the relaxation length.
+  if (car.relaxation > 0) {
+    if (!st.alphaLag) st.alphaLag = { ...(f.alphaGeo ?? f.alpha) };
+    const k = Math.min(1, (h * Math.max(u, 0.5)) / car.relaxation);
+    const geo = f.alphaGeo ?? f.alpha;
+    for (const id of CORNER_IDS) st.alphaLag[id] += k * (geo[id] - st.alphaLag[id]);
   }
   st.eY += h * (u * Math.sin(st.ePsi) + st.v * Math.cos(st.ePsi));
   st.ePsi += h * (st.r - u * kappa);

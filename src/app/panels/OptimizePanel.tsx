@@ -24,7 +24,7 @@ import { layoutOf, toGeometry,
 } from '../store';
 import { CORNER_IDS, type CornerId } from '../../core/vehicle/vehicle';
 import { POINT_LABELS, pointLabel } from '../components';
-import type { SuspensionKind } from '../../core/suspension/doubleWishbone';
+import type { SuspensionKind, DoubleWishboneGeometry } from '../../core/suspension/doubleWishbone';
 import { pointAxisLocked } from '../locks';
 import { armMetrics } from '../../core/suspension/armGeometry';
 import {
@@ -224,7 +224,7 @@ const makeRunStore = (): RunStore => create<RunState>(() => ({ running: false, p
 export const useCornerRun = makeRunStore();
 export const useVehicleRun = makeRunStore();
 
-function RunArea({ useRun, blockers, notes, label, start, current, meta, onApply, undo }: {
+function RunArea({ useRun, blockers, notes, label, start, current, meta, onApply, undo, preview }: {
   useRun: RunStore;
   blockers: string[]; notes: ReactNode; label: string;
   start: (onProgress: (p: ProgressInfo) => void) => RunHandle<Report>;
@@ -232,11 +232,16 @@ function RunArea({ useRun, blockers, notes, label, start, current, meta, onApply
   meta: Record<string, AnyMeta>;
   onApply: (r: Report) => void;
   undo: { available: boolean; run: () => void };
+  /** The result's geometry, to show as a ghost in the Corner view before applying. */
+  preview?: (r: Report) => DoubleWishboneGeometry | null;
 }) {
   const run = useRun();
+  const previewing = useApp((s) => !!s.previewGeometry);
+  const clearPreview = () => useApp.setState({ previewGeometry: null });
   const disp = useDisplay();
   const go = () => {
     const h = start((p) => useRun.setState({ progress: p }));
+    clearPreview();
     useRun.setState({ running: true, progress: null, result: null, error: null, from: current, handle: h });
     h.done
       .then(({ result }) => useRun.setState({ running: false, result, handle: null }))
@@ -304,9 +309,14 @@ function RunArea({ useRun, blockers, notes, label, start, current, meta, onApply
           </table>
           {stale && <p className="hint warn-text">The design changed since this run. Run again before applying.</p>}
           <div className="jm-row">
-            <button className="wide-btn primary" disabled={stale} onClick={() => { onApply(run.result!); useRun.setState({ result: null, from: null }); }}>Apply to design</button>
-            <button className="wide-btn" onClick={() => useRun.setState({ result: null, from: null })}>Discard</button>
+            <button className="wide-btn primary" disabled={stale} onClick={() => { clearPreview(); onApply(run.result!); useRun.setState({ result: null, from: null }); }}>Apply to design</button>
+            <button className="wide-btn" onClick={() => { clearPreview(); useRun.setState({ result: null, from: null }); }}>Discard</button>
           </div>
+          {preview && preview(run.result) && (
+            <label className="check-row" title="Draw the optimized design faintly over the current one in the Corner view (it follows the travel and steering sliders) before deciding">
+              <input type="checkbox" checked={previewing} onChange={(e) => useApp.setState({ previewGeometry: e.target.checked ? preview(run.result!) : null })} /> Preview in the view (ghost)
+            </label>
+          )}
         </div>
       )}
       {undo.available && !run.result && (
@@ -583,6 +593,7 @@ export function OptimizePanel() {
           label={`Optimize ${sharers.length > 1 ? `${root} (+ ${sharers.length - 1} linked)` : root}`}
           notes={skippedNote(built.skippedLocked, (k) => { const v = parseVarKey(k)!; return `${POINT_LABELS[v.k]} ${AXES[v.axis]}`; }, built.problem.holds ?? [])}
           start={(onP) => runOptimizer(built.problem, onP)}
+          preview={(r) => (r as unknown as { geometry?: DoubleWishboneGeometry }).geometry ?? null}
           onApply={(r) => {
             // Setup values into their fields.
             const st = useApp.getState();

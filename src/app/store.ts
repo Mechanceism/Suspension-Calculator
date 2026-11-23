@@ -679,6 +679,8 @@ export interface AppState extends DesignState {
   notify(text: string, kind?: 'info' | 'warn' | 'error'): void;
   loadPreset(id: string): void;
   select(sel: Selection): void;
+  /** Optimizer result shown as a ghost in the Corner view before applying (not saved). */
+  previewGeometry: DoubleWishboneGeometry | null;
   /** Custom linkage: the joint point picked in the view (moved with the arrows), or null. */
   customPick: { joint: string; which: 'p' | 'q' } | null;
   movePoint(key: PointKey, delta: Vec3): void;
@@ -1597,6 +1599,7 @@ export const useApp = create<AppState>((set, get) => ({
 
   select: (selection) => set(selection ? { selection, leftTab: 'inspector', customPick: null } : { selection, customPick: null }),
   customPick: null,
+  previewGeometry: null,
   movePoints: (keys, delta) => {
     const geom = get().geom;
     const points = { ...geom.points };

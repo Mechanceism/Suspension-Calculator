@@ -1,10 +1,10 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Grid } from '@react-three/drei';
 import type { ThreeEvent } from '@react-three/fiber';
 import type * as THREE from 'three';
 import { vec3, sub, add, scale, normalize, length, type Vec3 } from '../../core/math/vec3';
 import { closestPointOnLine, lineThrough } from '../../core/math/geom';
-import { isBeam, type CornerPoints, type CornerState } from '../../core/suspension/doubleWishbone';
+import { DoubleWishbone, isBeam, type CornerPoints, type CornerState } from '../../core/suspension/doubleWishbone';
 import type { Characteristics } from '../../core/suspension/characteristics';
 import type { LoadedCorner } from '../../core/suspension/loaded';
 import { anyAxisLocked } from '../locks';
@@ -171,21 +171,34 @@ function CustomPicks({ state }: { state: CornerState }) {
   );
 }
 
-function Linkage({ state, faint = false }: { state: CornerState; faint?: boolean }) {
+/** The optimizer's result before applying (Optimize → Preview): its linkage, dashed, at the same travel and steering. */
+function OptimizedGhost({ travel, rack }: { travel: number; rack: number }) {
+  const g = useApp((s) => s.previewGeometry);
+  const st = useMemo(() => {
+    if (!g) return null;
+    try { const s = new DoubleWishbone(g).solve({ travel, rack }); return s.solve.status === 'converged' ? s : null; } catch { return null; }
+  }, [g, travel, rack]);
+  if (!st) return null;
+  return <Linkage state={st} faint tint="#7ee787" />;
+}
+
+function Linkage({ state, faint = false, tint }: { state: CornerState; faint?: boolean; tint?: string }) {
   const vis = useApp((s) => s.visibility);
   const p = state.points;
   const sh = linkageShape(p, state.kind);
   const custom = state.kind === 'custom';
   if (faint) {
-    const o = 0.3;
+    const o = tint ? 0.75 : 0.3, w = tint ? 2 : 1;
+    const c = (base: string) => tint ?? base;
     return (
       <group>
-        {custom && <CustomDrawing p={p} width={1} opacity={o} />}
-        {vis.uca && sh.uca.map(([a, b], i) => <Seg key={i} a={a} b={b} color={COLORS.uca} width={1} opacity={o} />)}
-        {vis.lca && sh.lca.map(([a, b], i) => <Seg key={i} a={a} b={b} color={COLORS.lca} width={1} opacity={o} />)}
-        {vis.upright && <Polyline pts={sh.upright} color={COLORS.upright} width={1} opacity={o} />}
-        {vis.tieRod && (!isBeam(state.kind) || !!p.crossTieRod) && state.kind !== 'twistBeam' && !custom && <Seg a={p.trInner} b={p.trOuter} color={COLORS.tieRod} width={1} opacity={o} />}
-        {vis.spring && p.damperChassis && p.damperArm && <Seg a={p.damperChassis} b={p.damperArm} color={COLORS.spring} width={1} opacity={o} />}
+        {custom && <CustomDrawing p={p} width={w} opacity={o} />}
+        {vis.uca && sh.uca.map(([a, b], i) => <Seg key={i} a={a} b={b} color={c(COLORS.uca)} width={w} opacity={o} dashed={!!tint} />)}
+        {vis.lca && sh.lca.map(([a, b], i) => <Seg key={i} a={a} b={b} color={c(COLORS.lca)} width={w} opacity={o} dashed={!!tint} />)}
+        {vis.upright && <Polyline pts={sh.upright} color={c(COLORS.upright)} width={w} opacity={o} />}
+        {tint && <Seg a={spindleFoot(p)} b={p.wheelCenter} color={tint} width={w} opacity={o} />}
+        {vis.tieRod && (!isBeam(state.kind) || !!p.crossTieRod) && state.kind !== 'twistBeam' && !custom && <Seg a={p.trInner} b={p.trOuter} color={c(COLORS.tieRod)} width={w} opacity={o} dashed={!!tint} />}
+        {vis.spring && p.damperChassis && p.damperArm && <Seg a={p.damperChassis} b={p.damperArm} color={c(COLORS.spring)} width={w} opacity={o} />}
       </group>
     );
   }
@@ -513,6 +526,7 @@ export function Scene({ model }: { model: Model }) {
       )}
       {vis.chassis && <Chassis state={state} rackLimit={rackLimit} rackAxis={model.corner.rackAxis} />}
       <Linkage state={state} />
+      <OptimizedGhost travel={state.inputs.travel} rack={state.inputs.rack} />
       {vis.wheel && (
         <Part id="wheel">{(e) => (
           <Wheel center={state.points.wheelCenter} axis={state.spinAxis} radius={radius} width={width} shoulder={simpleTire ? 0 : shoulder} rimRadius={rimRadius} simple={simpleTire} color={e === 2 ? COLORS.select : COLORS.wheel} />

@@ -724,7 +724,7 @@ Matched to how expensive one evaluation is:
 
 ### Possible next steps for the optimizer
 - ✅ **Ranges for other values**: static camber and toe (the spin axis rebuilt from them) and the tire's set pressure (gas model: the contact patch and the grip goals) are free coordinates too (*Setup values* in the picker); **length ranges** keep the upper / lower arm (pivot axis to ball joint) and the tie rod between a min and a max, a stiff penalty only outside the range (0.01 mm). Custom-linkage and setup-value ranges now also load back from project files. Tested: camber and toe set exactly; a length range holds while the goal pulls the arm.
-- **Ghost preview** of the optimized geometry in the viewport before applying.
+- ✅ **Ghost preview**: a corner optimizer result can be shown in the Corner view before applying (*Preview in the view*): its linkage dashed in green at the same travel and steering, cleared on Apply / Discard / a new run.
 - **Tire data**: fit μ_ref, n and β (or a full Pacejka-style model with camber thrust) from measured data, per tire.
 - **Per-tire grip model** (different tires front and rear) instead of one shared model.
 - **Steady-state cornering balance**: find the lateral g where the front or rear axle saturates (friction limit) and maximize it, instead of a fixed g.

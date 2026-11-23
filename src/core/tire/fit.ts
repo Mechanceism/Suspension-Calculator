@@ -8,7 +8,7 @@
  * (the coefficients take whatever signs fit it). Moments, combined slip and turn slip are not fitted.
  */
 import { boundedLeastSquares } from '../optimize/leastSquares';
-import { tirFx0, tirFy0, type TirModel } from './tir';
+import { tirFx0, tirFy0, tirForces, tirMz0, type TirModel } from './tir';
 
 export interface TireSample {
   /** Slip angle and inclination, rad; slip ratio; load N (positive); pressure kPa; forces N. */
@@ -19,6 +19,8 @@ export interface TireSample {
   p?: number;
   fx?: number;
   fy?: number;
+  /** Aligning moment, N·m. */
+  mz?: number;
 }
 
 export interface TireCsv {
@@ -36,6 +38,7 @@ const ALIASES: Record<keyof TireSample, RegExp> = {
   p: /^(p|pressure|press|inflation)$/i,
   fx: /^(fx|long_?force)$/i,
   fy: /^(fy|lat_?force|side_?force)$/i,
+  mz: /^(mz|aligning_?moment|align|sat)$/i,
 };
 
 /**
@@ -96,7 +99,12 @@ export function parseTireTable(text: string, angles?: 'deg' | 'rad'): TireCsv {
 }
 
 export interface FitQuality { rows: number; rmsN: number; r2: number }
-export interface TireFitResult { model: TirModel; lateral: FitQuality | null; longitudinal: FitQuality | null; warnings: string[] }
+export interface TireFitResult {
+  model: TirModel; lateral: FitQuality | null; longitudinal: FitQuality | null;
+  /** Combined slip (forces with both slips) and the aligning moment, when the data has them. */
+  combinedLateral?: FitQuality | null; combinedLongitudinal?: FitQuality | null; moment?: FitQuality | null;
+  warnings: string[];
+}
 
 const median = (xs: number[]) => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[Math.floor(s.length / 2)]! : NaN; };
 const thin = <T,>(xs: T[], max: number) => (xs.length <= max ? xs : xs.filter((_, i) => i % Math.ceil(xs.length / max) === 0));
@@ -112,23 +120,23 @@ function quality(rows: TireSample[], pred: (s: TireSample) => number, meas: (s: 
 }
 
 /** Fit the pure-slip force coefficients of an MF 6.1 model to the samples. */
-export function fitTire(samples: TireSample[], opts: { name?: string; fnomin?: number; nompres?: number; maxRows?: number } = {}, onProgress?: (stage: string, iteration: number) => void): TireFitResult {
+export function fitTire(samples: TireSample[], opts: { name?: string; fnomin?: number; nompres?: number; maxRows?: number; unloadedRadius?: number } = {}, onProgress?: (stage: string, iteration: number) => void): TireFitResult {
   const warnings: string[] = [];
   const fnomin = Math.round(opts.fnomin ?? median(samples.map((s) => s.fz)));
   const ps = samples.map((s) => s.p).filter((p): p is number => p !== undefined);
   const nompres = opts.nompres ?? (ps.length ? Math.round(median(ps)) : 0);
   const pSpread = ps.length ? Math.max(...ps) - Math.min(...ps) : 0;
   const iaSpread = samples.length ? Math.max(...samples.map((s) => Math.abs(s.ia))) : 0;
-  const p: Record<string, number> = { PKY4: 2 };
+  const p: Record<string, number> = { PKY4: 2, ...(opts.unloadedRadius ? { UNLOADED_RADIUS: opts.unloadedRadius } : {}) };
   const base = (): TirModel => ({ kind: 'tir', name: opts.name ?? 'fitted.tir', fittyp: 61, version: '6.1', fnomin, nompres, p: { ...p } });
   const max = opts.maxRows ?? 2500;
 
-  const fitOne = (stage: string, rows: TireSample[], specs: ParamSpec[], pred: (m: TirModel, s: TireSample) => number, meas: (s: TireSample) => number) => {
+  const fitOne = (stage: string, rows: TireSample[], specs: ParamSpec[], pred: (m: TirModel, s: TireSample) => number, meas: (s: TireSample) => number, norm = fnomin) => {
     const keys = specs.map((s) => s.key);
     const model = base();
     const res = (x: number[]) => {
       keys.forEach((k, i) => { model.p[k] = x[i]!; });
-      return rows.map((s) => (pred(model, s) - meas(s)) / fnomin);
+      return rows.map((s) => (pred(model, s) - meas(s)) / norm);
     };
     const r = boundedLeastSquares(res, specs.map((s) => s.x0), specs.map((s) => s.lo), specs.map((s) => s.hi), {
       maxIterations: 80, step: 1e-4, relTol: 1e-9,
@@ -191,7 +199,41 @@ export function fitTire(samples: TireSample[], opts: { name?: string; fnomin?: n
   // A model needs both directions: fill what wasn't fitted with plausible values.
   if (!lateral) Object.assign(p, { PCY1: 1.3, PDY1: 1.0, PKY1: -15, PKY2: 1.7, PEY1: -0.5 });
   if (!longitudinal) Object.assign(p, { PCX1: 1.5, PDX1: (p.PDY1 ?? 1) * 1.05, PKX1: 20 });
-  return { model: base(), lateral, longitudinal, warnings };
+
+  // Combined slip: rows with both a slip angle and a slip ratio weight the pure forces (Gxα, Gyκ).
+  let combinedLongitudinal: FitQuality | null = null, combinedLateral: FitQuality | null = null;
+  const both = samples.filter((s) => Math.abs(s.sa) > 0.03 && Math.abs(s.sl) > 0.02);
+  const cxRows = thin(both.filter((s) => s.fx !== undefined), max);
+  if (cxRows.length >= 30) {
+    combinedLongitudinal = fitOne('combined (longitudinal)', cxRows, [
+      { key: 'RBX1', x0: 10, lo: 1, hi: 60 }, { key: 'RBX2', x0: 6, lo: -20, hi: 40 },
+      { key: 'RCX1', x0: 1, lo: 0.5, hi: 2 }, { key: 'REX1', x0: 0, lo: -5, hi: 1 }, { key: 'RHX1', x0: 0, lo: -0.1, hi: 0.1 },
+    ], (m, s) => tirForces(m, { fz: s.fz, kappa: s.sl, alpha: s.sa, gamma: s.ia, pressure: s.p }).fx, (s) => s.fx!);
+  } else if (both.length) warnings.push(`Only ${cxRows.length} combined-slip rows with Fx: combined longitudinal coefficients not fitted.`);
+  const cyRows = thin(both.filter((s) => s.fy !== undefined), max);
+  if (cyRows.length >= 30) {
+    combinedLateral = fitOne('combined (lateral)', cyRows, [
+      { key: 'RBY1', x0: 8, lo: 1, hi: 60 }, { key: 'RBY2', x0: 6, lo: -20, hi: 40 }, { key: 'RBY3', x0: 0, lo: -0.2, hi: 0.2 },
+      { key: 'RCY1', x0: 1, lo: 0.5, hi: 2 }, { key: 'REY1', x0: 0, lo: -5, hi: 1 }, { key: 'RHY1', x0: 0, lo: -0.1, hi: 0.1 },
+    ], (m, s) => tirForces(m, { fz: s.fz, kappa: s.sl, alpha: s.sa, gamma: s.ia, pressure: s.p }).fy, (s) => s.fy!);
+  } else if (both.length) warnings.push(`Only ${cyRows.length} combined-slip rows with Fy: combined lateral coefficients not fitted.`);
+
+  // Aligning moment: pure-cornering rows with Mz (normalized by Fz0 · R0).
+  let moment: FitQuality | null = null;
+  const mzRows = thin(samples.filter((s) => s.mz !== undefined && Math.abs(s.sl) < 0.02), max);
+  if (mzRows.length >= 30) {
+    const R0 = p.UNLOADED_RADIUS ?? 0.3;
+    if (!p.UNLOADED_RADIUS) warnings.push('No unloaded radius given: the aligning moment is fitted with R0 = 0.3 m (its coefficients scale with it).');
+    const specs: ParamSpec[] = [
+      { key: 'QBZ1', x0: 10, lo: 1, hi: 60 }, { key: 'QBZ2', x0: 0, lo: -20, hi: 20 }, { key: 'QCZ1', x0: 1.2, lo: 0.8, hi: 2.5 },
+      { key: 'QDZ1', x0: 0.1, lo: -1, hi: 1 }, { key: 'QDZ2', x0: 0, lo: -1, hi: 1 }, { key: 'QEZ1', x0: -1, lo: -10, hi: 1 },
+      { key: 'QEZ2', x0: 0, lo: -5, hi: 5 }, { key: 'QHZ1', x0: 0, lo: -0.05, hi: 0.05 }, { key: 'QDZ6', x0: 0, lo: -0.1, hi: 0.1 },
+      { key: 'QBZ10', x0: 0, lo: -2, hi: 2 },
+    ];
+    if (iaSpread > 0.01) specs.push({ key: 'QDZ3', x0: 0, lo: -10, hi: 10 }, { key: 'QDZ8', x0: 0, lo: -2, hi: 2 }, { key: 'QHZ3', x0: 0, lo: -1, hi: 1 });
+    moment = fitOne('aligning moment', mzRows, specs, (m, s) => tirMz0(m, { fz: s.fz, kappa: 0, alpha: s.sa, gamma: s.ia, pressure: s.p }).mz, (s) => s.mz!, fnomin * R0);
+  } else if (samples.some((s) => s.mz !== undefined)) warnings.push(`Only ${mzRows.length} pure-cornering rows with Mz: aligning-moment coefficients not fitted.`);
+  return { model: base(), lateral, longitudinal, combinedLateral, combinedLongitudinal, moment, warnings };
 }
 
 /** Write a model as a .tir file (the force coefficients and what they need). */
@@ -210,6 +252,7 @@ export function writeTir(m: TirModel): string {
     ['LONGITUDINAL_COEFFICIENTS', /^P[A-Z]X\d$|^PPX\d$/],
     ['LATERAL_COEFFICIENTS', /^P[A-Z]Y\d$|^PPY\d$/],
     ['COMBINED_SLIP', /^R[A-Z]{2}\d$/],
+    ['ALIGNING_COEFFICIENTS', /^Q[A-Z]Z\d+$/],
   ];
   for (const [section, re] of groups) {
     const keys = Object.keys(m.p).filter((k) => re.test(k)).sort();

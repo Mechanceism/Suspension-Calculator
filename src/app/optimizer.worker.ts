@@ -14,7 +14,7 @@ type Job =
   | { kind: 'test'; problem: VehicleProblem; segments: SegmentSpec[]; opts: TestRunOptions }
   | { kind: 'playback'; problem: VehicleProblem; segments: SegmentSpec[]; ride?: boolean; handling?: boolean }
   | { kind: 'sensitivity'; problem: VehicleProblem; samples: number }
-  | { kind: 'tirefit'; samples: TireSample[]; name: string }
+  | { kind: 'tirefit'; samples: TireSample[]; name: string; unloadedRadius?: number }
   | { kind: 'rates'; problem: VehicleProblem; tests: RateTest[]; vars: RateVar[]; budget: number; mode: 'pass' | 'improve' };
 
 self.onmessage = (e: MessageEvent<Job>) => {
@@ -26,7 +26,7 @@ self.onmessage = (e: MessageEvent<Job>) => {
       return;
     }
     if (j.kind === 'tirefit') {
-      const r = fitTire(j.samples, { name: j.name }, (stage, iteration) => { self.postMessage({ type: 'progress', info: { stage, iteration } }); });
+      const r = fitTire(j.samples, { name: j.name, ...(j.unloadedRadius ? { unloadedRadius: j.unloadedRadius } : {}) }, (stage, iteration) => { self.postMessage({ type: 'progress', info: { stage, iteration } }); });
       self.postMessage({ type: 'done', result: r });
       return;
     }

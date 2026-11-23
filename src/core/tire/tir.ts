@@ -130,7 +130,7 @@ export function tirFx0(m: TirModel, i: TirInputs): { fx: number; mux: number } {
 }
 
 /** Pure lateral force Fy0(α). */
-export function tirFy0(m: TirModel, i: TirInputs): { fy: number; muy: number; ky: number } {
+export function tirFy0(m: TirModel, i: TirInputs): { fy: number; muy: number; ky: number; By: number; Cy: number; SHy: number; SVy: number } {
   const { c, l, fz0, fz, dfz, dpi } = common(m, i);
   const { mf6 } = coef(m);
   const gs = mf6 ? Math.sin(i.gamma) : i.gamma;
@@ -159,7 +159,35 @@ export function tirFy0(m: TirModel, i: TirInputs): { fy: number; muy: number; ky
   const ay = i.alpha + SHy;
   const By = Ky / (Cy * Dy + (Cy * Dy >= 0 ? EPS : -EPS));
   const ba = By * ay;
-  return { fy: Dy * Math.sin(Cy * Math.atan(ba - Ey * (ba - Math.atan(ba)))) + SVy, muy, ky: Ky };
+  return { fy: Dy * Math.sin(Cy * Math.atan(ba - Ey * (ba - Math.atan(ba)))) + SVy, muy, ky: Ky, By, Cy, SHy, SVy };
+}
+
+/**
+ * Pure-slip aligning moment Mz0(α), N·m (MF 6.1, no turn slip): −t·Fy0 (pneumatic trail t times the side
+ * force at zero inclination) plus the residual torque Mzr. Needs UNLOADED_RADIUS (else 0.3 m) and the Q…Z
+ * coefficients; a file without them gives 0. Also returns the trail t, m.
+ *   t  = Dt cos(Ct atan(Bt αt − Et (Bt αt − atan Bt αt))) cos α,  αt = α + SHt
+ *   Mzr = Dr cos(atan(Br αr)) ,  αr = α + SHy + SVy / Ky
+ */
+export function tirMz0(m: TirModel, i: TirInputs): { mz: number; trail: number } {
+  const { c, l, fz0, fz, dfz, dpi } = common(m, i);
+  const { mf6 } = coef(m);
+  const gs = mf6 ? Math.sin(i.gamma) : i.gamma;
+  const R0 = m.p.UNLOADED_RADIUS ?? 0.3;
+  const y = tirFy0(m, i);
+  const fyFlat = tirFy0(m, { ...i, gamma: 0 }).fy;
+  const SHt = c('QHZ1') + c('QHZ2') * dfz + (c('QHZ3') + c('QHZ4') * dfz) * gs;
+  const at = i.alpha + SHt;
+  const Bt = (c('QBZ1') + c('QBZ2') * dfz + c('QBZ3') * dfz * dfz) * (1 + c('QBZ5') * Math.abs(gs) + c('QBZ6') * gs * gs) * l('LKY') / l('LMUY');
+  const Ct = c('QCZ1');
+  const Dt = fz * (R0 / fz0) * (c('QDZ1') + c('QDZ2') * dfz) * (1 - c('PPZ1') * dpi) * l('LTR') * (1 + c('QDZ3') * Math.abs(gs) + c('QDZ4') * gs * gs);
+  const Et = Math.min(1, (c('QEZ1') + c('QEZ2') * dfz + c('QEZ3') * dfz * dfz) * (1 + (c('QEZ4') + c('QEZ5') * gs) * (2 / Math.PI) * Math.atan(Bt * Ct * at)));
+  const bt = Bt * at;
+  const trail = Dt * Math.cos(Ct * Math.atan(bt - Et * (bt - Math.atan(bt)))) * Math.cos(i.alpha);
+  const ar = i.alpha + y.SHy + y.SVy / (y.ky || EPS);
+  const Br = c('QBZ9') * l('LKY') / l('LMUY') + c('QBZ10') * y.By * y.Cy;
+  const Dr = fz * R0 * ((c('QDZ6') + c('QDZ7') * dfz) * l('LRES') + ((c('QDZ8') + c('QDZ9') * dfz) * (1 + c('PPZ2') * dpi) + (c('QDZ10') + c('QDZ11') * dfz) * Math.abs(gs)) * gs * l('LKZC')) * l('LMUY') * Math.cos(i.alpha);
+  return { mz: -trail * fyFlat + Dr * Math.cos(Math.atan(Br * ar)), trail };
 }
 
 /** Combined slip: Fx = Gxα·Fx0, Fy = Gyκ·Fy0 + SVyκ. */

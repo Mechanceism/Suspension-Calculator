@@ -373,5 +373,5 @@ export const runRatesJob = (problem: VehicleProblem, tests: RateTest[], vars: Ra
   progressJob<RateResult, RateProgress>({ kind: 'rates', problem, tests, vars, budget, mode }, onProgress);
 
 /** Fit a tire model to measured data, in the worker. */
-export const runTireFitJob = (samples: TireSample[], name: string, onProgress: (p: { stage: string; iteration: number }) => void) =>
-  progressJob<TireFitResult, { stage: string; iteration: number }>({ kind: 'tirefit', samples, name }, onProgress);
+export const runTireFitJob = (samples: TireSample[], name: string, onProgress: (p: { stage: string; iteration: number }) => void, unloadedRadius?: number) =>
+  progressJob<TireFitResult, { stage: string; iteration: number }>({ kind: 'tirefit', samples, name, ...(unloadedRadius ? { unloadedRadius } : {}) }, onProgress);

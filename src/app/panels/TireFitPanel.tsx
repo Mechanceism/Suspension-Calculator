@@ -56,7 +56,8 @@ export function TireFit() {
   };
   const fit = () => {
     if (!st.csv?.samples.length) return;
-    const job = runTireFitJob(st.csv.samples, `${st.name} (fitted).tir`, (p) => useFit.setState({ progress: `${p.stage}, iteration ${p.iteration}` }));
+    const R0 = useApp.getState().geom.scalars.tireDiameter.value / 2 / 1000; // the design's tire, m (aligning moment)
+    const job = runTireFitJob(st.csv.samples, `${st.name} (fitted).tir`, (p) => useFit.setState({ progress: `${p.stage}, iteration ${p.iteration}` }), R0 > 0 ? R0 : undefined);
     useFit.setState({ running: true, progress: 'starting…', error: null, result: null, stop: job.stop });
     job.done
       .then((result) => useFit.setState({ running: false, result, stop: null }))
@@ -74,9 +75,9 @@ export function TireFit() {
     <details className="tire-advanced tire-fit">
       <summary>Fit a tire model to measured data</summary>
       <p className="hint">
-        A table of measurements, one row each: slip angle <b>SA</b>, slip ratio <b>SL</b>, load <b>FZ</b>, inclination <b>IA</b>, pressure <b>P</b>, forces <b>FX</b> / <b>FY</b>
+        A table of measurements, one row each: slip angle <b>SA</b>, slip ratio <b>SL</b>, load <b>FZ</b>, inclination <b>IA</b>, pressure <b>P</b>, forces <b>FX</b> / <b>FY</b>, and optionally the aligning moment <b>MZ</b> (N·m)
         (CSV or tab-separated, a header row naming the columns; a units row under it is understood). Rows with slip ratio near 0 fit the cornering
-        coefficients, rows with slip angle near 0 the braking / driving ones. Your data stays on this computer.
+        coefficients, rows with slip angle near 0 the braking / driving ones, rows with both the combined-slip ones, and MZ the aligning moment (with the design's tire radius). Your data stays on this computer.
       </p>
       <div className="jm-row">
         <button className="chip" onClick={() => input.current?.click()}>Load data</button>
@@ -109,7 +110,12 @@ export function TireFit() {
       {st.error && <p className="hint warn-text">{st.error}</p>}
       {r && csv && (
         <div className="opt-result">
-          <p className="small-text">{q(r.lateral, 'Cornering')}<br />{q(r.longitudinal, 'Braking / driving')}</p>
+          <p className="small-text">
+            {q(r.lateral, 'Cornering')}<br />{q(r.longitudinal, 'Braking / driving')}
+            {r.combinedLateral !== undefined && <><br />{q(r.combinedLateral ?? null, 'Combined slip, side force')}</>}
+            {r.combinedLongitudinal !== undefined && <><br />{q(r.combinedLongitudinal ?? null, 'Combined slip, braking / driving force')}</>}
+            {r.moment && <><br />{`Aligning moment: ${r.moment.rows} rows, error ${fmt(r.moment.rmsN, 1)} N·m RMS, R² ${fmt(r.moment.r2, 3)}`}</>}
+          </p>
           <p className="small-text">
             Nominal load {fmt(r.model.fnomin, 0)} N{r.model.nompres > 0 ? `, pressure ${fmt(r.model.nompres, 0)} kPa` : ''} · peak side μ {fmt(r.model.p.PDY1, 2)}, braking μ {fmt(r.model.p.PDX1, 2)} at the nominal load
           </p>

@@ -18,7 +18,7 @@ import type { TireProfile } from '../core/tire/geometry';
 import type { TireForceModel } from '../core/tire/model';
 import { parseTireSize } from '../core/tire/size';
 import { GOAL_KINDS, GOAL_META, type GoalKind } from '../core/optimize/corner';
-import { VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, type VehicleGoalKind } from '../core/optimize/vehicle';
+import { VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, type VehicleGoalKind, type FixedCaseKind } from '../core/optimize/vehicle';
 import { DEFAULT_GRIP } from '../core/tire/grip';
 import { DEFAULT_MF, type MFCoeffs } from '../core/tire/magicFormula';
 import type { TirModel } from '../core/tire/tir';
@@ -998,6 +998,11 @@ export interface VehicleOptimizerSetup {
   lateralG: Field;
   brakingG: Field;
   accelG: Field;
+  /** Braking in a turn (both g; off when either is 0). */
+  combinedLatG?: Field;
+  combinedBrakeG?: Field;
+  /** Weight of each fixed case in the averaged goals (default 1). */
+  caseWeights?: Partial<Record<FixedCaseKind, number>>;
   keepClose: Field;
   /** Load cases: the fixed ones above, or a test's segments (test id). */
   caseSource?: string;

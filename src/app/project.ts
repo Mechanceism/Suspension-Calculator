@@ -121,6 +121,7 @@ export interface ProjectFile {
     ranges: Record<string, { lo: FieldJson; hi: FieldJson }>;
     goals: Record<string, { on: boolean; target: FieldJson; weight: FieldJson }>;
     lateralG: FieldJson; brakingG: FieldJson; accelG: FieldJson; keepClose: FieldJson; caseSource?: string; starts?: number;
+    combinedLatG?: FieldJson; combinedBrakeG?: FieldJson; caseWeights?: Record<string, number>;
   };
   /** Contact-patch pressure model (contact-area goal). */
   grip: Record<string, FieldJson>;
@@ -215,6 +216,9 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
       accelG: fj(d.vehicleOptimizer.accelG), keepClose: fj(d.vehicleOptimizer.keepClose),
       ...(d.vehicleOptimizer.caseSource ? { caseSource: d.vehicleOptimizer.caseSource } : {}),
       ...(d.vehicleOptimizer.starts && d.vehicleOptimizer.starts > 1 ? { starts: d.vehicleOptimizer.starts } : {}),
+      ...(d.vehicleOptimizer.combinedLatG ? { combinedLatG: fj(d.vehicleOptimizer.combinedLatG) } : {}),
+      ...(d.vehicleOptimizer.combinedBrakeG ? { combinedBrakeG: fj(d.vehicleOptimizer.combinedBrakeG) } : {}),
+      ...(d.vehicleOptimizer.caseWeights ? { caseWeights: { ...d.vehicleOptimizer.caseWeights } } : {}),
     },
     grip: mapFields(GRIP_KEYS, d.grip),
     tireGrip: mapFields(MF_KEYS, d.tireGrip),
@@ -532,7 +536,18 @@ function readVehicleOptimizer(raw: unknown, warnings: string[]): VehicleOptimize
   };
   const { ranges, goals } = readRangesGoals(raw, d.goals, valid, rf);
   const opt = (k: 'lateralG' | 'brakingG' | 'accelG' | 'keepClose') => (raw[k] ? rf(raw[k], 'ratio', d[k], k) : d[k]);
-  return { ranges, goals, lateralG: opt('lateralG'), brakingG: opt('brakingG'), accelG: opt('accelG'), keepClose: opt('keepClose'), ...(typeof raw.caseSource === 'string' ? { caseSource: raw.caseSource } : {}), ...(typeof raw.starts === 'number' && raw.starts > 1 ? { starts: Math.min(16, Math.round(raw.starts)) } : {}) };
+  const zero = { text: '0', value: 0 };
+  const cw = isObj(raw.caseWeights) ? Object.fromEntries((['lateral', 'braking', 'accel', 'combined'] as const)
+    .filter((k) => typeof (raw.caseWeights as Json)[k] === 'number' && Number.isFinite((raw.caseWeights as Json)[k]))
+    .map((k) => [k, Math.max(0, (raw.caseWeights as Json)[k] as number)])) : null;
+  return {
+    ranges, goals, lateralG: opt('lateralG'), brakingG: opt('brakingG'), accelG: opt('accelG'), keepClose: opt('keepClose'),
+    ...(typeof raw.caseSource === 'string' ? { caseSource: raw.caseSource } : {}),
+    ...(typeof raw.starts === 'number' && raw.starts > 1 ? { starts: Math.min(16, Math.round(raw.starts)) } : {}),
+    ...(raw.combinedLatG ? { combinedLatG: rf(raw.combinedLatG, 'ratio', zero, 'braking-in-a-turn lateral g') } : {}),
+    ...(raw.combinedBrakeG ? { combinedBrakeG: rf(raw.combinedBrakeG, 'ratio', zero, 'braking-in-a-turn braking g') } : {}),
+    ...(cw && Object.keys(cw).length ? { caseWeights: cw } : {}),
+  };
 }
 
 const AXIS_KEYS = ['x', 'y', 'z'];

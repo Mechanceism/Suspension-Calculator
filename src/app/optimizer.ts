@@ -11,7 +11,7 @@ import {
   type CornerProblem, type CornerReport, type HardpointId, type ProgressInfo, type Variable, type Hold,
 } from '../core/optimize/corner';
 import {
-  VEHICLE_GOAL_KINDS, reportVehicle,
+  VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, reportVehicle,
   type VehicleProblem, type VehicleReport, type VehicleVariable, type VehicleHold,
 } from '../core/optimize/vehicle';
 import type { GripModel } from '../core/tire/grip';
@@ -289,7 +289,11 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
     dropLinks: { front: dl(s.shared.front), rear: dl(s.shared.rear) },
     dropLinkOn: { front: s.shared.front.dropLinkOn ?? 'lca', rear: s.shared.rear.dropLinkOn ?? 'lca' },
     droop: Math.abs(s.droop), bump: Math.abs(s.bump),
-    cases: { lateralG: Math.max(0, o.lateralG.value), brakingG: Math.max(0, o.brakingG.value), accelG: Math.max(0, o.accelG.value) },
+    cases: {
+      lateralG: Math.max(0, o.lateralG.value), brakingG: Math.max(0, o.brakingG.value), accelG: Math.max(0, o.accelG.value),
+      ...(o.combinedLatG && o.combinedBrakeG ? { combined: { lateralG: Math.max(0, o.combinedLatG.value), brakingG: Math.max(0, o.combinedBrakeG.value) } } : {}),
+      ...(o.caseWeights ? { weights: o.caseWeights } : {}),
+    },
     states: o.caseSource && (o.caseSource === 'all' || s.tests.some((x) => x.id === o.caseSource))
       ? statesForTests(s.tests, o.caseSource, { wheelbase: v.wheelbase.value, halfTrack: Math.abs(toGeometry(all[rootOf('FL', s.links)].geom).wheel.center.x) }) : undefined,
     goals, variables, holds, aero: aeroOf(s), grip: gripModelOf(s.grip), tireGrip: tireGripFor(s, 'front'), ...(s.tireFileRear ? { tireGripRear: tireGripFor(s, 'rear') } : {}), keepClose: Math.max(0, o.keepClose.value), starts: o.starts ?? 1,
@@ -299,8 +303,9 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
   if (!variables.length) blockers.push(skippedLocked.length ? 'Every free coordinate is locked.' : 'Add at least one free coordinate.');
   if (goals.length && goals.every((g) => g.weight <= 0)) blockers.push('Every goal has weight 0.');
   const c = problem.cases;
-  if (!problem.states?.length && !c.lateralG && !c.brakingG && !c.accelG && goals.some((g) => !['antiDive', 'antiSquat', 'bumpSteer'].includes(g.kind))) {
-    blockers.push('Turn on at least one load case (cornering, braking or accelerating).');
+  const anyCase = c.lateralG || c.brakingG || c.accelG || (c.combined && c.combined.lateralG && c.combined.brakingG);
+  if (!problem.states?.length && !anyCase && goals.some((g) => !['geometry', 'limit'].includes(VEHICLE_GOAL_META[g.kind].uses))) {
+    blockers.push('Turn on at least one load case (cornering, braking, accelerating or braking in a turn).');
   }
   return { problem, skippedLocked, blockers };
 }

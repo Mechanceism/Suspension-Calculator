@@ -697,11 +697,12 @@ A level wheel gives a fairly even pressure; an inclined one gives a wedge of δ,
 **Corner goals.** *Contact area* and *Grip* are averaged over two cases: static (travel 0, static corner load) and the outside wheel in roll (travel = half track · tan φ, ground tilted φ relative to the body, load = static × the *outside-wheel load in roll* factor, default 1.5). The tire's ground height is re-solved for each load. Maximized goals use the residual (start ÷ value)/√tol (tol = 1 %), so a 1 % gain counts about as much as removing one tolerance of miss on a target goal.
 
 ## L7: Vehicle optimizer ✅ (`src/core/optimize/vehicle.ts`)
-Same solver; every evaluation rebuilds the corners from the candidate hardpoints (corner tables with 21 samples) and runs the whole-car solve (L6) for each load case that is on: **cornering** (left turn, g), **braking** (g), **accelerating** (g). Springs are re-fitted to the static loads when *preload per corner* is on, so ride height stays at design. Variables belong to a corner design (root corner): with front and rear linked, one move applies to all four corners.
+Same solver; every evaluation rebuilds the corners from the candidate hardpoints (corner tables with 21 samples) and runs the whole-car solve (L6) for each load case that is on: **cornering** (left turn, g), **braking** (g), **accelerating** (g), **braking in a turn** (both a lateral and a braking g at once; on when both are set). Each fixed case has a **weight** (default 1) in the averaged goals (total grip, contact area, test reserve: Σ wᵢ·vᵢ / Σ wᵢ) and in *Test passes* (its residuals × √w), the same way a test state's priority × segment weight counts. Springs are re-fitted to the static loads when *preload per corner* is on, so ride height stays at design. Variables belong to a corner design (root corner): with front and rear linked, one move applies to all four corners.
 
 | Goal | Value | Tolerance |
 |---|---|---|
 | Total grip (max) | Σ friction capacity of the four tires ÷ vehicle weight (g), averaged over the cases | 1 % |
+| Cornering limit (max) | the steady lateral g at which the first axle's grip use reaches 1 (below) | 1 % |
 | Total contact area (max) | Σ patch areas, averaged over the cases | 1 % |
 | Outside-tire inclination | inclination to the ground of the two loaded tires in cornering (residual per tire) | 0.05° |
 | Roll gradient | body roll ÷ lateral g | 0.02°/g |
@@ -712,6 +713,11 @@ Same solver; every evaluation rebuilds the corners from the candidate hardpoints
 | Bump steer (every design) | as in the corner optimizer, for every design | 0.01° |
 
 Because load sensitivity rewards evenly loaded tires, the grip goal also cares how load transfer is split. Front/rear differences (LLTD) need separate front and rear designs (untick *Rear same dimensions as front*). Tested: identical front and rear give LLTD ≈ the weight split (50.4 %); moving the four UCA pivot heights reaches a 55 % target within the ranges in ~2 s; one evaluation (two cases, two designs) takes ~0.1 s.
+
+### Cornering limit (axle saturation) ✅
+The steady cornering limit is the lateral g at which the front or the rear axle runs out of grip, with the whole car solved at each g (load transfer, roll, camber and the tires' load sensitivity all included). Each axle's grip use u is the solver's axle utilization (its share of the cornering force ÷ what its two tires can still give, L6); the limit solves max(u_front, u_rear)(g) = 1 by secant steps from 1 g, kept inside a bracket [lo, hi] (start [0, 5] g; a step leaving it bisects), stopping at |u − 1| < 10⁻⁷. The tight tolerance keeps the value smooth for the optimizer's finite-difference gradient. Each optimizer step starts from the last limit found (g and chassis pose), so a step usually needs 2–4 solves. The result also says which axle goes first (front = the car pushes wide, rear = it slides) and the other axle's grip use then: when that is near 100 %, both ends are near their grip together and little is wasted. Only computed when the goal is on.
+
+Tested: at the limit found the worst axle is at 100 % (±0.5 %); a stiff front bar makes the front saturate first at a lower g and a stiff rear bar the rear; a warm start near the answer needs ≤ 4 solves; maximizing it with the front static camber free on a front-limited car leans the front wheels in (< −0.5°) and raises the limit. The braking-in-a-turn case pitches the nose down and rolls the body, with the outside front tire carrying the most load; with weights 0 / 0 / 1 the averaged grip equals the combined case alone.
 
 ### Optimizer strategies ✅ (`src/core/optimize/search.ts`, `rates.ts`; decided 2026-11-22)
 Matched to how expensive one evaluation is:
@@ -727,8 +733,9 @@ Matched to how expensive one evaluation is:
 - ✅ **Ghost preview**: a corner optimizer result can be shown in the Corner view before applying (*Preview in the view*): its linkage dashed in green at the same travel and steering, cleared on Apply / Discard / a new run.
 - **Tire data**: fit μ_ref, n and β (or a full Pacejka-style model with camber thrust) from measured data, per tire.
 - **Per-tire grip model** (different tires front and rear) instead of one shared model.
-- **Steady-state cornering balance**: find the lateral g where the front or rear axle saturates (friction limit) and maximize it, instead of a fixed g.
-- **Combined cases**: braking in a turn, a weighted mix of cases, and a track-specific case list.
+- ✅ **Steady-state cornering balance**: the *Cornering limit* goal finds the lateral g where the front or rear axle saturates and maximizes it (above).
+- ✅ **Combined cases**: braking in a turn and a weight per fixed case. A track-specific case list is the Tests workspace (*Use: Test …* as the load cases).
+- A **power-on exit** case (accelerating in a turn) and the cornering limit while braking (the g-g diagram's edge).
 - Spring and bar rates in the steady geometry stage too (today they are tuned on the ride).
 - Damper knees and dyno curves as tuning variables; clicker positions when a damper's settings are known.
 

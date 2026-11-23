@@ -105,6 +105,20 @@ describe('project files', () => {
     expect(importProject(f).design.geom.points.ucaOut[0].value).toBe(531);
   });
 
+  it('round-trips the vehicle optimizer braking-in-a-turn case and case weights', () => {
+    const d = defaultDesign();
+    d.vehicleOptimizer.combinedLatG = { text: '0.8', value: 0.8 };
+    d.vehicleOptimizer.combinedBrakeG = { text: '0.6', value: 0.6 };
+    d.vehicleOptimizer.caseWeights = { lateral: 2, combined: 0.5 };
+    const r = roundTrip(d);
+    expect(r.warnings).toEqual([]);
+    expect(r.design.vehicleOptimizer.combinedLatG).toEqual({ text: '0.8', value: 0.8 });
+    expect(r.design.vehicleOptimizer.combinedBrakeG).toEqual({ text: '0.6', value: 0.6 });
+    expect(r.design.vehicleOptimizer.caseWeights).toEqual({ lateral: 2, combined: 0.5 });
+    // Older files: no combined case, default weights.
+    expect(roundTrip(defaultDesign()).design.vehicleOptimizer.combinedLatG).toBeUndefined();
+  });
+
   it('rejects files that are not project files', () => {
     expect(() => importProject({ hello: 'world' })).toThrow();
   });

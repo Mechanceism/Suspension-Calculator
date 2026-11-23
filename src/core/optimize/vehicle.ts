@@ -41,16 +41,17 @@ import {
 const G = 9.80665;
 
 export type VehicleGoalKind =
-  | 'grip' | 'contactArea' | 'inclination' | 'roll' | 'lltd' | 'rollStiffness' | 'pitch' | 'antiDive' | 'antiSquat' | 'bumpSteer' | 'testPass' | 'testReserve';
+  | 'grip' | 'lateralLimit' | 'contactArea' | 'inclination' | 'roll' | 'lltd' | 'rollStiffness' | 'pitch' | 'antiDive' | 'antiSquat' | 'bumpSteer' | 'testPass' | 'testReserve';
 
 export interface VehicleGoalMeta {
   short: string; label: string; unit: string; target: number; tolerance: number; hint: string; maximize?: boolean;
-  /** Load case the goal is evaluated in. */
-  uses: 'all' | 'lateral' | 'braking' | 'accel' | 'geometry';
+  /** Load case the goal is evaluated in ('limit': its own steady cornering cases up to the grip limit). */
+  uses: 'all' | 'lateral' | 'braking' | 'accel' | 'geometry' | 'limit';
 }
 
 export const VEHICLE_GOAL_META: Record<VehicleGoalKind, VehicleGoalMeta> = {
   grip: { short: 'Total grip', label: 'Total grip (largest)', unit: 'g', target: 0, tolerance: 0.01, maximize: true, uses: 'all', hint: 'Sum of the four tires\' peak force in the direction each must push ÷ vehicle weight, averaged over the load cases. Uses the tire grip model (Magic Formula): load sensitivity rewards even loads, and a wheel leaning into the turn gains camber thrust.' },
+  lateralLimit: { short: 'Cornering limit', label: 'Cornering limit (largest)', unit: 'g', target: 0, tolerance: 0.01, maximize: true, uses: 'limit', hint: 'The steady lateral g at which the first axle runs out of grip (front first = the car pushes wide, rear first = it spins), found by solving the whole car at rising g. Load transfer, camber, roll and the tires\' load sensitivity all count. Independent of the load cases above.' },
   contactArea: { short: 'Total area', label: 'Total contact area (largest)', unit: 'cm²', target: 0, tolerance: 0.01, maximize: true, uses: 'all', hint: 'Sum of the four patch areas, averaged over the load cases. With the air-spring tire model the area is set mostly by load ÷ pressure; the stiffness model responds to inclination much more.' },
   inclination: { short: 'Outside incl.', label: 'Outside-tire inclination (cornering)', unit: '°', target: -1, tolerance: 0.05, uses: 'lateral', hint: 'Inclination to the ground of the two outside (loaded) tires in the cornering case. + = top outboard.' },
   roll: { short: 'Roll gradient', label: 'Roll gradient (cornering)', unit: '°/g', target: 1, tolerance: 0.02, uses: 'lateral', hint: 'Body roll per g of lateral acceleration.' },
@@ -124,7 +125,13 @@ export interface VehicleProblem {
   droop: number;
   bump: number;
   /** Load cases (0 = off). Lateral is a left turn. */
-  cases: { lateralG: number; brakingG: number; accelG: number };
+  cases: {
+    lateralG: number; brakingG: number; accelG: number;
+    /** Braking in a turn: both at once (off when either is 0). */
+    combined?: { lateralG: number; brakingG: number };
+    /** Weight of each fixed case in the averaged goals (grip, contact area, test reserve) and in Test passes (default 1). */
+    weights?: Partial<Record<FixedCaseKind, number>>;
+  };
   goals: VehicleGoal[];
   variables: VehicleVariable[];
   holds?: VehicleHold[];
@@ -153,11 +160,18 @@ export interface VehicleProblem {
   tableSamples?: number;
 }
 
+export type FixedCaseKind = 'lateral' | 'braking' | 'accel' | 'combined';
+
 export interface CaseEval {
-  /** 'lateral' | 'braking' | 'accel' for the fixed cases, or the test state's name. */
+  /** 'lateral' | 'braking' | 'accel' | 'combined' for the fixed cases, or the test state's name. */
   name: string;
-  kind: 'lateral' | 'braking' | 'accel' | 'state';
+  kind: FixedCaseKind | 'state';
   g: number;
+  /** Cornering and braking g of the case. */
+  lateralG: number;
+  brakingG: number;
+  /** Weight in the averaged goals (test states: priority × segment weight). */
+  weight: number;
   /** The road state solved (test states only). */
   state?: RoadState;
   result: VehicleResult;
@@ -169,6 +183,8 @@ export interface VehicleEval {
   cases: CaseEval[];
   /** Static (design) characteristics of each corner. */
   chars: Record<CornerId, Characteristics>;
+  /** The cornering limit (only when a goal needs it). null = not found. */
+  limit?: LateralLimit | null;
 }
 
 const geometriesFor = (p: VehicleProblem, x: number[]) => {
@@ -312,6 +328,7 @@ export interface CaseSpec {
   name: string; kind: CaseEval['kind']; g: number;
   lateralG: number; brakingG: number; accelG: number; gravityScale?: number; groundOffset?: Partial<Record<CornerId, number>>;
   state?: RoadState;
+  weight?: number;
 }
 
 /** The load cases of a problem: its test states, or the fixed cornering / braking / accelerating cases. */
@@ -323,9 +340,12 @@ export function caseList(p: VehicleProblem): CaseSpec[] {
     }));
   }
   const out: CaseSpec[] = [];
-  if (p.cases.lateralG) out.push({ name: 'lateral', kind: 'lateral', g: p.cases.lateralG, lateralG: p.cases.lateralG, brakingG: 0, accelG: 0 });
-  if (p.cases.brakingG) out.push({ name: 'braking', kind: 'braking', g: p.cases.brakingG, lateralG: 0, brakingG: p.cases.brakingG, accelG: 0 });
-  if (p.cases.accelG) out.push({ name: 'accel', kind: 'accel', g: p.cases.accelG, lateralG: 0, brakingG: 0, accelG: p.cases.accelG });
+  const w = (k: FixedCaseKind) => Math.max(0, p.cases.weights?.[k] ?? 1);
+  if (p.cases.lateralG) out.push({ name: 'lateral', kind: 'lateral', g: p.cases.lateralG, lateralG: p.cases.lateralG, brakingG: 0, accelG: 0, weight: w('lateral') });
+  if (p.cases.brakingG) out.push({ name: 'braking', kind: 'braking', g: p.cases.brakingG, lateralG: 0, brakingG: p.cases.brakingG, accelG: 0, weight: w('braking') });
+  if (p.cases.accelG) out.push({ name: 'accel', kind: 'accel', g: p.cases.accelG, lateralG: 0, brakingG: 0, accelG: p.cases.accelG, weight: w('accel') });
+  const cb = p.cases.combined;
+  if (cb && cb.lateralG && cb.brakingG) out.push({ name: 'combined', kind: 'combined', g: Math.hypot(cb.lateralG, cb.brakingG), lateralG: cb.lateralG, brakingG: cb.brakingG, accelG: 0, weight: w('combined') });
   return out;
 }
 
@@ -353,8 +373,46 @@ export function solveCase(p: VehicleProblem, asm: AssembledVehicle, c: CaseSpec,
     const axis = result.corners[id].axisWorld;
     g[id] = patchGrip(wc, axis, { point: vec3(0, result.corners[id].groundY, 0), normal: Y_AXIS }, p.designs[root]!.profile, result.corners[id].tireLoad, grip);
   }
-  return { name: c.name, kind: c.kind, g: c.g, state: c.state, result, grip: g };
+  return { name: c.name, kind: c.kind, g: c.g, lateralG: c.lateralG, brakingG: c.brakingG, weight: c.state?.weight ?? c.weight ?? 1, state: c.state, result, grip: g };
 }
+
+/** Where the car runs out of cornering grip: the lateral g, the axle that goes first and the other axle's grip use then. */
+export interface LateralLimit { g: number; axle: 'front' | 'rear'; other: number; pose: ChassisPose; solves: number }
+
+/**
+ * The steady cornering limit (left turn, no braking): the lateral g at which the front or rear axle's grip use
+ * reaches 1. Secant steps on the worst axle's use from a first guess of 1 g, kept inside a bracket.
+ */
+export function lateralLimit(p: VehicleProblem, asm: AssembledVehicle, warm?: { g: number; pose?: ChassisPose }): LateralLimit | null {
+  let guess = warm?.pose, solves = 0;
+  const use = (g: number) => {
+    solves++;
+    const e = solveCase(p, asm, { name: 'limit', kind: 'lateral', g, lateralG: g, brakingG: 0, accelG: 0 }, guess);
+    if (!e?.result.grip) return null;
+    guess = e.result.pose;
+    const a = e.result.grip.axles;
+    return { u: Math.max(a.front, a.rear), a };
+  };
+  let lo = 0, hi = 5;
+  let g0 = warm && warm.g > 0.05 && warm.g < hi ? warm.g : 1, r0 = use(g0);
+  if (!r0) return null;
+  let g1 = Math.min(hi, Math.max(0.05, g0 / Math.max(r0.u, 1e-3)));
+  for (let i = 0; i < 10; i++) {
+    if (r0.u < 1) lo = Math.max(lo, g0); else hi = Math.min(hi, g0);
+    const r1 = use(g1);
+    if (!r1) return null;
+    if (Math.abs(r1.u - 1) < 1e-7 || hi - lo < 1e-7) return { g: g1, axle: r1.a.front >= r1.a.rear ? 'front' : 'rear', other: Math.min(r1.a.front, r1.a.rear), pose: guess!, solves };
+    if (r1.u < 1) lo = Math.max(lo, g1); else hi = Math.min(hi, g1);
+    const slope = (r1.u - r0.u) / (g1 - g0);
+    let g2 = slope > 1e-6 ? g1 + (1 - r1.u) / slope : (lo + hi) / 2;
+    if (!(g2 > lo && g2 < hi)) g2 = (lo + hi) / 2;
+    g0 = g1; r0 = r1; g1 = g2;
+  }
+  return null;
+}
+
+/** The last cornering limit found per guesses object (warm start). */
+const lastLimit = new WeakMap<object, { g: number; pose: ChassisPose }>();
 
 /** Build the corners and run every load case for the given geometries. null = can't be assembled/solved. */
 export function evaluateVehicle(p: VehicleProblem, geometries: Partial<Record<CornerId, DoubleWishboneGeometry>>, guesses?: Partial<Record<string, ChassisPose>>): VehicleEval | null {
@@ -367,7 +425,15 @@ export function evaluateVehicle(p: VehicleProblem, geometries: Partial<Record<Co
     if (guesses) guesses[c.name] = e.result.pose;
     cases.push(e);
   }
-  return { geometries, cases, chars: asm.chars };
+  // The cornering limit, only when a goal asks for it (several solves).
+  let limit: LateralLimit | null | undefined;
+  if (p.goals.some((g) => VEHICLE_GOAL_META[g.kind].uses === 'limit')) {
+    // Warm start from the last limit found with these guesses (an optimizer step moves it only a little).
+    const last = guesses ? lastLimit.get(guesses) : undefined;
+    limit = lateralLimit(p, asm, last ?? { g: 1, pose: guesses?.lateral });
+    if (guesses && limit) lastLimit.set(guesses, { g: limit.g, pose: limit.pose });
+  }
+  return { geometries, cases, chars: asm.chars, ...(limit !== undefined ? { limit } : {}) };
 }
 
 const mean = (v: number[]) => (v.length ? v.reduce((a, b) => a + b, 0) / v.length : NaN);
@@ -395,8 +461,13 @@ function rollStiffnessShareOf(c: CaseEval, chars: Record<CornerId, { rollCenterH
 /** Outside corners: a left turn (lateral > 0) loads the right side. */
 const outsideOf = (c: CaseEval): CornerId[] => (c.result.corners.FR.tireLoad >= c.result.corners.FL.tireLoad ? ['FR', 'RR'] : ['FL', 'RL']);
 /** The most-cornering and the hardest-braking case (fixed or test states). */
-const latGOf = (c: CaseEval) => (c.kind === 'state' ? c.state!.lateralG : c.kind === 'lateral' ? c.g : 0);
-const brakeGOf = (c: CaseEval) => (c.kind === 'state' ? c.state!.brakingG : c.kind === 'braking' ? c.g : 0);
+const latGOf = (c: CaseEval) => c.lateralG;
+const brakeGOf = (c: CaseEval) => c.brakingG;
+/** Weighted mean over the load cases. */
+const wmean = (e: VehicleEval, f: (c: CaseEval) => number) => {
+  const tw = e.cases.reduce((a, c) => a + c.weight, 0);
+  return tw > 0 ? e.cases.reduce((a, c) => a + c.weight * f(c), 0) / tw : mean(e.cases.map(f));
+};
 const latCase = (e: VehicleEval) => e.cases.filter((c) => Math.abs(latGOf(c)) > 0.05).sort((a, b) => Math.abs(latGOf(b)) - Math.abs(latGOf(a)))[0];
 const brakeCase = (e: VehicleEval) => e.cases.filter((c) => brakeGOf(c) > 0.05).sort((a, b) => brakeGOf(b) - brakeGOf(a))[0];
 
@@ -430,17 +501,13 @@ export function vehicleGoalValue(kind: VehicleGoalKind, p: VehicleProblem, e: Ve
   const brk = brakeCase(e);
   switch (kind) {
     // Peak force each tire can carry in the direction it must push (Magic Formula, camber thrust included).
-    case 'grip': return e.cases.length ? mean(e.cases.map((c) => CORNER_IDS.reduce((a, id) => a + (c.result.grip?.corners[id].capacity ?? 0), 0))) / (p.mass * G) : null;
-    case 'contactArea': return e.cases.length ? mean(e.cases.map((c) => CORNER_IDS.reduce((a, id) => a + c.grip[id].area, 0))) / 100 : null;
+    case 'grip': return e.cases.length ? wmean(e, (c) => CORNER_IDS.reduce((a, id) => a + (c.result.grip?.corners[id].capacity ?? 0), 0)) / (p.mass * G) : null;
+    case 'lateralLimit': return e.limit?.g ?? null;
+    case 'contactArea': return e.cases.length ? wmean(e, (c) => CORNER_IDS.reduce((a, id) => a + c.grip[id].area, 0)) / 100 : null;
     case 'inclination': return lat ? mean(outsideOf(lat).map((id) => deg(lat.result.corners[id].inclination))) : null;
     case 'roll': return lat ? Math.abs(deg(lat.result.pose.roll)) / Math.abs(latGOf(lat)) : null;
     case 'testPass': return e.cases.length ? 100 * Math.max(...e.cases.map((c) => c.result.grip?.maxUtilization ?? 0)) : null;
-    case 'testReserve': {
-      if (!e.cases.length) return null;
-      const w = e.cases.map((c) => c.state?.weight ?? 1);
-      const tw = w.reduce((a, b) => a + b, 0) || 1;
-      return (100 * e.cases.reduce((a, c, i) => a + w[i]! * (1 - (c.result.grip?.maxUtilization ?? 1)), 0)) / tw;
-    }
+    case 'testReserve': return e.cases.length ? 100 * wmean(e, (c) => 1 - (c.result.grip?.maxUtilization ?? 1)) : null;
     case 'lltd': return lat ? lltdOf(lat) : null;
     case 'rollStiffness': return lat ? rollStiffnessShareOf(lat, e.chars) : null;
     case 'pitch': return brk ? deg(brk.result.pose.pitch) : null;
@@ -475,12 +542,12 @@ function vehicleResiduals(goal: VehicleGoal, p: VehicleProblem, e: VehicleEval, 
     return e.cases.flatMap((c) => {
       if (c.state?.checks) return checkResiduals(c.result, c.state.checks).map((v) => v * Math.sqrt(c.state!.weight ?? 1) * 3);
       const limit = goal.target / 100;
-      return CORNER_IDS.map((id) => Math.max(0, (c.result.grip?.corners[id].utilization ?? 0) - limit) / (meta.tolerance / 100));
+      return CORNER_IDS.map((id) => (Math.sqrt(c.weight) * Math.max(0, (c.result.grip?.corners[id].utilization ?? 0) - limit)) / (meta.tolerance / 100));
     });
   }
   if (goal.kind === 'testReserve') {
     // Lower grip use everywhere; squares make the worst states count most.
-    return e.cases.map((c) => (Math.sqrt(c.state?.weight ?? 1) * (c.result.grip?.maxUtilization ?? 1)) / 0.05);
+    return e.cases.map((c) => (Math.sqrt(c.weight) * (c.result.grip?.maxUtilization ?? 1)) / 0.05);
   }
   if (goal.kind === 'bumpSteer') {
     const r: number[] = [];

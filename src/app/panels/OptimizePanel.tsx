@@ -14,7 +14,7 @@ import {
   type GoalKind, type GoalMeta, type ProgressInfo, type HardpointId, type Variable, type Hold,
 } from '../../core/optimize/corner';
 import {
-  VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, evaluateVehicle, vehicleGoalValue,
+  VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, evaluateVehicle, vehicleGoalValue, type LateralLimit, type FixedCaseKind,
   type VehicleGoalKind, type VehicleGoalMeta,
 } from '../../core/optimize/vehicle';
 import { layoutOf, toGeometry,
@@ -688,20 +688,31 @@ export function VehicleOptimizePanel() {
 
   // "Now" values from the whole-car solve, debounced (one evaluation takes ~0.1–0.3 s).
   const [now, setNow] = useState<Partial<Record<VehicleGoalKind, number | null>> | null>(null);
+  const [limitNow, setLimitNow] = useState<LateralLimit | null>(null);
   useEffect(() => {
     if (interacting) return;
     setNow(null);
+    setLimitNow(null);
     const t = setTimeout(() => {
       const p = built.problem;
       const geoms = Object.fromEntries(Object.entries(p.designs).map(([r, d]) => [r, d!.geometry]));
       const e = evaluateVehicle(p, geoms);
       setNow(e ? Object.fromEntries(VEHICLE_GOAL_KINDS.map((k) => [k, vehicleGoalValue(k, p, e)])) : {});
+      setLimitNow(e?.limit ?? null);
     }, 500);
     return () => clearTimeout(t);
   }, [built, interacting]);
 
-  const setField = (k: 'lateralG' | 'brakingG' | 'accelG' | 'keepClose', text: string) =>
-    update((v) => ({ ...v, [k]: parseField(text, 'ratio', v[k]) }));
+  const setField = (k: 'lateralG' | 'brakingG' | 'accelG' | 'keepClose' | 'combinedLatG' | 'combinedBrakeG', text: string) =>
+    update((v) => ({ ...v, [k]: parseField(text, 'ratio', v[k] ?? { text: '0', value: 0 }) }));
+  const zeroG = { text: '0', value: 0 };
+  const weightCell = (k: FixedCaseKind, on: boolean) => (
+    <td title="Weight of this case in the averaged goals (total grip, contact area, test reserve) and in Test passes">
+      {on && <input type="number" min={0} step={0.5} style={{ width: 48 }} value={o.caseWeights?.[k] ?? 1}
+        onChange={(e) => { const n = Number(e.target.value); if (Number.isFinite(n) && n >= 0) update((v) => ({ ...v, caseWeights: { ...v.caseWeights, [k]: n } })); }} />}
+    </td>
+  );
+  const combinedOn = !!(o.combinedLatG?.value && o.combinedBrakeG?.value);
   const [pickRoot, setPickRoot] = useState<CornerId | null>(null);
   const picked = pickRoot && roots.some((r) => r.root === pickRoot) ? pickRoot : roots[0]!.root;
   const g = all[picked].geom;
@@ -753,17 +764,32 @@ export function VehicleOptimizePanel() {
           <p className="hint">Every segment's speed samples of that test are load cases ({built.problem.states?.length ?? 0} states). Turn on <b>Test passes</b> to make every tire stay within its grip.</p>
         )}
         <table className="opt-table">
+          <thead><tr><th /><th>g</th><th>Weight</th></tr></thead>
           <tbody>
-            <tr><td>Cornering (left turn)</td><td className="nowrap"><ValueInput field={o.lateralG} unit="g" width={52} onCommit={(t) => setField('lateralG', t)} /> g</td></tr>
-            <tr><td>Braking</td><td className="nowrap"><ValueInput field={o.brakingG} unit="g" width={52} onCommit={(t) => setField('brakingG', t)} /> g</td></tr>
-            <tr title="Needs powered corners"><td>Accelerating</td><td className="nowrap"><ValueInput field={o.accelG} unit="g" width={52} onCommit={(t) => setField('accelG', t)} /> g</td></tr>
+            <tr><td>Cornering (left turn)</td><td className="nowrap"><ValueInput field={o.lateralG} unit="g" width={52} onCommit={(t) => setField('lateralG', t)} /> g</td>{weightCell('lateral', o.lateralG.value > 0)}</tr>
+            <tr><td>Braking</td><td className="nowrap"><ValueInput field={o.brakingG} unit="g" width={52} onCommit={(t) => setField('brakingG', t)} /> g</td>{weightCell('braking', o.brakingG.value > 0)}</tr>
+            <tr title="Needs powered corners"><td>Accelerating</td><td className="nowrap"><ValueInput field={o.accelG} unit="g" width={52} onCommit={(t) => setField('accelG', t)} /> g</td>{weightCell('accel', o.accelG.value > 0)}</tr>
+            <tr title="Trail braking: cornering and braking at once (both on = the case is on). The outside front tire carries the most load.">
+              <td>Braking in a turn</td>
+              <td className="nowrap">
+                <ValueInput field={o.combinedLatG ?? zeroG} unit="g" width={44} onCommit={(t) => setField('combinedLatG', t)} /> lat
+                {' '}<ValueInput field={o.combinedBrakeG ?? zeroG} unit="g" width={44} onCommit={(t) => setField('combinedBrakeG', t)} /> brake
+              </td>
+              {weightCell('combined', combinedOn)}
+            </tr>
           </tbody>
         </table>
-        <p className="hint">0 = off. Grip and contact area are averaged over the cases that are on.</p>
+        <p className="hint">0 = off. Grip, contact area and test reserve are averaged over the cases that are on, by weight. The cornering limit goal finds its own cases.</p>
       </Section>
       <Section title="Goals">
         <GoalTable kinds={VEHICLE_GOAL_KINDS} meta={VEHICLE_GOAL_META} goals={o.goals} now={now}
           onChange={(k, patch) => update((v) => ({ ...v, goals: { ...v.goals, [k]: { ...v.goals[k], ...patch } } }))} />
+        {o.goals.lateralLimit.on && limitNow && (
+          <p className="hint">
+            Now: the {limitNow.axle} axle runs out of grip first at {limitNow.g.toFixed(3)} g, with the {limitNow.axle === 'front' ? 'rear' : 'front'} at {(limitNow.other * 100).toFixed(0)}%
+            {limitNow.axle === 'front' ? ' (the car pushes wide at the limit).' : ' (the rear slides at the limit).'} The closer the other axle is to 100%, the more of the car's grip is used.
+          </p>
+        )}
         <table className="opt-table">
           <tbody>
             <tr title="Keeps the result near the current design when the goals alone don't pin it down. 0 = off.">

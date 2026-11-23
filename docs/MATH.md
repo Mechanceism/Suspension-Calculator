@@ -427,6 +427,14 @@ Two operating modes:
 
 **Background (classic formulas, for cross-checking).** Total lateral transfer per axle `ΔW = m·a_y·h_CG/t`; the roll center splits it into geometric `m·a_y·h_RC/t` and elastic `m·a_y·(h_CG − h_RC)/t`. Roll moment = sprung mass · a_y · roll moment arm (sprung CG to roll axis). Rollover threshold depends on CG height and track, not the roll center.
 
+### Robustness: travel ends, solid axles, far balances ✅ (2026-11-23)
+- **Table ends**: the corner and axle tables are Catmull–Rom splines; past either end the missing sample is now extrapolated linearly (P₋₁ = 2P₀ − P₁) instead of repeating the end sample, which halved every slope there (motion ratio, wheel path) and put a kink in the work near full droop / bump.
+- **Solid-axle settle**: the two-wheel Newton on (q_L, q_R) now backtracks until the remaining force drops (the work changes slope sharply where a tire leaves the ground), and when it stalls falls back to alternate bracketed 1-D settles of each wheel; tolerance 10⁻⁶ N.
+- **Body step**: the Newton step on (heave, roll, pitch) is scaled as a whole to its limits (20 mm, 0.05 rad) instead of clipping each component, which turned it off the Newton direction and made it creep.
+- **Far balances**: a solve that fails, or lands with an axle or a side off the ground that a rigid car would keep loaded (static share − rigid transfer m·a·h / L or m·a_y·h / t, with 2 % of W to spare), is repeated by ramping the accelerations up in six steps from rest. Without this a hard stop could land on the unstable "stoppie" balance (on the front wheels only, pitched ~13–15°), which the playback drew as the car flipping.
+- **Solid-axle presets**: their links have one chassis pivot (fwd = aft), so the lower arm has no hinge axis. The steering readouts and the rack sweep at the current height now use the axle's travel there; the lower-arm angle returns 0 for such links. Before, it threw and crashed the app on the A4 / A3 / AW / AS presets.
+- Tested: the trophy truck braking 0.3–1.2 g converges with rear axle loads within 5 % of W of the rigid estimate; the road car keeps its rear wheels down at 1.2 g; a warm-started brake / accelerate cycle converges at every step; table slopes at the ends match the inside.
+
 ### Planned for later (noted 2026-11-21)
 - **More shared-component types:** monoshock / roll-decoupled layouts, pushrods across corners, anti-roll bar geometry with chassis-mounted bar ends.
 - **CG from scales (page 6 of the hand math):** a utility to find the CG from four corner scale weights level and with one axle raised (tilt). For now the CG is entered directly.
@@ -621,6 +629,8 @@ Whole-car starting points. Each axle takes a sample layout scaled to the car: he
 | FSAE car | double wishbones | 18 × 7.5-10 | 300 kg, 280 mm, 47 % | 3.0 / 3.2, 0.6 | rear, LSD |
 | Kart | double wishbone (stiff) / solid axle | 10 × 4.50-5 / 11 × 7.10-5 | 165 kg, 260 mm, 42 % | 9, 0.2 | rear, locked, rear brake only |
 | Trophy truck | long-travel double wishbones / 4-link | 40 × 13.50 R17 | 2700 kg, 800 mm, 50 % | 1.0 / 1.1, 0.35 | rear, locked |
+
+The tire grip model's nominal load Fz0 and pressure p0 are set to the car's mean static tire load and set pressure, so the generic coefficients give μ ≈ 1 at static load on any size of car (left at 1 kN, a 6.6 kN truck tire read almost no grip). Brake bias: road car 70 % with ABS, FSAE 62 %, kart rear only, trophy truck 72 % (ideal about 0.85 g; at 1 g the rear locks, a real result for that bias).
 
 Tested: every corner solves at full droop, ride height and full bump; the tire size and track are as asked; the static loads carry the whole car with the asked front share; the whole car settles in a 0.3 g turn; a profile round-trips through a project file.
 

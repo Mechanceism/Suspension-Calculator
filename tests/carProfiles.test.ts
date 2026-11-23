@@ -45,6 +45,8 @@ describe('car profiles', () => {
       const total = loads.FL + loads.FR + loads.RL + loads.RR;
       expect(total).toBeCloseTo(p.mass * G, 0);
       expect((loads.FL + loads.FR) / total).toBeCloseTo(p.frontShare, 2);
+      // The grip model is centred on this car's tires: about μ 1 at the static load.
+      expect(d.tireGrip.fz0.value).toBeCloseTo(total / 4, -2);
       // Drive and brakes.
       expect(d.settings.FL.powered).toBe(p.drive !== 'rear');
       expect(d.settings.RL.powered).toBe(p.drive !== 'front');

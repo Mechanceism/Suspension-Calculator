@@ -314,8 +314,10 @@ export function useModel(): Model {
 
     const computeSteering = (): SteeringInfo => {
     // Steering: compare with straight ahead at the same arm position.
+    // Same height, other rack positions: by the lower arm's angle; a solid axle (links with one pivot, no
+    // arm axis) by its travel.
     const armAngle = lowerArmAngle(corner.geometry, state);
-    const atRack = (r: number) => corner.solve({ driver: 'lowerArmAngle', armAngle, rack: r }, state.poses);
+    const atRack = (r: number) => corner.solve(corner.solidAxle ? { driver: state.inputs.driver, travel: state.inputs.travel, rack: r } : { driver: 'lowerArmAngle', armAngle, rack: r }, state.poses);
     const straight = atRack(0);
     const rp = atRack(rack + 0.5);
     const rm = atRack(rack - 0.5);
@@ -380,7 +382,9 @@ export function useModel(): Model {
   }, [live, sweep, sliderTravel, rack, driver, mode, factor, spec, ws, droop, bump, tireSetup, spring, steer, cFactor, damperLimits, interacting]);
 
   // Steering sweep across the rack range at the current arm position.
-  const armKey = current && built.corner ? Math.round(lowerArmAngle(built.corner.geometry, current.state) * 1e5) : 0;
+  // The current height: the lower arm's angle, or a solid axle's travel (its links have no arm axis).
+  const armKey = current && built.corner ? Math.round((built.corner.solidAxle ? current.state.inputs.travel : lowerArmAngle(built.corner.geometry, current.state)) * 1e5) : 0;
+  const heightDriver = current?.state.inputs.driver ?? 'wheelCenter';
   const rackLimit = steer.rackLimit.value;
   const wheelbase = useApp((s) => s.vehicle.wheelbase.value);
   const curTireLoad = Math.round(current?.tireLoad ?? spring.cornerLoad.value);
@@ -391,8 +395,9 @@ export function useModel(): Model {
     const armAngle = armKey / 1e5;
     const n = 25;
     const racks = Array.from({ length: n }, (_, i) => -rackLimit + (2 * rackLimit * i) / (n - 1));
-    const states = corner.sweep(racks, (r) => ({ driver: 'lowerArmAngle', armAngle, rack: r }));
-    const mid = corner.solve({ driver: 'lowerArmAngle', armAngle, rack: 0 }, states[(n - 1) / 2]!.poses);
+    const at = (r: number) => (corner.solidAxle ? { driver: heightDriver, travel: armKey / 1e5, rack: r } : { driver: 'lowerArmAngle' as const, armAngle, rack: r });
+    const states = corner.sweep(racks, at);
+    const mid = corner.solve(at(0), states[(n - 1) / 2]!.poses);
     const h0 = headingAngle(mid.spinAxis);
     const y0 = mid.points.contact.y;
     // Ackermann with the mirrored corner: this wheel at rack r, its mirror image at −r (yaw + = left).
@@ -409,7 +414,7 @@ export function useModel(): Model {
         ackermann: ackermann(yaw[i]!, -yaw[n - 1 - i]!, wheelbase, steerTrack).percent,
       };
     });
-  }, [built, armKey, rackLimit, cFactor, ratioSpec.cFactorLock, curTireLoad, interacting, wheelbase]);
+  }, [built, armKey, heightDriver, rackLimit, cFactor, ratioSpec.cFactorLock, curTireLoad, interacting, wheelbase]);
   if (!interacting) lastSteerSweep.current = steerSweep;
 
   return { error: live.error, corner: live.corner, sweep, current, steerSweep, damperLimits };

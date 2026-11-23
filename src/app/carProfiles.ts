@@ -108,7 +108,7 @@ export const CAR_PROFILES: CarProfileSpec[] = [
     hint: 'Long-travel double wishbones in front, a 4-link solid rear axle, 40 in tires, 2700 kg, soft springs and lots of travel; rear-wheel drive with a locked rear.',
     front: { layout: SAMPLE_LAYOUTS.find((l) => l.id === 'A')!.geometry, halfTrack: 1100, tire: { diameter: 1016, width: 343, rim: 431.8, text: '40x13.50R17', pressure: 140 }, unsprung: 140, rideHz: 1.0, zeta: 0.35, camber: 0 },
     rear: { layout: SAMPLE_BEAM4, halfTrack: 1080, tire: { diameter: 1016, width: 343, rim: 431.8, text: '40x13.50R17', pressure: 140 }, unsprung: 200, rideHz: 1.1, zeta: 0.35, camber: 0 },
-    mass: 2700, cgHeight: 800, frontShare: 0.5, wheelbase: 3050, brakeBias: 0.6, driveSplit: 0, drive: 'rear', brakes: 'all', abs: false, diff: 'locked',
+    mass: 2700, cgHeight: 800, frontShare: 0.5, wheelbase: 3050, brakeBias: 0.72, driveSplit: 0, drive: 'rear', brakes: 'all', abs: false, diff: 'locked',
     inertia: [1500, 5500, 6000], droop: 200, bump: 250, rack: [60, 70], bars: [25, 0],
   },
 ];
@@ -194,6 +194,11 @@ export function carProfileDesign(id: string): DesignState {
     ...d.settings[id], steered: id.startsWith('F'), powered: powered(id),
     brake: p.brakes === 'rear' && id.startsWith('F') ? 'none' : 'outboard', abs: p.abs, diff: p.diff,
   } satisfies CornerSettings])) as Record<CornerId, CornerSettings>;
+  // The tire grip model's nominal load and pressure at this car's static tire load and set pressure (the
+  // generic coefficients are relative to them; left at a light car's 1 kN, a heavy car's tires read as
+  // having almost no grip).
+  const meanLoad = (loads.FL + loads.FR + loads.RL + loads.RR) / 4;
+  const tireGrip = { ...d.tireGrip, fz0: field(round(meanLoad, 10), 'force'), p0: field((p.front.tire.pressure + p.rear.tire.pressure) / 2, 'pressure') };
   const bar = (rate: number) => (rate > 0 ? { antiRollBar: 'wheelRate' as const, arbRate: field(rate, 'rate') } : { antiRollBar: 'none' as const });
   return {
     ...d,
@@ -202,7 +207,7 @@ export function carProfileDesign(id: string): DesignState {
     steer: { ...d.steer, cFactor: field(p.rack[0]), rackLimit: field(p.rack[1]) },
     droop: p.droop, bump: p.bump,
     corners: { FL: front, FR: front, RL: rear, RR: rear },
-    links, settings, vehicle,
+    links, settings, vehicle, tireGrip,
     shared: { front: { ...d.shared.front, ...bar(p.bars[0]) }, rear: { ...d.shared.rear, ...bar(p.bars[1]) } },
   };
 }

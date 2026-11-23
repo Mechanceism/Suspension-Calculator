@@ -23,6 +23,8 @@ export function headingAngle(spinAxis: Vec3): number {
 /** Current LCA rotation about its pivot axis relative to design (rad, + = ball joint up). */
 export function lowerArmAngle(geometry: DoubleWishboneGeometry, state: CornerState): number {
   const { aft, fwd, out } = geometry.lca;
+  // A link with one pivot (solid-axle links: fwd = aft) has no hinge axis: no angle to measure.
+  if (length(sub(fwd, aft)) < 1e-9) return 0;
   const u = normalize(sub(fwd, aft));
   const rej = (v: Vec3) => addScaled(v, u, -dot(v, u));
   const r0 = rej(sub(out, aft));

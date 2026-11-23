@@ -488,9 +488,16 @@ function settleAxle(
   let qb = guess[1] ?? 0;
   const clampA = (q: number) => Math.min(a.table.hi, Math.max(a.table.lo, q));
   const clampB = (q: number) => Math.min(b.table.hi, Math.max(b.table.lo, q));
-  for (let it = 0; it < 30; it++) {
-    const [ga, gb] = both(qa, qb);
-    if (Math.abs(ga) < 1e-3 && Math.abs(gb) < 1e-3) break;
+  // Remaining generalized force, not counting a corner held at a travel limit that pushes it further.
+  const miss = (qa_: number, qb_: number, g: [number, number]) => Math.hypot(
+    (qa_ <= a.table.lo + 1e-6 && g[0] < 0) || (qa_ >= a.table.hi - 1e-6 && g[0] > 0) ? 0 : g[0],
+    (qb_ <= b.table.lo + 1e-6 && g[1] < 0) || (qb_ >= b.table.hi - 1e-6 && g[1] > 0) ? 0 : g[1]);
+  const tol = 1e-6;
+  let g = both(qa, qb);
+  // Damped Newton: the step is cut back until the miss drops (the work changes slope sharply where a tire
+  // leaves the ground, and a full step can jump between the two regimes without settling).
+  for (let it = 0; it < 30 && miss(qa, qb, g) > tol; it++) {
+    const [ga, gb] = g;
     const h = 1e-3;
     const [pa1, pb1] = both(qa + h, qb), [pa2, pb2] = both(qa, qb + h);
     const j11 = (pa1 - ga) / h;
@@ -503,10 +510,21 @@ function settleAxle(
     let db = (-gb * j11 + ga * j21) / det;
     const m = Math.max(Math.abs(da), Math.abs(db));
     if (m > 10) { da *= 10 / m; db *= 10 / m; }
-    const na = clampA(qa + da);
-    const nb = clampB(qb + db);
-    if (Math.abs(na - qa) < 1e-7 && Math.abs(nb - qb) < 1e-7) break; // stuck at limits
-    qa = na; qb = nb;
+    const m0 = miss(qa, qb, g);
+    let moved = false;
+    for (let k = 0; k < 12; k++, da /= 2, db /= 2) {
+      const na = clampA(qa + da), nb = clampB(qb + db);
+      const gn = both(na, nb);
+      if (miss(na, nb, gn) < m0) { moved = Math.abs(na - qa) > 1e-9 || Math.abs(nb - qb) > 1e-9; qa = na; qb = nb; g = gn; break; }
+    }
+    if (!moved) break;
+  }
+  // Fallback when Newton stalls: settle each wheel in turn with the other held (each 1-D settle is bracketed,
+  // so it always lands on that wheel's equilibrium), repeated until both agree, then a few Newton-free sweeps.
+  for (let sweep = 0; sweep < 60 && miss(qa, qb, g) > tol; sweep++) {
+    qa = settle1((q) => wA(q, qb), a.table.lo, a.table.hi, qa).q;
+    qb = settle1((q) => wB(q, qa), b.table.lo, b.table.hi, qb).q;
+    g = both(qa, qb);
   }
   // Limits: if either corner is pinned, hold it and settle the other on its own.
   let sa: CornerStatus = 'ok';
@@ -784,6 +802,50 @@ export function vehicleAt(input: VehicleInput, pose: ChassisPose, travel: Record
 }
 
 export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions = {}): VehicleResult {
+  const r = solveVehicleOnce(input, options);
+  const acc = Math.abs(input.lateralG) + Math.abs(input.brakingG ?? 0) + Math.abs(input.accelG ?? 0);
+  if (acc < 1e-9 || (r.converged && !liftedUnexpectedly(input, r))) return r;
+  // Load continuation: ramp the accelerations up from rest, each step starting from the last. From rest
+  // the solver can otherwise land on the far, unstable balance (e.g. a "stoppie" on the front wheels)
+  // or stall. The direct answer is kept when the ramp does no better.
+  let pose: ChassisPose | undefined = undefined;
+  let cornerGuess: Partial<Record<CornerId, number>> | undefined;
+  let last: VehicleResult | null = null;
+  const n = 6;
+  for (let k = 1; k <= n; k++) {
+    const f = k / n;
+    const step = { ...input, lateralG: input.lateralG * f, brakingG: (input.brakingG ?? 0) * f, accelG: (input.accelG ?? 0) * f };
+    last = solveVehicleOnce(step, { ...options, guess: pose ?? { heave: 0, roll: 0, pitch: 0 }, ...(cornerGuess ? { cornerGuess } : {}) });
+    if (!last.converged) break;
+    pose = last.pose;
+    cornerGuess = Object.fromEntries(CORNER_IDS.map((id) => [id, last!.corners[id]?.travel]));
+  }
+  if (last && last.converged && (!r.converged || !liftedUnexpectedly(input, last))) return last;
+  return r;
+}
+
+/**
+ * An axle or a side off the ground that a rigid car would keep loaded (static share minus the rigid load
+ * transfer, with 2 % of the weight to spare): the solve found a far, unstable balance.
+ */
+export function liftedUnexpectedly(input: VehicleInput, r: VehicleResult): boolean {
+  const W = input.totalMass * G * (input.gravityScale ?? 1);
+  const h = input.cg.y - input.groundY;
+  const L = input.wheelbase;
+  const lon = (input.brakingG ?? 0) - (input.accelG ?? 0);
+  const front = W * (L + input.cg.z) / L + lon * input.totalMass * G * h / L;
+  const rear = W - front;
+  const ids = (input.corners.map((c) => c.id));
+  const off = (list: CornerId[]) => list.every((id) => !ids.includes(id) || (r.corners[id]?.tireLoad ?? 0) <= 1e-6);
+  const xs = input.corners.map((c) => Math.abs(r.corners[c.id]?.contact.x ?? 0)).filter((x) => x > 0);
+  const track = xs.length ? (2 * xs.reduce((a, b) => a + b, 0)) / xs.length : 0;
+  const side = track > 0 ? W / 2 - Math.abs(input.lateralG) * input.totalMass * G * h / track : 0;
+  const spare = 0.02 * W;
+  return (off(['FL', 'FR']) && front > spare) || (off(['RL', 'RR']) && rear > spare)
+    || ((off(['FL', 'RL']) || off(['FR', 'RR'])) && side > spare);
+}
+
+function solveVehicleOnce(input: VehicleInput, options: VehicleSolveOptions = {}): VehicleResult {
   const sp = sprungProperties(input);
   const fs = forceSetup(input);
   const { W, latTotal, notes, unmet, frontLatShare } = fs;
@@ -851,9 +913,11 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
     });
     const step = solveLinear(J, cur.res.map((v) => -v));
     if (!step) break;
-    // Limit the step, then backtrack until the residual drops.
+    // Limit the step (scaled as a whole: clipping one component alone turns the step off the Newton
+    // direction, and it may then not go downhill at all), then backtrack until the residual drops.
     const lim = [20, 0.05, 0.05];
-    let s = step.map((v, i) => Math.max(-lim[i]!, Math.min(lim[i]!, v)));
+    const fit = Math.min(1, ...step.map((v, i) => (Math.abs(v) > lim[i]! ? lim[i]! / Math.abs(v) : 1)));
+    let s = step.map((v) => v * fit);
     let accepted = false;
     for (let k = 0; k < 8; k++) {
       const trial = { heave: pose.heave + s[0]!, roll: pose.roll + s[1]!, pitch: pose.pitch + s[2]! };

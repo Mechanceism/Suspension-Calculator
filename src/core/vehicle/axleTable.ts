@@ -85,19 +85,27 @@ export class AxleTable {
       return { i, t: f - i };
     };
     const a = loc(qL), b = loc(qR);
-    const idx = (k: number) => Math.min(this.n - 1, Math.max(0, k));
+    // Samples past an end are extrapolated linearly from the last two along that travel (repeating the end
+    // sample would halve the slopes there).
+    const n = this.n;
+    const at = (ii: number, jj: number, k: number): number => {
+      if (ii < 0) return 2 * at(0, jj, k) - at(Math.min(1, n - 1), jj, k);
+      if (ii > n - 1) return 2 * at(n - 1, jj, k) - at(Math.max(0, n - 2), jj, k);
+      if (jj < 0) return 2 * at(ii, 0, k) - at(ii, Math.min(1, n - 1), k);
+      if (jj > n - 1) return 2 * at(ii, n - 1, k) - at(ii, Math.max(0, n - 2), k);
+      return this.data[((ii * n + jj) * 2 + s) * W + k]!;
+    };
     const val = new Array<number>(W).fill(0), dA = new Array<number>(W).fill(0), dB = new Array<number>(W).fill(0);
     // Catmull–Rom weights and their derivatives.
     const w = (t: number) => [(-t + 2 * t * t - t * t * t) / 2, (2 - 5 * t * t + 3 * t * t * t) / 2, (t + 4 * t * t - 3 * t * t * t) / 2, (-t * t + t * t * t) / 2];
     const wd = (t: number) => [(-1 + 4 * t - 3 * t * t) / 2, (-10 * t + 9 * t * t) / 2, (1 + 8 * t - 9 * t * t) / 2, (-2 * t + 3 * t * t) / 2];
     const wa = w(a.t), wda = wd(a.t), wb = w(b.t), wdb = wd(b.t);
     for (let u = 0; u < 4; u++) {
-      const ii = idx(a.i - 1 + u);
+      const ii = a.i - 1 + u;
       for (let v = 0; v < 4; v++) {
-        const jj = idx(b.i - 1 + v);
-        const base = ((ii * this.n + jj) * 2 + s) * W;
+        const jj = b.i - 1 + v;
         for (let k = 0; k < W; k++) {
-          const P = this.data[base + k]!;
+          const P = at(ii, jj, k);
           val[k]! += wa[u]! * wb[v]! * P;
           dA[k]! += wda[u]! * wb[v]! * P;
           dB[k]! += wa[u]! * wdb[v]! * P;

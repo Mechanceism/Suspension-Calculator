@@ -92,13 +92,19 @@ export class CornerTable {
     const f = (qq - this.lo) / this.step;
     const i = Math.min(this.n - 2, Math.max(0, Math.floor(f)));
     const t = f - i;
-    const idx = (j: number) => Math.min(this.n - 1, Math.max(0, j)) * K;
-    const i0 = idx(i - 1), i1 = idx(i), i2 = idx(i + 1), i3 = idx(i + 2);
+    // Samples past either end are extrapolated linearly from the last two (repeating the end sample would
+    // halve the slope there: a motion ratio or wheel path at full droop / bump read as half of what it is).
+    const n = this.n;
+    const P = (j: number, k: number): number => {
+      if (j < 0) return 2 * this.data[k]! - this.data[(n > 1 ? 1 : 0) * K + k]!;
+      if (j > n - 1) return 2 * this.data[(n - 1) * K + k]! - this.data[Math.max(0, n - 2) * K + k]!;
+      return this.data[j * K + k]!;
+    };
     const val = new Array<number>(K);
     const der = new Array<number>(K);
     const t2 = t * t, t3 = t2 * t;
     for (let k = 0; k < K; k++) {
-      const P0 = this.data[i0 + k]!, P1 = this.data[i1 + k]!, P2 = this.data[i2 + k]!, P3 = this.data[i3 + k]!;
+      const P0 = P(i - 1, k), P1 = P(i, k), P2 = P(i + 1, k), P3 = P(i + 2, k);
       const a1 = -P0 + P2;
       const a2 = 2 * P0 - 5 * P1 + 4 * P2 - P3;
       const a3 = -P0 + 3 * P1 - 3 * P2 + P3;

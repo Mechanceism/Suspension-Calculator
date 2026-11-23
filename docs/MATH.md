@@ -723,7 +723,7 @@ Matched to how expensive one evaluation is:
 - Tested: Latin-hypercube strata, multi-start finding the deeper of two valleys a single run misses, sensitivity recovering known effects and an interaction (R² > 0.99), Bayesian optimization beating as many random tries on a 2-D function, tuning far-too-soft dampers on a rough road improving the score.
 
 ### Possible next steps for the optimizer
-- **Ranges for other values**: tire pressure, static camber/toe, and **derived-dimension ranges** (e.g. arm length between A and B), not only hardpoint coordinates and rates.
+- ✅ **Ranges for other values**: static camber and toe (the spin axis rebuilt from them) and the tire's set pressure (gas model: the contact patch and the grip goals) are free coordinates too (*Setup values* in the picker); **length ranges** keep the upper / lower arm (pivot axis to ball joint) and the tie rod between a min and a max, a stiff penalty only outside the range (0.01 mm). Custom-linkage and setup-value ranges now also load back from project files. Tested: camber and toe set exactly; a length range holds while the goal pulls the arm.
 - **Ghost preview** of the optimized geometry in the viewport before applying.
 - **Tire data**: fit μ_ref, n and β (or a full Pacejka-style model with camber thrust) from measured data, per tire.
 - **Per-tire grip model** (different tires front and rear) instead of one shared model.

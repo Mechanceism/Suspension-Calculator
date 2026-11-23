@@ -146,7 +146,8 @@ export interface ProjectFile {
 interface OptimizerJson {
   ranges: Record<string, { lo: FieldJson; hi: FieldJson }>;
   goals: Record<string, { on: boolean; target: FieldJson; weight: FieldJson }>;
-  rollAngle: FieldJson; rackCheck: FieldJson; keepClose: FieldJson; rollLoadFactor: FieldJson;
+  rollAngle: FieldJson; rackCheck: FieldJson; keepClose: FieldJson; rollLoadFactor: FieldJson; starts?: number;
+  lengthRanges?: Record<string, { lo: FieldJson; hi: FieldJson }>;
 }
 
 const fj = (f: Field): FieldJson => ({ text: f.text, value: f.value });
@@ -205,6 +206,7 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
       goals: Object.fromEntries(Object.entries(o!.goals).map(([k, g]) => [k, { on: g.on, target: fj(g.target), weight: fj(g.weight) }])),
       rollAngle: fj(o!.rollAngle), rackCheck: fj(o!.rackCheck), keepClose: fj(o!.keepClose), rollLoadFactor: fj(o!.rollLoadFactor),
       ...(o!.starts && o!.starts > 1 ? { starts: o!.starts } : {}),
+      ...(o!.lengthRanges ? { lengthRanges: Object.fromEntries(Object.entries(o!.lengthRanges).map(([k, r]) => [k, { lo: fj(r!.lo), hi: fj(r!.hi) }])) } : {}),
     }])),
     vehicleOptimizer: {
       ranges: Object.fromEntries(Object.entries(d.vehicleOptimizer.ranges).map(([k, r]) => [k, { lo: fj(r.lo), hi: fj(r.hi) }])),
@@ -547,7 +549,9 @@ function readOptimizer(raw: unknown, warnings: string[]): Partial<Record<CornerI
     const ranges: OptimizerSetup['ranges'] = {};
     for (const [k, r] of Object.entries(isObj(o.ranges) ? o.ranges : {})) {
       const [pk, ax] = k.split('.');
-      if (!(POINT_KEYS as readonly string[]).includes(pk!) || !AXIS_KEYS.includes(ax!) || !isObj(r)) continue;
+      // Point coordinates, setup values (scalar.…) and custom linkage points (custom.…).
+      const ok = ((POINT_KEYS as readonly string[]).includes(pk!) && AXIS_KEYS.includes(ax!)) || /^scalar\.(staticCamber|staticToe|tirePressure)$/.test(k) || /^custom\..+\.(p|q)\.[xyz]$/.test(k);
+      if (!ok || !isObj(r)) continue;
       ranges[k] = { lo: rf(r.lo, 'length', { text: '0', value: 0 }, `${k} min`), hi: rf(r.hi, 'length', { text: '0', value: 0 }, `${k} max`) };
     }
     const goals = d.goals;
@@ -564,6 +568,10 @@ function readOptimizer(raw: unknown, warnings: string[]): Partial<Record<CornerI
       keepClose: o.keepClose ? rf(o.keepClose, 'ratio', d.keepClose, 'keep close') : d.keepClose,
       rollLoadFactor: o.rollLoadFactor ? rf(o.rollLoadFactor, 'ratio', d.rollLoadFactor, 'roll load factor') : d.rollLoadFactor,
       ...(typeof o.starts === 'number' && o.starts > 1 ? { starts: Math.min(16, Math.round(o.starts)) } : {}),
+      ...(isObj(o.lengthRanges) ? { lengthRanges: Object.fromEntries((['uca', 'lca', 'tieRod'] as const).filter((k) => isObj((o.lengthRanges as Json)[k])).map((k) => {
+        const r = (o.lengthRanges as Json)[k] as Json;
+        return [k, { lo: rf(r.lo, 'length', { text: '0', value: 0 }, `${k} length min`), hi: rf(r.hi, 'length', { text: '0', value: 0 }, `${k} length max`) }];
+      })) } : {}),
     };
   }
   return out;

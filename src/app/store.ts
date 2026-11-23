@@ -876,6 +876,8 @@ export interface OptimizerSetup {
   rollLoadFactor: Field;
   /** Gradient runs (1 = local from the current design; more = wide search from the best DOE samples too). */
   starts?: number;
+  /** Lengths the optimizer keeps within a range (min / max, mm): the arms (pivot axis to ball joint) and the tie rod. */
+  lengthRanges?: Partial<Record<'uca' | 'lca' | 'tieRod', { lo: Field; hi: Field }>>;
 }
 
 /** Whole-vehicle optimizer setup. */

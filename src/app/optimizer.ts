@@ -167,6 +167,12 @@ export function buildProblem(s: AppState): BuiltProblem<CornerProblem> {
   const variables: Variable[] = [];
   const skippedLocked: string[] = [];
   for (const [key, r] of Object.entries(o.ranges)) {
+    // Setup values: static camber / toe (deg), the tire's set pressure (kPa).
+    const sv = key.startsWith('scalar.') ? key.slice(7) : null;
+    if (sv) {
+      if (sv === 'staticCamber' || sv === 'staticToe' || (sv === 'tirePressure' && s.tireModel === 'gas')) variables.push({ point: sv, axis: 0, lo: r.lo.value, hi: r.hi.value });
+      continue;
+    }
     const cv = parseCustomVarKey(key);
     if (cv) {
       // A custom linkage's joint point (only while the design is one).
@@ -188,6 +194,12 @@ export function buildProblem(s: AppState): BuiltProblem<CornerProblem> {
     geometry, droop: -Math.abs(s.droop), bump: Math.abs(s.bump), samples: 9,
     rackPositions: rack > 0 && s.settings[s.activeCorner].steered ? [-rack, rack] : [],
     rollAngle: o.rollAngle.value, wheelbase: s.vehicle.wheelbase.value, goals, variables, holds: holdsFor(s, root), keepClose: Math.max(0, o.keepClose.value), starts: o.starts ?? 1,
+    ranges: (['uca', 'lca', 'tieRod'] as const).flatMap((k) => {
+      const r = o.lengthRanges?.[k];
+      if (!r) return [];
+      const hold: Hold = k === 'tieRod' ? { dimension: { a: 'trInner', b: 'trOuter', measure: 'distance', value: 0, travel: null } } : { arm: k, which: 'length' };
+      return [{ hold, lo: r.lo.value, hi: r.hi.value }];
+    }),
     tire: model ? { profile: toProfile(s.geom), model, staticLoad, rollLoadFactor: o.rollLoadFactor.value, grip: gripModelOf(s.grip), tireGrip: tireGripFor(s, s.activeCorner === 'FL' || s.activeCorner === 'FR' ? 'front' : 'rear'), pressure: tirePressure(model) } : undefined,
   };
   const blockers: string[] = [];

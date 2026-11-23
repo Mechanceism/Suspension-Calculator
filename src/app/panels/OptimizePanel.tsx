@@ -10,14 +10,14 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { create, type StoreApi, type UseBoundStore } from 'zustand';
 import { parseValue, type Quantity } from '../../core/units/units';
 import {
-  GOAL_KINDS, GOAL_META, sampleCorner, goalValue,
+  GOAL_KINDS, GOAL_META, sampleCorner, goalValue, SCALAR_VARIABLES,
   type GoalKind, type GoalMeta, type ProgressInfo, type HardpointId, type Variable, type Hold,
 } from '../../core/optimize/corner';
 import {
   VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, evaluateVehicle, vehicleGoalValue,
   type VehicleGoalKind, type VehicleGoalMeta,
 } from '../../core/optimize/vehicle';
-import { layoutOf,
+import { layoutOf, toGeometry,
   useApp, rootOf, defaultOptimizerSetup, defaultVehicleOptimizerSetup, mergedCorners,
   POINT_KEYS, POINT_NAMES, activeParam, activePointKeys, OPT_DEFAULT_RANGE, GRIP_KEYS, GRIP_META,
   type Field, type OptimizerSetup, type PointKey, type GoalSetting, type CornerDesign,
@@ -26,6 +26,7 @@ import { CORNER_IDS, type CornerId } from '../../core/vehicle/vehicle';
 import { POINT_LABELS, pointLabel } from '../components';
 import type { SuspensionKind } from '../../core/suspension/doubleWishbone';
 import { pointAxisLocked } from '../locks';
+import { armMetrics } from '../../core/suspension/armGeometry';
 import {
   buildProblem, buildVehicleProblem, runOptimizer, runVehicleOptimizer, varKey, parseVarKey, vehVarKey, parseVehVarKey, customVarKey, parseCustomVarKey, customOfVariable,
   pointKeyOf, designRoots, type RunHandle, type RunResult,
@@ -383,10 +384,54 @@ function CornerPresets() {
   );
 }
 
+/** Setup values the corner optimizer can move (key → label, typical ± range, hint). */
+const SCALAR_LABEL: Record<string, { label: string; range: number; hint: string }> = {
+  staticCamber: { label: 'Static camber (°)', range: 1, hint: 'The wheel\'s camber at ride height (deg): moves with the grip and inclination goals' },
+  staticToe: { label: 'Static toe (°)', range: 0.3, hint: 'The wheel\'s toe at ride height (deg)' },
+  tirePressure: { label: 'Tire pressure (kPa)', range: 20, hint: 'The set pressure (gas tire model): changes the contact patch and the grip goals' },
+};
+
+/** Arm and tie-rod lengths the optimizer must keep within a min / max. */
+function LengthRanges({ setup, update }: { setup: OptimizerSetup; update: (fn: (o: OptimizerSetup) => OptimizerSetup) => void }) {
+  const geom = useApp((s) => s.geom);
+  const g = toGeometry(geom);
+  const now = { uca: armMetrics(g.uca).length, lca: armMetrics(g.lca).length, tieRod: Math.hypot(g.tieRod.outer.x - g.tieRod.inner.x, g.tieRod.outer.y - g.tieRod.inner.y, g.tieRod.outer.z - g.tieRod.inner.z) };
+  const label = { uca: 'Upper arm length', lca: 'Lower arm length', tieRod: 'Tie-rod length' } as const;
+  const lr = setup.lengthRanges ?? {};
+  const set = (k: keyof typeof now, v: { lo: Field; hi: Field } | undefined) => update((o) => {
+    const next = { ...(o.lengthRanges ?? {}) };
+    if (v) next[k] = v; else delete next[k];
+    return { ...o, lengthRanges: next };
+  });
+  return (
+    <Section title={`Length ranges (${Object.keys(lr).length})`} open={Object.keys(lr).length > 0}>
+      <p className="hint small-text">Keep a length between a min and max while the points move (an arm: pivot axis to ball joint). Lock it instead to hold it exactly.</p>
+      <table className="opt-table">
+        <thead><tr><th /><th>Now</th><th>Min</th><th>Max</th></tr></thead>
+        <tbody>
+          {(Object.keys(now) as (keyof typeof now)[]).map((k) => {
+            const r = lr[k];
+            return (
+              <tr key={k}>
+                <td><label className="check-label"><input type="checkbox" checked={!!r} onChange={(e) => set(k, e.target.checked ? { lo: numField(Math.round(now[k] - 10)), hi: numField(Math.round(now[k] + 10)) } : undefined)} /> {label[k]}</label></td>
+                <td className="mono">{fmt(now[k], 1)}</td>
+                <td>{r && <ValueInput field={r.lo} unit="mm" width={56} onCommit={(t) => set(k, { ...r, lo: parseField(t, 'length', r.lo) })} />}</td>
+                <td>{r && <ValueInput field={r.hi} unit="mm" width={56} onCommit={(t) => set(k, { ...r, hi: parseField(t, 'length', r.hi) })} />}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </Section>
+  );
+}
+
 export function OptimizePanel() {
   const setup = useSetup();
   const update = useApp((s) => s.updateOptimizer);
   const geom = useApp((s) => s.geom);
+  const tirePr = useApp((s) => s.tire.pressure.value);
+  const gas = useApp((s) => s.tireModel === 'gas');
   const locks = useApp((s) => s.locks);
   const droop = useApp((s) => s.droop);
   const bump = useApp((s) => s.bump);
@@ -425,6 +470,13 @@ export function OptimizePanel() {
       key, k: v!.k, axis: v!.axis, label: `${POINT_LABELS[v!.k]} ${AXES[v!.axis]}`,
       now: spec.value(v!.k, v!.axis), locked: spec.locked(v!.k, v!.axis), lo: setup.ranges[key]!.lo, hi: setup.ranges[key]!.hi,
     } as RangeEntry));
+  // Setup values: static camber / toe, tire pressure.
+  const scalarNow = (k: string) => (k === 'staticCamber' ? geom.scalars.staticCamber.value : k === 'staticToe' ? geom.scalars.staticToe.value : tirePr);
+  for (const key of Object.keys(setup.ranges)) {
+    const k = key.startsWith('scalar.') ? key.slice(7) : null;
+    if (!k || !SCALAR_LABEL[k]) continue;
+    entries.push({ key, axis: 0, label: SCALAR_LABEL[k]!.label, now: scalarNow(k), locked: false, lo: setup.ranges[key]!.lo, hi: setup.ranges[key]!.hi });
+  }
   // Custom linkage joint points.
   const customPoint = (joint: string, which: 'p' | 'q') => { const j = geom.custom?.joints.find((x) => x.id === joint); return j ? (which === 'q' ? j.q : j.p) : undefined; };
   if (geom.kind === 'custom') {
@@ -477,7 +529,26 @@ export function OptimizePanel() {
         <GripModelFields />
       </Section>
       <FreeCoordinates spec={spec} ranges={setup.ranges} entries={entries} update={(fn) => update((o) => ({ ...o, ranges: fn(o.ranges) }))}
-        header={geom.kind === 'custom' && geom.custom ? (
+        header={<><table className="opt-table">
+          <thead><tr><th>Setup values</th><th /></tr></thead>
+          <tbody>
+            {Object.entries(SCALAR_LABEL).filter(([k]) => k !== 'tirePressure' || gas).map(([k, m]) => {
+              const key = `scalar.${k}`, on = !!setup.ranges[key];
+              return (
+                <tr key={k} title={m.hint}>
+                  <td>{m.label}</td>
+                  <td><button className={`chip axis-chip${on ? ' on' : ''}`} onClick={() => update((o) => {
+                    const r = { ...o.ranges };
+                    if (r[key]) delete r[key];
+                    else { const now = scalarNow(k); r[key] = { lo: numField(now - m.range), hi: numField(now + m.range) }; }
+                    return { ...o, ranges: r };
+                  })}>{on ? 'free' : 'fixed'}</button></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {geom.kind === 'custom' && geom.custom ? (
           <table className="opt-table">
             <thead><tr><th>Linkage points</th><th /><th /><th /></tr></thead>
             <tbody>
@@ -504,7 +575,8 @@ export function OptimizePanel() {
               )))}
             </tbody>
           </table>
-        ) : undefined} />
+        ) : null}</>} />
+      <LengthRanges setup={setup} update={update} />
       <Section title="Run">
         <RunArea
           useRun={useCornerRun} blockers={built.blockers} meta={GOAL_META} current={geom}
@@ -512,8 +584,14 @@ export function OptimizePanel() {
           notes={skippedNote(built.skippedLocked, (k) => { const v = parseVarKey(k)!; return `${POINT_LABELS[v.k]} ${AXES[v.axis]}`; }, built.problem.holds ?? [])}
           start={(onP) => runOptimizer(built.problem, onP)}
           onApply={(r) => {
+            // Setup values into their fields.
+            const st = useApp.getState();
+            for (const v of r.variables) {
+              if (v.point === 'staticCamber' || v.point === 'staticToe') st.setScalar(v.point, String(Number(v.after.toFixed(4))));
+              else if (v.point === 'tirePressure') st.setTireField('pressure', String(Number(v.after.toFixed(2))));
+            }
             // Hardpoints through the optimizer's apply (its Undo); a custom linkage's joint points into the linkage.
-            const pts = r.variables.filter((v) => !customOfVariable(v.point));
+            const pts = r.variables.filter((v) => !customOfVariable(v.point) && !(SCALAR_VARIABLES as readonly string[]).includes(v.point));
             if (pts.length) applyOptimized(pts.map((v) => ({ key: pointKeyOf(v.point), axis: v.axis, value: v.after })));
             const cust = r.variables.filter((v) => customOfVariable(v.point));
             const c0 = useApp.getState().geom.custom;

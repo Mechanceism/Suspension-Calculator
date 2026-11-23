@@ -2,6 +2,7 @@
  * App side of the optimizers: turns the setups (free coordinates + ranges, goals, locks) into a
  * CornerProblem or a VehicleProblem, and runs them in a Web Worker so the UI stays responsive.
  */
+import { blendCurves, parseDamperCurve } from '../core/vehicle/vehicle';
 import { brakeCapacity, type BrakeSystem, type BrakeCapacity } from '../core/vehicle/brakes';
 import type { BrakeThermal } from '../core/vehicle/brakeThermal';
 import type { TrailerSpec } from '../core/vehicle/towing';
@@ -23,7 +24,7 @@ import { CORNER_IDS, tirePressure, type AxleShared, type CornerId, type DamperSp
 import { vec3 } from '../core/math/vec3';
 import { ratioSpecOf, layoutOf,
   POINT_KEYS, rootOf, toGeometry, toProfile, toForceModel, mergedCorners, vehicleStaticLoads, defaultOptimizerSetup, GRIP_KEYS, MF_KEYS,
-  type AppState, type FadeKey, type PointKey, type OptimizerSetup, type SharedDesign, type GripKey, type MFKey, type Field, type DamperKey, type DamperMode,
+  DEFAULT_DAMPER_CURVE, type DamperCurveText, type AppState, type FadeKey, type PointKey, type OptimizerSetup, type SharedDesign, type GripKey, type MFKey, type Field, type DamperKey, type DamperMode,
   type BrakeKey,
 } from './store';
 import { STATE_KEY } from './anchors';
@@ -204,9 +205,19 @@ export function designRoots(s: Pick<AppState, 'links'>): { root: CornerId; corne
 }
 
 /** A design's damper for the ride model (high-speed rates and knees only for two-stage dampers). */
-export function damperOf(d: { damper: Record<DamperKey, Field>; damperMode: DamperMode }): DamperSpec {
+export function damperOf(d: { damper: Record<DamperKey, Field>; damperMode: DamperMode; damperCurve?: DamperCurveText }): DamperSpec {
   const v = (k: DamperKey) => Math.max(0, d.damper[k].value);
   const base = { bump: v('bumpDamping'), rebound: v('reboundDamping') };
+  if (d.damperMode === 'curve') {
+    // Dyno curves, at the clicker's position between full soft and full firm.
+    const c = d.damperCurve ?? DEFAULT_DAMPER_CURVE;
+    const t = c.clicks > 0 ? Math.min(1, Math.max(0, c.click / c.clicks)) : 0;
+    const curve = (soft: string, firm: string) => blendCurves(parseDamperCurve(soft).pts, parseDamperCurve(firm).pts, t);
+    const bump = curve(c.softBump, c.firmBump), rebound = curve(c.softRebound, c.firmRebound);
+    // The low-speed slope stands in for the rate where a single rate is needed (damping ratios).
+    const slope = (pts: [number, number][], fallback: number) => (pts.length ? pts[0]![1] / Math.max(pts[0]![0], 1e-6) : fallback);
+    return { bump: slope(bump, base.bump), rebound: slope(rebound, base.rebound), curve: { bump, rebound } };
+  }
   return d.damperMode === 'twoStage'
     ? { ...base, bumpHigh: v('bumpDampingHigh'), reboundHigh: v('reboundDampingHigh'), bumpKnee: v('bumpKnee'), reboundKnee: v('reboundKnee') }
     : base;

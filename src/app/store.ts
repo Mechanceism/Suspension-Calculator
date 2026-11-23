@@ -128,7 +128,13 @@ export const DAMPER_KEYS = ['maxLength', 'minLength', 'bumpStopLength', 'bumpSto
 /** Damper inputs only the two-stage damper uses. */
 export const DAMPER_TWO_STAGE_KEYS = ['bumpDampingHigh', 'reboundDampingHigh', 'bumpKnee', 'reboundKnee'] as const;
 /** Damper force curve: one rate per direction (linear), or two-stage (low-speed rate up to a knee, then a high-speed rate). */
-export type DamperMode = 'linear' | 'twoStage';
+export type DamperMode = 'linear' | 'twoStage' | 'curve';
+/** Dyno curves ('shaft speed mm/s, force N' per line): full soft, and optionally full firm with a clicker between. */
+export interface DamperCurveText { softBump: string; softRebound: string; firmBump: string; firmRebound: string; clicks: number; click: number }
+export const DEFAULT_DAMPER_CURVE: DamperCurveText = {
+  softBump: '25, 120\n50, 220\n100, 330\n200, 450\n400, 640', softRebound: '25, 200\n50, 380\n100, 560\n200, 760\n400, 1050',
+  firmBump: '', firmRebound: '', clicks: 0, click: 0,
+};
 export type DamperKey = (typeof DAMPER_KEYS)[number];
 export const DAMPER_META: Record<DamperKey, { label: string; quantity: Quantity; unit: string }> = {
   maxLength: { label: 'Damper fully extended', quantity: 'length', unit: 'mm' },
@@ -554,8 +560,10 @@ export interface AppState extends DesignState {
   spring: Record<SpringKey, Field>;
   damper: Record<DamperKey, Field>;
   bumpStop: boolean;
-  /** Damper force curve (linear or two-stage). */
+  /** Damper force curve (linear, two-stage, or dyno curves). */
   damperMode: DamperMode;
+  /** Dyno curves and clicker (damperMode 'curve'). */
+  damperCurve?: DamperCurveText;
   steer: Record<SteerKey, Field>;
 
   selection: Selection;
@@ -742,8 +750,10 @@ export interface CornerDesign {
   spring: Record<SpringKey, Field>;
   damper: Record<DamperKey, Field>;
   bumpStop: boolean;
-  /** Damper force curve (linear or two-stage). */
+  /** Damper force curve (linear, two-stage, or dyno curves). */
   damperMode: DamperMode;
+  /** Dyno curves and clicker (damperMode 'curve'). */
+  damperCurve?: DamperCurveText;
   tireModel: TireModelKind;
   tire: Record<TireKey, Field>;
   volumeChange: boolean;
@@ -1071,8 +1081,10 @@ export interface DesignState {
   spring: Record<SpringKey, Field>;
   damper: Record<DamperKey, Field>;
   bumpStop: boolean;
-  /** Damper force curve (linear or two-stage). */
+  /** Damper force curve (linear, two-stage, or dyno curves). */
   damperMode: DamperMode;
+  /** Dyno curves and clicker (damperMode 'curve'). */
+  damperCurve?: DamperCurveText;
   steer: Record<SteerKey, Field>;
   /** Measured steering ratio: 'steering-wheel °, input' pairs, one per line ('' = none; replaces the c-factors). */
   steerCurve?: string;
@@ -1141,7 +1153,7 @@ export interface HeldDimension {
 
 /** The working (active corner) fields as a CornerDesign. */
 export const workingDesign = (s: CornerDesign): CornerDesign => ({
-  geom: s.geom, spring: s.spring, damper: s.damper, bumpStop: s.bumpStop, damperMode: s.damperMode, tireModel: s.tireModel,
+  geom: s.geom, spring: s.spring, damper: s.damper, bumpStop: s.bumpStop, damperMode: s.damperMode, ...(s.damperCurve ? { damperCurve: s.damperCurve } : {}), tireModel: s.tireModel,
   tire: s.tire, volumeChange: s.volumeChange, tireSizeText: s.tireSizeText,
 });
 
@@ -1171,7 +1183,7 @@ export function vehicleStaticLoads(
 
 /** The design part of the app state (what a file saves). */
 export const pickDesign = (s: DesignState): DesignState => ({
-  presetId: s.presetId, geom: s.geom, spring: s.spring, damper: s.damper, bumpStop: s.bumpStop, damperMode: s.damperMode, steer: s.steer, steerSaved: s.steerSaved,
+  presetId: s.presetId, geom: s.geom, spring: s.spring, damper: s.damper, bumpStop: s.bumpStop, damperMode: s.damperMode, ...(s.damperCurve ? { damperCurve: s.damperCurve } : {}), steer: s.steer, steerSaved: s.steerSaved,
   tireModel: s.tireModel, tire: s.tire, volumeChange: s.volumeChange, tireSizeText: s.tireSizeText,
   droop: s.droop, bump: s.bump, driver: s.driver,
   corners: s.corners, links: s.links, settings: s.settings, activeCorner: s.activeCorner,
@@ -1335,7 +1347,7 @@ export const useApp = create<AppState>((set, get) => ({
     const corners = mergedCorners(s);
     const root = rootOf(id, s.links);
     set({
-      corners, activeCorner: id, ...corners[root],
+      corners, activeCorner: id, ...corners[root], damperCurve: corners[root].damperCurve,
       selection: null, measure: [], rack: s.settings[id].steered ? s.rack : 0,
     });
   },

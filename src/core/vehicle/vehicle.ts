@@ -87,11 +87,48 @@ export interface DamperSpec {
   reboundHigh?: number;
   bumpKnee?: number;
   reboundKnee?: number;
+  /**
+   * A measured (dyno) curve per direction: [shaft speed m/s, force N] from 0 out, both growing. When given it
+   * replaces the rates: linear between the points, the last segment's slope beyond them.
+   */
+  curve?: { bump: [number, number][]; rebound: [number, number][] };
+}
+
+/** Force (N) on a dyno curve at speed s ≥ 0 (m/s); from (0, 0) through the points, the end slope beyond. */
+export function curveForce(pts: [number, number][], s: number): number {
+  const p: [number, number][] = [[0, 0], ...pts.filter(([v]) => v > 0)];
+  if (p.length < 2) return 0;
+  let i = 0;
+  while (i < p.length - 2 && s > p[i + 1]![0]) i++;
+  const [v0, f0] = p[i]!, [v1, f1] = p[i + 1]!;
+  return f0 + ((f1 - f0) * (s - v0)) / ((v1 - v0) || 1);
+}
+
+/** Read "shaft speed mm/s, force N" pairs, one per line (or ';'), as a curve (m/s, N); the lines it couldn't read. */
+export function parseDamperCurve(text: string): { pts: [number, number][]; bad: string[] } {
+  const pts: [number, number][] = [];
+  const bad: string[] = [];
+  for (const line of text.split(/[\n;]+/).map((l) => l.trim()).filter(Boolean)) {
+    const m = /^(-?\d+(?:\.\d+)?)\s*[, \t]\s*(-?\d+(?:\.\d+)?)$/.exec(line);
+    if (!m) { bad.push(line); continue; }
+    pts.push([Math.abs(Number(m[1])) / 1000, Math.abs(Number(m[2]))]);
+  }
+  return { pts: pts.sort((a, b) => a[0] - b[0]), bad };
+}
+
+/** A clicker between two curves (full soft at t = 0, full firm at 1), blended at every speed either has. */
+export function blendCurves(soft: [number, number][], firm: [number, number][], t: number): [number, number][] {
+  if (!firm.length || !(t > 0)) return soft;
+  if (!soft.length || t >= 1) return firm;
+  const speeds = [...new Set([...soft, ...firm].map(([v]) => v))].sort((a, b) => a - b);
+  return speeds.map((v) => [v, (1 - t) * curveForce(soft, v) + t * curveForce(firm, v)]);
 }
 
 /** Damper force (N) at shaft speed v (m/s, + = extending): the sign of v (it resists the motion). */
 export function damperForce(d: DamperSpec, v: number): number {
   const ext = v > 0;
+  const cv = d.curve && (ext ? d.curve.rebound : d.curve.bump);
+  if (cv && cv.length) return Math.sign(v) * curveForce(cv, Math.abs(v));
   const c = ext ? d.rebound : d.bump;
   const ch = ext ? d.reboundHigh : d.bumpHigh;
   const knee = ext ? d.reboundKnee : d.bumpKnee;

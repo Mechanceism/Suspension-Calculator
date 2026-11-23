@@ -56,11 +56,11 @@ import {
   defaultTireGrip, MF_KEYS, MF_META, RIDE_KEYS, DAMPER_TWO_STAGE_KEYS, SETUP_STEPS, AERO_KEYS, AERO_META, defaultAero, BRAKE_KEYS, BRAKE_META, FADE_KEYS, FADE_META, defaultBrakes, TOW_KEYS, TOW_META, defaultTow,
   type VehicleOptimizerSetup, type HeldDimension, newDimId,
   type OptimizerSetup,
-  type DesignState, type CornerDesign, type Field, type CornerLinks, type CornerSettings, type SharedDesign, type Axle, centerLinkDefaults,
+  type DesignState, type CornerDesign, type Field, type CornerLinks, type CornerSettings, type SharedDesign, type Axle, centerLinkDefaults, type DamperCurveText,
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 35;
+export const FORMAT_VERSION = 36;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -84,7 +84,7 @@ export interface CornerJson {
   /** Custom linkage (format 27; mm). */
   custom?: unknown;
   spring: Record<string, FieldJson>;
-  damper: { fields: Record<string, FieldJson>; bumpStop: boolean; mode?: 'linear' | 'twoStage' };
+  damper: { fields: Record<string, FieldJson>; bumpStop: boolean; mode?: 'linear' | 'twoStage' | 'curve'; curve?: DamperCurveText };
   tire: { model: DesignState['tireModel']; volumeChange: boolean; sizeText: string; fields: Record<string, FieldJson> };
 }
 
@@ -167,7 +167,7 @@ function cornerToJson(id: CornerId, c: CornerDesign): CornerJson {
     ...(c.geom.bushing ? { bushing: { radial: fj(c.geom.bushing.radial), axial: fj(c.geom.bushing.axial) } } : {}),
     ...(c.geom.custom ? { custom: JSON.parse(JSON.stringify(c.geom.custom)) as unknown } : {}),
     spring: mapFields(SPRING_KEYS, c.spring),
-    damper: { fields: mapFields(DAMPER_KEYS, c.damper), bumpStop: c.bumpStop, mode: c.damperMode },
+    damper: { fields: mapFields(DAMPER_KEYS, c.damper), bumpStop: c.bumpStop, mode: c.damperMode, ...(c.damperCurve ? { curve: c.damperCurve } : {}) },
     tire: { model: c.tireModel, volumeChange: c.volumeChange, sizeText: c.tireSizeText, fields: mapFields(TIRE_KEYS, c.tire) },
   };
 }
@@ -362,6 +362,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   32: (f) => ({ ...f, formatVersion: 33, ...(isObj(f.tow) && isObj(f.tow.fields) ? { tow: { ...f.tow, fields: { ...f.tow.fields, tongueLimit: { text: '0', value: 0 } } } } : {}) }),
   // 33 → 34: tire relaxation off (0).
   33: (f) => ({ ...f, formatVersion: 34 }),
+  // 35 → 36: no damper dyno curves.
+  35: (f) => ({ ...f, formatVersion: 36 }),
   // 34 → 35: aero side force, roll sensitivity and balance shift off.
   34: (f) => ({ ...f, formatVersion: 35, ...(isObj(f.aero) && isObj(f.aero.fields) ? { aero: { ...f.aero, fields: { ...f.aero.fields, CsA: { text: '0', value: 0 }, sideCp: { text: '900', value: 900 }, rollSensF: { text: '0', value: 0 }, rollSensR: { text: '0', value: 0 }, yawBalance: { text: '0', value: 0 } } } } : {}) }),
 };
@@ -706,7 +708,13 @@ function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: str
       return r;
     })(),
     bumpStop: typeof damperRaw.bumpStop === 'boolean' ? damperRaw.bumpStop : def.bumpStop,
-    damperMode: damperRaw.mode === 'twoStage' ? 'twoStage' : 'linear',
+    damperMode: damperRaw.mode === 'twoStage' || damperRaw.mode === 'curve' ? damperRaw.mode : 'linear',
+    // Format 36: dyno curves and a clicker (older files: none, quietly).
+    ...(isObj(damperRaw.curve) ? { damperCurve: {
+      softBump: String(damperRaw.curve.softBump ?? ''), softRebound: String(damperRaw.curve.softRebound ?? ''),
+      firmBump: String(damperRaw.curve.firmBump ?? ''), firmRebound: String(damperRaw.curve.firmRebound ?? ''),
+      clicks: Math.max(0, Math.round(Number(damperRaw.curve.clicks) || 0)), click: Math.max(0, Math.round(Number(damperRaw.curve.click) || 0)),
+    } } : {}),
     tireModel: model,
     tire: readRecord(tireRaw.fields, TIRE_KEYS, (k) => TIRE_META[k].quantity, def.tire, `${id}.tire`, w),
     volumeChange: typeof tireRaw.volumeChange === 'boolean' ? tireRaw.volumeChange : def.volumeChange,

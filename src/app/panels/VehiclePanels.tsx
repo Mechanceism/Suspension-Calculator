@@ -10,8 +10,9 @@ import { LocksPanel } from './LocksPanel';
 import { VehicleOptimizePanel } from './OptimizePanel';
 import { CORNER_IDS, type CornerId } from '../../core/vehicle/vehicle';
 import { deg } from '../../core/suspension/characteristics';
+import { isOneAxle, SUSPENSION_LABELS } from '../../core/suspension/doubleWishbone';
 import { angleInput, ratioSpecOf,
-  useApp, VEHICLE_KEYS, VEHICLE_META, CORNER_NAMES, SHARED_META, rootOf,
+  useApp, VEHICLE_KEYS, VEHICLE_META, CORNER_NAMES, SHARED_META, rootOf, resolvedCorner,
   type CornerLinks, type DiffType, type Axle, type SharedDesign,
   BRAKE_KEYS, BRAKE_META, FADE_KEYS, FADE_META, TOW_KEYS, TOW_META,
 } from '../store';
@@ -36,6 +37,11 @@ export function CornerSetup({ compact = false }: { compact?: boolean }) {
   const setActiveCorner = useApp((s) => s.setActiveCorner);
   const setLink = useApp((s) => s.setLink);
   const setCornerSetting = useApp((s) => s.setCornerSetting);
+  // A solid axle or twist beam is one part under both wheels: its left / right link can't be undone.
+  const axleKind = (s: Parameters<typeof resolvedCorner>[0], id: CornerId) => { const k = resolvedCorner(s, id).geom.kind; return isOneAxle(k) ? k! : null; };
+  const frontAxle = useApp((s) => axleKind(s, 'FL'));
+  const rearAxle = useApp((s) => axleKind(s, 'RL'));
+  const lockedBy = (k: keyof CornerLinks) => (k === 'frontPair' ? frontAxle : k === 'rearPair' ? rearAxle : null);
   const root = rootOf(active, links);
   const sharedWith = CORNER_IDS.filter((id) => id !== active && rootOf(id, links) === root);
   return (
@@ -107,8 +113,8 @@ export function CornerSetup({ compact = false }: { compact?: boolean }) {
       {!compact && (
         <div className="link-rows">
           {(Object.keys(LINK_LABELS) as (keyof CornerLinks)[]).map((k) => (
-            <label key={k} className="check-row">
-              <input type="checkbox" checked={links[k]} onChange={(e) => setLink(k, e.target.checked)} />
+            <label key={k} className="check-row" title={lockedBy(k) && links[k] ? `${SUSPENSION_LABELS[lockedBy(k)!]}: one axle under both wheels, so left and right share one design` : undefined}>
+              <input type="checkbox" checked={links[k]} disabled={!!lockedBy(k) && links[k]} onChange={(e) => setLink(k, e.target.checked)} />
               {LINK_LABELS[k]}
             </label>
           ))}

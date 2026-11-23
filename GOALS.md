@@ -43,7 +43,7 @@ Calculating and visualizing come first. **Later:** export to modeling software (
 ## Current status and handoff (2026-11-23)
 Read this first when picking the work up again; the details of each item are in the sections below and in [docs/MATH.md](docs/MATH.md).
 
-**Branch.** All work below is on `feature/pending-goals`, pushed to GitHub, **not merged to main yet** (main = `7d0bde0`, the merge of `feature/large-items`). Merge to main when the user asks (they merge at milestones). 345 tests pass (`npm test`, about 2.5 min); `npm run typecheck` is clean. Project file format: `FORMAT_VERSION = 36`.
+**Branch.** All work below is on `feature/pending-goals`, pushed to GitHub, **not merged to main yet** (main = `7d0bde0`, the merge of `feature/large-items`). Merge to main when the user asks (they merge at milestones). 368 tests pass (`npm test`, about 2.5 min); `npm run typecheck` is clean. Project file format: `FORMAT_VERSION = 36`.
 
 **How the user wants the work done.**
 - Finish one item at a time: implement, test (unit tests plus a check in the running app for anything visual), update the docs (docs/MATH.md, README.md, GOALS.md), then commit and push. Work through the pending list in order.
@@ -71,6 +71,7 @@ Read this first when picking the work up again; the details of each item are in 
 | 13 | Vehicle optimizer: cornering-limit goal (axle saturation); braking-in-a-turn case; case weights | ✅ | 617b3a0 |
 | 14 | Basic car profiles: road car, FSAE car, kart, trophy truck (File → New from car profile) | ✅ | 1a45298 |
 | — | Fix: car "flipping" under hard braking (solver robustness) and the solid-axle preset crash | ✅ | cf7331c |
+| — | Fix (bug report): a solid axle / twist beam is one part under both wheels (one solve for both corners, drawn once, left / right always linked) | ✅ | (this commit) |
 | **15** | **Enter hardpoints inside the setup wizard** | **next** | |
 | 16 | Export / integration (Phase 5: hardpoint CSV, Fusion parameters, Blender script, Fusion add-in) | skipped for now (user) | |
 | 17 | Phone companion app (probe to capture real 3D points) | skipped for now (user) | |
@@ -84,6 +85,7 @@ Read this first when picking the work up again; the details of each item are in 
 **Known limits / caveats.**
 - One whole-car solve takes about 0.3–1.5 s; the *Cornering limit* goal needs 2–4 solves per evaluation, so vehicle optimizer runs with it are slow.
 - The full test suite takes about 2.5 min (the vehicle optimizer and cornering-limit tests are the slow ones).
+- A *torsion bar + drop links* anti-roll bar on a solid axle or twist beam is evaluated from the wheel centers' heights in the whole-car solve, not the mounts' (docs/MATH.md, *One axle under both wheels*): its roll stiffness reads high when the mounts sit inboard.
 - The generic tire grip model is relative to its nominal load / pressure (Fz0, p0); a design not made from a car profile keeps 1000 N / 83 kPa, so heavy cars should set Fz0 to their static tire load (Optimize → Tire grip model).
 
 **Development notes.**

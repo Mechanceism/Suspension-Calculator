@@ -40,7 +40,7 @@
  */
 import pkg from '../../package.json';
 import { rockerFromCoilover } from '../core/suspension/coilover';
-import { SUSPENSION_KINDS, type SuspensionKind } from '../core/suspension/doubleWishbone';
+import { SUSPENSION_KINDS, SUSPENSION_LABELS, isOneAxle, type SuspensionKind } from '../core/suspension/doubleWishbone';
 import type { CustomLinkage, CustomJoint } from '../core/suspension/customLinkage';
 import { parseValue, type Quantity } from '../core/units/units';
 import { CORNER_IDS, type CornerId } from '../core/vehicle/vehicle';
@@ -794,6 +794,17 @@ export function importProject(data: unknown): ImportResult {
     rearPair: typeof linksRaw.rearPair === 'boolean' ? linksRaw.rearPair : DEFAULT_LINKS.rearPair,
     rearFromFront: typeof linksRaw.rearFromFront === 'boolean' ? linksRaw.rearFromFront : DEFAULT_LINKS.rearFromFront,
   };
+  // A solid axle or twist beam is one part under both wheels, so its left and right corners share one design
+  // (a file could have them apart): link them, keeping the axle's design (the left one's when both are axles).
+  for (const [pair, l, r, name] of [['frontPair', 'FL', 'FR', 'front'], ['rearPair', 'RL', 'RR', 'rear']] as const) {
+    if (links[pair] || (pair === 'rearPair' && links.rearFromFront)) continue;
+    const kl = corners[l].geom.kind, kr = corners[r].geom.kind;
+    if (!isOneAxle(kl) && !isOneAxle(kr)) continue;
+    const from = isOneAxle(kl) ? 'left' : 'right';
+    if (from === 'right') corners[l] = corners[r];
+    links[pair] = true;
+    warnings.push(`The ${name} ${SUSPENSION_LABELS[(from === 'left' ? kl : kr)!].toLowerCase()} is one axle under both wheels: its left and right corners now share the ${from} corner's design.`);
+  }
   const settingsRaw = isObj(f.settings) ? f.settings : {};
   const settings = Object.fromEntries(CORNER_IDS.map((id) => {
     const r = isObj(settingsRaw[id]) ? settingsRaw[id] as Json : {};

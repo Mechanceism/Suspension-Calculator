@@ -7,7 +7,7 @@ import { parseValue, formatValue, type Quantity } from '../core/units/units';
 import { vec3, type Vec3 } from '../core/math/vec3';
 import { customFromWishbone, type CustomLinkage } from '../core/suspension/customLinkage';
 import { parseSteerCurve } from '../core/tests/steer';
-import { DoubleWishbone, spinAxisFromCamberToe, SUSPENSION_LABELS, virtualPivot, isBeam, type DoubleWishboneGeometry, type TravelDriver, type SuspensionKind } from '../core/suspension/doubleWishbone';
+import { DoubleWishbone, spinAxisFromCamberToe, SUSPENSION_LABELS, virtualPivot, isBeam, isOneAxle, type DoubleWishboneGeometry, type TravelDriver, type SuspensionKind } from '../core/suspension/doubleWishbone';
 import { SAMPLE_LAYOUTS, SAMPLE_SPRING, PRESET_LAYOUTS } from '../examples/sampleLayouts';
 import { fitFreeLength } from '../core/suspension/spring';
 import { rockerFromCoilover } from '../core/suspension/coilover';
@@ -1367,6 +1367,14 @@ export const useApp = create<AppState>((set, get) => ({
   setLink: (key, value) => {
     const s = get();
     const before = mergedCorners(s);
+    // A solid axle or twist beam is one part under both wheels: its left and right can't have different designs.
+    if (!value && (key === 'frontPair' || key === 'rearPair')) {
+      const kind = before[rootOf(key === 'frontPair' ? 'FL' : 'RL', s.links)].geom.kind;
+      if (isOneAxle(kind)) {
+        s.notify(`The ${key === 'frontPair' ? 'front' : 'rear'} is a ${SUSPENSION_LABELS[kind!].toLowerCase()}: one axle under both wheels, so its left and right share one design. Change the type to separate them.`, 'warn');
+        return;
+      }
+    }
     const links = { ...s.links, [key]: value };
     // A corner that stops following another starts from a copy of the design it was using.
     const corners = { ...before };
@@ -1833,12 +1841,20 @@ export const useApp = create<AppState>((set, get) => ({
       return;
     }
     set({ geom: next, presetId: 'custom', spring: fittedSpring(next, get().spring), selection: null });
-    // A solid axle spans the axle: its left and right corners share the design. A steered corner gets a steered axle.
-    if (isBeam(kind)) {
-      const front = get().activeCorner === 'FL' || get().activeCorner === 'FR';
-      get().setLink(front ? 'frontPair' : 'rearPair', true);
-      if (get().settings[get().activeCorner].steered && !get().geom.steeredAxle) get().setSteeredAxle(true);
+    // A solid axle or twist beam spans the axle: its left and right corners share this design (the left
+    // corner takes it first, so it isn't lost when the right one starts following the left).
+    if (isOneAxle(kind)) {
+      const s = get();
+      const front = s.activeCorner === 'FL' || s.activeCorner === 'FR';
+      const pair = front ? 'frontPair' : 'rearPair';
+      if (!s.links[pair]) {
+        const all = mergedCorners(s);
+        set({ corners: { ...all, [rootOf(front ? 'FL' : 'RL', s.links)]: all[rootOf(s.activeCorner, s.links)] } });
+        get().setLink(pair, true);
+      }
     }
+    // A steered corner gets a steered axle.
+    if (isBeam(kind) && get().settings[get().activeCorner].steered && !get().geom.steeredAxle) get().setSteeredAxle(true);
     // A twist beam's beam twists like an anti-roll bar: start from a typical stiffness if the axle has none.
     if (kind === 'twistBeam') {
       const axle = get().activeCorner === 'FL' || get().activeCorner === 'FR' ? 'front' : 'rear';

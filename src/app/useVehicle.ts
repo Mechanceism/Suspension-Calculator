@@ -245,10 +245,24 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
 
       // Exact corner states at the solved travels, for drawing and characteristics.
       const views: Partial<Record<CornerId, VehicleCornerView>> = {};
+      // A solid axle or twist beam is one part under both wheels: solve it once at both travels and take
+      // each corner from that (the right one from the axle's right side), so both wheels sit on it.
+      const pairs = new Map<CornerId, ReturnType<DoubleWishbone['solveAxle']>>();
+      const stateOf = (id: CornerId, corner: DoubleWishbone) => {
+        if (!corner.solidAxle && !corner.twistBeam) return corner.solve({ travel: res.corners[id].travel, rack: racks[id] });
+        const l: CornerId = isFront(id) ? 'FL' : 'RL', r: CornerId = isFront(id) ? 'FR' : 'RR';
+        let pair = pairs.get(l);
+        if (!pair) {
+          const axRack = corner.geometry.steeredAxle && s.settings[l].steered ? rack : 0;
+          pair = corner.solveAxle({ left: res.corners[l].travel, right: res.corners[r].travel, rack: axRack });
+          pairs.set(l, pair);
+        }
+        return isLeft(id) ? pair.left : pair.right;
+      };
       for (const c of corners) {
         const d = all[rootOf(c.id, s.links)];
         const b = setup.built.get(d)!;
-        const state = b.corner.solve({ travel: res.corners[c.id].travel, rack: racks[c.id] });
+        const state = stateOf(c.id, b.corner);
         const pl = placement(c.id, wheelbase);
         const wcWorld = P.point(pl.point(state.points.wheelCenter));
         const axisWorld = P.rot(pl.dir(state.spinAxis));

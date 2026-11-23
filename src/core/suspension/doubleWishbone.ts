@@ -49,7 +49,7 @@
 import {
   type Vec3, vec3, add, sub, scale, length, normalize, rejectFrom, Y_AXIS, X_AXIS, distance as dist,
 } from '../math/vec3';
-import { mulVec, transpose, fromAxisAngle } from '../math/mat3';
+import { mulVec, transpose, fromAxisAngle, type Mat3 } from '../math/mat3';
 import { TwistBeam, type TwistBeamGeometry } from './twistBeam';
 import { centerLinkPose, type CenterLinkGeometry } from './steering';
 import { complianceOf, DEFAULT_BUSHING, type Bushing, type BushingStiffness, type ComplianceResult } from './compliance';
@@ -65,6 +65,8 @@ export type SuspensionKind = 'doubleWishbone' | 'macpherson' | 'multilink' | 'si
 export const SUSPENSION_KINDS: SuspensionKind[] = ['doubleWishbone', 'macpherson', 'multilink', 'singleArm', 'twistBeam', 'beam4', 'beam3', 'beamWatts', 'beamLeaf', 'rigid', 'custom'];
 /** Solid (beam) axle types: one design spans the whole axle (both wheels). */
 export const isBeam = (k: SuspensionKind | undefined) => k === 'beam4' || k === 'beam3' || k === 'beamWatts' || k === 'beamLeaf';
+/** Types with one axle under both wheels (the solid axles, the twist beam): left and right share that part, so they share one design. */
+export const isOneAxle = (k: SuspensionKind | undefined) => isBeam(k) || k === 'twistBeam';
 export const SUSPENSION_LABELS: Record<SuspensionKind, string> = {
   doubleWishbone: 'Double wishbone (SLA)', macpherson: 'MacPherson strut', multilink: 'Multilink (5 links)',
   singleArm: 'Single arm (swing / trailing arm, knuckle on the arm)',
@@ -203,6 +205,11 @@ export interface CornerPoints {
   wattsLinks?: [Vec3, Vec3][];
   crossTieRod?: [Vec3, Vec3];
   axleRight?: Vec3;
+  /**
+   * Solid axle: the axle's two ends (on the axle, at the wheel centers' design positions: this corner's,
+   * then the other's). Twist beam: the cross beam's ends on this arm and on the other one.
+   */
+  axleEnds?: [Vec3, Vec3];
   /** Leaf springs: the front eye and rear shackle (frame), for drawing. */
   leafEye?: Vec3;
   leafShackle?: Vec3;
@@ -236,6 +243,25 @@ export const spinAxisFromCamberToe = (camber: number, toe: number): Vec3 => ({
 });
 
 const centroid = (...pts: Vec3[]): Vec3 => scale(pts.reduce((a, b) => add(a, b)), 1 / pts.length);
+
+/** A right corner's state given in the vehicle frame, mirrored in X into the corner's own frame. */
+function mirrorState(s: CornerState): CornerState {
+  const m = (v: Vec3) => vec3(-v.x, v.y, v.z);
+  const mp = (v: unknown): unknown => Array.isArray(v) ? v.map(mp) : v && typeof v === 'object' && 'x' in v && 'y' in v && 'z' in v ? m(v as Vec3) : v;
+  const points = Object.fromEntries(Object.entries(s.points).map(([k, v]) => [k, mp(v)])) as unknown as CornerPoints;
+  // A pose seen in the mirror: position mirrored, rotation M R M (M = diag(−1, 1, 1)).
+  const poses = Object.fromEntries(Object.entries(s.poses).map(([k, p]) => {
+    const r = p.rotation;
+    return [k, { position: m(p.position), rotation: [r[0], -r[1], -r[2], -r[3], r[4], r[5], -r[6], r[7], r[8]] as Mat3 }];
+  })) as Poses;
+  return { ...s, points, poses, spinAxis: m(s.spinAxis) };
+}
+
+/** An axle's characteristics seen from its right wheel (mirrored: the sides swap, lateral positions flip). */
+function mirrorAxleChars(c: AxleCharacteristics): AxleCharacteristics {
+  const swap = <T>(o: { left: T; right: T }) => ({ left: o.right, right: o.left });
+  return { ...c, camber: swap(c.camber), toe: swap(c.toe), halfTrack: swap(c.halfTrack), rollCenterX: c.rollCenterX === null ? null : -c.rollCenterX };
+}
 
 /** Rigid-tire contact point: lowest point of the circle of `radius` in the wheel plane. */
 export function contactPoint(center: Vec3, spinAxisUnit: Vec3, radius: number): Vec3 {
@@ -491,42 +517,113 @@ export class DoubleWishbone {
    * axis is a vertical line through the wheel (a beam axle here doesn't steer).
    */
   private solveBeam(full: Required<CornerInputs>, initial?: Poses): CornerState {
+    const st = this.solidAxle!.solve({ left: full.travel, right: full.travel, rack: full.rack }, initial);
+    return this.beamCorner(st, 'L', full);
+  }
+
+  /**
+   * A solid axle or twist beam: both of its corners from ONE solve of the whole axle at the two wheels'
+   * travels (and the rack, for a steered axle), so both wheels sit on the same axle. The right corner is
+   * given in its own frame (mirrored in X), like any right corner; `axle` is the solved axle itself.
+   */
+  solveAxle(inputs: { left?: number; right?: number; rack?: number }, initial?: Poses): { left: CornerState; right: CornerState; axle: AxleState } {
+    const left = inputs.left ?? 0, right = inputs.right ?? 0, rack = inputs.rack ?? 0;
+    const at = (side: 'L' | 'R'): Required<CornerInputs> => ({ travel: side === 'L' ? left : right, armAngle: 0, rack, driver: 'wheelCenter' });
+    if (this.solidAxle) {
+      const st = this.solidAxle.solve({ left, right, rack }, initial);
+      return { left: this.beamCorner(st, 'L', at('L')), right: this.beamCorner(st, 'R', at('R')), axle: st };
+    }
+    if (this.twistBeam) {
+      const st = this.twistBeam.solve({ left, right });
+      return { left: this.twistCorner(st, 'L', at('L')), right: this.twistCorner(st, 'R', at('R')), axle: st };
+    }
+    throw new Error('Only a solid axle or a twist beam has one axle for both wheels');
+  }
+
+  /**
+   * One wheel of a solved solid axle as a corner. The left corner also carries the parts the wheels share
+   * (Panhard rod, Watt's linkage, cross tie rod, the axle's ends); the right one is mirrored into its own frame.
+   */
+  private beamCorner(st: AxleState, side: 'L' | 'R', full: Required<CornerInputs>): CornerState {
     const ax = this.solidAxle!;
-    const st = ax.solve({ left: full.travel, right: full.travel, rack: full.rack }, initial);
     const g = this.geometry;
+    const R = side === 'R';
+    const own = (k: 'left' | 'right') => (R ? (k === 'left' ? 'right' : 'left') : k);
     const find = (name: string) => st.links.find((l) => l.name === name);
-    const lower = find('lower (left)'), upper = find('upper (left)') ?? find('upper (center)');
+    const lower = find(`lower (${own('left')})`), upper = find(`upper (${own('left')})`) ?? find('upper (center)');
     const pan = find('Panhard rod');
-    const w = st.left;
+    const w = R ? st.right : st.left, other = R ? st.left : st.right;
+    // Axle design origin (between the wheel centers) and where a point fixed to the axle is now.
+    const c0 = vec3(0, g.wheel.center.y, g.wheel.center.z);
+    const axle = st.poses.axle!;
+    const onAxle = (q: Vec3) => add(axle.position, mulVec(axle.rotation, sub(q, c0)));
+    const mq = (q: Vec3) => (R ? vec3(-q.x, q.y, q.z) : q);
     const points: CornerPoints = {
-      ucaFwd: g.uca.fwd, ucaAft: g.uca.fwd, ucaOut: upper?.axle ?? g.uca.out,
-      lcaFwd: g.lca.fwd, lcaAft: g.lca.fwd, lcaOut: lower?.axle ?? g.lca.out,
-      trInner: g.tieRod.inner, trOuter: g.tieRod.outer,
+      // (Link ends come from the solved axle, already on this side; design points are mirrored to it.)
+      ucaFwd: upper?.chassis ?? mq(g.uca.fwd), ucaAft: upper?.chassis ?? mq(g.uca.fwd), ucaOut: upper?.axle ?? onAxle(mq(g.uca.out)),
+      lcaFwd: lower?.chassis ?? mq(g.lca.fwd), lcaAft: lower?.chassis ?? mq(g.lca.fwd), lcaOut: lower?.axle ?? onAxle(mq(g.lca.out)),
+      trInner: mq(g.tieRod.inner), trOuter: mq(g.tieRod.outer),
       wheelCenter: w.center, contact: w.contact,
       steerLower: w.contact, steerUpper: add(w.center, scale(Y_AXIS, 100)),
       ...(pan ? { panhardChassis: pan.chassis, panhardAxle: pan.axle } : {}),
-      axleRight: st.right.center,
+      axleRight: other.center,
+      axleEnds: [onAxle(mq(g.wheel.center)), onAxle(mq(vec3(-g.wheel.center.x, g.wheel.center.y, g.wheel.center.z)))],
     };
+    if (this.kind === 'beamLeaf') { points.lcaFwd = points.lcaAft = points.leafEye = mq(g.lca.fwd); points.leafShackle = mq(g.lca.aft); }
     const watts = st.links.filter((l) => l.name.startsWith("Watt's"));
     if (watts.length) points.wattsLinks = watts.map((l) => [l.chassis, l.axle] as [Vec3, Vec3]);
     if (st.steer) {
-      // Steered axle: the left kingpin is the steering axis; the drag link and cross tie rod.
-      points.steerLower = st.steer.kingpin.left[0]; points.steerUpper = st.steer.kingpin.left[1];
-      points.trInner = st.steer.drag; points.trOuter = st.steer.arm.left;
-      points.crossTieRod = [st.steer.arm.left, st.steer.arm.right];
+      // Steered axle: this side's kingpin is the steering axis. The left knuckle has the drag link; the
+      // cross tie rod joins the knuckles' arms.
+      const kp = R ? st.steer.kingpin.right : st.steer.kingpin.left;
+      points.steerLower = kp[0]; points.steerUpper = kp[1];
+      points.trInner = R ? st.steer.arm.left : st.steer.drag; points.trOuter = R ? st.steer.arm.right : st.steer.arm.left;
+      points.crossTieRod = R ? [st.steer.arm.right, st.steer.arm.left] : [st.steer.arm.left, st.steer.arm.right];
     }
     const springs = ax.geometry.springs;
     if (springs && st.springLength) {
-      // The left spring's axle end: where the axle carries it now.
-      const R = st.poses.axle!.rotation, o = st.poses.axle!.position;
-      const c0 = scale(add(g.wheel.center, vec3(-g.wheel.center.x, g.wheel.center.y, g.wheel.center.z)), 0.5);
-      points.damperChassis = springs.left.chassis;
-      points.damperArm = add(o, mulVec(R, sub(springs.left.axle, c0)));
+      // This side's spring: its axle end where the axle carries it now.
+      points.damperChassis = mq(springs.left.chassis);
+      points.damperArm = onAxle(mq(springs.left.axle));
     }
-    if (this.kind === 'beamLeaf') { points.leafEye = g.lca.fwd; points.leafShackle = g.lca.aft; }
+    // A mount on any moving body of this type sits on the axle: an "upright" pose fixed to it.
+    const U = this.originOf('upright');
+    const upright = { position: onAxle(mq(U)), rotation: axle.rotation };
     let chars: AxleCharacteristics | null = null;
     try { chars = axleCharacteristics(ax, st); } catch { chars = null; }
-    return { kind: this.kind, inputs: full, solve: st.solve, poses: st.poses, points, spinAxis: w.spinAxis, ...(chars ? { axle: { state: st, chars } } : {}) };
+    const state: CornerState = {
+      kind: this.kind, inputs: full, solve: st.solve, poses: { ...st.poses, upright }, points, spinAxis: w.spinAxis,
+      ...(chars ? { axle: { state: st, chars: R ? mirrorAxleChars(chars) : chars } } : {}),
+    };
+    return R ? mirrorState(state) : state;
+  }
+
+  /** One arm of a solved twist beam as a corner (the arm carries the hub); the right one mirrored into its own frame. */
+  private twistCorner(st: AxleState, side: 'L' | 'R', full: Required<CornerInputs>): CornerState {
+    const g = this.geometry;
+    const R = side === 'R';
+    const arm = st.poses[R ? 'armR' : 'armL']!, otherArm = st.poses[R ? 'armL' : 'armR']!;
+    const mq = (q: Vec3) => (R ? vec3(-q.x, q.y, q.z) : q);
+    // The arms' poses map design points (origin at 0) to where they are now.
+    const on = (pose: typeof arm, q: Vec3) => add(pose.position, mulVec(pose.rotation, q));
+    const w = R ? st.right : st.left, other = R ? st.left : st.right;
+    const sc = st.twist?.shearCenter ?? vec3(0, g.lca.aft.y, g.lca.aft.z);
+    // The beam joins the arms at the shear center's design height and position, at the arm's outer end.
+    const beamAt = vec3(g.lca.out.x, g.lca.aft.y, g.lca.aft.z);
+    const points: CornerPoints = {
+      ucaFwd: mq(g.uca.fwd), ucaAft: mq(g.uca.aft), ucaOut: on(arm, mq(g.uca.out)),
+      lcaFwd: mq(g.lca.fwd), lcaAft: sc, lcaOut: on(arm, mq(g.lca.out)),
+      trInner: mq(g.tieRod.inner), trOuter: on(arm, mq(g.tieRod.outer)),
+      wheelCenter: w.center, contact: w.contact,
+      steerLower: w.contact, steerUpper: add(w.center, scale(Y_AXIS, 100)),
+      axleRight: other.center,
+      axleEnds: [on(arm, mq(beamAt)), on(otherArm, mq(vec3(-beamAt.x, beamAt.y, beamAt.z)))],
+    };
+    if (g.damper) { points.damperChassis = mq(g.damper.chassis); points.damperArm = on(arm, mq(g.damper.armPoint)); }
+    const U = this.originOf('upright');
+    const upright = { position: on(arm, mq(U)), rotation: arm.rotation };
+    const state: CornerState = { kind: this.kind, inputs: full, solve: st.solve, poses: { ...st.poses, upright }, points, spinAxis: w.spinAxis };
+    return R ? mirrorState(state) : state;
   }
 
   /**

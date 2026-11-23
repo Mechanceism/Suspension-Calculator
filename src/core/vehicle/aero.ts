@@ -12,6 +12,7 @@
  *   { "format": "suspension-aero", "version": 1, "name": "…",
  *     "CdA": 0.9, "ClAf": -0.6, "ClAr": -0.9, "dragHeight": 450,        constants (m², mm), or
  *     "rideHeightRef": "absolute" | "change",
+ *     "CsA": 0.02, "sideCp": 900, "rollSensF": 0.01, "rollSensR": 0.01, "yawBalance": 0.005,   optional (m²/°, mm, m²/°, /°)
  *     "map": { "rhFront": [mm…], "rhRear": [mm…], "CdA": [[…]], "ClAf": [[…]], "ClAr": [[…]] } }
  *   map tables are [front index][rear index]. "ClA" with "balance" (front share of the downforce, 0–1)
  *   can stand in for ClAf / ClAr.
@@ -38,6 +39,14 @@ export interface AeroModel {
   rideHeightRef: 'absolute' | 'change';
   /** Height of the drag force above the ground, mm. */
   dragHeight: number;
+  /** Side force area per degree of sideslip, m²/° (the body pushed back against its sideways motion; 0 = none). */
+  CsA?: number;
+  /** Where the side force acts, mm behind the front axle (behind the CG: it steadies the car like a weathervane). */
+  sideCp?: number;
+  /** Lift area change per degree of body roll, front / rear, m²/° (+ = downforce lost as the body rolls). */
+  rollSens?: { front: number; rear: number };
+  /** Front share of the downforce moved per degree of sideslip (+ = toward the front: the center of pressure moves forward in yaw). */
+  yawBalance?: number;
 }
 
 export interface AeroInput {
@@ -77,12 +86,22 @@ export function aeroCoefficients(m: AeroModel, rhF: number, rhR: number): { CdA:
  * Aero forces, N: drag (rearward), lift at the front and rear axles (+ up). `rh` = absolute ride heights
  * (mm), `rh0` = the design ride heights (for maps in "change").
  */
-export function aeroForces(a: AeroInput, rh: { front: number; rear: number }, rh0: { front: number; rear: number }): { drag: number; liftF: number; liftR: number } {
+export function aeroForces(
+  a: AeroInput, rh: { front: number; rear: number }, rh0: { front: number; rear: number }, att: { roll?: number; sideslip?: number } = {},
+): { drag: number; liftF: number; liftR: number; side: number } {
   const q = 0.5 * a.rho * a.speed * a.speed;
-  if (!(q > 0)) return { drag: 0, liftF: 0, liftR: 0 };
+  if (!(q > 0)) return { drag: 0, liftF: 0, liftR: 0, side: 0 };
   const m = a.model;
   const c = m.rideHeightRef === 'change' ? aeroCoefficients(m, rh.front - rh0.front, rh.rear - rh0.rear) : aeroCoefficients(m, rh.front, rh.rear);
-  return { drag: q * c.CdA, liftF: q * c.ClAf, liftR: q * c.ClAr };
+  // Roll sensitivity (the body rolled either way) and the center of pressure moving with sideslip.
+  const rollDeg = Math.abs(att.roll ?? 0) * 180 / Math.PI, betaDeg = (att.sideslip ?? 0) * 180 / Math.PI;
+  let f = c.ClAf + (m.rollSens?.front ?? 0) * rollDeg, r = c.ClAr + (m.rollSens?.rear ?? 0) * rollDeg;
+  if (m.yawBalance && Math.abs(f + r) > 1e-12) {
+    const tot = f + r, share = Math.min(1, Math.max(0, f / tot + m.yawBalance * Math.abs(betaDeg)));
+    f = tot * share; r = tot - f;
+  }
+  // Side force against the sideways motion (+ = toward the left; sideslip + = moving toward the left).
+  return { drag: q * c.CdA, liftF: q * f, liftR: q * r, side: -q * (m.CsA ?? 0) * betaDeg };
 }
 
 export interface AeroParse { model: AeroModel | null; warnings: string[]; errors: string[] }
@@ -111,6 +130,10 @@ export function parseAero(text: string, name = 'aero'): AeroParse {
       ClAr: num(pick(o, 'ClAr', 'ClA_rear', 'ClArear')) ?? sp?.[1] ?? 0,
       rideHeightRef: pick(o, 'rideHeightRef') === 'change' ? 'change' : 'absolute',
       dragHeight: num(pick(o, 'dragHeight')) ?? 400,
+      ...(num(pick(o, 'CsA')) !== undefined ? { CsA: num(pick(o, 'CsA'))! } : {}),
+      ...(num(pick(o, 'sideCp')) !== undefined ? { sideCp: num(pick(o, 'sideCp'))! } : {}),
+      ...(num(pick(o, 'rollSensF')) !== undefined || num(pick(o, 'rollSensR')) !== undefined ? { rollSens: { front: num(pick(o, 'rollSensF')) ?? 0, rear: num(pick(o, 'rollSensR')) ?? 0 } } : {}),
+      ...(num(pick(o, 'yawBalance')) !== undefined ? { yawBalance: num(pick(o, 'yawBalance'))! } : {}),
     };
     if (cla !== undefined && bal === undefined && num(pick(o, 'ClAf')) === undefined) warnings.push('ClA without a balance: 45 % of the downforce put on the front axle.');
     const mapRaw = pick(o, 'map');

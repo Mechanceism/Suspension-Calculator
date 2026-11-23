@@ -34,6 +34,7 @@ import { localPatch } from '../tire/geometry';
 import { tireForce } from '../tire/model';
 import { segmentLatG, roadEffective, G, type RoadState } from './segments';
 import { wheelHeights } from './road';
+import { aeroForces } from '../vehicle/aero';
 import { swayTrailer, newSwayState, coupleTrailer, stepTrailer, followTrailer, swayOf, type SwayState } from './trailerSway';
 import { classifyState, worstSeverity, PROFILES, type Finding } from './checks';
 import { steerForTurn, steeringWheelAngle, type SteerNeed } from './steer';
@@ -275,12 +276,20 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
    * Towing: the hitch's side force. Above walking pace the coupled car + trailer accelerations (returned as
    * the forces that give them); slower, F = −m_t·τ·a with a = (ΣF_tires + F) / m (the trailer follows).
    */
+  /** Aero side force against the sideslip, at its center of pressure (yaws the car about the CG). */
+  const withAero = (fh: HandlingForces, u: number): HandlingForces => {
+    const am = p.aero?.model;
+    if (!am?.CsA || !H || !(u > KINEMATIC_SPEED)) return fh;
+    const F = aeroForces({ model: am, rho: p.aero!.rho, speed: u }, { front: 0, rear: 0 }, { front: 0, rear: 0 }, { sideslip: Math.atan2(H.v, u) }).side;
+    const aCp = (-(am.sideCp ?? p.wheelbase * 0.6) - asm.cg.z) / 1000; // m ahead of the CG
+    return { ...fh, sumFy: fh.sumFy + F, mz: fh.mz + aCp * F, tireFy: fh.tireFy ?? fh.sumFy };
+  };
   const withHitch = (fh: HandlingForces, u = 0, grav = 0, ax = 0): HandlingForces => {
     if (!trailer || !car) return fh;
     if (tw && TS && H && u >= KINEMATIC_SPEED) {
       const a = coupleTrailer(tw, TS, { m: car.mass, I: car.yawInertia }, u, H.v, H.r, ax, grav, fh.sumFy, fh.mz);
       rtdot = a.rtdot;
-      return { ...fh, sumFy: car.mass * (a.vdot + u * H.r - grav), mz: car.yawInertia * a.rdot, tireFy: fh.sumFy };
+      return { ...fh, sumFy: car.mass * (a.vdot + u * H.r - grav), mz: car.yawInertia * a.rdot, tireFy: fh.tireFy ?? fh.sumFy };
     }
     const mt = trailer.mass * Math.min(1, Math.max(0, trailer.tongueShare));
     const F = (-mt * fh.sumFy) / (car.mass + mt);
@@ -291,7 +300,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     const kap = kAt(S);
     let first: HandlingForces | null = null;
     for (let sub = 0; sub < 2; sub++) {
-      const fh = withHitch(handlingNow(u, grav), u, grav, ax);
+      const fh = withHitch(withAero(handlingNow(u, grav), u), u, grav, ax);
       if (!first) first = fh;
       stepHandling(car!, H!, u, kap, fh, grav, cmd, h / 2, o.driver);
       if (tw && TS) {

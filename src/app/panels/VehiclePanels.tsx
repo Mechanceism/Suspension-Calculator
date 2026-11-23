@@ -288,7 +288,8 @@ export function VehicleResults({ model }: { model: VehicleModel | null }) {
             { label: 'Drag', value: fmt(r.aero.drag, 0), unit: 'N', hint: 'On the body, rearward; the driven tires push against it' },
             { label: 'Downforce, front axle', value: fmt(-r.aero.liftF, 0), unit: 'N', hint: '− = lift' },
             { label: 'Downforce, rear axle', value: fmt(-r.aero.liftR, 0), unit: 'N' },
-            { label: 'Aero balance (front share)', value: Math.abs(r.aero.liftF + r.aero.liftR) > 1e-6 ? fmt((r.aero.liftF / (r.aero.liftF + r.aero.liftR)) * 100, 1) : '—', unit: '%' },
+            { label: 'Aero balance (front share)', value: Math.abs(r.aero.liftF + r.aero.liftR) > 1e-6 ? fmt((r.aero.liftF / (r.aero.liftF + r.aero.liftR)) * 100, 1) : '—', unit: '%', hint: 'Moves with ride height (maps), roll (roll sensitivity) and, over time, sideslip' },
+            { label: 'Center of pressure, behind the front axle', value: Math.abs(r.aero.liftF + r.aero.liftR) > 1e-6 ? fmt((r.aero.liftR / (r.aero.liftF + r.aero.liftR)) * model.wheelbase, 0) : '—', unit: 'mm', hint: 'Where the downforce acts along the car' },
           ]} />
         </Section>
       )}

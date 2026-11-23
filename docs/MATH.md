@@ -529,6 +529,8 @@ Off by default (negligible for slow cars). On: forces on the **body**, never thr
 - Readouts: drag, downforce per axle and the aero balance (front share) in the Vehicle results; at 100 km/h in the panel.
 - Tested: downforce adds ½ρV²·ClA to the tire loads, split by axle; at constant speed the driven tires push exactly the drag, and drag up high moves load rearward; the map interpolates bilinearly and holds at its edges; JSON (also `ClA` + `balance`) and CSV grids read, incomplete files are refused with the reason; air density 1.225 kg/m³ at sea level and 15 °C. In the browser: generic values at 144 km/h give 771 N drag and 289 / 385 N downforce (42.9 % front); an imported map raises downforce as the ride height drops.
 
+- **Side force, roll sensitivity, moving center of pressure** (optional; Aero inputs or JSON `CsA`, `sideCp`, `rollSensF/R`, `yawBalance`; format 35): side force −q·CsA·β (β = sideslip in degrees, against the sideways motion) at `sideCp` behind the front axle, adding its yaw moment about the CG in handling over time; lift areas + rollSens · |roll°| (downforce lost as the body rolls, in every state); the front share of the downforce + yawBalance · |β°|. The results show the aero balance and the center of pressure (L · rear share behind the front axle), which move with ride height, roll and sideslip. Tested: the formulas; a strong side force behind the CG lowers the sideslip in a driven turn; older files load with them off.
+
 ## Editing tools: driving dimensions (`src/core/math/dimension.ts`)
 Set dimension (Measure tool) moves one point; the other is fixed. With d = B − A:
 - **Distance:** B′ = A + L·d/|d| (or A′ = B − L·d/|d|).

@@ -676,7 +676,8 @@ export function aeroAt(input: VehicleInput, pose: ChassisPose): { drag: number; 
   if (!input.aero) return null;
   const P = poseFns(pose);
   const rh = { front: P.point(vec3(0, 0, 0)).y - input.groundY, rear: P.point(vec3(0, 0, -input.wheelbase)).y - input.groundY };
-  return aeroForces(input.aero, rh, { front: -input.groundY, rear: -input.groundY });
+  const f = aeroForces(input.aero, rh, { front: -input.groundY, rear: -input.groundY }, { roll: pose.roll });
+  return { drag: f.drag, liftF: f.liftF, liftR: f.liftR };
 }
 
 /**

@@ -108,7 +108,13 @@ export function trailerOf(s: Pick<AppState, 'tow'>): TrailerSpec | undefined {
 export function aeroOf(s: Pick<AppState, 'aero'>): { model: AeroModel; rho: number } | undefined {
   const a = s.aero;
   if (!a?.on) return undefined;
-  const model: AeroModel = a.file ?? { name: 'generic', CdA: a.CdA.value, ClAf: -a.downF.value, ClAr: -a.downR.value, rideHeightRef: 'absolute', dragHeight: a.dragHeight.value };
+  // The side force, roll sensitivity and balance shift (generic values) also apply to an imported model that has none.
+  const extra = {
+    ...(a.CsA.value ? { CsA: a.CsA.value, sideCp: a.sideCp.value } : {}),
+    ...(a.rollSensF.value || a.rollSensR.value ? { rollSens: { front: a.rollSensF.value, rear: a.rollSensR.value } } : {}),
+    ...(a.yawBalance.value ? { yawBalance: a.yawBalance.value } : {}),
+  };
+  const model: AeroModel = a.file ? { ...extra, ...a.file } : { name: 'generic', CdA: a.CdA.value, ClAf: -a.downF.value, ClAr: -a.downR.value, rideHeightRef: 'absolute', dragHeight: a.dragHeight.value, ...extra };
   return { model, rho: airDensity(a.altitude.value, a.temperature.value) };
 }
 

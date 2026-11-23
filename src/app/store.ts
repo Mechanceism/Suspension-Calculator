@@ -936,7 +936,7 @@ export const defaultTow = (): TowSettings => ({
   ...(Object.fromEntries(TOW_KEYS.map((k) => [k, field(TOW_META[k].initial, TOW_META[k].quantity)])) as Record<TowKey, Field>), on: false,
 });
 
-export const AERO_KEYS = ['CdA', 'downF', 'downR', 'dragHeight', 'altitude', 'temperature'] as const;
+export const AERO_KEYS = ['CdA', 'downF', 'downR', 'dragHeight', 'altitude', 'temperature', 'CsA', 'sideCp', 'rollSensF', 'rollSensR', 'yawBalance'] as const;
 export type AeroKey = (typeof AERO_KEYS)[number];
 export const AERO_META: Record<AeroKey, { label: string; quantity: Quantity; unit: string; hint: string }> = {
   CdA: { label: 'Drag area CdA', quantity: 'ratio', unit: 'm²', hint: 'Drag coefficient × frontal area. Road cars ≈ 0.6–0.8, open-wheel cars with wings ≈ 1–1.5.' },
@@ -945,6 +945,11 @@ export const AERO_META: Record<AeroKey, { label: string; quantity: Quantity; uni
   dragHeight: { label: 'Drag acts at height', quantity: 'length', unit: 'mm', hint: 'Above the ground: drag up high moves load to the rear.' },
   altitude: { label: 'Altitude', quantity: 'altitude', unit: 'm', hint: 'For the air density' },
   temperature: { label: 'Air temperature', quantity: 'temperature', unit: '°C', hint: 'For the air density' },
+  CsA: { label: 'Side force area per ° of sideslip', quantity: 'ratio', unit: 'm²/°', hint: 'Handling over time: the body pushed back against its sideways motion. 0 = none; a car ≈ 0.01–0.04.' },
+  sideCp: { label: 'Side force acts, behind the front axle', quantity: 'length', unit: 'mm', hint: 'Behind the CG it steadies the car in a slide (weathervane); ahead of it, it makes it less stable.' },
+  rollSensF: { label: 'Downforce lost per ° of roll, front', quantity: 'ratio', unit: 'm²/°', hint: 'Lift area added per degree of body roll (either way): wings and floors lose downforce as the body rolls. 0 = none.' },
+  rollSensR: { label: 'Downforce lost per ° of roll, rear', quantity: 'ratio', unit: 'm²/°', hint: 'As for the front.' },
+  yawBalance: { label: 'Balance shift per ° of sideslip', quantity: 'ratio', unit: '/°', hint: 'Front share of the downforce moved per degree of sideslip (+ = forward: the center of pressure moves forward in a slide).' },
 };
 export interface AeroSettings extends Record<AeroKey, Field> {
   on: boolean;
@@ -954,7 +959,7 @@ export interface AeroSettings extends Record<AeroKey, Field> {
 export const defaultAero = (): AeroSettings => ({
   on: false, file: null,
   CdA: field(0.8, 'ratio'), downF: field(0.3, 'ratio'), downR: field(0.4, 'ratio'), dragHeight: field(400),
-  altitude: field(0, 'altitude'), temperature: field(20, 'temperature'),
+  altitude: field(0, 'altitude'), temperature: field(20, 'temperature'), CsA: field(0, 'ratio'), sideCp: field(900), rollSensF: field(0, 'ratio'), rollSensR: field(0, 'ratio'), yawBalance: field(0, 'ratio'),
 });
 
 /** Setup wizard steps, easy to hard. */

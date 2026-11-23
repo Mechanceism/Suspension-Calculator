@@ -610,6 +610,20 @@ With *Handling* on (per test, default on with the ride), a driver steers the car
 - **Cost:** about the same as the ride alone (a Run all of two presets with steady states, ride and handling: ≈ 4.5 s in the browser).
 - Tested: the steering table inverts and stops at full lock; a steady 30 m turn at 12 m/s is followed with yaw rate u/R, lateral u²/(gR), steering within 0.5° of the steady steering need and < 0.1 m error (< 0.5 m through turn-in and out), and passes; right turns mirror left turns; too fast for the grip (18 m/s) the front slides, the driver goes to full lock and the car runs wide (fails *Off the line*); a rear with much less grip slides out (oversteer / spin, sideslip > 3°); without steered wheels a turn can't be followed; starting from rest through a turn (slow mode) stays on the line; every built-in test is driven by the default car without leaving the line or spinning.
 
+## Car profiles ✅ (`src/app/carProfiles.ts`)
+Whole-car starting points. Each axle takes a sample layout scaled to the car: heights and lengths by s = tire radius ÷ the layout's wheel radius (so the tire, ride height and arms grow together), widths by s_x = half track ÷ the layout's wheel-center x (the spin axis is kept). Static loads come from the mass, CG height and front share (CG z = −(1 − f)·L). Per corner, with sprung mass m_s = load ÷ g − unsprung and the motion ratio MR = Δ damper length ÷ Δ wheel travel at ride height (±5 mm):
+- spring: wheel rate k_w = m_s·(2π f_ride)², spring rate k = k_w ÷ MR², free length fitted to ride height;
+- dampers: c_bump = ζ·2√(k_w m_s) ÷ MR² (rebound 1.6 ×, the high-speed rates half of the low-speed ones), damper lengths from the solved travel ends (±5 mm), the bump stop at 15 % of the stroke.
+
+| Profile | Front / rear | Tires | Mass, CG height, front share | Ride f (Hz), ζ | Drive |
+|---|---|---|---|---|---|
+| Road car | MacPherson / multilink | 205/55 R16 | 1300 kg, 540 mm, 61 % | 1.3 / 1.5, 0.3 | front, ABS |
+| FSAE car | double wishbones | 18 × 7.5-10 | 300 kg, 280 mm, 47 % | 3.0 / 3.2, 0.6 | rear, LSD |
+| Kart | double wishbone (stiff) / solid axle | 10 × 4.50-5 / 11 × 7.10-5 | 165 kg, 260 mm, 42 % | 9, 0.2 | rear, locked, rear brake only |
+| Trophy truck | long-travel double wishbones / 4-link | 40 × 13.50 R17 | 2700 kg, 800 mm, 50 % | 1.0 / 1.1, 0.35 | rear, locked |
+
+Tested: every corner solves at full droop, ride height and full bump; the tire size and track are as asked; the static loads carry the whole car with the asked front share; the whole car settles in a 0.3 g turn; a profile round-trips through a project file.
+
 ## Setup wizard: measuring the car ✅ (`src/core/setup/measure.ts`)
 - **Corner-scale CG:** level weights W_FL…W_RR → mass m = ΣW, front share f = (W_FL + W_FR)/m, CG z = −(1 − f)·L behind the front axle, lateral x = [(W_FL − W_FR)·t_F/2 + (W_RL − W_RR)·t_R/2] / m. Height: raise one axle by H at its wheel centers (suspension locked) and weigh the other axle again; it gains ΔW: h = r + L·ΔW / (m·tan θ), sin θ = H/L, r = wheel-center height. Exact for a rigid body pivoting at the grounded wheel centers (tested).
 - **Spring rate from an added weight** over one wheel: ride rate k_ride = m·g / Δh (body drop at that wheel); the tire is in series, 1/k_wheel = 1/k_ride − 1/k_tire (k_tire from the tire model at the static load); spring rate = k_wheel / MR², MR = spring travel per wheel travel from the geometry. Approximate (the rest of the car shares a little of the load).

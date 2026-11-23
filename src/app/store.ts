@@ -219,7 +219,11 @@ const field = (value: number, quantity: Quantity = 'length'): Field => ({ text: 
 const fields = (v: Vec3): [Field, Field, Field] => [field(v.x), field(v.y), field(v.z)];
 
 export function editableFromLayout(id: string): EditableGeometry {
-  const g = (PRESET_LAYOUTS.find((l) => l.id === id) ?? SAMPLE_LAYOUTS[0]!).geometry;
+  return editableFromGeometry((PRESET_LAYOUTS.find((l) => l.id === id) ?? SAMPLE_LAYOUTS[0]!).geometry);
+}
+
+/** Editable fields for a geometry (static camber / toe 0, a 13 in rim: set the scalars after if needed). */
+export function editableFromGeometry(g: DoubleWishboneGeometry): EditableGeometry {
   return {
     points: {
       ucaFwd: fields(g.uca.fwd), ucaAft: fields(g.uca.aft), ucaOut: fields(g.uca.out),
@@ -733,7 +737,7 @@ export interface AppState extends DesignState {
 }
 
 /** Spring fields with the free length fitted so the static load sits at travel 0 (if solvable). */
-function fittedSpring(geom: EditableGeometry, f: Record<SpringKey, Field>, cornerLoad?: number): Record<SpringKey, Field> {
+export function fittedSpring(geom: EditableGeometry, f: Record<SpringKey, Field>, cornerLoad?: number): Record<SpringKey, Field> {
   try {
     const corner = new DoubleWishbone(toGeometry(geom));
     const load = cornerLoad === undefined ? sprungLoad(f, 1) : Math.max(0, cornerLoad - f.unsprungMass.value * G);

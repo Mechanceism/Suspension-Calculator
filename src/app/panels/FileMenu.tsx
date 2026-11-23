@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useApp } from '../store';
 import { listLayouts, removeLayout, hasLayout, type LibraryEntry } from '../library';
-import { useDirtyParts, newLayout, save, saveAs, openLayout, exportParts, importParts, exportSettings, importSettings, usePendingImport, setAfterSave, download, type Part } from '../fileActions';
+import { useDirtyParts, newLayout, newFromProfile, save, saveAs, openLayout, exportParts, importParts, exportSettings, importSettings, usePendingImport, setAfterSave, download, type Part } from '../fileActions';
 import { exportSettingsFile } from '../settingsFile';
 import { importTireFile } from '../tireActions';
 import { openWizard } from './SetupWizard';
+import { CAR_PROFILES } from '../carProfiles';
 import { importAeroFile } from './AeroPanel';
 
 const when = (iso: string) => {
@@ -15,6 +16,7 @@ const when = (iso: string) => {
 export function FileMenu() {
   const [open, setOpen] = useState(false);
   const [recentsOpen, setRecentsOpen] = useState(false);
+  const [profilesOpen, setProfilesOpen] = useState(false);
   const [recents, setRecents] = useState<LibraryEntry[]>([]);
   const fileName = useApp((s) => s.fileName);
   const parts = useDirtyParts();
@@ -35,7 +37,7 @@ export function FileMenu() {
     return () => window.removeEventListener('mousedown', close);
   }, [open]);
 
-  const run = (fn: () => void) => () => { setOpen(false); setRecentsOpen(false); fn(); };
+  const run = (fn: () => void) => () => { setOpen(false); setRecentsOpen(false); setProfilesOpen(false); fn(); };
 
   return (
     <div className="file-menu" ref={root}>
@@ -47,6 +49,16 @@ export function FileMenu() {
       {open && (
         <div className="menu" role="menu">
           <button role="menuitem" onClick={run(() => newLayout(parts))}>New (default layout)</button>
+          <div className="menu-sub" onMouseEnter={() => setProfilesOpen(true)} onMouseLeave={() => setProfilesOpen(false)}>
+            <button role="menuitem" aria-haspopup="menu" onClick={() => setProfilesOpen(!profilesOpen)} title="A whole car to start from: every corner's type and points, springs, dampers, tires and the vehicle inputs">New from car profile<span className="menu-arrow">▸</span></button>
+            {profilesOpen && (
+              <div className="menu submenu" role="menu">
+                {CAR_PROFILES.map((c) => (
+                  <button key={c.id} role="menuitem" title={c.hint} onClick={run(() => newFromProfile(c.id, parts))}>{c.label}</button>
+                ))}
+              </div>
+            )}
+          </div>
           <button role="menuitem" onClick={run(() => openWizard())} title="Enter your car step by step: easy values first, measuring tools included">Setup wizard</button>
           <button role="menuitem" onClick={run(save)}>Save<kbd>Ctrl+S</kbd></button>
           <button role="menuitem" onClick={run(() => useApp.getState().set('saveAsOpen', true))}>Save as…<kbd>Ctrl+Shift+S</kbd></button>

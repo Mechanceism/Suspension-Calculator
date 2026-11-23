@@ -34,11 +34,62 @@ Calculating and visualizing come first. **Later:** export to modeling software (
 | 1 | **Math core**: single corner, double wishbone (SLA), full motion through travel. Spec: [docs/MATH.md](docs/MATH.md) | ✅ Kinematics (L0–L2), tire (L3–L4) and loaded corner with coilover (L5) done. Pushrod/rocker spring layout planned. |
 | 2 | **Visualizer**: 3D view of the core components, driven by the math core | ✅ First version (`npm run dev`) |
 | 3 | **More variables**: add the remaining characteristics to both the math and the UI | ✅ First set: caster / KPI gain, roll camber, track change (scrub), roll-center migration, Ackermann % and the classic Ackermann lines, roll stiffness per axle, roll gradient; KPI and trail plots; caster gain, track change, Ackermann and the roll-stiffness split as optimizer goals; coilover length / angles / position along the arm as typed values. ✅ Since then: compliance steer and camber from arm bushings, KPI and caster in roll. |
-| 4 | **Constraints and optimizer**: lock / range / free per variable; solve for free values once the visualizer and math agree | ✅ Locks (values, coordinates, points, whole parts, derived dimensions; Locks tab). Corner optimizer: free coordinates with ranges, weighted goals (bump steer, camber gain, roll inclination, RC, KPI, caster, scrub, trail, anti angle, motion ratio, **contact area and grip per tire**), presets, Apply / Undo. **Vehicle optimizer** through the whole-car solve in cornering / braking / accelerating / braking-in-a-turn cases, weighted (total grip and area, **cornering limit** (axle saturation), loaded-tire inclination, roll, LLTD, pitch, anti-dive/squat, bump steer). Next steps listed in MATH.md (ranges for non-coordinate values, ghost preview, tire data, …). |
+| 4 | **Constraints and optimizer**: lock / range / free per variable; solve for free values once the visualizer and math agree | ✅ Locks (values, coordinates, points, whole parts, derived dimensions; Locks tab). Corner optimizer: free coordinates with ranges, weighted goals (bump steer, camber gain, roll inclination, RC, KPI, caster, scrub, trail, anti angle, motion ratio, **contact area and grip per tire**), presets, Apply / Undo. **Vehicle optimizer** through the whole-car solve in cornering / braking / accelerating / braking-in-a-turn cases, weighted (total grip and area, **cornering limit** (axle saturation), loaded-tire inclination, roll, LLTD, pitch, anti-dive/squat, bump steer). Since then: setup values and length ranges as variables, ghost preview, cornering limit, braking in a turn, case weights. Next steps listed in MATH.md (spring / bar rates in the steady stage, damper settings as variables, power-on exit case). |
 | 5 | **Export and integration** (only after calculating and visualizing are solid): file exports and an optional Fusion 360 add-in (Python + HTML panel) | |
 | 6 | **Multi-corner**: add more corners, inter-corner interactions (sway bars, shared shocks, pushrods/rockers) | ✅ Four independent corners, whole-car equilibrium, brakes, drive (chassis diff or hub motor), anti-roll bars and heave springs, force arrows in the view (L6). Scale-weight CG utility later. |
 | 7 | **Other suspension types**: MacPherson, multilink, etc., plus user-defined linkages | ✅ MacPherson strut, five-link multilink and no suspension (rigid) (per design: Inspector / Inputs → Type, setup wizard, presets M and L), mixed on one car through the vehicle, ride, handling and optimizers. Since then: single arm (swing / trailing arm), solid axle (4-link, 3-link + Panhard, leaf springs), twist beam, pushrod / rocker spring layouts, custom (user-defined) linkages. |
 | 8 | **Tests workspace** (alongside Corner and Vehicle, sharing one design): chainable / combinable test segments (speed change over distance, straight / left / right turn with radius, flat / grade / bank / bumps / potholes / lumpy), per-tire grip use and slip detection, speed limits, test goals for the optimizer | Phase A done: segments with speed / path / road (rough height maps, placed bumps), pass / warning / fail rules and profiles, test (A, B…) and segment (P1, P2…) priorities, enable / run all, optimize one or all tests until they pass (widening ranges up to a chosen maximum) / improve / preview wider ranges, steering through turns (steering lock check), track map, playback, export in parts. Phase B done: ride over time (7 DOF: body heave / roll / pitch + four wheels, dampers, tire damping, road at speed, transients at segment changes), checked by the pass rules, played back with real body motion. Phase C done: handling over time (a driver steers along the path through the car's steering kinematics with a lag, a rate limit and the rack limit; each tire's side force from its slip angle; yaw and sideslip; checks for running off the line and spinning; playback shows the line actually driven). Aero done (generic values or imported characteristics) |
+
+## Current status and handoff (2026-11-23)
+Read this first when picking the work up again; the details of each item are in the sections below and in [docs/MATH.md](docs/MATH.md).
+
+**Branch.** All work below is on `feature/pending-goals`, pushed to GitHub, **not merged to main yet** (main = `7d0bde0`, the merge of `feature/large-items`). Merge to main when the user asks (they merge at milestones). 345 tests pass (`npm test`, about 2.5 min); `npm run typecheck` is clean. Project file format: `FORMAT_VERSION = 36`.
+
+**How the user wants the work done.**
+- Finish one item at a time: implement, test (unit tests plus a check in the running app for anything visual), update the docs (docs/MATH.md, README.md, GOALS.md), then commit and push. Work through the pending list in order.
+- Commit and push after each finished step; tests must pass first. Merge to main only when asked.
+- Any change to saved values bumps `FORMAT_VERSION` with a migration step and a test (see *Project Files*).
+- Conventions: X outboard (left corner frame), Y up, Z forward; mm, N, kg, deg in the UI.
+- In the Vehicle view, moves on mirrored (linked) corners are mirrored; only moves that would make a mirrored pair differ are blocked (e.g. X of an Ackermann crossing), with a notice.
+
+**Pending list (in the user's order).**
+
+| # | Item | Status | Commit(s) |
+|---|---|---|---|
+| 1 | Solid axle: Watt's linkage, steered solid axle | ✅ | 2253335 |
+| 2 | Custom linkage: sliding joints, drag points in the view, optimizer moves its points | ✅ | c676bdd |
+| 3 | Anti-roll bar drop links on the rocker / either arm / knuckle; rocker ratio editor | ✅ | 55910d6 |
+| 4 | Steering: measured ratio curve; pitman / idler arm with a center link | ✅ | 9e83338, b6965ef |
+| 5 | Compliance steer and camber from arm bushings; KPI and caster in roll | ✅ | 2e0a9cd |
+| 6 | Towing: hitch rating and light-tongue checks | ✅ | 334c8fe, 77c3be3 |
+| 7 | Tires: aligning moment, combined-slip / Mz fitting, relaxation length | ✅ | 77bbf97, 550b592, 34d46d8 |
+| 8 | Driver works the pedals; racing line with a track width | ✅ | 1d3f1e1 |
+| 9 | Aero: side force with sideslip, roll sensitivity, moving center of pressure | ✅ | 691e61b |
+| 10 | Dampers: dyno curves and a clicker | ✅ | 9752ba8 |
+| 11 | Corner optimizer: static camber / toe and tire pressure as variables; length ranges | ✅ | 77e0007 |
+| 12 | Corner optimizer: ghost preview of the result before applying | ✅ | f78d339 |
+| 13 | Vehicle optimizer: cornering-limit goal (axle saturation); braking-in-a-turn case; case weights | ✅ | 617b3a0 |
+| 14 | Basic car profiles: road car, FSAE car, kart, trophy truck (File → New from car profile) | ✅ | 1a45298 |
+| — | Fix: car "flipping" under hard braking (solver robustness) and the solid-axle preset crash | ✅ | cf7331c |
+| **15** | **Enter hardpoints inside the setup wizard** | **next** | |
+| 16 | Export / integration (Phase 5: hardpoint CSV, Fusion parameters, Blender script, Fusion add-in) | skipped for now (user) | |
+| 17 | Phone companion app (probe to capture real 3D points) | skipped for now (user) | |
+
+**Item 15, what it means.** The wizard's *Suspension points* step (`src/app/panels/SetupWizard.tsx`, step `points` in `SETUP_STEPS`, `src/app/store.ts`) today only opens the point table. It should let the user enter each corner's hardpoints in the wizard itself: per design (respecting the front / rear / left / right links), only the points the corner's type uses (`activePointKeys`), with units as typed, a small picture or highlight of which point is which, *Use an estimate* (keep the preset's points, marked estimated like the other steps) and *Apply and next*.
+
+**Open points to confirm with the user.**
+- Trophy-truck profile: built with long-travel double wishbones in front and a 4-link solid rear axle (the common real layout). An earlier note mentioned "long-arm MacPhersons"; switch the front if that is what they meant.
+- Trophy truck brake bias is 72 % front; at 1 g the rear locks (real for that bias; the ideal at 1 g is about 77 %).
+
+**Known limits / caveats.**
+- One whole-car solve takes about 0.3–1.5 s; the *Cornering limit* goal needs 2–4 solves per evaluation, so vehicle optimizer runs with it are slow.
+- The full test suite takes about 2.5 min (the vehicle optimizer and cornering-limit tests are the slow ones).
+- The generic tire grip model is relative to its nominal load / pressure (Fz0, p0); a design not made from a car profile keeps 1000 N / 83 kPa, so heavy cars should set Fz0 to their static tire load (Optimize → Tire grip model).
+
+**Development notes.**
+- Node is at `C:\Program Files\nodejs` (add it to PATH in Git Bash). `npm run dev` serves the app at http://localhost:5173.
+- Checks in the running app were done with `puppeteer-core` driving the installed Chrome (headless, `--use-angle=swiftshader`): click through the UI, read the results tables, take screenshots. The app's live store can be reached in the page with `await import(<the exact /src/app/store.ts?t=… URL from performance.getEntriesByType('resource')>)` then `useApp.getState()` (a plain `import('/src/app/store.ts')` gives a separate copy).
+
 
 ### Tests workspace: requested changes (noted 2026-11-22)
 1. **Segment list.** Replace the collapsible segment cards with a plain, always-visible ordered list (number, name, one-line summary) where segments can be added, reordered (drag or ↑/↓) and removed; selecting one opens its editor.
@@ -92,7 +143,7 @@ Most inputs have to come from the user, and many are hard to find. A **value wiz
 7. **Springs:** the rate from the spring's label, or a **spring-rate tool**: add a known weight to one corner of the parked car and measure the change in ride height; with the motion ratio from the geometry that gives the wheel rate and the spring rate.
 8. **Harder values:** dampers (generic, then the damper's settings or dyno curve), anti-roll bars, steering ratio and rack travel, tire pressures and tire data (generic, a `.tir` file, or fitted data), body inertias (estimated from the mass and size).
 
-Done: File → Setup wizard (and Vehicle → Inputs), eleven steps with a step list and summary (steering and tire grip on separate pages; steering from turns lock to lock / center to lock and the wheel angle, giving the rack travel, the max steering angle and the tightest turn; a diagram for track vs overall width and wheelbase; rim width and wheel offset on the tires page); each step *Apply and next* (your values) or *Use an estimate* (marked; Vehicle and Test results show "Based on estimated values: …" with a link back). Tools: corner-scale CG calculator (level + one axle lifted), unsprung-weight sum, spring rate from an added weight (tire and motion ratio taken out), generic damper rates from damping ratios, body-inertia estimate, tire `.tir` import. Still to come: entering the points through the wizard itself (it opens the point table), and the phone companion app.
+Done: File → Setup wizard (and Vehicle → Inputs), eleven steps with a step list and summary (steering and tire grip on separate pages; steering from turns lock to lock / center to lock and the wheel angle, giving the rack travel, the max steering angle and the tightest turn; a diagram for track vs overall width and wheelbase; rim width and wheel offset on the tires page); each step *Apply and next* (your values) or *Use an estimate* (marked; Vehicle and Test results show "Based on estimated values: …" with a link back). Tools: corner-scale CG calculator (level + one axle lifted), unsprung-weight sum, spring rate from an added weight (tire and motion ratio taken out), generic damper rates from damping ratios, body-inertia estimate, tire `.tir` import. Still to come: entering the points through the wizard itself (it opens the point table; **next, item 15**), and the phone companion app (skipped for now).
 
 **Future: phone companion app.** A separate app that runs on a phone and uses its sensors and cameras, with a physical touch point (probe) on the phone, so the user can touch points on the suspension and capture their real 3D positions to send to this tool.
 

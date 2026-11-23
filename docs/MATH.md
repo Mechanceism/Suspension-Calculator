@@ -755,8 +755,8 @@ Matched to how expensive one evaluation is:
 ### Possible next steps for the optimizer
 - ✅ **Ranges for other values**: static camber and toe (the spin axis rebuilt from them) and the tire's set pressure (gas model: the contact patch and the grip goals) are free coordinates too (*Setup values* in the picker); **length ranges** keep the upper / lower arm (pivot axis to ball joint) and the tie rod between a min and a max, a stiff penalty only outside the range (0.01 mm). Custom-linkage and setup-value ranges now also load back from project files. Tested: camber and toe set exactly; a length range holds while the goal pulls the arm.
 - ✅ **Ghost preview**: a corner optimizer result can be shown in the Corner view before applying (*Preview in the view*): its linkage dashed in green at the same travel and steering, cleared on Apply / Discard / a new run.
-- **Tire data**: fit μ_ref, n and β (or a full Pacejka-style model with camber thrust) from measured data, per tire.
-- **Per-tire grip model** (different tires front and rear) instead of one shared model.
+- ✅ **Tire data**: the Magic Formula grip model with `.tir` import and fitting to measured data (see *Tire grip*). Still open: fitting the contact-patch model's μ_ref, n and β (contact-area goal) from data.
+- ✅ **Per-axle grip model**: front and rear tires can differ (a rear `.tir` / fit). Per-corner (left ≠ right) is not supported.
 - ✅ **Steady-state cornering balance**: the *Cornering limit* goal finds the lateral g where the front or rear axle saturates and maximizes it (above).
 - ✅ **Combined cases**: braking in a turn and a weight per fixed case. A track-specific case list is the Tests workspace (*Use: Test …* as the load cases).
 - A **power-on exit** case (accelerating in a turn) and the cornering limit while braking (the g-g diagram's edge).

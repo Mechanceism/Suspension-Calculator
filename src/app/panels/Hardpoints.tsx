@@ -33,12 +33,12 @@ export function Hardpoints() {
           <tr><th>Point</th><th>X</th><th>Y</th><th>Z</th><th /></tr>
         </thead>
         <tbody>
-          {activePointKeys(kind, layoutOf(geom), geom.steerMechanism).map((k) => (
+          {activePointKeys(kind, layoutOf(geom), geom.steerMechanism, geom.steeredAxle).map((k) => (
             <tr key={k} title={pointLabel(k, kind, layoutOf(geom))}>
               <td className="mono">{forCorner(active, POINT_NAMES[k])}</td>
               {([0, 1, 2] as const).map((axis) => (
                 <td key={axis}>
-                  <ValueInput field={geom.points[k][axis]} unit="mm" onCommit={(t) => setPoint(k, axis, t)} locked={pointAxisLocked(locks, root, k, axis, geom.damperArm, geom.kind, layoutOf(geom), geom.steerMechanism)} />
+                  <ValueInput field={geom.points[k][axis]} unit="mm" onCommit={(t) => setPoint(k, axis, t)} locked={pointAxisLocked(locks, root, k, axis, geom.damperArm, geom.kind, layoutOf(geom), geom.steerMechanism, geom.steeredAxle)} />
                 </td>
               ))}
               <td><LockButton keys={([0, 1, 2] as const).map((a) => lockKeys.point(root, k, a))} title="Lock / unlock X, Y and Z of this point" /></td>

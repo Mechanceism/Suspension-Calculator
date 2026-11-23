@@ -1,11 +1,14 @@
-import { useApp, layoutOf, rockerAllowed, type SpringLayout, SPRING_KEYS, SPRING_META, DAMPER_KEYS, DAMPER_META, DAMPER_TWO_STAGE_KEYS, rootOf, type ArmChoice, type SpringKey } from '../store';
+import { useApp, layoutOf, rockerAllowed, toGeometry, DEFAULT_DAMPER_CURVE, type DamperCurveText, type SpringLayout, SPRING_KEYS, SPRING_META, DAMPER_KEYS, DAMPER_META, DAMPER_TWO_STAGE_KEYS, rootOf, type ArmChoice, type SpringKey } from '../store';
 import { lockKeys } from '../locks';
 import type { Model } from '../useModel';
 import { FieldRows, fmt } from './FieldRows';
 import { useState } from 'react';
 import { dampingRatio, dampingForRatio } from '../../core/suspension/spring';
-import { damperForce } from '../../core/vehicle/vehicle';
+import { damperForce, parseDamperCurve } from '../../core/vehicle/vehicle';
 import { damperOf } from '../optimizer';
+import { ValueInput } from './ValueInput';
+import { parseValue } from '../../core/units/units';
+import { rockerRatio, rockerRatioMove } from '../../core/suspension/coilover';
 
 /** Spring layout, rate, free length (+ fit) and the corner-load inputs it carries. */
 export function SpringFields({ keys = SPRING_KEYS }: { keys?: readonly SpringKey[] }) {
@@ -29,6 +32,7 @@ export function SpringFields({ keys = SPRING_KEYS }: { keys?: readonly SpringKey
           {rockerAllowed(kind) && <option value="rocker">Pushrod / pullrod + rocker</option>}
         </select>
       </div>
+      {layout === 'rocker' && <RockerRatioRow />}
       {layout === 'rocker' && (
         <div className="row" title="What the pushrod's lower end is fixed to (moving it keeps its spot on the arm)">
           <span className="muted">Pushrod lower end on</span>
@@ -80,8 +84,10 @@ export function DamperFields({ model }: { model: Model }) {
         <span className="muted">Damper curve</span>
         <button className={`chip${damperMode === 'linear' ? ' on' : ''}`} onClick={() => set('damperMode', 'linear')}>Linear</button>
         <button className={`chip${damperMode === 'twoStage' ? ' on' : ''}`} onClick={() => set('damperMode', 'twoStage')}>Two-stage</button>
+        <button className={`chip${damperMode === 'curve' ? ' on' : ''}`} title="Measured force vs shaft speed from a damper dyno, with a clicker between full soft and full firm" onClick={() => set('damperMode', 'curve')}>Dyno curve</button>
       </div>
-      <FieldRows rows={DAMPER_KEYS.filter((k) => (bumpStop || !k.startsWith('bumpStop')) && (damperMode === 'twoStage' || !(DAMPER_TWO_STAGE_KEYS as readonly string[]).includes(k))).map((k) => ({
+      {damperMode === 'curve' && <DynoCurveFields />}
+      <FieldRows rows={DAMPER_KEYS.filter((k) => (bumpStop || !k.startsWith('bumpStop')) && (damperMode === 'twoStage' || !(DAMPER_TWO_STAGE_KEYS as readonly string[]).includes(k)) && !(damperMode === 'curve' && /Damping|Knee/.test(k))).map((k) => ({
         label: k === 'bumpDamping' && damperMode === 'twoStage' ? 'Bump, low speed' : k === 'reboundDamping' && damperMode === 'twoStage' ? 'Rebound, low speed' : DAMPER_META[k].label,
         field: damper[k], unit: DAMPER_META[k].unit, onCommit: (t: string) => setDamperField(k, t),
         lockKey: lockKeys.field(root, 'damper', k),
@@ -151,7 +157,8 @@ function DampingFit({ model }: { model: Model }) {
 function DamperCurve() {
   const damper = useApp((s) => s.damper);
   const damperMode = useApp((s) => s.damperMode);
-  const spec = damperOf({ damper, damperMode });
+  const damperCurve = useApp((s) => s.damperCurve);
+  const spec = damperOf({ damper, damperMode, damperCurve });
   const vMax = 0.5;
   const W = 260, H = 110, cx = W / 2, pad = 14;
   const fMax = Math.max(1, ...[-vMax, vMax].map((v) => Math.abs(damperForce(spec, v))));
@@ -167,5 +174,78 @@ function DamperCurve() {
       <text x={W - pad} y={H - 3} className="axis-text" textAnchor="end">rebound +{vMax} m/s</text>
       <text x={cx + 4} y={pad} className="axis-text">{Math.round(fMax)} N</text>
     </svg>
+  );
+}
+
+/**
+ * Rocker ratio: the spring end's lever about the rocker's pivot axis ÷ the pushrod end's (each its distance
+ * from the axis). Typing a ratio slides the spring's rocker end along its arm (same direction from the
+ * axis) and moves the coilover's frame end with it, so the coilover keeps its length and angle.
+ */
+function RockerRatioRow() {
+  const geom = useApp((s) => s.geom);
+  const g = toGeometry(geom);
+  if (!g.rocker || !g.damper) return null;
+  const { ratio, pushrodLever: lp, springLever: ls } = rockerRatio(g);
+  const commit = (text: string) => {
+    const v = parseValue(text, 'ratio');
+    const d = v.ok ? rockerRatioMove(g, v.value) : null;
+    if (!d) { useApp.getState().notify('Enter a rocker ratio above 0.', 'warn'); return; }
+    const s = useApp.getState();
+    const pts = s.geom.points;
+    s.setPointsAxis(([0, 1, 2] as const).flatMap((a) => [
+      { key: 'dmpArm' as const, axis: a, value: Number((pts.dmpArm[a].value + [d.x, d.y, d.z][a]!).toFixed(4)) },
+      { key: 'dmpChassis' as const, axis: a, value: Number((pts.dmpChassis[a].value + [d.x, d.y, d.z][a]!).toFixed(4)) },
+    ]));
+  };
+  return (
+    <div className="row" title="Spring end's lever about the rocker pivot ÷ the pushrod end's. Above 1 the spring moves more than the pushrod. Typing a value slides the spring's rocker end along its arm (and the coilover with it, keeping its length).">
+      <span className="muted">Rocker ratio (spring ÷ pushrod lever)</span>
+      <ValueInput field={{ text: Number.isFinite(ratio) ? ratio.toFixed(3) : '', value: ratio }} unit="" width={64} onCommit={commit} />
+      <span className="muted small-text">{fmtMm(lp)} / {fmtMm(ls)} mm</span>
+    </div>
+  );
+}
+
+const fmtMm = (v: number) => (Number.isFinite(v) ? v.toFixed(0) : '—');
+
+/**
+ * Dyno curves: "shaft speed mm/s, force N" per line for bump and rebound at full soft and (optionally) full
+ * firm; with a click count, the current click blends between them (0 = full soft).
+ */
+function DynoCurveFields() {
+  const c = useApp((s) => s.damperCurve) ?? DEFAULT_DAMPER_CURVE;
+  const put = (patch: Partial<DamperCurveText>) => useApp.setState({ damperCurve: { ...c, ...patch }, presetId: 'custom' });
+  const area = (key: 'softBump' | 'softRebound' | 'firmBump' | 'firmRebound', label: string) => {
+    const bad = parseDamperCurve(c[key]).bad;
+    return (
+      <label className="dyno-curve">
+        <span className="muted small-text">{label}</span>
+        <textarea rows={4} defaultValue={c[key]} key={c[key]} placeholder="mm/s, N" onBlur={(e) => { if (e.target.value !== c[key]) put({ [key]: e.target.value }); }} />
+        {bad.length > 0 && <span className="small-text warn-text">Couldn&apos;t read: {bad.slice(0, 2).join(' · ')}</span>}
+      </label>
+    );
+  };
+  const firm = c.firmBump.trim() !== '' || c.firmRebound.trim() !== '';
+  return (
+    <div className="dyno-fields">
+      <p className="hint small-text">Pairs of shaft speed (mm/s) and force (N), one per line, from a dyno sheet; straight between the points and the last slope beyond them.</p>
+      <div className="jm-row">{area('softBump', firm ? 'Bump, full soft' : 'Bump')}{area('softRebound', firm ? 'Rebound, full soft' : 'Rebound')}</div>
+      <details open={firm}>
+        <summary className="small-text">Clicker (full firm curves)</summary>
+        <div className="jm-row">{area('firmBump', 'Bump, full firm')}{area('firmRebound', 'Rebound, full firm')}</div>
+        <div className="row small-text">
+          <span className="muted">Clicks</span>
+          <input type="number" min={0} max={60} value={c.clicks} style={{ width: 56 }} onChange={(e) => put({ clicks: Math.max(0, Math.round(Number(e.target.value) || 0)), click: Math.min(c.click, Math.max(0, Math.round(Number(e.target.value) || 0))) })} />
+          {c.clicks > 0 && (
+            <>
+              <span className="muted">Setting</span>
+              <input type="range" min={0} max={c.clicks} step={1} value={c.click} onChange={(e) => put({ click: Number(e.target.value) })} />
+              <b>{c.click}</b><span className="muted">/ {c.clicks} (0 = full soft)</span>
+            </>
+          )}
+        </div>
+      </details>
+    </div>
   );
 }

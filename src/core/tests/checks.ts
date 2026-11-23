@@ -10,7 +10,7 @@ export type Severity = 'pass' | 'warn' | 'fail';
 
 export type CheckId =
   | 'nearLimit' | 'understeer' | 'oversteer' | 'wheelspin' | 'absActive' | 'lockup' | 'speedNotReached'
-  | 'bumpStop' | 'bottoming' | 'wheelLift' | 'rollover' | 'noSolution' | 'beyondGrip' | 'steerLimit' | 'pathError' | 'spin' | 'brakeLimit' | 'brakeFade' | 'trailerSway';
+  | 'bumpStop' | 'bottoming' | 'wheelLift' | 'rollover' | 'noSolution' | 'beyondGrip' | 'steerLimit' | 'pathError' | 'spin' | 'brakeLimit' | 'brakeFade' | 'trailerSway' | 'hitchLoad' | 'lightTongue';
 
 export interface CheckSetting {
   severity: Severity;
@@ -44,6 +44,8 @@ export const CHECK_META: Record<CheckId, CheckMeta> = {
   rollover: { label: 'Rollover', hint: 'Cornering g beyond the rigid rollover threshold (half track ÷ CG height).', fixed: true },
   noSolution: { label: 'No solution', hint: "The car can't settle in this state.", fixed: true },
   brakeLimit: { label: 'Brakes too weak', hint: 'With the brake hydraulics modeled: the braking asked needs more pedal force than the driver applies (line pressure, pistons, pads, rotors). Bigger pistons / rotors, a smaller master cylinder, a booster or more pedal ratio help.' },
+  hitchLoad: { label: 'Hitch overloaded', hint: 'Towing: the load on the hitch ball (tongue weight plus what braking, accelerating and bumps add) is above the hitch\'s rated tongue load (Towing → Hitch rating).' },
+  lightTongue: { label: 'Light tongue', hint: 'Towing: the trailer\'s static tongue weight is below this share of its weight. Below about 10 % a trailer tends to sway.', threshold: { label: 'least tongue share', unit: '%' } },
   trailerSway: { label: 'Trailer sway', hint: 'Towing, driving over time with the driver steering: the trailer swings side to side about the line it would follow without tire slip by more than this (or jackknifes). More tongue weight, a lighter or shorter trailer (less yaw inertia), a longer hitch-to-axle distance or a lower speed help.', threshold: { label: 'allowed', unit: '°' } },
   brakeFade: { label: 'Brake fade', hint: 'With brake fade modeled: the rotors are hot enough that the pads have lost more than this share of their grip. If the faded brakes can no longer make the braking asked, it counts as Brakes too weak. Heavier rotors, more cooling, or pads that fade hotter help.', threshold: { label: 'allowed pad grip loss', unit: '%' } },
   pathError: { label: 'Off the line', hint: 'Driving over time with the driver steering: the car is further than this from the path (runs wide or cuts in).', threshold: { label: 'allowed', unit: 'm' } },
@@ -72,6 +74,8 @@ const base: CheckProfile = {
   brakeLimit: { severity: 'fail' },
   brakeFade: { severity: 'warn', threshold: 10 },
   trailerSway: { severity: 'fail', threshold: 5 },
+  hitchLoad: { severity: 'fail' },
+  lightTongue: { severity: 'warn', threshold: 10 },
   spin: { severity: 'fail', threshold: 12 },
 };
 
@@ -113,6 +117,8 @@ export interface StateFacts {
   steer?: SteerNeed | null;
   /** Handling over time (driver steering): distance off the path (m, + = left), sideslip (deg), steering at full lock. */
   handling?: { pathError: number; sideslip: number; atLock: boolean; sway?: number; jackknife?: boolean; articulation?: number };
+  /** Towing: the load on the hitch ball now (N), the hitch's rating (N, 0 = none) and the static tongue share (0–1). */
+  hitch?: { load: number; limit: number; share: number };
 }
 
 const pct = (x: number) => `${(x * 100).toFixed(0)}%`;
@@ -142,6 +148,9 @@ export function classifyState(f: StateFacts, profile: CheckProfile): Finding[] {
     if (hd.jackknife) add('trailerSway', `The trailer jackknifes (articulation ${Math.abs(hd.articulation ?? 0).toFixed(0)}°)`);
     else if (hd.sway !== undefined && hd.sway > (profile.trailerSway?.threshold ?? 5)) add('trailerSway', `Trailer sway ±${hd.sway.toFixed(1)}°`);
   }
+  const hi = f.hitch;
+  if (hi && hi.share * 100 < (profile.lightTongue?.threshold ?? 10)) add('lightTongue', `Tongue weight is ${(hi.share * 100).toFixed(0)} % of the trailer: below ${(profile.lightTongue?.threshold ?? 10).toFixed(0)} % a trailer tends to sway`);
+  if (hi && hi.limit > 0 && hi.load > hi.limit * (1 + 1e-6)) add('hitchLoad', `Hitch load ${hi.load.toFixed(0)} N is above its rating (${hi.limit.toFixed(0)} N)`);
   if (!r || !r.converged) { add('noSolution', "The car can't settle in this state"); return out; }
   const g = r.grip;
   if (r.unmet.accel) add('speedNotReached', 'No powered wheels: the car cannot accelerate (or hold speed uphill)');

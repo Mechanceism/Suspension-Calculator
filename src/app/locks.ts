@@ -35,16 +35,16 @@ export const lockKeys = {
  * Is this coordinate locked, directly or because a part it belongs to is locked? A point the corner's
  * suspension type doesn't use counts as locked (nothing may free it).
  */
-export function pointAxisLocked(locks: Locks, root: CornerId, k: PointKey, axis: 0 | 1 | 2, damperArm: ArmChoice, kind: SuspensionKind = 'doubleWishbone', layout: SpringLayout = 'coilover', steer: 'rack' | 'arm' = 'rack'): boolean {
-  if (!activePointKeys(kind, layout, steer).includes(k)) return true;
+export function pointAxisLocked(locks: Locks, root: CornerId, k: PointKey, axis: 0 | 1 | 2, damperArm: ArmChoice, kind: SuspensionKind = 'doubleWishbone', layout: SpringLayout = 'coilover', steer: 'rack' | 'arm' | 'centerLink' = 'rack', steeredAxle = false): boolean {
+  if (!activePointKeys(kind, layout, steer, steeredAxle).includes(k)) return true;
   if (locks[lockKeys.point(root, k, axis)]) return true;
-  return ownersOf(k, componentDefs(damperArm, kind, layout, 'lca', steer)).some((c) => locks[lockKeys.part(root, c)]);
+  return ownersOf(k, componentDefs(damperArm, kind, layout, 'lca', steer, steeredAxle)).some((c) => locks[lockKeys.part(root, c)]);
 }
 
-export const pointLocked = (locks: Locks, root: CornerId, k: PointKey, damperArm: ArmChoice, kind: SuspensionKind = 'doubleWishbone', layout: SpringLayout = 'coilover', steer: 'rack' | 'arm' = 'rack') =>
+export const pointLocked = (locks: Locks, root: CornerId, k: PointKey, damperArm: ArmChoice, kind: SuspensionKind = 'doubleWishbone', layout: SpringLayout = 'coilover', steer: 'rack' | 'arm' | 'centerLink' = 'rack') =>
   ([0, 1, 2] as const).every((a) => pointAxisLocked(locks, root, k, a, damperArm, kind, layout, steer));
 
-export const anyAxisLocked = (locks: Locks, root: CornerId, k: PointKey, damperArm: ArmChoice, kind: SuspensionKind = 'doubleWishbone', layout: SpringLayout = 'coilover', steer: 'rack' | 'arm' = 'rack') =>
+export const anyAxisLocked = (locks: Locks, root: CornerId, k: PointKey, damperArm: ArmChoice, kind: SuspensionKind = 'doubleWishbone', layout: SpringLayout = 'coilover', steer: 'rack' | 'arm' | 'centerLink' = 'rack') =>
   ([0, 1, 2] as const).some((a) => pointAxisLocked(locks, root, k, a, damperArm, kind, layout, steer));
 
 const DERIVED_LABELS: Record<string, string> = { length: 'length', inclination: 'pivot-axis inclination', planAngle: 'pivot-axis plan angle', frontViewAngle: 'front-view angle' };

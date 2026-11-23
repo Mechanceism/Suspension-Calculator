@@ -13,10 +13,9 @@ import { DoubleWishbone, SUSPENSION_KINDS, SUSPENSION_LABELS, type SuspensionKin
 import { springLength, dampingForRatio } from '../../core/suspension/spring';
 import { cgFromScales, springFromWeight, unsprungFromParts, estimateInertia, G, type CornerKg, type UnsprungParts } from '../../core/setup/measure';
 import { rackForWheelAngle } from '../../core/tests/steer';
-import {
+import { angleInput,
   useApp, mergedCorners, rootOf, toGeometry, toProfile, toForceModel, vehicleStaticLoads, mountedTireWidth, measuringRim, SETUP_STEPS, SETUP_LABELS,
   type SetupStep, type CornerDesign, type TireAxle, type Field,
-  convertGeometry,
 } from '../store';
 import { importTireFile } from '../tireActions';
 import { switchWorkspace } from '../viewport/SafeHtml';
@@ -72,15 +71,9 @@ const TypeStep: StepView = ({ apply }) => {
   const setLink = useApp((s) => s.setLink);
   useApp((s) => s.corners); useApp((s) => s.geom); // re-render when a type changes
   const kindOf = (axle: 'front' | 'rear') => designOf(axle).geom.kind ?? 'doubleWishbone';
-  const setKind = (axle: 'front' | 'rear', kind: SuspensionKind) => {
-    try {
-      useApp.getState().updateDesigns(links.rearFromFront ? 'both' : axle, (d) => {
-        const geom = convertGeometry(d.geom, kind);
-        new DoubleWishbone(toGeometry(geom)).design();
-        return { ...d, geom };
-      });
-    } catch (err) { useApp.getState().notify(`Can't switch: ${err instanceof Error ? err.message : String(err)}`, 'error'); }
-  };
+  // The same switch as the Inspector's (it links a solid axle's / twist beam's left and right, steers a
+  // steered corner's axle, turns steering off on a twist beam and offers it back).
+  const setKind = (axle: 'front' | 'rear', kind: SuspensionKind) => useApp.getState().setSuspensionKindFor(axle === 'front' ? 'FL' : 'RL', kind);
   const sel = (axle: 'front' | 'rear') => (
     <select value={kindOf(axle)} onChange={(e) => setKind(axle, e.target.value as SuspensionKind)} disabled={axle === 'rear' && links.rearFromFront}>
       {SUSPENSION_KINDS.map((k) => <option key={k} value={k}>{SUSPENSION_LABELS[k]}</option>)}
@@ -511,7 +504,7 @@ const DampersStep: StepView = ({ apply }) => {
 };
 
 const SteeringStep: StepView = ({ apply }) => {
-  const armMech = useApp((st) => st.geom.steerMechanism === 'arm');
+  const armMech = useApp((st) => angleInput(st.geom.steerMechanism));
   const steer = useApp((st) => st.steer);
   const wheelbase = useApp((st) => st.vehicle.wheelbase.value);
   const [turnsMode, setTurnsMode] = useState<'lockToLock' | 'centerToLock'>('lockToLock');

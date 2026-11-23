@@ -183,7 +183,7 @@ export async function tuneSpringsDampers(scope: Scope, active: TestDesign | null
     return null;
   }
   const rateTests: RateTest[] = tests.map((t) => ({
-    segments: t.segments.map((sg) => segmentSpec(sg, t)), weight: tests.length > 1 ? rankWeight(t.rank, tests.length) : 1, onFail: t.onFail, handling: t.handling !== false,
+    segments: t.segments.map((sg) => segmentSpec(sg, t)), weight: tests.length > 1 ? rankWeight(t.rank, tests.length) : 1, onFail: t.onFail, handling: t.handling !== false, driverSpeed: t.handling !== false && !!t.driverSpeed,
   }));
   const { problem } = buildVehicleProblem(s);
   let last: RateProgress | null = null;
@@ -241,7 +241,7 @@ function ensureFreeCoordinates(): boolean {
     for (const { root } of designRoots(s)) {
       const g = all[root].geom;
       for (const k of POINT_KEYS) for (const a of [0, 1, 2] as const) {
-        if (pointAxisLocked(s.locks, root, k, a, g.damperArm, g.kind, layoutOf(g), g.steerMechanism)) continue;
+        if (pointAxisLocked(s.locks, root, k, a, g.damperArm, g.kind, layoutOf(g), g.steerMechanism, g.steeredAxle)) continue;
         const v = g.points[k][a].value;
         ranges[vehVarKey(root, k, a)] = { lo: f(v - OPT_DEFAULT_RANGE), hi: f(v + OPT_DEFAULT_RANGE) };
       }

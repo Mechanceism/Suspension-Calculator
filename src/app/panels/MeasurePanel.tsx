@@ -102,7 +102,7 @@ export function MeasurePanel({ cur }: { cur: Current | null }) {
   const setValue = (m: DimMeasure, v: number) => {
     if (!movingId || !isPoint(movingId) || !a || !b) return;
     const k = movingId;
-    const lockedAxis = ([0, 1, 2] as const).filter((ax) => pointAxisLocked(locks, root, k, ax, geom.damperArm, geom.kind, layoutOf(geom), geom.steerMechanism));
+    const lockedAxis = ([0, 1, 2] as const).filter((ax) => pointAxisLocked(locks, root, k, ax, geom.damperArm, geom.kind, layoutOf(geom), geom.steerMechanism, geom.steeredAxle));
     const others = dims.filter((d) => d.root === root);
     const sharesPoint = others.some((d) => d.a === k || d.b === k);
     if (!useTravel && !sharesPoint) {

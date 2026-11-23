@@ -40,7 +40,7 @@
  */
 import pkg from '../../package.json';
 import { rockerFromCoilover } from '../core/suspension/coilover';
-import { SUSPENSION_KINDS, type SuspensionKind } from '../core/suspension/doubleWishbone';
+import { SUSPENSION_KINDS, SUSPENSION_LABELS, isOneAxle, type SuspensionKind } from '../core/suspension/doubleWishbone';
 import type { CustomLinkage, CustomJoint } from '../core/suspension/customLinkage';
 import { parseValue, type Quantity } from '../core/units/units';
 import { CORNER_IDS, type CornerId } from '../core/vehicle/vehicle';
@@ -56,11 +56,11 @@ import {
   defaultTireGrip, MF_KEYS, MF_META, RIDE_KEYS, DAMPER_TWO_STAGE_KEYS, SETUP_STEPS, AERO_KEYS, AERO_META, defaultAero, BRAKE_KEYS, BRAKE_META, FADE_KEYS, FADE_META, defaultBrakes, TOW_KEYS, TOW_META, defaultTow,
   type VehicleOptimizerSetup, type HeldDimension, newDimId,
   type OptimizerSetup,
-  type DesignState, type CornerDesign, type Field, type CornerLinks, type CornerSettings, type SharedDesign, type Axle,
+  type DesignState, type CornerDesign, type Field, type CornerLinks, type CornerSettings, type SharedDesign, type Axle, centerLinkDefaults, type DamperCurveText,
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 27;
+export const FORMAT_VERSION = 36;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -76,11 +76,15 @@ export interface CornerJson {
   damperArm: 'lca' | 'uca' | 'upright';
   springLayout?: 'coilover' | 'rocker';
   pushrodOn?: 'lca' | 'uca' | 'upright';
-  steerMechanism?: 'rack' | 'arm';
+  steerMechanism?: 'rack' | 'arm' | 'centerLink';
+  /** Arm pivot bushings (format 32), N/mm. */
+  bushing?: { radial: FieldJson; axial: FieldJson };
+  /** Solid axle: steered (format 28). */
+  steeredAxle?: boolean;
   /** Custom linkage (format 27; mm). */
   custom?: unknown;
   spring: Record<string, FieldJson>;
-  damper: { fields: Record<string, FieldJson>; bumpStop: boolean; mode?: 'linear' | 'twoStage' };
+  damper: { fields: Record<string, FieldJson>; bumpStop: boolean; mode?: 'linear' | 'twoStage' | 'curve'; curve?: DamperCurveText };
   tire: { model: DesignState['tireModel']; volumeChange: boolean; sizeText: string; fields: Record<string, FieldJson> };
 }
 
@@ -100,10 +104,14 @@ export interface ProjectFile {
   steering: Record<string, FieldJson>;
   /** The other steering mechanism's own ratio and limit (format 23). */
   steeringSaved?: Record<string, Record<string, FieldJson>>;
+  /** Format 30: a measured steering ratio ('steering-wheel °, input' per line). */
+  steeringCurve?: string;
   motion: { droop: number; bump: number; driver: DesignState['driver'] };
   shared: Record<Axle, {
     antiRollBar: SharedDesign['antiRollBar']; heaveSpring: SharedDesign['heaveSpring'];
     fields: Record<string, FieldJson>; dropLink: { x: FieldJson; y: FieldJson; z: FieldJson };
+    /** Format 29: what the drop link is fixed to. */
+    dropLinkOn?: 'lca' | 'uca' | 'upright' | 'rocker';
   }>;
   /** Locked values (keys as in locks.ts). */
   locks: string[];
@@ -113,6 +121,7 @@ export interface ProjectFile {
     ranges: Record<string, { lo: FieldJson; hi: FieldJson }>;
     goals: Record<string, { on: boolean; target: FieldJson; weight: FieldJson }>;
     lateralG: FieldJson; brakingG: FieldJson; accelG: FieldJson; keepClose: FieldJson; caseSource?: string; starts?: number;
+    combinedLatG?: FieldJson; combinedBrakeG?: FieldJson; caseWeights?: Record<string, number>;
   };
   /** Contact-patch pressure model (contact-area goal). */
   grip: Record<string, FieldJson>;
@@ -138,7 +147,8 @@ export interface ProjectFile {
 interface OptimizerJson {
   ranges: Record<string, { lo: FieldJson; hi: FieldJson }>;
   goals: Record<string, { on: boolean; target: FieldJson; weight: FieldJson }>;
-  rollAngle: FieldJson; rackCheck: FieldJson; keepClose: FieldJson; rollLoadFactor: FieldJson;
+  rollAngle: FieldJson; rackCheck: FieldJson; keepClose: FieldJson; rollLoadFactor: FieldJson; starts?: number;
+  lengthRanges?: Record<string, { lo: FieldJson; hi: FieldJson }>;
 }
 
 const fj = (f: Field): FieldJson => ({ text: f.text, value: f.value });
@@ -155,9 +165,11 @@ function cornerToJson(id: CornerId, c: CornerDesign): CornerJson {
     scalars: Object.fromEntries(SCALAR_KEYS.map((k) => [cornerParam(id, SCALAR_META[k].name), fj(c.geom.scalars[k])])),
     damperArm: c.geom.damperArm,
     springLayout: layoutOf(c.geom), pushrodOn: c.geom.pushrodOn ?? 'lca', steerMechanism: c.geom.steerMechanism ?? 'rack',
+    ...(c.geom.steeredAxle ? { steeredAxle: true } : {}),
+    ...(c.geom.bushing ? { bushing: { radial: fj(c.geom.bushing.radial), axial: fj(c.geom.bushing.axial) } } : {}),
     ...(c.geom.custom ? { custom: JSON.parse(JSON.stringify(c.geom.custom)) as unknown } : {}),
     spring: mapFields(SPRING_KEYS, c.spring),
-    damper: { fields: mapFields(DAMPER_KEYS, c.damper), bumpStop: c.bumpStop, mode: c.damperMode },
+    damper: { fields: mapFields(DAMPER_KEYS, c.damper), bumpStop: c.bumpStop, mode: c.damperMode, ...(c.damperCurve ? { curve: c.damperCurve } : {}) },
     tire: { model: c.tireModel, volumeChange: c.volumeChange, sizeText: c.tireSizeText, fields: mapFields(TIRE_KEYS, c.tire) },
   };
 }
@@ -178,6 +190,7 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
     vehicle: { fields: mapFields(VEHICLE_KEYS, d.vehicle), autoPreload: d.autoPreload, cornerLoadMode: d.cornerLoadMode },
     steering: mapFields(STEER_KEYS, d.steer),
     steeringSaved: Object.fromEntries(Object.entries(d.steerSaved).map(([m, rec]) => [m, mapFields(MECH_STEER_KEYS, rec!)])),
+    ...(d.steerCurve ? { steeringCurve: d.steerCurve } : {}),
     motion: { droop: d.droop, bump: d.bump, driver: d.driver },
     shared: Object.fromEntries((['front', 'rear'] as const).map((a) => {
       const sh = d.shared[a];
@@ -185,6 +198,7 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
         antiRollBar: sh.antiRollBar, heaveSpring: sh.heaveSpring,
         fields: { arbRate: fj(sh.arbRate), barRate: fj(sh.barRate), lever: fj(sh.lever), heaveRate: fj(sh.heaveRate) },
         dropLink: { x: fj(sh.dropLink[0]), y: fj(sh.dropLink[1]), z: fj(sh.dropLink[2]) },
+        ...(sh.dropLinkOn && sh.dropLinkOn !== 'lca' ? { dropLinkOn: sh.dropLinkOn } : {}),
       }];
     })) as unknown as ProjectFile['shared'],
     locks: Object.keys(d.locks).sort(),
@@ -193,6 +207,7 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
       goals: Object.fromEntries(Object.entries(o!.goals).map(([k, g]) => [k, { on: g.on, target: fj(g.target), weight: fj(g.weight) }])),
       rollAngle: fj(o!.rollAngle), rackCheck: fj(o!.rackCheck), keepClose: fj(o!.keepClose), rollLoadFactor: fj(o!.rollLoadFactor),
       ...(o!.starts && o!.starts > 1 ? { starts: o!.starts } : {}),
+      ...(o!.lengthRanges ? { lengthRanges: Object.fromEntries(Object.entries(o!.lengthRanges).map(([k, r]) => [k, { lo: fj(r!.lo), hi: fj(r!.hi) }])) } : {}),
     }])),
     vehicleOptimizer: {
       ranges: Object.fromEntries(Object.entries(d.vehicleOptimizer.ranges).map(([k, r]) => [k, { lo: fj(r.lo), hi: fj(r.hi) }])),
@@ -201,6 +216,9 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
       accelG: fj(d.vehicleOptimizer.accelG), keepClose: fj(d.vehicleOptimizer.keepClose),
       ...(d.vehicleOptimizer.caseSource ? { caseSource: d.vehicleOptimizer.caseSource } : {}),
       ...(d.vehicleOptimizer.starts && d.vehicleOptimizer.starts > 1 ? { starts: d.vehicleOptimizer.starts } : {}),
+      ...(d.vehicleOptimizer.combinedLatG ? { combinedLatG: fj(d.vehicleOptimizer.combinedLatG) } : {}),
+      ...(d.vehicleOptimizer.combinedBrakeG ? { combinedBrakeG: fj(d.vehicleOptimizer.combinedBrakeG) } : {}),
+      ...(d.vehicleOptimizer.caseWeights ? { caseWeights: { ...d.vehicleOptimizer.caseWeights } } : {}),
     },
     grip: mapFields(GRIP_KEYS, d.grip),
     tireGrip: mapFields(MF_KEYS, d.tireGrip),
@@ -336,6 +354,24 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   25: (f) => ({ ...f, formatVersion: 26, ...(isObj(f.tow) && isObj(f.tow.fields) ? { tow: { ...f.tow, fields: { ...f.tow.fields, trailerYawRadius: { text: '1350', value: 1350 } } } } : {}) }),
   // 26 → 27: no custom linkages (nothing to change).
   26: (f) => ({ ...f, formatVersion: 27 }),
+  // 27 → 28: no steered solid axles, no Watt's linkage (nothing to change).
+  27: (f) => ({ ...f, formatVersion: 28 }),
+  // 28 → 29: drop links on the lower arm (the only choice before).
+  28: (f) => ({ ...f, formatVersion: 29 }),
+  // 29 → 30: no measured steering ratio.
+  29: (f) => ({ ...f, formatVersion: 30 }),
+  // 30 → 31: center-link steering points (filled in on read).
+  30: (f) => ({ ...f, formatVersion: 31 }),
+  // 31 → 32: arm bushings at their typical stiffness (absent = typical).
+  31: (f) => ({ ...f, formatVersion: 32 }),
+  // 32 → 33: a trailer gets no hitch rating (no limit).
+  32: (f) => ({ ...f, formatVersion: 33, ...(isObj(f.tow) && isObj(f.tow.fields) ? { tow: { ...f.tow, fields: { ...f.tow.fields, tongueLimit: { text: '0', value: 0 } } } } : {}) }),
+  // 33 → 34: tire relaxation off (0).
+  33: (f) => ({ ...f, formatVersion: 34 }),
+  // 35 → 36: no damper dyno curves.
+  35: (f) => ({ ...f, formatVersion: 36 }),
+  // 34 → 35: aero side force, roll sensitivity and balance shift off.
+  34: (f) => ({ ...f, formatVersion: 35, ...(isObj(f.aero) && isObj(f.aero.fields) ? { aero: { ...f.aero, fields: { ...f.aero.fields, CsA: { text: '0', value: 0 }, sideCp: { text: '900', value: 900 }, rollSensF: { text: '0', value: 0 }, rollSensR: { text: '0', value: 0 }, yawBalance: { text: '0', value: 0 } } } } : {}) }),
 };
 
 /** Read a check table; unknown checks are ignored, missing ones take the defaults. */
@@ -387,6 +423,7 @@ function readTests(raw: unknown, warnings: string[]): TestDesign[] {
         speedEnd: fieldOr(sr.speedEnd, 'speed', d.speedEnd, where('end speed')),
         path: sr.path === 'left' || sr.path === 'right' ? sr.path : 'straight',
         radius: fieldOr(sr.radius, 'distance', d.radius, where('radius')),
+        ...(isObj(sr.width) ? { width: fieldOr(sr.width, 'distance', { text: '', value: 0 }, where('track width')) } : {}),
         latG: fieldOr(sr.latG, 'ratio', OFF, where('lateral g')),
         longG: fieldOr(sr.longG, 'ratio', OFF, where('longitudinal g')),
         grade: fieldOr(sr.grade, 'percent', d.grade, where('grade')),
@@ -431,6 +468,8 @@ function readTests(raw: unknown, warnings: string[]): TestDesign[] {
       enabled: t.enabled !== false,
       ride: t.ride !== false,
       handling: t.handling !== false,
+      ...(t.driverSpeed === true ? { driverSpeed: true } : {}),
+      ...(t.racingLine === true ? { racingLine: true } : {}),
     });
   }
   return out;
@@ -497,7 +536,18 @@ function readVehicleOptimizer(raw: unknown, warnings: string[]): VehicleOptimize
   };
   const { ranges, goals } = readRangesGoals(raw, d.goals, valid, rf);
   const opt = (k: 'lateralG' | 'brakingG' | 'accelG' | 'keepClose') => (raw[k] ? rf(raw[k], 'ratio', d[k], k) : d[k]);
-  return { ranges, goals, lateralG: opt('lateralG'), brakingG: opt('brakingG'), accelG: opt('accelG'), keepClose: opt('keepClose'), ...(typeof raw.caseSource === 'string' ? { caseSource: raw.caseSource } : {}), ...(typeof raw.starts === 'number' && raw.starts > 1 ? { starts: Math.min(16, Math.round(raw.starts)) } : {}) };
+  const zero = { text: '0', value: 0 };
+  const cw = isObj(raw.caseWeights) ? Object.fromEntries((['lateral', 'braking', 'accel', 'combined'] as const)
+    .filter((k) => typeof (raw.caseWeights as Json)[k] === 'number' && Number.isFinite((raw.caseWeights as Json)[k]))
+    .map((k) => [k, Math.max(0, (raw.caseWeights as Json)[k] as number)])) : null;
+  return {
+    ranges, goals, lateralG: opt('lateralG'), brakingG: opt('brakingG'), accelG: opt('accelG'), keepClose: opt('keepClose'),
+    ...(typeof raw.caseSource === 'string' ? { caseSource: raw.caseSource } : {}),
+    ...(typeof raw.starts === 'number' && raw.starts > 1 ? { starts: Math.min(16, Math.round(raw.starts)) } : {}),
+    ...(raw.combinedLatG ? { combinedLatG: rf(raw.combinedLatG, 'ratio', zero, 'braking-in-a-turn lateral g') } : {}),
+    ...(raw.combinedBrakeG ? { combinedBrakeG: rf(raw.combinedBrakeG, 'ratio', zero, 'braking-in-a-turn braking g') } : {}),
+    ...(cw && Object.keys(cw).length ? { caseWeights: cw } : {}),
+  };
 }
 
 const AXIS_KEYS = ['x', 'y', 'z'];
@@ -514,7 +564,9 @@ function readOptimizer(raw: unknown, warnings: string[]): Partial<Record<CornerI
     const ranges: OptimizerSetup['ranges'] = {};
     for (const [k, r] of Object.entries(isObj(o.ranges) ? o.ranges : {})) {
       const [pk, ax] = k.split('.');
-      if (!(POINT_KEYS as readonly string[]).includes(pk!) || !AXIS_KEYS.includes(ax!) || !isObj(r)) continue;
+      // Point coordinates, setup values (scalar.…) and custom linkage points (custom.…).
+      const ok = ((POINT_KEYS as readonly string[]).includes(pk!) && AXIS_KEYS.includes(ax!)) || /^scalar\.(staticCamber|staticToe|tirePressure)$/.test(k) || /^custom\..+\.(p|q)\.[xyz]$/.test(k);
+      if (!ok || !isObj(r)) continue;
       ranges[k] = { lo: rf(r.lo, 'length', { text: '0', value: 0 }, `${k} min`), hi: rf(r.hi, 'length', { text: '0', value: 0 }, `${k} max`) };
     }
     const goals = d.goals;
@@ -531,6 +583,10 @@ function readOptimizer(raw: unknown, warnings: string[]): Partial<Record<CornerI
       keepClose: o.keepClose ? rf(o.keepClose, 'ratio', d.keepClose, 'keep close') : d.keepClose,
       rollLoadFactor: o.rollLoadFactor ? rf(o.rollLoadFactor, 'ratio', d.rollLoadFactor, 'roll load factor') : d.rollLoadFactor,
       ...(typeof o.starts === 'number' && o.starts > 1 ? { starts: Math.min(16, Math.round(o.starts)) } : {}),
+      ...(isObj(o.lengthRanges) ? { lengthRanges: Object.fromEntries((['uca', 'lca', 'tieRod'] as const).filter((k) => isObj((o.lengthRanges as Json)[k])).map((k) => {
+        const r = (o.lengthRanges as Json)[k] as Json;
+        return [k, { lo: rf(r.lo, 'length', { text: '0', value: 0 }, `${k} length min`), hi: rf(r.hi, 'length', { text: '0', value: 0 }, `${k} length max`) }];
+      })) } : {}),
     };
   }
   return out;
@@ -583,7 +639,7 @@ function readCustom(raw: unknown, where: string, w: string[]): CustomLinkage | u
   const joints: CustomJoint[] = [];
   for (const j of Array.isArray(raw.joints) ? raw.joints : []) {
     if (!isObj(j)) continue;
-    const kind = j.kind === 'ball' || j.kind === 'hinge' || j.kind === 'rod' ? j.kind : null;
+    const kind = j.kind === 'ball' || j.kind === 'hinge' || j.kind === 'rod' || j.kind === 'cylinder' || j.kind === 'slider' ? j.kind : null;
     const p = vec(j.p), q = vec(j.q);
     if (!kind || typeof j.id !== 'string' || typeof j.a !== 'string' || typeof j.b !== 'string' || !ok(p) || (kind !== 'ball' && !ok(q))) {
       w.push(`${where}: a joint couldn't be read, dropped`);
@@ -603,6 +659,13 @@ function withPivotDefaults(points: CornerDesign['geom']['points'], missing: bool
   return { ...points, strPiv1: f(x, y - 60, z + 120), strPiv2: f(x, y + 90, z + 120) };
 }
 
+/** Center-link points around the inner tie-rod joint (for files from before format 31). */
+function withLinkDefaults(points: CornerDesign['geom']['points'], missing: boolean): CornerDesign['geom']['points'] {
+  if (!missing) return points;
+  const i = { x: points.trInner[0].value, y: points.trInner[1].value, z: points.trInner[2].value };
+  return { ...points, ...(centerLinkDefaults(i) as Record<'pitEnd' | 'idlPiv1' | 'idlPiv2' | 'idlEnd', [Field, Field, Field]>) };
+}
+
 /** Rocker points built from the coilover (for files from before format 19). */
 function withRockerDefaults(points: CornerDesign['geom']['points']): CornerDesign['geom']['points'] {
   const v = (k: keyof typeof points) => ({ x: points[k][0].value, y: points[k][1].value, z: points[k][2].value });
@@ -617,7 +680,7 @@ function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: str
   const w = isObj(raw) ? warnings : [];
   const pts = isObj(c.points) ? c.points : {};
   const points = { ...def.geom.points };
-  let rockerMissing = false, pivotMissing = false;
+  let rockerMissing = false, pivotMissing = false, linkMissing = false;
   for (const k of POINT_KEYS) {
     const name = cornerParam(id, POINT_NAMES[k]);
     const p = pts[name];
@@ -630,6 +693,8 @@ function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: str
     if (!isObj(p) && (k === 'strPiv1' || k === 'strPiv2')) { pivotMissing = true; continue; }
     // Format 24 added the Panhard rod (solid axle, 3-link): older files take the default, quietly.
     if (!isObj(p) && (k === 'phChs' || k === 'phAxle')) continue;
+    // Format 31 added the center-link steering points: older files get them around the inner tie-rod joint, quietly.
+    if (!isObj(p) && (k === 'pitEnd' || k === 'idlPiv1' || k === 'idlPiv2' || k === 'idlEnd')) { linkMissing = true; continue; }
     if (!isObj(p)) w.push(`${name}: missing, using default`);
     points[k] = (['x', 'y', 'z'] as const).map((ax, i) =>
       readField(obj[ax], 'length', def.geom.points[k][i]!, `${name}.${ax}`, isObj(p) ? w : [])) as [Field, Field, Field];
@@ -648,8 +713,10 @@ function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: str
   const model = tireRaw.model === 'rigid' || tireRaw.model === 'stiffness' || tireRaw.model === 'gas' ? tireRaw.model : def.tireModel;
   return {
     geom: {
-      points: withPivotDefaults(rockerMissing ? withRockerDefaults(points) : points, pivotMissing), scalars,
-      steerMechanism: c.steerMechanism === 'arm' ? 'arm' : 'rack',
+      points: withLinkDefaults(withPivotDefaults(rockerMissing ? withRockerDefaults(points) : points, pivotMissing), linkMissing), scalars,
+      steerMechanism: c.steerMechanism === 'arm' || c.steerMechanism === 'centerLink' ? c.steerMechanism : 'rack',
+      ...(c.steeredAxle === true ? { steeredAxle: true } : {}),
+      ...(isObj(c.bushing) ? { bushing: { radial: readField(c.bushing.radial, 'rate', { text: '5000', value: 5000 }, `${id}.bushing.radial`, w), axial: readField(c.bushing.axial, 'rate', { text: '1500', value: 1500 }, `${id}.bushing.axial`, w) } } : {}),
       springLayout: c.springLayout === 'rocker' ? 'rocker' : 'coilover',
       pushrodOn: c.pushrodOn === 'uca' || c.pushrodOn === 'upright' ? c.pushrodOn : 'lca',
       damperArm: c.damperArm === 'uca' || c.damperArm === 'upright' ? c.damperArm : 'lca', kind: (SUSPENSION_KINDS as string[]).includes(c.type as string) ? c.type as SuspensionKind : 'doubleWishbone',
@@ -664,7 +731,13 @@ function readCorner(raw: unknown, id: CornerId, def: CornerDesign, warnings: str
       return r;
     })(),
     bumpStop: typeof damperRaw.bumpStop === 'boolean' ? damperRaw.bumpStop : def.bumpStop,
-    damperMode: damperRaw.mode === 'twoStage' ? 'twoStage' : 'linear',
+    damperMode: damperRaw.mode === 'twoStage' || damperRaw.mode === 'curve' ? damperRaw.mode : 'linear',
+    // Format 36: dyno curves and a clicker (older files: none, quietly).
+    ...(isObj(damperRaw.curve) ? { damperCurve: {
+      softBump: String(damperRaw.curve.softBump ?? ''), softRebound: String(damperRaw.curve.softRebound ?? ''),
+      firmBump: String(damperRaw.curve.firmBump ?? ''), firmRebound: String(damperRaw.curve.firmRebound ?? ''),
+      clicks: Math.max(0, Math.round(Number(damperRaw.curve.clicks) || 0)), click: Math.max(0, Math.round(Number(damperRaw.curve.click) || 0)),
+    } } : {}),
     tireModel: model,
     tire: readRecord(tireRaw.fields, TIRE_KEYS, (k) => TIRE_META[k].quantity, def.tire, `${id}.tire`, w),
     volumeChange: typeof tireRaw.volumeChange === 'boolean' ? tireRaw.volumeChange : def.volumeChange,
@@ -687,6 +760,7 @@ function readShared(raw: unknown, axle: Axle, warnings: string[]): SharedDesign 
     lever: readField(fields.lever, SHARED_META.lever.quantity, def.lever, `shared.${axle}.lever`, warnings),
     heaveRate: readField(fields.heaveRate, SHARED_META.heaveRate.quantity, def.heaveRate, `shared.${axle}.heaveRate`, warnings),
     dropLink: (['x', 'y', 'z'] as const).map((k, i) => readField(dl[k], 'length', def.dropLink[i]!, `shared.${axle}.dropLink.${k}`, warnings)) as [Field, Field, Field],
+    ...(a.dropLinkOn === 'uca' || a.dropLinkOn === 'upright' || a.dropLinkOn === 'rocker' ? { dropLinkOn: a.dropLinkOn } : {}),
   };
 }
 
@@ -720,6 +794,17 @@ export function importProject(data: unknown): ImportResult {
     rearPair: typeof linksRaw.rearPair === 'boolean' ? linksRaw.rearPair : DEFAULT_LINKS.rearPair,
     rearFromFront: typeof linksRaw.rearFromFront === 'boolean' ? linksRaw.rearFromFront : DEFAULT_LINKS.rearFromFront,
   };
+  // A solid axle or twist beam is one part under both wheels, so its left and right corners share one design
+  // (a file could have them apart): link them, keeping the axle's design (the left one's when both are axles).
+  for (const [pair, l, r, name] of [['frontPair', 'FL', 'FR', 'front'], ['rearPair', 'RL', 'RR', 'rear']] as const) {
+    if (links[pair] || (pair === 'rearPair' && links.rearFromFront)) continue;
+    const kl = corners[l].geom.kind, kr = corners[r].geom.kind;
+    if (!isOneAxle(kl) && !isOneAxle(kr)) continue;
+    const from = isOneAxle(kl) ? 'left' : 'right';
+    if (from === 'right') corners[l] = corners[r];
+    links[pair] = true;
+    warnings.push(`The ${name} ${SUSPENSION_LABELS[(from === 'left' ? kl : kr)!].toLowerCase()} is one axle under both wheels: its left and right corners now share the ${from} corner's design.`);
+  }
   const settingsRaw = isObj(f.settings) ? f.settings : {};
   const settings = Object.fromEntries(CORNER_IDS.map((id) => {
     const r = isObj(settingsRaw[id]) ? settingsRaw[id] as Json : {};
@@ -742,8 +827,10 @@ export function importProject(data: unknown): ImportResult {
     ...corners.FL, // replaced with the active corner's root below
     // The variable ratio came with format 20: older files keep a constant ratio quietly.
     // Format 23: the other mechanism's own steering values (older files: none, quietly).
+    // Format 30: a measured steering ratio (older files: none, quietly).
+    ...(typeof f.steeringCurve === 'string' && f.steeringCurve.trim() ? { steerCurve: f.steeringCurve } : {}),
     steerSaved: Object.fromEntries(Object.entries(isObj(f.steeringSaved) ? f.steeringSaved : {})
-      .filter(([m, rec]) => (m === 'rack' || m === 'arm') && isObj(rec))
+      .filter(([m, rec]) => (m === 'rack' || m === 'arm' || m === 'centerLink') && isObj(rec))
       .map(([m, rec]) => [m, readRecord(rec, MECH_STEER_KEYS, (k) => STEER_META[k].quantity, def.steer, `steering (${m})`, warnings)])) as DesignState['steerSaved'],
     steer: (() => {
       const w: string[] = [];
@@ -761,7 +848,7 @@ export function importProject(data: unknown): ImportResult {
       // Files before format 10 have no ride inputs: they take the defaults quietly.
       const w: string[] = [];
       const r = readRecord(vehicleRaw.fields, VEHICLE_KEYS, (k) => VEHICLE_META[k].quantity, def.vehicle, 'vehicle', w);
-      if (!olderThan4) warnings.push(...w.filter((x) => (original >= 10 || !RIDE_KEYS.some((k) => x.startsWith(`vehicle.${k}`))) && (original >= 17 || !x.startsWith('vehicle.yawInertia'))));
+      if (!olderThan4) warnings.push(...w.filter((x) => (original >= 10 || !RIDE_KEYS.some((k) => x.startsWith(`vehicle.${k}`))) && (original >= 17 || !x.startsWith('vehicle.yawInertia')) && (original >= 34 || !x.startsWith('vehicle.relaxation'))));
       return r;
     })(),
     autoPreload: typeof vehicleRaw.autoPreload === 'boolean' ? vehicleRaw.autoPreload : def.autoPreload,

@@ -167,6 +167,23 @@ export const SAMPLE_LEAF: DoubleWishboneGeometry = {
   damper: { chassis: vec3(400, 500, -30), arm: 'upright', armPoint: vec3(400, 190, -30) }, // the leaf is the spring: this only sets its (virtual) installed length
 };
 
+/** Sample solid rear axle, 3-link + Watt's linkage: the bar's pivot on the axle's center (roll center at its height, 300 mm). */
+export const SAMPLE_BEAM_WATTS: DoubleWishboneGeometry = {
+  ...SAMPLE_BEAM3, kind: 'beamWatts',
+  panhard: { axle: vec3(0, 200, -120), chassis: vec3(350, 290, -120) }, // pivot on the axle, top link's frame end
+};
+
+/**
+ * Sample steered solid front axle, 4-link: kingpins at the axle ends (7° KPI, 4° caster), knuckle arms behind
+ * them angled in toward the rear axle, a cross tie rod, and a drag link from the rack near the centerline.
+ */
+export const SAMPLE_BEAM_STEERED: DoubleWishboneGeometry = {
+  ...SAMPLE_BEAM4, steeredAxle: true,
+  lca: { ...SAMPLE_BEAM4.lca, out2: vec3(490, 40, 8) },
+  uca: { ...SAMPLE_BEAM4.uca, out2: vec3(460, 280, -8) },
+  tieRod: { inner: vec3(60, 140, -150), outer: vec3(430, 140, -150) },
+};
+
 /** Every preset the app offers: the double wishbone samples, then one of each other type. */
 export const PRESET_LAYOUTS: Layout[] = [
   ...SAMPLE_LAYOUTS,
@@ -176,6 +193,8 @@ export const PRESET_LAYOUTS: Layout[] = [
   { id: 'T', label: 'Single arm: trailing arm', geometry: SAMPLE_TRAILING_ARM },
   { id: 'A4', label: 'Solid axle, 4-link', geometry: SAMPLE_BEAM4 },
   { id: 'A3', label: 'Solid axle, 3-link + Panhard rod', geometry: SAMPLE_BEAM3 },
+  { id: 'AW', label: "Solid axle, 3-link + Watt's linkage", geometry: SAMPLE_BEAM_WATTS },
+  { id: 'AS', label: 'Solid axle, steered (front, 4-link)', geometry: SAMPLE_BEAM_STEERED },
   { id: 'TB', label: 'Twist beam', geometry: SAMPLE_TWIST_BEAM },
   { id: 'LF', label: 'Solid axle on leaf springs', geometry: SAMPLE_LEAF },
 ];

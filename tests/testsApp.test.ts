@@ -168,7 +168,7 @@ describe('priority ranks', () => {
     const { runTest } = await import('../src/core');
     const d = defaultDesign();
     const { problem } = buildVehicleProblem(d as AppState);
-    expect(problem.ride).toEqual({ rollInertia: 35, pitchInertia: 100, yawInertia: 140, tireDamping: 100 });
+    expect(problem.ride).toEqual({ rollInertia: 35, pitchInertia: 100, yawInertia: 140, tireDamping: 100, relaxation: 0 });
     expect(problem.designs.FL?.damping).toEqual({ bump: 1500, rebound: 2500 });
     const geoms = Object.fromEntries(Object.entries(problem.designs).map(([k, v]) => [k, v!.geometry]));
     for (const preset of TEST_PRESETS) {

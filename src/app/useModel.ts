@@ -7,16 +7,25 @@
  * (motion ratio, wheel rate, ride rate, ride frequency).
  */
 import { useMemo, useRef } from 'react';
-import { useApp, toGeometry, toProfile, toForceModel, sprungLoad, vehicleStaticLoads, mergedCorners } from './store';
+import { useApp, ratioSpecOf, toGeometry, toProfile, toForceModel, sprungLoad, vehicleStaticLoads, mergedCorners } from './store';
 import { DoubleWishbone, type CornerState } from '../core/suspension/doubleWishbone';
 import { rollCamber, ackermann } from '../core/suspension/derived';
 import { steeringWheelAngle, inputPerRev } from '../core/tests/steer';
 import type { SteeringMechanism } from '../core/suspension/steering';
-import { normalize as normV, sub as subV } from '../core/math/vec3';
+import { normalize as normV, sub as subV, add as addV } from '../core/math/vec3';
+import { mulVec } from '../core/math/mat3';
+import { centerLinkPose } from '../core/suspension/steering';
 
 /** How the corner's steering input moves the inner tie-rod joint. */
-const mechanismOf = (c: { rackAxis: import('../core/math/vec3').Vec3; geometry: import('../core/suspension/doubleWishbone').DoubleWishboneGeometry }): SteeringMechanism => {
+const mechanismOf = (c: { rackAxis: import('../core/math/vec3').Vec3; geometry: import('../core/suspension/doubleWishbone').DoubleWishboneGeometry }, input = 0): SteeringMechanism => {
   const s = c.geometry.steering;
+  if (s?.kind === 'centerLink') {
+    // The inner joint rides on the center link: its motion per radian of pitman angle (central difference at the input).
+    const at = (deg: number) => { const cl = centerLinkPose(s, deg); return cl ? addV(cl.A, mulVec(cl.R, subV(c.geometry.tieRod.inner, cl.A0))) : null; };
+    const a = at(input - 0.05), b = at(input + 0.05);
+    const k = 180 / Math.PI / 0.1;
+    return { kind: 'arm', pivot: s.pivot1, axis: normV(subV(s.pivot2, s.pivot1)), ...(a && b ? { rate: { x: (b.x - a.x) * k, y: (b.y - a.y) * k, z: (b.z - a.z) * k } } : {}) };
+  }
   return s?.kind === 'arm' ? { kind: 'arm', pivot: s.pivot1, axis: normV(subV(s.pivot2, s.pivot1)) } : { kind: 'rack', axis: c.rackAxis };
 };
 import { characteristics, deg, type Characteristics } from '../core/suspension/characteristics';
@@ -111,6 +120,11 @@ export interface Current extends Omit<Sample, 'spring'> {
   rcMigration: number;
   /** Outside wheel's camber change to the ground per degree of body roll (deg/deg; 1 = leans with the body). */
   rollCamber: number;
+  /** Outside wheel's KPI and caster change to the ground per degree of body roll (°/°). */
+  rollKpi: number;
+  rollCaster: number;
+  /** Compliance (arm bushings): toe / camber change per kN of side force (tire pushed inboard) and per kN of braking, °/kN. */
+  compliance: { lateral: { toe: number; camber: number }; braking: { toe: number; camber: number } } | null;
   spring: SpringInfo | null;
 }
 
@@ -152,7 +166,8 @@ export function useModel(): Model {
   const bumpStop = useApp((s) => s.bumpStop);
   const steer = useApp((s) => s.steer);
   const cFactor = steer.cFactor.value;
-  const ratioSpec = { cFactor, cFactorLock: steer.cFactorLock.value, rackLimit: steer.rackLimit.value };
+  const curveText = useApp((s) => s.steerCurve);
+  const ratioSpec = { ...ratioSpecOf({ steer, steerCurve: curveText }), cFactor };
   const driver = mode === 'loaded' ? 'wheelCenter' : sliderDriver;
   const factor = mode === 'loaded' ? loadFactor : 1;
 
@@ -198,7 +213,7 @@ export function useModel(): Model {
   const sweepLoader = useMemo(() => makeLoader(staticLoad), [tireSetup, staticLoad]);
   const lastEquilibrium = useRef<number | undefined>(undefined);
   // While dragging, slow extras reuse their last values so the drag stays responsive.
-  const lastSlow = useRef<{ wheelRate: number; tireRate: number; steering: SteeringInfo | null }>({ wheelRate: NaN, tireRate: Infinity, steering: null });
+  const lastSlow = useRef<{ wheelRate: number; tireRate: number; steering: SteeringInfo | null; compliance?: Current['compliance'] }>({ wheelRate: NaN, tireRate: Infinity, steering: null });
   const lastSteerSweep = useRef<SteerSample[]>([]);
 
   const kinematicSweep = useMemo(() => {
@@ -299,8 +314,10 @@ export function useModel(): Model {
 
     const computeSteering = (): SteeringInfo => {
     // Steering: compare with straight ahead at the same arm position.
+    // Same height, other rack positions: by the lower arm's angle; a solid axle (links with one pivot, no
+    // arm axis) by its travel.
     const armAngle = lowerArmAngle(corner.geometry, state);
-    const atRack = (r: number) => corner.solve({ driver: 'lowerArmAngle', armAngle, rack: r }, state.poses);
+    const atRack = (r: number) => corner.solve(corner.solidAxle ? { driver: state.inputs.driver, travel: state.inputs.travel, rack: r } : { driver: 'lowerArmAngle', armAngle, rack: r }, state.poses);
     const straight = atRack(0);
     const rp = atRack(rack + 0.5);
     const rm = atRack(rack - 0.5);
@@ -310,7 +327,7 @@ export function useModel(): Model {
     const forces = {
       vertical, lateral: steer.lateral.value, longitudinal: steer.longitudinal.value, pneumaticTrail: steer.pneumaticTrail.value,
     };
-    const mech = mechanismOf(corner);
+    const mech = mechanismOf(corner, rack);
     const cLocal = inputPerRev(rack, ratioSpec);
     const loads = steeringLoads(state, contact, forces, mech, cLocal);
     const axisGround = loaded?.steeringAxisAtGround ?? chars.steeringAxisAtGround;
@@ -333,7 +350,7 @@ export function useModel(): Model {
     };
     };
     // A beam axle doesn't steer here: no steering readout.
-    const steering = corner.solidAxle || corner.twistBeam ? null : interacting && lastSlow.current.steering ? lastSlow.current.steering : computeSteering();
+    const steering = (corner.solidAxle && !corner.geometry.steeredAxle) || corner.twistBeam ? null : interacting && lastSlow.current.steering ? lastSlow.current.steering : computeSteering();
     if (!interacting) {
       lastSlow.current = { wheelRate: springInfo?.wheelRate ?? NaN, tireRate: springInfo?.tireRate ?? Infinity, steering };
     }
@@ -354,23 +371,33 @@ export function useModel(): Model {
       trackChange: (plus.halfTrack - minus.halfTrack) / (2 * h),
       rcMigration: plus.rollCenterHeight !== null && minus.rollCenterHeight !== null ? (plus.rollCenterHeight - minus.rollCenterHeight) / (2 * h) : NaN,
       rollCamber: rollCamber(rollCamberGain ?? (deg(plus.camber) - deg(minus.camber)) / (2 * h), chars.halfTrack),
+      // Body roll tips the outside wheel's axis outward by the roll (KPI falls by it); its bump changes both.
+      rollKpi: -1 + ((deg(plus.kpi) - deg(minus.kpi)) / (2 * h)) * (Math.PI / 180) * chars.halfTrack,
+      rollCaster: ((deg(plus.caster) - deg(minus.caster)) / (2 * h)) * (Math.PI / 180) * chars.halfTrack,
+      compliance: interacting ? lastSlow.current.compliance ?? null : (() => {
+        const b = useApp.getState().geom.bushing;
+        try { const r = corner.compliance(state, { radial: b?.radial.value ?? 5000, axial: b?.axial.value ?? 1500 }); lastSlow.current.compliance = r; return r; } catch { return null; }
+      })(),
     };
   }, [live, sweep, sliderTravel, rack, driver, mode, factor, spec, ws, droop, bump, tireSetup, spring, steer, cFactor, damperLimits, interacting]);
 
   // Steering sweep across the rack range at the current arm position.
-  const armKey = current && built.corner ? Math.round(lowerArmAngle(built.corner.geometry, current.state) * 1e5) : 0;
+  // The current height: the lower arm's angle, or a solid axle's travel (its links have no arm axis).
+  const armKey = current && built.corner ? Math.round((built.corner.solidAxle ? current.state.inputs.travel : lowerArmAngle(built.corner.geometry, current.state)) * 1e5) : 0;
+  const heightDriver = current?.state.inputs.driver ?? 'wheelCenter';
   const rackLimit = steer.rackLimit.value;
   const wheelbase = useApp((s) => s.vehicle.wheelbase.value);
   const curTireLoad = Math.round(current?.tireLoad ?? spring.cornerLoad.value);
   const steerSweep = useMemo<SteerSample[]>(() => {
     const corner = built.corner;
-    if (!corner || !current || corner.solidAxle || corner.twistBeam) return [];
+    if (!corner || !current || (corner.solidAxle && !corner.geometry.steeredAxle) || corner.twistBeam) return [];
     if (interacting) return lastSteerSweep.current;
     const armAngle = armKey / 1e5;
     const n = 25;
     const racks = Array.from({ length: n }, (_, i) => -rackLimit + (2 * rackLimit * i) / (n - 1));
-    const states = corner.sweep(racks, (r) => ({ driver: 'lowerArmAngle', armAngle, rack: r }));
-    const mid = corner.solve({ driver: 'lowerArmAngle', armAngle, rack: 0 }, states[(n - 1) / 2]!.poses);
+    const at = (r: number) => (corner.solidAxle ? { driver: heightDriver, travel: armKey / 1e5, rack: r } : { driver: 'lowerArmAngle' as const, armAngle, rack: r });
+    const states = corner.sweep(racks, at);
+    const mid = corner.solve(at(0), states[(n - 1) / 2]!.poses);
     const h0 = headingAngle(mid.spinAxis);
     const y0 = mid.points.contact.y;
     // Ackermann with the mirrored corner: this wheel at rack r, its mirror image at −r (yaw + = left).
@@ -379,7 +406,7 @@ export function useModel(): Model {
     const steerTrack = 2 * Math.abs(g0 ? g0.x : mid.points.contact.x);
     return states.map((st, i) => {
       const c = characteristics(st);
-      const l = steeringLoads(st, c.contactPoint, { vertical: curTireLoad, lateral: 0, longitudinal: 0, pneumaticTrail: 0 }, mechanismOf(corner), inputPerRev(racks[i]!, ratioSpec));
+      const l = steeringLoads(st, c.contactPoint, { vertical: curTireLoad, lateral: 0, longitudinal: 0, pneumaticTrail: 0 }, mechanismOf(corner, rack), inputPerRev(racks[i]!, ratioSpec));
       return {
         rack: racks[i]!, steeringWheelAngle: steeringWheelAngle(racks[i]!, ratioSpec),
         roadWheelAngle: headingAngle(st.spinAxis) - h0, camber: c.camber,
@@ -387,7 +414,7 @@ export function useModel(): Model {
         ackermann: ackermann(yaw[i]!, -yaw[n - 1 - i]!, wheelbase, steerTrack).percent,
       };
     });
-  }, [built, armKey, rackLimit, cFactor, ratioSpec.cFactorLock, curTireLoad, interacting, wheelbase]);
+  }, [built, armKey, heightDriver, rackLimit, cFactor, ratioSpec.cFactorLock, curTireLoad, interacting, wheelbase]);
   if (!interacting) lastSteerSweep.current = steerSweep;
 
   return { error: live.error, corner: live.corner, sweep, current, steerSweep, damperLimits };

@@ -1,4 +1,6 @@
-import { useApp, STEER_META, rackAhead, rootOf, type SteerKey } from '../store';
+import { useEffect, useState } from 'react';
+import { parseSteerCurve } from '../../core/tests/steer';
+import { useApp, angleInput, STEER_META, rackAhead, rootOf, type SteerKey } from '../store';
 import { parseValue } from '../../core/units/units';
 import { lockKeys } from '../locks';
 import { deg } from '../../core/suspension/characteristics';
@@ -20,7 +22,7 @@ const FORCES: SteerKey[] = ['lateral', 'longitudinal', 'pneumaticTrail', 'mu'];
 export function SteerFields({ keys }: { keys: SteerKey[] }) {
   const steer = useApp((s) => s.steer);
   const setSteerField = useApp((s) => s.setSteerField);
-  const arm = useApp((s) => s.geom.steerMechanism === 'arm');
+  const arm = useApp((s) => angleInput(s.geom.steerMechanism));
   return (
     <FieldRows rows={keys.map((k) => ({
       label: steerLabel(k, arm).label, field: steer[k], unit: steerLabel(k, arm).unit, onCommit: (t: string) => setSteerField(k, t),
@@ -29,7 +31,33 @@ export function SteerFields({ keys }: { keys: SteerKey[] }) {
   );
 }
 
-export const SteeringSystemFields = () => <><MechanismRow /><SteerFields keys={SYSTEM} /><RackLayoutFields /></>;
+export const SteeringSystemFields = () => <><MechanismRow /><SteerFields keys={SYSTEM} /><RatioCurveField /><RackLayoutFields /></>;
+
+/**
+ * A measured steering ratio: steering-wheel angle vs input (rack mm, or arm ° with a steering arm) from
+ * center out, one pair per line. When it reads, it replaces the c-factors above (mirrored the other way).
+ */
+function RatioCurveField() {
+  const text = useApp((s) => s.steerCurve ?? '');
+  const arm = useApp((s) => angleInput(s.geom.steerMechanism));
+  const [draft, setDraft] = useState(text);
+  useEffect(() => setDraft(text), [text]);
+  const parsed = draft.trim() ? parseSteerCurve(draft) : null;
+  return (
+    <details className="ratio-curve" open={!!text}>
+      <summary title="Measured or published steering ratio: steering-wheel angle and the rack travel (or arm angle) at it, from center to lock">Measured ratio curve {text ? '(in use)' : '(optional)'}</summary>
+      <textarea rows={4} value={draft} placeholder={`steering-wheel °, ${arm ? 'arm °' : 'rack mm'} — e.g.\n90, 18\n180, 38\n360, 82\n540, 120`}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => { if (draft !== text) useApp.setState({ steerCurve: draft.trim() ? draft : undefined, presetId: 'custom' }); }} />
+      {parsed && (
+        <div className={`small-text ${parsed.ok && !parsed.bad.length ? 'muted' : 'warn-text'}`}>
+          {parsed.ok ? `${parsed.curve.length} pairs read; it replaces the c-factors (the local ratio comes from its slope).` : 'Needs pairs that both grow from center out (steering-wheel °, then input).'}
+          {parsed.bad.length > 0 && ` Couldn't read: ${parsed.bad.slice(0, 3).join(' · ')}`}
+        </div>
+      )}
+    </details>
+  );
+}
 
 /** Rack, or steering arm / plate (ATV plate on the column, pitman / idler arm with a center link). */
 function MechanismRow() {
@@ -38,9 +66,10 @@ function MechanismRow() {
   return (
     <div className="row" title="Rack: the inner tie-rod joints slide across the car. Steering arm / plate: they swing about a pivot axis (an ATV plate on the steering column, or a steering box's pitman arm / idler arm carrying a center link). Applies to every corner.">
       <span className="muted">Mechanism</span>
-      <select value={m} onChange={(e) => setM(e.target.value as 'rack' | 'arm')}>
+      <select value={m} onChange={(e) => setM(e.target.value as 'rack' | 'arm' | 'centerLink')}>
         <option value="rack">Rack and pinion</option>
         <option value="arm">Steering arm / plate (box, cam, ATV)</option>
+        <option value="centerLink">Pitman arm, idler arm and center link</option>
       </select>
     </div>
   );
@@ -59,6 +88,24 @@ export function RackLayoutFields() {
   const pt = (k: 'trInner' | 'trOuter') => geom.points[k].map((f) => f.value);
   const [ix, iy, iz] = pt('trInner'), [ox, oy, oz] = pt('trOuter');
   const length = 2 * Math.abs(ix!);
+  if (geom.steerMechanism === 'centerLink') {
+    // Pitman / idler arm lengths (ball end to its pivot axis) and the center link.
+    const v = (k: 'strPiv1' | 'strPiv2' | 'pitEnd' | 'idlPiv1' | 'idlPiv2' | 'idlEnd' | 'trInner') => geom.points[k].map((f) => f.value) as [number, number, number];
+    const armLen = (a1: [number, number, number], a2: [number, number, number], q: [number, number, number]) => {
+      const a = [a2[0] - a1[0], a2[1] - a1[1], a2[2] - a1[2]], r = [q[0] - a1[0], q[1] - a1[1], q[2] - a1[2]];
+      const t = (r[0]! * a[0]! + r[1]! * a[1]! + r[2]! * a[2]!) / Math.max(a[0]! ** 2 + a[1]! ** 2 + a[2]! ** 2, 1e-12);
+      return Math.hypot(r[0]! - t * a[0]!, r[1]! - t * a[1]!, r[2]! - t * a[2]!);
+    };
+    const pe = v('pitEnd'), ie = v('idlEnd');
+    return (
+      <FieldRows rows={[
+        { label: 'Pitman arm length', value: fmt(armLen(v('strPiv1'), v('strPiv2'), pe), 1), unit: 'mm', hint: 'Its ball end (FL_Pitman_End) to its pivot axis (FL_Str_Piv1 / 2)' },
+        { label: 'Idler arm length', value: fmt(armLen(v('idlPiv1'), v('idlPiv2'), ie), 1), unit: 'mm', hint: 'Its ball end (FL_Idler_End) to its pivot axis (FL_Idler_Piv1 / 2). Equal to the pitman and parallel to it: the center link slides across the car without turning.' },
+        { label: 'Center link length', value: fmt(Math.hypot(ie[0] - pe[0], ie[1] - pe[1], ie[2] - pe[2]), 1), unit: 'mm' },
+        { label: 'Tie-rod length', value: fmt(Math.hypot(ox! - ix!, oy! - iy!, oz! - iz!), 1), unit: 'mm' },
+      ]} />
+    );
+  }
   if (geom.steerMechanism === 'arm') {
     const [p1x, p1y, p1z] = geom.points.strPiv1.map((f) => f.value), [p2x, p2y, p2z] = geom.points.strPiv2.map((f) => f.value);
     // Arm length: the inner joint's distance from the pivot axis.

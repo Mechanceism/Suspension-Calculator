@@ -16,7 +16,7 @@ import { patchGrip, DEFAULT_GRIP, type GripModel, type PatchGrip } from '../tire
 import { mfPeaks, DEFAULT_MF, type TireGrip } from '../tire/magicFormula';
 import { solveLoadedHeight, type TireForceModel } from '../tire/model';
 import type { TireProfile } from '../tire/geometry';
-import { DoubleWishbone, type CornerState, type DoubleWishboneGeometry } from '../suspension/doubleWishbone';
+import { DoubleWishbone, spinAxisFromCamberToe, type CornerState, type DoubleWishboneGeometry } from '../suspension/doubleWishbone';
 import { characteristics, deg, rad, type Characteristics } from '../suspension/characteristics';
 import { armMetrics } from '../suspension/armGeometry';
 import { type LsqResult } from './leastSquares';
@@ -31,7 +31,22 @@ export type HardpointId =
   /** Rocker layout: pivot axis and pushrod ends. */
   | 'rockerPivot1' | 'rockerPivot2' | 'pushrodLower' | 'pushrodUpper'
   /** Steering-arm mechanism: its pivot axis. */
-  | 'steerPivot1' | 'steerPivot2';
+  | 'steerPivot1' | 'steerPivot2'
+  /** Center-link steering: the pitman end, the idler pivot axis and end. */
+  | 'pitmanEnd' | 'idlerPivot1' | 'idlerPivot2' | 'idlerEnd'
+  /** Custom linkage: a joint's point, `custom:<joint id>:p` or `:q`. */
+  | `custom:${string}`
+  /** Not points (axis 0): static camber and toe (deg), the tire's set pressure (kPa). */
+  | 'staticCamber' | 'staticToe' | 'tirePressure';
+
+/** Variables that aren't point coordinates. */
+export const SCALAR_VARIABLES = ['staticCamber', 'staticToe', 'tirePressure'] as const;
+const isScalar = (id: string) => (SCALAR_VARIABLES as readonly string[]).includes(id);
+/** Static camber and toe of a geometry, deg (from its spin axis). */
+export const staticCamberToe = (g: DoubleWishboneGeometry) => {
+  const a = g.wheel.spinAxis;
+  return { camber: deg(Math.asin(Math.max(-1, Math.min(1, -a.y)))), toe: deg(Math.atan2(a.z, a.x)) };
+};
 
 export type GoalKind =
   | 'bumpSteer' | 'camberGain' | 'rollCamber' | 'rollCenter' | 'rcMigration'
@@ -97,6 +112,8 @@ export interface CornerProblem {
   goals: Goal[];
   variables: Variable[];
   holds?: Hold[];
+  /** Dimensions the optimizer must keep within a range (e.g. an arm's length between two values): mm / deg. */
+  ranges?: { hold: Hold; lo: number; hi: number }[];
   /** Weight of the "prefer small changes" term (per 10 mm moved). */
   keepClose?: number;
   /** Wheelbase, mm (Ackermann goal; default 1550). */
@@ -120,15 +137,31 @@ export function getPoint(g: DoubleWishboneGeometry, id: HardpointId): Vec3 | und
     case 'ucaOut2': return g.uca.out2; case 'lcaOut2': return g.lca.out2;
     case 'rockerPivot1': return g.rocker?.pivot1; case 'rockerPivot2': return g.rocker?.pivot2;
     case 'pushrodLower': return g.rocker?.pushrodLower; case 'pushrodUpper': return g.rocker?.pushrodUpper;
-    case 'steerPivot1': return g.steering?.kind === 'arm' ? g.steering.pivot1 : undefined;
-    case 'steerPivot2': return g.steering?.kind === 'arm' ? g.steering.pivot2 : undefined;
+    case 'steerPivot1': return g.steering?.kind === 'arm' || g.steering?.kind === 'centerLink' ? g.steering.pivot1 : undefined;
+    case 'steerPivot2': return g.steering?.kind === 'arm' || g.steering?.kind === 'centerLink' ? g.steering.pivot2 : undefined;
+    case 'pitmanEnd': return g.steering?.kind === 'centerLink' ? g.steering.pitmanEnd : undefined;
+    case 'idlerPivot1': return g.steering?.kind === 'centerLink' ? g.steering.idlerPivot1 : undefined;
+    case 'idlerPivot2': return g.steering?.kind === 'centerLink' ? g.steering.idlerPivot2 : undefined;
+    case 'idlerEnd': return g.steering?.kind === 'centerLink' ? g.steering.idlerEnd : undefined;
   }
+  if (id.startsWith('custom:')) {
+    const [, jid, which] = id.split(':');
+    const j = g.custom?.joints.find((x) => x.id === jid);
+    return j ? (which === 'q' ? j.q : j.p) : undefined;
+  }
+  return undefined;
 }
 
 /** A copy of the geometry with the variables set to x. */
 export function withVariables(g: DoubleWishboneGeometry, vars: Variable[], x: number[]): DoubleWishboneGeometry {
   const pts = new Map<HardpointId, Vec3>();
+  // Static camber / toe: a new spin axis.
+  const ct = staticCamberToe(g);
+  let spin = g.wheel.spinAxis;
+  const ic = vars.findIndex((v) => v.point === 'staticCamber'), it = vars.findIndex((v) => v.point === 'staticToe');
+  if (ic >= 0 || it >= 0) spin = spinAxisFromCamberToe(rad(ic >= 0 ? x[ic]! : ct.camber), rad(it >= 0 ? x[it]! : ct.toe));
   vars.forEach((v, i) => {
+    if (isScalar(v.point)) return;
     const p = pts.get(v.point) ?? getPoint(g, v.point);
     if (!p) return;
     pts.set(v.point, vec3(v.axis === 0 ? x[i]! : p.x, v.axis === 1 ? x[i]! : p.y, v.axis === 2 ? x[i]! : p.z));
@@ -139,14 +172,34 @@ export function withVariables(g: DoubleWishboneGeometry, vars: Variable[], x: nu
     uca: { fwd: P('ucaFwd'), aft: P('ucaAft'), out: P('ucaOut'), ...(g.uca.out2 ? { out2: P('ucaOut2') } : {}) },
     lca: { fwd: P('lcaFwd'), aft: P('lcaAft'), out: P('lcaOut'), ...(g.lca.out2 ? { out2: P('lcaOut2') } : {}) },
     tieRod: { inner: P('trInner'), outer: P('trOuter') },
-    wheel: { ...g.wheel, center: P('wheelCenter') },
+    wheel: { ...g.wheel, center: P('wheelCenter'), spinAxis: spin },
     damper: g.damper ? { ...g.damper, chassis: P('damperChassis'), armPoint: P('damperArm') } : undefined,
     ...(g.steering?.kind === 'arm' ? { steering: { kind: 'arm' as const, pivot1: P('steerPivot1'), pivot2: P('steerPivot2') } } : {}),
+    ...(g.steering?.kind === 'centerLink' ? { steering: { kind: 'centerLink' as const, pivot1: P('steerPivot1'), pivot2: P('steerPivot2'), pitmanEnd: P('pitmanEnd'), idlerPivot1: P('idlerPivot1'), idlerPivot2: P('idlerPivot2'), idlerEnd: P('idlerEnd') } } : {}),
     ...(g.rocker ? { rocker: { ...g.rocker, pivot1: P('rockerPivot1'), pivot2: P('rockerPivot2'), pushrodLower: P('pushrodLower'), pushrodUpper: P('pushrodUpper') } } : {}),
+    ...(g.custom ? {
+      custom: {
+        ...g.custom,
+        joints: g.custom.joints.map((j) => ({ ...j, p: pts.get(`custom:${j.id}:p`) ?? j.p, ...(j.q ? { q: pts.get(`custom:${j.id}:q`) ?? j.q } : {}) })),
+      },
+    } : {}),
   };
 }
 
-export const variableValue = (g: DoubleWishboneGeometry, v: Variable): number => getPoint(g, v.point)?.[AXES[v.axis]] ?? NaN;
+export const variableValue = (g: DoubleWishboneGeometry, v: Variable): number =>
+  v.point === 'staticCamber' ? staticCamberToe(g).camber : v.point === 'staticToe' ? staticCamberToe(g).toe : getPoint(g, v.point)?.[AXES[v.axis]] ?? NaN;
+
+/** A variable's value now, the tire pressure from the problem's tire. */
+const valueIn = (p: CornerProblem, v: Variable) => (v.point === 'tirePressure' ? p.tire?.pressure ?? NaN : variableValue(p.geometry, v));
+
+/** The problem's tire at the variables (the tire pressure variable sets its pressure). */
+function tireAt(p: CornerProblem, x: number[]): CornerProblem['tire'] {
+  const i = p.variables.findIndex((v) => v.point === 'tirePressure');
+  if (i < 0 || !p.tire) return p.tire;
+  const pr = x[i]!;
+  const model = p.tire.model.kind === 'gas' ? { ...p.tire.model, conditions: { ...p.tire.model.conditions, setPressure: pr } } : p.tire.model;
+  return { ...p.tire, model, pressure: pr };
+}
 
 /** Solved samples of one geometry, the raw material for every goal. */
 export interface CornerSamples {
@@ -382,12 +435,12 @@ const sampleOpts = (p: CornerProblem, goals?: Goal[]) =>
 export function reportCorner(p: CornerProblem, x: number[]): CornerReport {
   const geometry = withVariables(p.geometry, p.variables, x);
   const before = sampleCorner(p.geometry, sampleOpts(p));
-  const after = sampleCorner(geometry, sampleOpts(p));
+  const after = sampleCorner(geometry, { ...sampleOpts(p), tire: tireAt(p, x) });
   const tol = 1e-9;
   return {
     geometry,
     variables: p.variables.map((v, i) => {
-      const b = variableValue(p.geometry, v);
+      const b = valueIn(p, v);
       const a = x[i]!;
       const onLimit = a <= Math.min(v.lo, v.hi) + tol || a >= Math.max(v.lo, v.hi) - tol;
       return { ...v, before: b, after: a, atLimit: onLimit && Math.abs(a - b) > 1e-6 };
@@ -403,7 +456,7 @@ export function reportCorner(p: CornerProblem, x: number[]): CornerReport {
 export function optimizeCorner(p: CornerProblem, onIteration?: (info: ProgressInfo) => boolean | void): CornerOptimizeResult {
   const vars = p.variables;
   const goals = p.goals.filter((g) => g.weight > 0);
-  const x0 = vars.map((v) => variableValue(p.geometry, v));
+  const x0 = vars.map((v) => valueIn(p, v));
   const lo = vars.map((v) => Math.min(v.lo, v.hi));
   const hi = vars.map((v) => Math.max(v.lo, v.hi));
   const holds = (p.holds ?? []).map((h) => ({ h, v0: holdTarget(p.geometry, h) }));
@@ -414,7 +467,7 @@ export function optimizeCorner(p: CornerProblem, onIteration?: (info: ProgressIn
 
   const residuals = (x: number[]): number[] | null => {
     const g = withVariables(p.geometry, vars, x);
-    const s = sampleCorner(g, opts);
+    const s = sampleCorner(g, { ...opts, tire: tireAt(p, x) });
     if (!s) return null;
     const r: number[] = [];
     for (const goal of goals) {
@@ -423,6 +476,11 @@ export function optimizeCorner(p: CornerProblem, onIteration?: (info: ProgressIn
     }
     // Held (locked) derived dimensions: stiff, tolerance 0.001 mm / 0.001°.
     for (const { h, v0 } of holds) r.push((holdValue(g, h) - v0) / 1e-3);
+    // Dimensions kept within a range: nothing inside it, stiff outside (0.01 mm / 0.01°).
+    for (const { hold, lo: l, hi: hgh } of p.ranges ?? []) {
+      const v = holdValue(g, hold);
+      r.push(Number.isFinite(v) ? Math.max(0, Math.min(l, hgh) - v, v - Math.max(l, hgh)) / 1e-2 : 0);
+    }
     x.forEach((v, i) => r.push((keep * (v - x0[i]!)) / 10));
     return r;
   };

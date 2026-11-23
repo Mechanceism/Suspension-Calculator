@@ -1,18 +1,18 @@
-import { useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Grid } from '@react-three/drei';
 import type { ThreeEvent } from '@react-three/fiber';
 import type * as THREE from 'three';
 import { vec3, sub, add, scale, normalize, length, type Vec3 } from '../../core/math/vec3';
 import { closestPointOnLine, lineThrough } from '../../core/math/geom';
-import { isBeam, type CornerPoints, type CornerState } from '../../core/suspension/doubleWishbone';
+import { DoubleWishbone, isBeam, type CornerPoints, type CornerState } from '../../core/suspension/doubleWishbone';
 import type { Characteristics } from '../../core/suspension/characteristics';
 import type { LoadedCorner } from '../../core/suspension/loaded';
 import { anyAxisLocked } from '../locks';
-import { layoutOf, useApp, mountedTireWidth, POINT_NAMES, forCorner, selectedPoints, rootOf, type AnchorId, type ComponentId, type PointKey } from '../store';
+import { layoutOf, activePointKeys, useApp, mountedTireWidth, POINT_NAMES, forCorner, selectedPoints, rootOf, type AnchorId, type ComponentId, type PointKey } from '../store';
 import type { Model, Sample, Current } from '../useModel';
 import { STATE_KEY, anchorPosition } from '../anchors';
 import { Joint, Seg, Polyline, Tri, Wheel, Label, PatchMesh, Coilover, HitLink } from './primitives';
-import { MoveGizmo } from './JointGizmo';
+import { MoveGizmo, AxisGizmo } from './JointGizmo';
 import { componentDefs } from '../components';
 import { linkageShape, customShape } from './linkageShape';
 import { MeasureOverlay } from './MeasureOverlay';
@@ -117,27 +117,95 @@ export function CustomDrawing({ p, width = 3, opacity = 1 }: { p: CornerState['p
   );
 }
 
-function Linkage({ state, faint = false }: { state: CornerState; faint?: boolean }) {
+/**
+ * A custom linkage's joint points, pickable: click one for X / Y / Z arrows that move it (its design
+ * position, by how far it is dragged). Measure mode leaves them alone.
+ */
+function CustomPicks({ state }: { state: CornerState }) {
+  const pick = useApp((s) => s.customPick);
+  const custom = useApp((s) => s.geom.custom);
+  const measureMode = useApp((s) => s.measureMode);
+  const start = useRef<{ joint: string; which: 'p' | 'q'; v: Vec3 } | null>(null);
+  const noFrame = useRef<THREE.Object3D | null>(null);
+  const js = state.points.customJoints;
+  if (!js || !custom || measureMode) return null;
+  const at = (j: (typeof js)[number], which: 'p' | 'q') => (which === 'q' ? j.pts[1] : j.pts[0]);
+  const picked = pick ? js.find((j) => j.id === pick.joint) : undefined;
+  const pickedAt = picked && pick ? at(picked, pick.which) : undefined;
+  const begin = () => {
+    const c = useApp.getState().geom.custom;
+    const j = c?.joints.find((x) => x.id === pick?.joint);
+    if (!j || !pick) return false;
+    const v = pick.which === 'q' ? j.q : j.p;
+    if (!v) return false;
+    start.current = { joint: j.id, which: pick.which, v };
+    return true;
+  };
+  const move = (axis: 'x' | 'y' | 'z') => (d: number) => {
+    const s = useApp.getState(), c = s.geom.custom, st = start.current;
+    if (!c || !st) return;
+    const v = { ...st.v, [axis]: Number((st.v[axis] + d).toFixed(4)) };
+    s.setCustom({ ...c, joints: c.joints.map((j) => (j.id === st.joint ? { ...j, [st.which]: v } : j)) });
+  };
+  return (
+    <group>
+      {js.flatMap((j) => (['p', 'q'] as const).filter((w) => at(j, w)).map((w) => {
+        const q = at(j, w)!;
+        const on = pick?.joint === j.id && pick.which === w;
+        return (
+          <mesh key={`${j.id}-${w}`} position={[q.x, q.y, q.z]} userData={{ joint: true }}
+            onClick={(e) => { e.stopPropagation(); useApp.getState().select(null); useApp.setState({ customPick: on ? null : { joint: j.id, which: w } }); }}
+            onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = 'pointer'; }}
+            onPointerOut={() => { document.body.style.cursor = ''; }}>
+            <sphereGeometry args={[on ? 11 : 8, 14, 10]} />
+            <meshBasicMaterial color={on ? '#ffffff' : '#ffd166'} depthTest={false} transparent opacity={0.85} />
+          </mesh>
+        );
+      }))}
+      {pickedAt && (
+        <AxisGizmo at={pickedAt} frame={noFrame} axes={[
+          { onStart: begin, onDelta: move('x') }, { onStart: begin, onDelta: move('y') }, { onStart: begin, onDelta: move('z') },
+        ]} />
+      )}
+    </group>
+  );
+}
+
+/** The optimizer's result before applying (Optimize → Preview): its linkage, dashed, at the same travel and steering. */
+function OptimizedGhost({ travel, rack }: { travel: number; rack: number }) {
+  const g = useApp((s) => s.previewGeometry);
+  const st = useMemo(() => {
+    if (!g) return null;
+    try { const s = new DoubleWishbone(g).solve({ travel, rack }); return s.solve.status === 'converged' ? s : null; } catch { return null; }
+  }, [g, travel, rack]);
+  if (!st) return null;
+  return <Linkage state={st} faint tint="#7ee787" />;
+}
+
+function Linkage({ state, faint = false, tint }: { state: CornerState; faint?: boolean; tint?: string }) {
   const vis = useApp((s) => s.visibility);
   const p = state.points;
   const sh = linkageShape(p, state.kind);
   const custom = state.kind === 'custom';
   if (faint) {
-    const o = 0.3;
+    const o = tint ? 0.75 : 0.3, w = tint ? 2 : 1;
+    const c = (base: string) => tint ?? base;
     return (
       <group>
-        {custom && <CustomDrawing p={p} width={1} opacity={o} />}
-        {vis.uca && sh.uca.map(([a, b], i) => <Seg key={i} a={a} b={b} color={COLORS.uca} width={1} opacity={o} />)}
-        {vis.lca && sh.lca.map(([a, b], i) => <Seg key={i} a={a} b={b} color={COLORS.lca} width={1} opacity={o} />)}
-        {vis.upright && <Polyline pts={sh.upright} color={COLORS.upright} width={1} opacity={o} />}
-        {vis.tieRod && !isBeam(state.kind) && state.kind !== 'twistBeam' && !custom && <Seg a={p.trInner} b={p.trOuter} color={COLORS.tieRod} width={1} opacity={o} />}
-        {vis.spring && p.damperChassis && p.damperArm && <Seg a={p.damperChassis} b={p.damperArm} color={COLORS.spring} width={1} opacity={o} />}
+        {custom && <CustomDrawing p={p} width={w} opacity={o} />}
+        {vis.uca && sh.uca.map(([a, b], i) => <Seg key={i} a={a} b={b} color={c(COLORS.uca)} width={w} opacity={o} dashed={!!tint} />)}
+        {vis.lca && sh.lca.map(([a, b], i) => <Seg key={i} a={a} b={b} color={c(COLORS.lca)} width={w} opacity={o} dashed={!!tint} />)}
+        {vis.upright && <Polyline pts={sh.upright} color={c(COLORS.upright)} width={w} opacity={o} />}
+        {tint && <Seg a={spindleFoot(p)} b={p.wheelCenter} color={tint} width={w} opacity={o} />}
+        {vis.tieRod && (!isBeam(state.kind) || !!p.crossTieRod) && state.kind !== 'twistBeam' && !custom && <Seg a={p.trInner} b={p.trOuter} color={c(COLORS.tieRod)} width={w} opacity={o} dashed={!!tint} />}
+        {vis.spring && p.damperChassis && p.damperArm && <Seg a={p.damperChassis} b={p.damperArm} color={c(COLORS.spring)} width={w} opacity={o} />}
       </group>
     );
   }
   return (
     <group>
       {custom && <CustomDrawing p={p} />}
+      {custom && <CustomPicks state={state} />}
       {vis.uca && sh.uca.length > 0 && (
         <Part id="uca">{(e) => (
           <>
@@ -174,11 +242,12 @@ function Linkage({ state, faint = false }: { state: CornerState; faint?: boolean
           </>
         )}</Part>
       )}
-      {vis.tieRod && !isBeam(state.kind) && state.kind !== 'twistBeam' && !custom && (
+      {vis.tieRod && (!isBeam(state.kind) || !!p.crossTieRod) && state.kind !== 'twistBeam' && !custom && (
         <Part id="tieRod">{(e) => (
           <>
             <Seg a={p.trInner} b={p.trOuter} color={e === 2 ? COLORS.select : COLORS.tieRod} width={em(3, e)} />
             <HitLink a={p.trInner} b={p.trOuter} radius={12} />
+            {p.crossTieRod && <Seg a={p.crossTieRod[0]} b={p.crossTieRod[1]} color={e === 2 ? COLORS.select : COLORS.tieRod} width={em(3, e)} />}
           </>
         )}</Part>
       )}
@@ -249,18 +318,24 @@ function Joints({ state, cur }: { state: CornerState; cur: Current }) {
       {(vis.lca || vis.upright) && state.kind !== 'custom' && <PickJoint id="lcaOut" p={p.lcaOut} color={COLORS.lca} r={9} />}
       {state.kind === 'multilink' && (vis.uca || vis.upright) && p.ucaOut2 && <PickJoint id="ucaOut2" p={p.ucaOut2} color={COLORS.uca} r={9} />}
       {state.kind === 'multilink' && (vis.lca || vis.upright) && p.lcaOut2 && <PickJoint id="lcaOut2" p={p.lcaOut2} color={COLORS.lca} r={9} />}
-      {vis.tieRod && !isBeam(state.kind) && state.kind !== 'twistBeam' && state.kind !== 'custom' && <PickJoint id="trInner" p={p.trInner} color={COLORS.chassis} />}
+      {p.crossTieRod && vis.upright && <PickJoint id="ucaOut2" p={p.steerUpper} color={COLORS.upright} r={9} />}
+      {p.crossTieRod && vis.upright && <PickJoint id="lcaOut2" p={p.steerLower} color={COLORS.upright} r={9} />}
+      {vis.tieRod && (!isBeam(state.kind) || !!p.crossTieRod) && state.kind !== 'twistBeam' && state.kind !== 'custom' && <PickJoint id="trInner" p={p.trInner} color={COLORS.chassis} />}
       {p.panhardChassis && <PickJoint id="phChs" p={p.panhardChassis} color={COLORS.chassis} />}
       {p.panhardAxle && <PickJoint id="phAxle" p={p.panhardAxle} color={COLORS.lca} />}
       {vis.chassis && p.steerPivot1 && <PickJoint id="strPiv1" p={p.steerPivot1} color={COLORS.chassis} />}
       {vis.chassis && p.steerPivot2 && <PickJoint id="strPiv2" p={p.steerPivot2} color={COLORS.chassis} />}
+      {vis.chassis && p.pitmanEnd && <PickJoint id="pitEnd" p={p.pitmanEnd} color={COLORS.tieRod} />}
+      {vis.chassis && p.idlerPivot1 && <PickJoint id="idlPiv1" p={p.idlerPivot1} color={COLORS.chassis} />}
+      {vis.chassis && p.idlerPivot2 && <PickJoint id="idlPiv2" p={p.idlerPivot2} color={COLORS.chassis} />}
+      {vis.chassis && p.idlerEnd && <PickJoint id="idlEnd" p={p.idlerEnd} color={COLORS.tieRod} />}
       {vis.spring && p.damperChassis && <PickJoint id="dmpChassis" p={p.damperChassis} color={COLORS.chassis} />}
       {vis.spring && p.damperArm && <PickJoint id="dmpArm" p={p.damperArm} color={COLORS.spring} />}
       {vis.spring && p.rockerPivot1 && <PickJoint id="rkrPiv1" p={p.rockerPivot1} color={COLORS.chassis} />}
       {vis.spring && p.rockerPivot2 && <PickJoint id="rkrPiv2" p={p.rockerPivot2} color={COLORS.chassis} />}
       {vis.spring && p.pushrodLower && <PickJoint id="prArm" p={p.pushrodLower} color={COLORS.tieRod} />}
       {vis.spring && p.pushrodUpper && <PickJoint id="prRkr" p={p.pushrodUpper} color={COLORS.spring} />}
-      {(vis.tieRod || vis.upright) && !isBeam(state.kind) && state.kind !== 'twistBeam' && state.kind !== 'custom' && <PickJoint id="trOuter" p={p.trOuter} color={COLORS.tieRod} />}
+      {(vis.tieRod || vis.upright) && (!isBeam(state.kind) || !!p.crossTieRod) && state.kind !== 'twistBeam' && state.kind !== 'custom' && <PickJoint id="trOuter" p={p.trOuter} color={COLORS.tieRod} />}
       {vis.wheel && <PickJoint id="wheelCenter" p={p.wheelCenter} color={COLORS.upright} r={6} />}
       {vis.wheel && <PickJoint id="contact" p={p.contact} color={COLORS.wheel} r={6} />}
       {/* Derived points are pickable for measuring. */}
@@ -305,7 +380,18 @@ function Chassis({ state, rackLimit, rackAxis }: { state: CornerState; rackLimit
           />
         </>
       )}</Part>
-      {!beam && state.kind !== 'custom' && <Part id="rack">{(e) => p.steerPivot1 && p.steerPivot2 ? (
+      {(!beam || !!p.crossTieRod) && state.kind !== 'custom' && <Part id="rack">{(e) => p.pitmanEnd && p.idlerEnd && p.idlerPivot1 && p.idlerPivot2 && p.steerPivot1 && p.steerPivot2 ? (
+        <>
+          {/* Center link: the pitman and idler arms on their pivot axes, the link between their ends, the inner joint on it. */}
+          <Seg a={p.steerPivot1} b={p.steerPivot2} color={e === 2 ? COLORS.select : COLORS.chassis} width={em(3, e)} />
+          <Seg a={p.idlerPivot1} b={p.idlerPivot2} color={e === 2 ? COLORS.select : COLORS.chassis} width={em(3, e)} />
+          <Seg a={closestPointOnLine(lineThrough(p.steerPivot1, p.steerPivot2), p.pitmanEnd)} b={p.pitmanEnd} color={e === 2 ? COLORS.select : COLORS.tieRod} width={em(3, e)} />
+          <Seg a={closestPointOnLine(lineThrough(p.idlerPivot1, p.idlerPivot2), p.idlerEnd)} b={p.idlerEnd} color={e === 2 ? COLORS.select : COLORS.tieRod} width={em(3, e)} />
+          <Seg a={p.pitmanEnd} b={p.idlerEnd} color={e === 2 ? COLORS.select : COLORS.tieRod} width={em(4, e)} />
+          <Seg a={p.pitmanEnd} b={p.trInner} color={e === 2 ? COLORS.select : COLORS.tieRod} width={em(3, e)} />
+          <HitLink a={p.pitmanEnd} b={p.idlerEnd} radius={14} />
+        </>
+      ) : p.steerPivot1 && p.steerPivot2 ? (
         <>
           {/* Steering arm / plate: its pivot axis and the arm out to the inner tie-rod joint. */}
           <Seg a={p.steerPivot1} b={p.steerPivot2} color={e === 2 ? COLORS.select : COLORS.chassis} width={em(3, e)} />
@@ -330,7 +416,8 @@ function Construction({ state, chars, loaded }: { state: CornerState; chars: Cha
   const icNear = ic && length(sub(ic, cp)) < 20000 ? ic : null;
   const rc = chars.rollCenterHeight !== null ? vec3(0, chars.groundY + chars.rollCenterHeight, cp.z) : null;
   const axisTop = add(p.steerUpper, scale(sub(p.steerUpper, p.steerLower), 0.35));
-  const axisGround = loaded ? loaded.steeringAxisAtGround : chars.steeringAxisAtGround;
+  // A corner whose type doesn't steer (twist beam, unsteered solid axle) has no steering axis to show.
+  const axisGround = !chars.steeringAxisAtGround ? null : loaded ? loaded.steeringAxisAtGround : chars.steeringAxisAtGround;
   return (
     <group>
       {vis.steeringAxis && axisGround && (
@@ -358,9 +445,13 @@ function Construction({ state, chars, loaded }: { state: CornerState; chars: Cha
 }
 
 function Trails({ sweep }: { sweep: Sample[] }) {
+  // Only the points this type really has as moving joints (others, e.g. an unused upper ball joint on a
+  // MacPherson or twist beam, or a solid axle's tie rod when it doesn't steer, would leave stray trails).
+  const g = useApp((s) => s.geom);
+  const keys = new Set<string>(activePointKeys(g.kind ?? 'doubleWishbone', layoutOf(g), g.steerMechanism ?? 'rack', g.steeredAxle));
   return (
     <group>
-      {TRAIL_KEYS.map(({ key, color }) => (
+      {TRAIL_KEYS.filter(({ key }) => key === 'wheelCenter' || key === 'contact' || keys.has(key)).map(({ key, color }) => (
         <Polyline key={key} pts={sweep.map((s) => s.state.points[key] as Vec3)} color={color} width={2} opacity={0.9} />
       ))}
     </group>
@@ -440,6 +531,7 @@ export function Scene({ model }: { model: Model }) {
       )}
       {vis.chassis && <Chassis state={state} rackLimit={rackLimit} rackAxis={model.corner.rackAxis} />}
       <Linkage state={state} />
+      <OptimizedGhost travel={state.inputs.travel} rack={state.inputs.rack} />
       {vis.wheel && (
         <Part id="wheel">{(e) => (
           <Wheel center={state.points.wheelCenter} axis={state.spinAxis} radius={radius} width={width} shoulder={simpleTire ? 0 : shoulder} rimRadius={rimRadius} simple={simpleTire} color={e === 2 ? COLORS.select : COLORS.wheel} />

@@ -31,6 +31,8 @@ export interface TrailerSpec {
   brakeShare: number;
   /** Trailer's yaw radius of gyration about its CG, mm (sway; default 0.45 × hitch to axle). */
   yawRadius?: number;
+  /** The hitch's rated tongue load, N (0 / absent = no limit). */
+  tongueLimit?: number;
 }
 
 /** Hitch position in the vehicle frame (mm) for a ground height and wheelbase. */

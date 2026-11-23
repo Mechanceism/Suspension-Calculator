@@ -60,6 +60,8 @@ export interface TestRunOptions {
   ride?: boolean;
   /** Over time, a driver steers along the path (Phase C handling; with `ride`). */
   handling?: boolean;
+  /** With handling: the driver also works the throttle and brakes (the speeds become targets; lifts when running wide). */
+  driverSpeed?: boolean;
 }
 
 export interface TestRun {
@@ -97,6 +99,7 @@ export function stateFacts(p: VehicleProblem, asm: AssembledVehicle, st: RoadSta
     weight: p.mass * G * st.gravityScale, brakeForce: p.mass * G * st.brakingG,
     requiredG: Math.hypot(st.lateralG, along) / Math.max(st.gravityScale, 1e-6),
     availableG: availableG(p, asm), steer,
+    ...(p.trailer ? { hitch: { load: result?.hitch ? -result.hitch.force.y : NaN, limit: p.trailer.tongueLimit ?? 0, share: p.trailer.tongueShare } } : {}),
   };
 }
 
@@ -221,7 +224,7 @@ export function runTest(
   });
   let ride: TestRun['ride'];
   if (opts.ride) {
-    const rr = rideOn(p, asm, segments, { handling: !!opts.handling });
+    const rr = rideOn(p, asm, segments, { handling: !!opts.handling, driverSpeed: !!opts.handling && !!opts.driverSpeed });
     ride = { frames: withBrakeTemps(p, rr.frames), metrics: rr.metrics, ...(rr.error ? { error: rr.error } : {}) };
     segs.forEach((sr, i) => {
       // Add what only shows over time (the steady samples already report the rest).

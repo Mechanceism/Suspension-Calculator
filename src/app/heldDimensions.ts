@@ -90,7 +90,7 @@ export function initHeldDimensions(): void {
     if (!dims.length) { baseline = s.geom; if (s.dimViolations.length) useApp.setState({ dimViolations: [] }); return; }
     const base = baseline ?? s.geom;
     const changed = (k: PointKey, axis: 0 | 1 | 2) => base.points[k][axis].value !== s.geom.points[k][axis].value;
-    const isFixed = (k: PointKey, axis: 0 | 1 | 2) => changed(k, axis) || pointAxisLocked(s.locks, root, k, axis, s.geom.damperArm, s.geom.kind, layoutOf(s.geom), s.geom.steerMechanism);
+    const isFixed = (k: PointKey, axis: 0 | 1 | 2) => changed(k, axis) || pointAxisLocked(s.locks, root, k, axis, s.geom.damperArm, s.geom.kind, layoutOf(s.geom), s.geom.steerMechanism, s.geom.steeredAxle);
     const r = resolveActive(s.geom, dims, isFixed);
     resolving = true;
     try {

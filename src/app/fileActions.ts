@@ -4,6 +4,7 @@
  * Unsaved changes are tracked per part (model, tests) since the last save or export of that part.
  */
 import { useMemo } from 'react';
+import { CAR_PROFILES, carProfileDesign } from './carProfiles';
 import { useShallow } from 'zustand/react/shallow';
 import { useApp, defaultDesign, pickDesign } from './store';
 import { serializeProject, importProject, modelSnapshot, testsSnapshot, serializeTests, importTests } from './project';
@@ -54,6 +55,17 @@ export function newLayout(dirty: boolean | { model: boolean; tests: boolean }): 
   useApp.getState().applyDesign(d, null, modelSnapshot(d), testsSnapshot(d));
   resetHistory();
   useApp.getState().notify('New layout (default sample C).');
+}
+
+/** File → New from car profile: a whole-car starting point (carProfiles.ts). */
+export function newFromProfile(id: string, dirty: boolean | { model: boolean; tests: boolean }): void {
+  if (!confirmDiscard(dirty)) return;
+  const p = CAR_PROFILES.find((c) => c.id === id);
+  if (!p) return;
+  const d = carProfileDesign(id);
+  useApp.getState().applyDesign(d, null, modelSnapshot(d), testsSnapshot(d));
+  resetHistory();
+  useApp.getState().notify(`New ${p.label}: ${p.hint} Springs from a ride frequency, dampers from critical damping; every value is a starting point to edit.`);
 }
 
 export function saveAs(name: string): void {

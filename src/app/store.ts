@@ -6,7 +6,8 @@ import { create } from 'zustand';
 import { parseValue, formatValue, type Quantity } from '../core/units/units';
 import { vec3, type Vec3 } from '../core/math/vec3';
 import { customFromWishbone, type CustomLinkage } from '../core/suspension/customLinkage';
-import { DoubleWishbone, spinAxisFromCamberToe, SUSPENSION_LABELS, virtualPivot, isBeam, type DoubleWishboneGeometry, type TravelDriver, type SuspensionKind } from '../core/suspension/doubleWishbone';
+import { parseSteerCurve } from '../core/tests/steer';
+import { DoubleWishbone, spinAxisFromCamberToe, SUSPENSION_LABELS, virtualPivot, isBeam, isOneAxle, type DoubleWishboneGeometry, type TravelDriver, type SuspensionKind } from '../core/suspension/doubleWishbone';
 import { SAMPLE_LAYOUTS, SAMPLE_SPRING, PRESET_LAYOUTS } from '../examples/sampleLayouts';
 import { fitFreeLength } from '../core/suspension/spring';
 import { rockerFromCoilover } from '../core/suspension/coilover';
@@ -17,7 +18,7 @@ import type { TireProfile } from '../core/tire/geometry';
 import type { TireForceModel } from '../core/tire/model';
 import { parseTireSize } from '../core/tire/size';
 import { GOAL_KINDS, GOAL_META, type GoalKind } from '../core/optimize/corner';
-import { VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, type VehicleGoalKind } from '../core/optimize/vehicle';
+import { VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, type VehicleGoalKind, type FixedCaseKind } from '../core/optimize/vehicle';
 import { DEFAULT_GRIP } from '../core/tire/grip';
 import { DEFAULT_MF, type MFCoeffs } from '../core/tire/magicFormula';
 import type { TirModel } from '../core/tire/tir';
@@ -33,9 +34,15 @@ export interface Field {
 }
 
 /** Hardpoints of every suspension type (each type uses some of them: activePointKeys). */
-export const POINT_KEYS = ['ucaFwd', 'ucaAft', 'ucaOut', 'lcaFwd', 'lcaAft', 'lcaOut', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm', 'ucaOut2', 'lcaOut2', 'rkrPiv1', 'rkrPiv2', 'prArm', 'prRkr', 'strPiv1', 'strPiv2', 'phChs', 'phAxle'] as const;
-/** Steering mechanism: a rack (input = rack travel, mm) or a steering arm / plate on a pivot (input = its angle, °). */
-export type SteerMechanism = 'rack' | 'arm';
+export const POINT_KEYS = ['ucaFwd', 'ucaAft', 'ucaOut', 'lcaFwd', 'lcaAft', 'lcaOut', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm', 'ucaOut2', 'lcaOut2', 'rkrPiv1', 'rkrPiv2', 'prArm', 'prRkr', 'strPiv1', 'strPiv2', 'phChs', 'phAxle', 'pitEnd', 'idlPiv1', 'idlPiv2', 'idlEnd'] as const;
+/**
+ * Steering mechanism: a rack (input = rack travel, mm), a steering arm / plate on a pivot (input = its angle, °),
+ * or a pitman arm, idler arm and center link (input = the pitman's angle, °; the inner tie-rod joint is on the link).
+ */
+export type SteerMechanism = 'rack' | 'arm' | 'centerLink';
+/** The steering input is an angle (°), not rack travel (mm). */
+export const angleInput = (m: SteerMechanism | undefined) => m === 'arm' || m === 'centerLink';
+const CENTER_LINK_KEYS = ['pitEnd', 'idlPiv1', 'idlPiv2', 'idlEnd'] as const;
 /** Spring layout: a coilover between the frame and an arm / the knuckle, or a pushrod / pullrod and rocker. */
 export type SpringLayout = 'coilover' | 'rocker';
 const ROCKER_KEYS = ['rkrPiv1', 'rkrPiv2', 'prArm', 'prRkr'] as const;
@@ -50,6 +57,7 @@ export const POINT_NAMES: Record<PointKey, string> = {
   ucaOut2: 'FL_UCA_Out2', lcaOut2: 'FL_LCA_Out2',
   rkrPiv1: 'FL_Rkr_Piv1', rkrPiv2: 'FL_Rkr_Piv2', prArm: 'FL_PR_Arm', prRkr: 'FL_PR_Rkr',
   strPiv1: 'FL_Str_Piv1', strPiv2: 'FL_Str_Piv2',
+  pitEnd: 'FL_Pitman_End', idlPiv1: 'FL_Idler_Piv1', idlPiv2: 'FL_Idler_Piv2', idlEnd: 'FL_Idler_End',
   phChs: 'FL_PH_Chs', phAxle: 'FL_PH_Axle',
 };
 
@@ -120,7 +128,13 @@ export const DAMPER_KEYS = ['maxLength', 'minLength', 'bumpStopLength', 'bumpSto
 /** Damper inputs only the two-stage damper uses. */
 export const DAMPER_TWO_STAGE_KEYS = ['bumpDampingHigh', 'reboundDampingHigh', 'bumpKnee', 'reboundKnee'] as const;
 /** Damper force curve: one rate per direction (linear), or two-stage (low-speed rate up to a knee, then a high-speed rate). */
-export type DamperMode = 'linear' | 'twoStage';
+export type DamperMode = 'linear' | 'twoStage' | 'curve';
+/** Dyno curves ('shaft speed mm/s, force N' per line): full soft, and optionally full firm with a clicker between. */
+export interface DamperCurveText { softBump: string; softRebound: string; firmBump: string; firmRebound: string; clicks: number; click: number }
+export const DEFAULT_DAMPER_CURVE: DamperCurveText = {
+  softBump: '25, 120\n50, 220\n100, 330\n200, 450\n400, 640', softRebound: '25, 200\n50, 380\n100, 560\n200, 760\n400, 1050',
+  firmBump: '', firmRebound: '', clicks: 0, click: 0,
+};
 export type DamperKey = (typeof DAMPER_KEYS)[number];
 export const DAMPER_META: Record<DamperKey, { label: string; quantity: Quantity; unit: string }> = {
   maxLength: { label: 'Damper fully extended', quantity: 'length', unit: 'mm' },
@@ -183,6 +197,10 @@ export interface EditableGeometry {
   scalars: Record<ScalarKey, Field>;
   /** Which arm the coilover's lower mount is attached to. */
   damperArm: ArmChoice;
+  /** Arm pivot bushings (compliance steer / camber), radial and axial N/mm; absent = typical rubber (5000 / 1500). */
+  bushing?: { radial: Field; axial: Field };
+  /** Solid axle: steered (kingpins UCA_Out2 / LCA_Out2 on the axle, knuckle arm TR_Out, drag link from TR_In). */
+  steeredAxle?: boolean;
   /** Custom linkage: its bodies and joints (mm; kept when switching to another type and back). */
   custom?: CustomLinkage;
 }
@@ -201,7 +219,11 @@ const field = (value: number, quantity: Quantity = 'length'): Field => ({ text: 
 const fields = (v: Vec3): [Field, Field, Field] => [field(v.x), field(v.y), field(v.z)];
 
 export function editableFromLayout(id: string): EditableGeometry {
-  const g = (PRESET_LAYOUTS.find((l) => l.id === id) ?? SAMPLE_LAYOUTS[0]!).geometry;
+  return editableFromGeometry((PRESET_LAYOUTS.find((l) => l.id === id) ?? SAMPLE_LAYOUTS[0]!).geometry);
+}
+
+/** Editable fields for a geometry (static camber / toe 0, a 13 in rim: set the scalars after if needed). */
+export function editableFromGeometry(g: DoubleWishboneGeometry): EditableGeometry {
   return {
     points: {
       ucaFwd: fields(g.uca.fwd), ucaAft: fields(g.uca.aft), ucaOut: fields(g.uca.out),
@@ -214,13 +236,15 @@ export function editableFromLayout(id: string): EditableGeometry {
       lcaOut2: fields(g.lca.out2 ?? g.lca.out),
       ...rockerDefaults(g.damper?.chassis ?? vec3(300, 380, 30), g.damper?.armPoint ?? vec3(480, 45, 30), g.rocker),
       ...steerArmDefaults(g),
+      ...centerLinkDefaults(g.tieRod.inner, g.steering?.kind === 'centerLink' ? g.steering : undefined),
       phChs: fields(g.panhard?.chassis ?? vec3(-(g.wheel.center.x - 250), g.wheel.center.y + 60, g.wheel.center.z - 80)),
       phAxle: fields(g.panhard?.axle ?? vec3(g.wheel.center.x - 200, g.wheel.center.y + 60, g.wheel.center.z - 80)),
     },
-    steerMechanism: g.steering?.kind === 'arm' ? 'arm' : 'rack',
+    steerMechanism: g.steering?.kind === 'arm' ? 'arm' : g.steering?.kind === 'centerLink' ? 'centerLink' : 'rack',
     springLayout: g.rocker ? 'rocker' : 'coilover',
     pushrodOn: g.rocker?.pushrodBody === 'uca' || g.rocker?.pushrodBody === 'upright' ? g.rocker.pushrodBody : 'lca',
     kind: g.kind ?? 'doubleWishbone',
+    ...(g.steeredAxle ? { steeredAxle: true } : {}),
     damperArm: g.damper?.arm === 'uca' || g.damper?.arm === 'upright' ? g.damper.arm : 'lca',
     scalars: {
       staticCamber: field(0, 'angle'),
@@ -251,6 +275,20 @@ export function steerArmDefaults(g: DoubleWishboneGeometry): Record<'strPiv1' | 
   return { strPiv1: fields(vec3(i.x, i.y - 60, i.z + 120)), strPiv2: fields(vec3(i.x, i.y + 90, i.z + 120)) };
 }
 
+/**
+ * Center-link steering points: given, or a parallelogram around the inner tie-rod joint: the pitman's ball end
+ * 60 mm inboard of it on the center link, the pitman 150 mm long pointing back from an upright pivot axis
+ * ahead; the idler arm the mirror image on the other side, so the link slides across the car as the pitman turns.
+ */
+export function centerLinkDefaults(i: Vec3, given?: { pivot1: Vec3; pivot2: Vec3; pitmanEnd: Vec3; idlerPivot1: Vec3; idlerPivot2: Vec3; idlerEnd: Vec3 }): Record<'strPiv1' | 'strPiv2' | 'pitEnd' | 'idlPiv1' | 'idlPiv2' | 'idlEnd', [Field, Field, Field]> | Record<'pitEnd' | 'idlPiv1' | 'idlPiv2' | 'idlEnd', [Field, Field, Field]> {
+  if (given) return { strPiv1: fields(given.pivot1), strPiv2: fields(given.pivot2), pitEnd: fields(given.pitmanEnd), idlPiv1: fields(given.idlerPivot1), idlPiv2: fields(given.idlerPivot2), idlEnd: fields(given.idlerEnd) };
+  const ax = i.x - 60;
+  return {
+    pitEnd: fields(vec3(ax, i.y, i.z)),
+    idlEnd: fields(vec3(-ax, i.y, i.z)), idlPiv1: fields(vec3(-ax, i.y - 60, i.z + 150)), idlPiv2: fields(vec3(-ax, i.y + 90, i.z + 150)),
+  };
+}
+
 /** Rocker layouts are for types with an arm or knuckle to push from. */
 export const rockerAllowed = (kind: SuspensionKind) => kind !== 'macpherson' && kind !== 'rigid' && !isBeam(kind);
 export const layoutOf = (e: Pick<EditableGeometry, 'kind' | 'springLayout'>): SpringLayout => (e.springLayout === 'rocker' && rockerAllowed(e.kind ?? 'doubleWishbone') ? 'rocker' : 'coilover');
@@ -263,14 +301,17 @@ export function toGeometry(e: EditableGeometry): DoubleWishboneGeometry {
   const et = Number.isFinite(s.wheelOffset.value) ? s.wheelOffset.value : 0;
   const hub = p('wheelCenter');
   const kind = e.kind ?? 'doubleWishbone';
-  const ml = kind === 'multilink';
+  // Second upright points: the multilink's rear links, or a steered solid axle's kingpin (top / bottom).
+  const ml = kind === 'multilink' || (isBeam(kind) && !!e.steeredAxle);
   return {
     kind,
     uca: { fwd: p('ucaFwd'), aft: p('ucaAft'), out: p('ucaOut'), ...(ml ? { out2: p('ucaOut2') } : {}) },
     lca: { fwd: p('lcaFwd'), aft: p('lcaAft'), out: p('lcaOut'), ...(ml ? { out2: p('lcaOut2') } : {}) },
     tieRod: { inner: p('trInner'), outer: p('trOuter') },
     ...(e.steerMechanism === 'arm' ? { steering: { kind: 'arm' as const, pivot1: p('strPiv1'), pivot2: p('strPiv2') } } : {}),
-    ...(kind === 'beam3' ? { panhard: { chassis: p('phChs'), axle: p('phAxle') } } : {}),
+    ...(e.steerMechanism === 'centerLink' ? { steering: { kind: 'centerLink' as const, pivot1: p('strPiv1'), pivot2: p('strPiv2'), pitmanEnd: p('pitEnd'), idlerPivot1: p('idlPiv1'), idlerPivot2: p('idlPiv2'), idlerEnd: p('idlEnd') } } : {}),
+    ...(kind === 'beam3' || kind === 'beamWatts' ? { panhard: { chassis: p('phChs'), axle: p('phAxle') } } : {}),
+    ...(isBeam(kind) && e.steeredAxle ? { steeredAxle: true } : {}),
     ...(kind === 'custom' && e.custom ? { custom: e.custom } : {}),
     wheel: {
       center: vec3(hub.x - et * spinAxis.x, hub.y - et * spinAxis.y, hub.z - et * spinAxis.z),
@@ -312,10 +353,37 @@ export function flipRackSide(e: EditableGeometry): EditableGeometry {
 }
 
 /** Hardpoints a suspension type (and spring layout) uses, in table order. */
-export function activePointKeys(kind: SuspensionKind, layout: SpringLayout = 'coilover', steer: SteerMechanism = 'rack'): PointKey[] {
-  const base = kindPointKeys(kind);
+/**
+ * Default points for a steered solid axle around the hub: the kingpin 125 mm inboard with ~7° of KPI and
+ * 4° of caster; the knuckle arm 150 mm behind it, angled in toward the rear axle's center (Ackermann);
+ * the drag link's steering end near the centerline at the arm's height.
+ */
+export function steeredAxlePoints(e: EditableGeometry, wheelbase: number): Partial<EditableGeometry['points']> {
+  const v = (k: PointKey) => vec3(e.points[k][0].value, e.points[k][1].value, e.points[k][2].value);
+  const c = v('wheelCenter');
+  const kx = c.x - 125, lo = vec3(kx + 15, c.y - 120, c.z + 8), up = vec3(kx - 15, c.y + 120, c.z - 8);
+  const armZ = c.z - 150, armX = kx - (kx * 150) / Math.max(wheelbase, 500);
+  return {
+    lcaOut2: fields(lo), ucaOut2: fields(up),
+    trOuter: fields(vec3(armX, c.y - 20, armZ)),
+    trInner: fields(vec3(60, c.y + 10, armZ)),
+  };
+}
+
+/** The steering ratio as the core reads it: c-factors, the limit, and the measured curve when there is one. */
+export function ratioSpecOf(s: Pick<DesignState, 'steer' | 'steerCurve'>) {
+  const parsed = s.steerCurve ? parseSteerCurve(s.steerCurve) : null;
+  return {
+    cFactor: s.steer.cFactor.value, cFactorLock: s.steer.cFactorLock.value, rackLimit: s.steer.rackLimit.value,
+    ...(parsed?.ok ? { curve: parsed.curve } : {}),
+  };
+}
+
+export function activePointKeys(kind: SuspensionKind, layout: SpringLayout = 'coilover', steer: SteerMechanism = 'rack', steeredAxle = false): PointKey[] {
+  // A steered solid axle: its kingpins (UCA_Out2 top, LCA_Out2 bottom), knuckle arm and drag link.
+  const base = isBeam(kind) && steeredAxle ? [...kindPointKeys(kind), 'ucaOut2', 'lcaOut2', 'trInner', 'trOuter'] as PointKey[] : kindPointKeys(kind);
   const withRocker = layout === 'rocker' && rockerAllowed(kind) ? [...base, ...ROCKER_KEYS] : base;
-  return steer === 'arm' ? [...withRocker, 'strPiv1', 'strPiv2'] : withRocker;
+  return steer === 'arm' ? [...withRocker, 'strPiv1', 'strPiv2'] : steer === 'centerLink' ? [...withRocker, 'strPiv1', 'strPiv2', ...CENTER_LINK_KEYS] : withRocker;
 }
 function kindPointKeys(kind: SuspensionKind): PointKey[] {
   if (kind === 'macpherson') return ['lcaFwd', 'lcaAft', 'lcaOut', 'dmpChassis', 'dmpArm', 'trInner', 'trOuter', 'wheelCenter'];
@@ -324,7 +392,7 @@ function kindPointKeys(kind: SuspensionKind): PointKey[] {
   if (kind === 'beamLeaf') return ['lcaFwd', 'lcaOut', 'lcaAft', 'wheelCenter'];
   if (kind === 'custom') return ['wheelCenter', 'dmpChassis', 'dmpArm'];
   if (kind === 'twistBeam') return ['lcaFwd', 'lcaAft', 'lcaOut', 'wheelCenter', 'dmpChassis', 'dmpArm'];
-  if (kind === 'beam3') return ['lcaFwd', 'lcaOut', 'ucaFwd', 'ucaOut', 'phChs', 'phAxle', 'wheelCenter', 'dmpChassis', 'dmpArm'];
+  if (kind === 'beam3' || kind === 'beamWatts') return ['lcaFwd', 'lcaOut', 'ucaFwd', 'ucaOut', 'phChs', 'phAxle', 'wheelCenter', 'dmpChassis', 'dmpArm'];
   if (kind === 'singleArm') return ['lcaFwd', 'lcaAft', 'lcaOut', 'ucaOut', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm'];
   if (kind === 'multilink') return ['ucaFwd', 'ucaOut', 'ucaAft', 'ucaOut2', 'lcaFwd', 'lcaOut', 'lcaAft', 'lcaOut2', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm'];
   return ['ucaFwd', 'ucaAft', 'ucaOut', 'lcaFwd', 'lcaAft', 'lcaOut', 'trInner', 'trOuter', 'wheelCenter', 'dmpChassis', 'dmpArm'];
@@ -375,7 +443,10 @@ export function convertGeometry(e: EditableGeometry, kind: SuspensionKind): Edit
     put('lcaOut', vec3(c.x - 150, c.y - 120, c.z)); put('lcaFwd', vec3(c.x - 150, c.y - 100, c.z + 550));
     if (kind === 'beam4') { put('ucaOut', vec3(c.x - 350, c.y + 120, c.z + 20)); put('ucaFwd', vec3(120, c.y + 150, c.z + 420)); }
     else { put('ucaOut', vec3(0, c.y + 130, c.z)); put('ucaFwd', vec3(0, c.y + 170, c.z + 400)); }
-    put('phAxle', vec3(c.x - 200, c.y + 60, c.z - 80)); put('phChs', vec3(-(c.x - 250), c.y + 60, c.z - 80));
+    if (kind === 'beamWatts') {
+      // Watt's linkage: the bar's pivot on the axle's center behind it, the top link to the frame on the left.
+      put('phAxle', vec3(0, c.y + 40, c.z - 120)); put('phChs', vec3(c.x - 250, c.y + 130, c.z - 120));
+    } else { put('phAxle', vec3(c.x - 200, c.y + 60, c.z - 80)); put('phChs', vec3(-(c.x - 250), c.y + 60, c.z - 80)); }
     put('dmpArm', vec3(c.x - 200, c.y + 30, c.z - 30)); put('dmpChassis', vec3(c.x - 200, c.y + 30 + coilLen, c.z - 30));
     put('ucaAft', p('ucaFwd')); put('lcaAft', p('lcaFwd'));
     return { ...e, kind, points: pts, springLayout: 'coilover', damperArm: 'upright' };
@@ -493,8 +564,10 @@ export interface AppState extends DesignState {
   spring: Record<SpringKey, Field>;
   damper: Record<DamperKey, Field>;
   bumpStop: boolean;
-  /** Damper force curve (linear or two-stage). */
+  /** Damper force curve (linear, two-stage, or dyno curves). */
   damperMode: DamperMode;
+  /** Dyno curves and clicker (damperMode 'curve'). */
+  damperCurve?: DamperCurveText;
   steer: Record<SteerKey, Field>;
 
   selection: Selection;
@@ -533,7 +606,10 @@ export interface AppState extends DesignState {
   /** Snapshots of the model and tests parts at the last save / export (unsaved-change tracking). */
   savedSnapshot: string | null;
   savedTests: string | null;
-  notice: { text: string; kind: 'info' | 'warn' | 'error' } | null;
+  /** A short message; `action` adds a button to it (e.g. "Add steering back"). */
+  notice: { text: string; kind: 'info' | 'warn' | 'error'; action?: NoticeAction } | null;
+  /** Corners whose steering was turned off because their type can't steer (offered back when it can again). */
+  steerRemoved: CornerId[];
   /** Save-as dialog open. */
   saveAsOpen: boolean;
 
@@ -554,7 +630,7 @@ export interface AppState extends DesignState {
   setActiveCorner(id: CornerId): void;
   setLink(key: keyof CornerLinks, value: boolean): void;
   setCornerSetting<K extends keyof CornerSettings>(id: CornerId, key: K, value: CornerSettings[K]): void;
-  setShared(axle: Axle, patch: Partial<Pick<SharedDesign, 'antiRollBar' | 'heaveSpring'>>): void;
+  setShared(axle: Axle, patch: Partial<Pick<SharedDesign, 'antiRollBar' | 'heaveSpring' | 'dropLinkOn'>>): void;
   setSharedField(axle: Axle, key: SharedFieldKey, text: string): void;
   setDropLink(axle: Axle, axis: 0 | 1 | 2, text: string): void;
   setVehicleField(key: VehicleKey, text: string): void;
@@ -607,9 +683,15 @@ export interface AppState extends DesignState {
   applyDesign(design: DesignState, fileName: string | null, savedModel: string | null, savedTests?: string | null): void;
   /** Mark parts saved (undefined = leave that part as it is). */
   markSaved(fileName: string | null, model?: string, tests?: string): void;
-  notify(text: string, kind?: 'info' | 'warn' | 'error'): void;
+  notify(text: string, kind?: 'info' | 'warn' | 'error', action?: NoticeAction): void;
+  /** Change the type of the design a corner uses (as the Inspector does for the corner being edited). */
+  setSuspensionKindFor(id: CornerId, kind: SuspensionKind): void;
   loadPreset(id: string): void;
   select(sel: Selection): void;
+  /** Optimizer result shown as a ghost in the Corner view before applying (not saved). */
+  previewGeometry: DoubleWishboneGeometry | null;
+  /** Custom linkage: the joint point picked in the view (moved with the arrows), or null. */
+  customPick: { joint: string; which: 'p' | 'q' } | null;
   movePoint(key: PointKey, delta: Vec3): void;
   /** Move several hardpoints by the same amount. */
   movePoints(keys: PointKey[], delta: Vec3): void;
@@ -639,6 +721,10 @@ export interface AppState extends DesignState {
   setPushrodOn(on: ArmChoice): void;
   /** Set a point of any corner's design (the active one or another), mm in that corner's own frame. */
   setCornerPoint(id: CornerId, key: PointKey, v: Vec3): void;
+  /** Arm pivot bushing stiffness (N/mm). */
+  setBushing(which: 'radial' | 'axial', text: string): void;
+  /** Solid axle: steered or not (turning it on places kingpins, a knuckle arm and a drag link from the hub). */
+  setSteeredAxle(on: boolean): void;
   /** Custom linkage: replace its bodies and joints (one undo step). */
   setCustom(c: CustomLinkage): void;
   /** Change the active design's suspension type (convertGeometry). */
@@ -656,7 +742,7 @@ export interface AppState extends DesignState {
 }
 
 /** Spring fields with the free length fitted so the static load sits at travel 0 (if solvable). */
-function fittedSpring(geom: EditableGeometry, f: Record<SpringKey, Field>, cornerLoad?: number): Record<SpringKey, Field> {
+export function fittedSpring(geom: EditableGeometry, f: Record<SpringKey, Field>, cornerLoad?: number): Record<SpringKey, Field> {
   try {
     const corner = new DoubleWishbone(toGeometry(geom));
     const load = cornerLoad === undefined ? sprungLoad(f, 1) : Math.max(0, cornerLoad - f.unsprungMass.value * G);
@@ -675,8 +761,10 @@ export interface CornerDesign {
   spring: Record<SpringKey, Field>;
   damper: Record<DamperKey, Field>;
   bumpStop: boolean;
-  /** Damper force curve (linear or two-stage). */
+  /** Damper force curve (linear, two-stage, or dyno curves). */
   damperMode: DamperMode;
+  /** Dyno curves and clicker (damperMode 'curve'). */
+  damperCurve?: DamperCurveText;
   tireModel: TireModelKind;
   tire: Record<TireKey, Field>;
   volumeChange: boolean;
@@ -707,8 +795,10 @@ export interface SharedDesign {
   barRate: Field;
   /** Bar arm (lever) length, mm. */
   lever: Field;
-  /** Drop-link mount on the lower arm (corner frame; mirrored for the right side). */
+  /** Drop-link mount (corner frame; mirrored for the right side), on `dropLinkOn`. */
   dropLink: [Field, Field, Field];
+  /** What the drop link is fixed to: the lower arm (default), upper arm, knuckle or the rocker (pushrod layouts). */
+  dropLinkOn?: 'lca' | 'uca' | 'upright' | 'rocker';
   heaveSpring: 'none' | 'wheelRate';
   /** Heave spring rate at the wheel, N/mm. */
   heaveRate: Field;
@@ -733,6 +823,12 @@ export interface CornerLinks {
 }
 
 /** The corner whose design a corner actually uses, following the links. */
+/** A button on a notice. */
+export interface NoticeAction { label: string; run: () => void }
+
+/** Whether a type can steer (a twist beam's hub is fixed to its arm). */
+export const canSteer = (kind: SuspensionKind | undefined) => kind !== 'twistBeam';
+
 export function rootOf(id: CornerId, links: CornerLinks): CornerId {
   switch (id) {
     case 'FL': return 'FL';
@@ -745,9 +841,9 @@ export function rootOf(id: CornerId, links: CornerLinks): CornerId {
 export const CORNER_NAMES: Record<CornerId, string> = { FL: 'Front left', FR: 'Front right', RL: 'Rear left', RR: 'Rear right' };
 
 /** Vehicle inputs (L6). */
-export const VEHICLE_KEYS = ['mass', 'cgX', 'cgY', 'cgZ', 'wheelbase', 'brakeBias', 'driveSplit', 'rollInertia', 'pitchInertia', 'yawInertia', 'tireDamping'] as const;
+export const VEHICLE_KEYS = ['mass', 'cgX', 'cgY', 'cgZ', 'wheelbase', 'brakeBias', 'driveSplit', 'rollInertia', 'pitchInertia', 'yawInertia', 'tireDamping', 'relaxation'] as const;
 /** Vehicle inputs only the ride over time (Phase B) and handling (Phase C) use. */
-export const RIDE_KEYS = ['rollInertia', 'pitchInertia', 'yawInertia', 'tireDamping'] as const;
+export const RIDE_KEYS = ['rollInertia', 'pitchInertia', 'yawInertia', 'tireDamping', 'relaxation'] as const;
 export type VehicleKey = (typeof VEHICLE_KEYS)[number];
 export const VEHICLE_META: Record<VehicleKey, { label: string; quantity: Quantity; unit: string; hint?: string }> = {
   mass: { label: 'Total mass (incl. unsprung)', quantity: 'mass', unit: 'kg' },
@@ -761,6 +857,7 @@ export const VEHICLE_META: Record<VehicleKey, { label: string; quantity: Quantit
   pitchInertia: { label: 'Body pitch inertia', quantity: 'ratio', unit: 'kg·m²', hint: 'Sprung body about its CG, around the side-to-side axis (ride over time). About sprung mass × (0.35–0.45 × wheelbase)².' },
   yawInertia: { label: 'Yaw inertia (whole car)', quantity: 'ratio', unit: 'kg·m²', hint: 'About the CG, around the vertical axis (handling over time). About total mass × (0.45 × wheelbase)².' },
   tireDamping: { label: 'Tire damping', quantity: 'damping', unit: 'N·s/m', hint: 'Vertical damping of each tire (ride over time). Small: rubber and air damp little.' },
+  relaxation: { label: 'Tire relaxation length', quantity: 'length', unit: 'mm', hint: 'Handling over time: a tire\'s side force builds up over this distance rolled after its slip angle changes (≈ 0.5–1 × the tire radius for cars; 0 = at once). Slows the car\'s response to quick steering.' },
 };
 
 export type Workspace = 'corner' | 'vehicle' | 'tests';
@@ -796,6 +893,8 @@ export interface OptimizerSetup {
   rollLoadFactor: Field;
   /** Gradient runs (1 = local from the current design; more = wide search from the best DOE samples too). */
   starts?: number;
+  /** Lengths the optimizer keeps within a range (min / max, mm): the arms (pivot axis to ball joint) and the tie rod. */
+  lengthRanges?: Partial<Record<'uca' | 'lca' | 'tieRod', { lo: Field; hi: Field }>>;
 }
 
 /** Whole-vehicle optimizer setup. */
@@ -848,7 +947,7 @@ export const defaultBrakes = (): BrakeSettings => ({
 });
 
 /** Towing inputs (docs/MATH.md § Towing). */
-export const TOW_KEYS = ['trailerMass', 'tongueShare', 'hitchHeight', 'hitchBehindRear', 'hitchToAxle', 'trailerCgHeight', 'trailerBrakes', 'trailerYawRadius'] as const;
+export const TOW_KEYS = ['trailerMass', 'tongueShare', 'hitchHeight', 'hitchBehindRear', 'hitchToAxle', 'trailerCgHeight', 'trailerBrakes', 'trailerYawRadius', 'tongueLimit'] as const;
 export type TowKey = (typeof TOW_KEYS)[number];
 export const TOW_META: Record<TowKey, { label: string; quantity: Quantity; unit: string; initial: number; hint?: string }> = {
   trailerMass: { label: 'Trailer mass (loaded)', quantity: 'mass', unit: 'kg', initial: 400 },
@@ -858,6 +957,7 @@ export const TOW_META: Record<TowKey, { label: string; quantity: Quantity; unit:
   hitchToAxle: { label: 'Hitch ball to the trailer axle', quantity: 'length', unit: 'mm', initial: 3000 },
   trailerCgHeight: { label: 'Trailer CG height', quantity: 'length', unit: 'mm', initial: 700, hint: 'Above the ground; above the hitch, braking presses the tongue down more' },
   trailerBrakes: { label: 'Trailer brakes (share of its braking)', quantity: 'ratio', unit: '%', initial: 0, hint: '0 = none: the trailer pushes the car when braking; 100 = it stops itself' },
+  tongueLimit: { label: 'Hitch rating (most tongue load)', quantity: 'mass', unit: 'kg', initial: 0, hint: 'The hitch\'s rated tongue weight (0 = no limit). Tests fail Hitch overloaded when braking, accelerating or bumps push the hitch load above it' },
   trailerYawRadius: { label: 'Trailer yaw radius of gyration', quantity: 'length', unit: 'mm', initial: 1350, hint: 'For sway (tests with Ride over time and the driver steering): √(yaw inertia ÷ mass) about its CG. A box trailer ≈ 0.3 × its length; heavy ends make it larger and the trailer sway sooner' },
 };
 export interface TowSettings extends Record<TowKey, Field> { on: boolean }
@@ -865,7 +965,7 @@ export const defaultTow = (): TowSettings => ({
   ...(Object.fromEntries(TOW_KEYS.map((k) => [k, field(TOW_META[k].initial, TOW_META[k].quantity)])) as Record<TowKey, Field>), on: false,
 });
 
-export const AERO_KEYS = ['CdA', 'downF', 'downR', 'dragHeight', 'altitude', 'temperature'] as const;
+export const AERO_KEYS = ['CdA', 'downF', 'downR', 'dragHeight', 'altitude', 'temperature', 'CsA', 'sideCp', 'rollSensF', 'rollSensR', 'yawBalance'] as const;
 export type AeroKey = (typeof AERO_KEYS)[number];
 export const AERO_META: Record<AeroKey, { label: string; quantity: Quantity; unit: string; hint: string }> = {
   CdA: { label: 'Drag area CdA', quantity: 'ratio', unit: 'm²', hint: 'Drag coefficient × frontal area. Road cars ≈ 0.6–0.8, open-wheel cars with wings ≈ 1–1.5.' },
@@ -874,6 +974,11 @@ export const AERO_META: Record<AeroKey, { label: string; quantity: Quantity; uni
   dragHeight: { label: 'Drag acts at height', quantity: 'length', unit: 'mm', hint: 'Above the ground: drag up high moves load to the rear.' },
   altitude: { label: 'Altitude', quantity: 'altitude', unit: 'm', hint: 'For the air density' },
   temperature: { label: 'Air temperature', quantity: 'temperature', unit: '°C', hint: 'For the air density' },
+  CsA: { label: 'Side force area per ° of sideslip', quantity: 'ratio', unit: 'm²/°', hint: 'Handling over time: the body pushed back against its sideways motion. 0 = none; a car ≈ 0.01–0.04.' },
+  sideCp: { label: 'Side force acts, behind the front axle', quantity: 'length', unit: 'mm', hint: 'Behind the CG it steadies the car in a slide (weathervane); ahead of it, it makes it less stable.' },
+  rollSensF: { label: 'Downforce lost per ° of roll, front', quantity: 'ratio', unit: 'm²/°', hint: 'Lift area added per degree of body roll (either way): wings and floors lose downforce as the body rolls. 0 = none.' },
+  rollSensR: { label: 'Downforce lost per ° of roll, rear', quantity: 'ratio', unit: 'm²/°', hint: 'As for the front.' },
+  yawBalance: { label: 'Balance shift per ° of sideslip', quantity: 'ratio', unit: '/°', hint: 'Front share of the downforce moved per degree of sideslip (+ = forward: the center of pressure moves forward in a slide).' },
 };
 export interface AeroSettings extends Record<AeroKey, Field> {
   on: boolean;
@@ -883,7 +988,7 @@ export interface AeroSettings extends Record<AeroKey, Field> {
 export const defaultAero = (): AeroSettings => ({
   on: false, file: null,
   CdA: field(0.8, 'ratio'), downF: field(0.3, 'ratio'), downR: field(0.4, 'ratio'), dragHeight: field(400),
-  altitude: field(0, 'altitude'), temperature: field(20, 'temperature'),
+  altitude: field(0, 'altitude'), temperature: field(20, 'temperature'), CsA: field(0, 'ratio'), sideCp: field(900), rollSensF: field(0, 'ratio'), rollSensR: field(0, 'ratio'), yawBalance: field(0, 'ratio'),
 });
 
 /** Setup wizard steps, easy to hard. */
@@ -908,6 +1013,11 @@ export interface VehicleOptimizerSetup {
   lateralG: Field;
   brakingG: Field;
   accelG: Field;
+  /** Braking in a turn (both g; off when either is 0). */
+  combinedLatG?: Field;
+  combinedBrakeG?: Field;
+  /** Weight of each fixed case in the averaged goals (default 1). */
+  caseWeights?: Partial<Record<FixedCaseKind, number>>;
   keepClose: Field;
   /** Load cases: the fixed ones above, or a test's segments (test id). */
   caseSource?: string;
@@ -995,9 +1105,13 @@ export interface DesignState {
   spring: Record<SpringKey, Field>;
   damper: Record<DamperKey, Field>;
   bumpStop: boolean;
-  /** Damper force curve (linear or two-stage). */
+  /** Damper force curve (linear, two-stage, or dyno curves). */
   damperMode: DamperMode;
+  /** Dyno curves and clicker (damperMode 'curve'). */
+  damperCurve?: DamperCurveText;
   steer: Record<SteerKey, Field>;
+  /** Measured steering ratio: 'steering-wheel °, input' pairs, one per line ('' = none; replaces the c-factors). */
+  steerCurve?: string;
   /**
    * Each steering mechanism's own ratio and limit (rack mm, arm degrees), kept while the other one is in
    * use and put back when switching to it again.
@@ -1063,7 +1177,7 @@ export interface HeldDimension {
 
 /** The working (active corner) fields as a CornerDesign. */
 export const workingDesign = (s: CornerDesign): CornerDesign => ({
-  geom: s.geom, spring: s.spring, damper: s.damper, bumpStop: s.bumpStop, damperMode: s.damperMode, tireModel: s.tireModel,
+  geom: s.geom, spring: s.spring, damper: s.damper, bumpStop: s.bumpStop, damperMode: s.damperMode, ...(s.damperCurve ? { damperCurve: s.damperCurve } : {}), tireModel: s.tireModel,
   tire: s.tire, volumeChange: s.volumeChange, tireSizeText: s.tireSizeText,
 });
 
@@ -1093,7 +1207,7 @@ export function vehicleStaticLoads(
 
 /** The design part of the app state (what a file saves). */
 export const pickDesign = (s: DesignState): DesignState => ({
-  presetId: s.presetId, geom: s.geom, spring: s.spring, damper: s.damper, bumpStop: s.bumpStop, damperMode: s.damperMode, steer: s.steer, steerSaved: s.steerSaved,
+  presetId: s.presetId, geom: s.geom, spring: s.spring, damper: s.damper, bumpStop: s.bumpStop, damperMode: s.damperMode, ...(s.damperCurve ? { damperCurve: s.damperCurve } : {}), steer: s.steer, steerSaved: s.steerSaved,
   tireModel: s.tireModel, tire: s.tire, volumeChange: s.volumeChange, tireSizeText: s.tireSizeText,
   droop: s.droop, bump: s.bump, driver: s.driver,
   corners: s.corners, links: s.links, settings: s.settings, activeCorner: s.activeCorner,
@@ -1128,7 +1242,7 @@ export const defaultVehicle = (): Record<VehicleKey, Field> => ({
   rollInertia: field(35, 'ratio'),
   pitchInertia: field(100, 'ratio'),
   yawInertia: field(140, 'ratio'),
-  tireDamping: field(100, 'damping'),
+  tireDamping: field(100, 'damping'), relaxation: field(0),
 });
 
 export function defaultDesign(presetId = 'C'): DesignState {
@@ -1228,6 +1342,7 @@ export const useApp = create<AppState>((set, get) => ({
   savedSnapshot: null,
   savedTests: null,
   notice: null,
+  steerRemoved: [],
   saveAsOpen: false,
 
   workspace: params.get('workspace') === 'vehicle' ? 'vehicle' : 'corner',
@@ -1257,13 +1372,21 @@ export const useApp = create<AppState>((set, get) => ({
     const corners = mergedCorners(s);
     const root = rootOf(id, s.links);
     set({
-      corners, activeCorner: id, ...corners[root],
+      corners, activeCorner: id, ...corners[root], damperCurve: corners[root].damperCurve,
       selection: null, measure: [], rack: s.settings[id].steered ? s.rack : 0,
     });
   },
   setLink: (key, value) => {
     const s = get();
     const before = mergedCorners(s);
+    // A solid axle or twist beam is one part under both wheels: its left and right can't have different designs.
+    if (!value && (key === 'frontPair' || key === 'rearPair')) {
+      const kind = before[rootOf(key === 'frontPair' ? 'FL' : 'RL', s.links)].geom.kind;
+      if (isOneAxle(kind)) {
+        s.notify(`The ${key === 'frontPair' ? 'front' : 'rear'} is a ${SUSPENSION_LABELS[kind!].toLowerCase()}: one axle under both wheels, so its left and right share one design. Change the type to separate them.`, 'warn');
+        return;
+      }
+    }
     const links = { ...s.links, [key]: value };
     // A corner that stops following another starts from a copy of the design it was using.
     const corners = { ...before };
@@ -1471,7 +1594,23 @@ export const useApp = create<AppState>((set, get) => ({
   },
   setCornerSetting: (id, key, value) => {
     const s = get();
+    if (key === 'steered' && value && !canSteer(mergedCorners(s)[rootOf(id, s.links)].geom.kind)) {
+      s.notify(`${CORNER_NAMES[id]} is a twist beam, which doesn't steer (the hub is fixed to the trailing arm: no knuckle or tie rod). Choose a type that steers for it first.`, 'warn');
+      return;
+    }
     set({ settings: { ...s.settings, [id]: { ...s.settings[id], [key]: value } }, ...(key === 'steered' && !value && id === s.activeCorner ? { rack: 0 } : {}) });
+    if (key !== 'steered' || !value) return;
+    // A steered corner needs a type that steers: a solid axle gets its knuckles, a twist beam can't.
+    const root = rootOf(id, s.links);
+    const g = mergedCorners(s)[root].geom;
+    if (isBeam(g.kind) && !g.steeredAxle) {
+      if (root === rootOf(s.activeCorner, s.links)) get().setSteeredAxle(true);
+      else {
+        const next: EditableGeometry = { ...g, steeredAxle: true, points: { ...g.points, ...steeredAxlePoints(g, s.vehicle.wheelbase.value) } };
+        set({ corners: { ...get().corners, [root]: { ...get().corners[root], geom: next } } });
+        get().notify(`${CORNER_NAMES[id]}: its solid axle is now a steered axle (knuckles on kingpins at the axle ends, a cross tie rod and a drag link) so it can steer.`, 'info');
+      }
+    }
   },
   setVehicleField: (key, text) => {
     const v = get().vehicle;
@@ -1479,11 +1618,17 @@ export const useApp = create<AppState>((set, get) => ({
   },
   applyDesign: (design, fileName, savedModel, savedTests = null) => set({
     ...design, ...design.corners[rootOf(design.activeCorner, design.links)], fileName, savedSnapshot: savedModel, savedTests, tireSizeError: null,
-    travel: 0, rack: 0, loadFactor: 1, mode: 'kinematic', playing: false, playingSteer: false,
+    travel: 0, rack: 0, loadFactor: 1, mode: 'kinematic', playing: false, playingSteer: false, steerRemoved: [],
     selection: null, measure: [], measureMode: false,
   }),
   markSaved: (fileName, model, tests) => set({ fileName, ...(model !== undefined ? { savedSnapshot: model } : {}), ...(tests !== undefined ? { savedTests: tests } : {}) }),
-  notify: (text, kind = 'info') => set({ notice: { text, kind } }),
+  notify: (text, kind = 'info', action) => set({ notice: { text, kind, ...(action ? { action } : {}) } }),
+  setSuspensionKindFor: (id, kind) => {
+    const prev = get().activeCorner;
+    if (prev !== id) get().setActiveCorner(id);
+    get().setSuspensionKind(kind);
+    if (get().activeCorner !== prev) get().setActiveCorner(prev);
+  },
 
   selection: null,
   leftTab: 'inspector',
@@ -1503,7 +1648,9 @@ export const useApp = create<AppState>((set, get) => ({
   measureMode: false,
   measure: [],
 
-  select: (selection) => set(selection ? { selection, leftTab: 'inspector' } : { selection }),
+  select: (selection) => set(selection ? { selection, leftTab: 'inspector', customPick: null } : { selection, customPick: null }),
+  customPick: null,
+  previewGeometry: null,
   movePoints: (keys, delta) => {
     const geom = get().geom;
     const points = { ...geom.points };
@@ -1617,15 +1764,26 @@ export const useApp = create<AppState>((set, get) => ({
     const s = get();
     const from = s.geom.steerMechanism ?? 'rack';
     if (from === m) return;
-    s.updateDesigns('both', (d) => ({ ...d, geom: { ...d.geom, steerMechanism: m } }));
+    s.updateDesigns('both', (d) => {
+      const geom = { ...d.geom, steerMechanism: m };
+      if (m !== 'centerLink') return { ...d, geom };
+      // A center link: lay one out around the inner tie-rod joint the first time (or when its points are far from it).
+      const v = (k: PointKey) => vec3(geom.points[k][0].value, geom.points[k][1].value, geom.points[k][2].value);
+      const i = v('trInner');
+      if (s.steerSaved.centerLink && Math.hypot(v('pitEnd').x - i.x, v('pitEnd').y - i.y, v('pitEnd').z - i.z) < 200) return { ...d, geom };
+      const lay = centerLinkDefaults(i) as Record<'pitEnd' | 'idlPiv1' | 'idlPiv2' | 'idlEnd', [Field, Field, Field]>;
+      const pe = vec3(lay.pitEnd[0].value, lay.pitEnd[1].value, lay.pitEnd[2].value);
+      return { ...d, geom: { ...geom, points: { ...geom.points, ...lay, strPiv1: fields(vec3(pe.x, pe.y - 60, pe.z + 150)), strPiv2: fields(vec3(pe.x, pe.y + 90, pe.z + 150)) } } };
+    });
     // The ratio and limit belong to the mechanism (mm vs degrees): keep the current ones with it and put
     // back the other mechanism's own (first time: typical values; arm 1 : 1 like ATV handlebars, ±40°).
     const f = (v: number) => ({ text: String(v), value: v });
     const keep = Object.fromEntries(MECH_STEER_KEYS.map((k) => [k, s.steer[k]])) as Record<MechSteerKey, Field>;
     const saved = s.steerSaved[m];
-    const back = saved ?? { cFactor: f(m === 'arm' ? 360 : 75), cFactorLock: f(0), rackLimit: f(m === 'arm' ? 40 : 30) };
+    const back = saved ?? { cFactor: f(m === 'arm' ? 360 : m === 'centerLink' ? 24 : 75), cFactorLock: f(0), rackLimit: f(m === 'rack' ? 30 : 40) };
     set({ steer: { ...get().steer, ...back }, steerSaved: { ...s.steerSaved, [from]: keep }, rack: 0 });
-    const what = `${back.cFactor.value} ${m === 'arm' ? '°' : 'mm'}/rev, ±${back.rackLimit.value} ${m === 'arm' ? '°' : 'mm'}`;
+    const what = `${back.cFactor.value} ${angleInput(m) ? '°' : 'mm'}/rev, ±${back.rackLimit.value} ${angleInput(m) ? '°' : 'mm'}`;
+    if (m === 'centerLink') { get().notify(`Pitman arm, idler arm and center link: the steering box turns the pitman arm (FL_Str_Piv1–2, its ball end FL_Pitman_End); the center link runs from it to the idler arm (FL_Idler_Piv1–2, FL_Idler_End) and carries the inner tie-rod joints. The input is the pitman's angle (°): ${saved ? 'your values are back' : 'typical values'} (${what}). Each corner sees the linkage mirrored, so left and right behave alike.`, 'info'); return; }
     get().notify(m === 'arm'
       ? `Steering arm / plate: the inner tie-rod joints swing about the arm's pivot axis (FL_Str_Piv1–2). The steering input is the arm angle (°): ${saved ? 'your arm values are back' : 'typical values'} (${what}). The rack's values are kept for switching back.`
       : `Rack: the steering input is rack travel (mm): ${saved ? 'your rack values are back' : 'typical values'} (${what}). The arm's values are kept for switching back.`, 'info');
@@ -1666,6 +1824,26 @@ export const useApp = create<AppState>((set, get) => ({
       : 'Coilover: from the pushrod\'s lower end up to where the rocker pivot was.', 'info');
   },
   setCustom: (c) => set({ geom: { ...get().geom, custom: c }, presetId: 'custom' }),
+  setBushing: (which, text) => {
+    const g = get().geom;
+    const b = g.bushing ?? { radial: field(5000, 'rate'), axial: field(1500, 'rate') };
+    const f = parseField(text, 'rate', b[which]);
+    if (!(f.value > 0)) { get().notify('Bushing stiffness must be above 0.', 'warn'); return; }
+    set({ geom: { ...g, bushing: { ...b, [which]: f } }, presetId: 'custom' });
+  },
+  setSteeredAxle: (on) => {
+    const s = get();
+    const geom = s.geom;
+    if (!isBeam(geom.kind) || !!geom.steeredAxle === on) return;
+    let next: EditableGeometry = { ...geom, steeredAxle: on };
+    if (on) next = { ...next, points: { ...geom.points, ...steeredAxlePoints(geom, s.vehicle.wheelbase.value) } };
+    try { new DoubleWishbone(toGeometry(next)).design(); } catch (err) {
+      get().notify(`Can't steer this axle: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      return;
+    }
+    set({ geom: next, presetId: 'custom' });
+    if (on) get().notify('Steered axle: each wheel turns on a kingpin at the axle end (UCA_Out2 top, LCA_Out2 bottom). A cross tie rod joins the knuckle arms (TR_Out and its mirror), set behind the kingpins pointing at the rear axle (Ackermann), and a drag link runs from the steering (TR_In, moved by the rack) to the left arm. Its angle against the axle\'s links sets the bump steer.', 'info');
+  },
   setCornerPoint: (id, key, v) => {
     const s = get();
     const root = rootOf(id, s.links);
@@ -1697,18 +1875,54 @@ export const useApp = create<AppState>((set, get) => ({
       return;
     }
     set({ geom: next, presetId: 'custom', spring: fittedSpring(next, get().spring), selection: null });
-    // A solid axle spans the axle: its left and right corners share the design.
-    if (isBeam(kind)) {
-      const front = get().activeCorner === 'FL' || get().activeCorner === 'FR';
-      get().setLink(front ? 'frontPair' : 'rearPair', true);
+    // A solid axle or twist beam spans the axle: its left and right corners share this design (the left
+    // corner takes it first, so it isn't lost when the right one starts following the left).
+    if (isOneAxle(kind)) {
+      const s = get();
+      const front = s.activeCorner === 'FL' || s.activeCorner === 'FR';
+      const pair = front ? 'frontPair' : 'rearPair';
+      if (!s.links[pair]) {
+        const all = mergedCorners(s);
+        set({ corners: { ...all, [rootOf(front ? 'FL' : 'RL', s.links)]: all[rootOf(s.activeCorner, s.links)] } });
+        get().setLink(pair, true);
+      }
     }
+    // A steered corner gets a steered axle (a twist beam can't steer: said below).
+    if (isBeam(kind) && get().settings[get().activeCorner].steered && !get().geom.steeredAxle) get().setSteeredAxle(true);
     // A twist beam's beam twists like an anti-roll bar: start from a typical stiffness if the axle has none.
     if (kind === 'twistBeam') {
       const axle = get().activeCorner === 'FL' || get().activeCorner === 'FR' ? 'front' : 'rear';
       const sh = get().shared[axle];
       if (sh.antiRollBar === 'none') { get().setShared(axle, { antiRollBar: 'wheelRate' }); get().setSharedField(axle, 'arbRate', '15'); }
     }
-    get().notify(`${SUSPENSION_LABELS[kind]}: ${kind === 'custom' ? 'edit its bodies and joints in the Linkage editor (Inspector, with nothing selected). It starts from the current arms as hinged bodies with ball joints to the knuckle and the tie rod as a rod from the rack, so it moves the same; add bodies, hinges, ball joints and rods to build anything with one free motion.' : kind === 'twistBeam' ? 'each hub is fixed to its trailing arm, which swings about the line from its bushing to the beam\'s shear center (on the centerline); the beam\'s twist stiffness is this axle\'s anti-roll bar (Shared components; started at 15 N/mm at the wheel if there was none). Moving the shear center back adds roll camber and roll steer.' : kind === 'beamLeaf' ? 'a solid axle on leaf springs (left and right now share this design): set the front eye, the spring seat on the axle and the rear shackle; the spring rate is the leaf rate at the seat. Roll center ≈ the seat height.' : isBeam(kind) ? `one axle carries both wheels (left and right now share this design). Lower links run forward from the axle, ${kind === 'beam4' ? 'the upper links angle in to locate it sideways' : 'one upper link in the middle and a Panhard rod locate it'}; coilovers sit on the axle. Move the link ends to shape it. A beam axle here doesn't steer.` : kind === 'singleArm' ? 'the knuckle now rides on the lower arm, turning on a kingpin from the lower to the upper ball joint\'s position (both on the arm); the arm swings on its frame pivots. Move the pivots along the car for a swing arm, across it for a trailing arm.' : kind === 'rigid' ? 'the wheel turns on a fixed kingpin through the ball joints\' positions; no spring or travel (only the tire gives).' : kind === 'macpherson' ? 'a strut was placed from the upright (top mount above the upper ball joint); adjust its points.' : kind === 'multilink' ? `each link now ends at its own point on the upright (moved 35 mm along the link: the same motion at ride height, nearly the same through travel); move them to shape the motion.${geom.kind === 'doubleWishbone' || !geom.kind ? ' The coilover now mounts on the upright (a multilink has no arm body), so check its motion ratio.' : ''}` : 'the links rejoin at one ball joint per arm.'}`, 'info');
+    // Steering: a type that can't steer (a twist beam) turns it off on its corners, remembered; choosing a
+    // type that steers again offers to add it back.
+    const st = get();
+    const ids = CORNER_IDS.filter((c) => rootOf(c, st.links) === rootOf(st.activeCorner, st.links));
+    let steerNote = '';
+    let action: NoticeAction | undefined;
+    if (!canSteer(kind)) {
+      const off = ids.filter((c) => st.settings[c].steered);
+      if (off.length) {
+        set({
+          settings: { ...st.settings, ...Object.fromEntries(off.map((c) => [c, { ...st.settings[c], steered: false }])) },
+          steerRemoved: [...new Set([...st.steerRemoved, ...off])], rack: 0, playingSteer: false,
+        });
+        steerNote = `
+
+Steering turned off for ${off.join(', ')}: a twist beam doesn't steer. Choosing a type that steers offers to add it back.`;
+      }
+    } else {
+      const back = st.steerRemoved.filter((c) => ids.includes(c));
+      if (back.length) {
+        set({ steerRemoved: st.steerRemoved.filter((c) => !back.includes(c)) });
+        steerNote = `
+
+${back.join(', ')} steered before the twist beam turned it off. This type steers: add steering back?`;
+        action = { label: `Add steering back (${back.join(', ')})`, run: () => { for (const c of back) get().setCornerSetting(c, 'steered', true); } };
+      }
+    }
+    get().notify(`${SUSPENSION_LABELS[kind]}: ${kind === 'custom' ? 'edit its bodies and joints in the Linkage editor (Inspector, with nothing selected). It starts from the current arms as hinged bodies with ball joints to the knuckle and the tie rod as a rod from the rack, so it moves the same; add bodies, hinges, ball joints and rods to build anything with one free motion.' : kind === 'twistBeam' ? 'each hub is fixed to its trailing arm, which swings about the line from its bushing to the beam\'s shear center (on the centerline); the beam\'s twist stiffness is this axle\'s anti-roll bar (Shared components; started at 15 N/mm at the wheel if there was none). Moving the shear center back adds roll camber and roll steer.' : kind === 'beamLeaf' ? 'a solid axle on leaf springs (left and right now share this design): set the front eye, the spring seat on the axle and the rear shackle; the spring rate is the leaf rate at the seat. Roll center ≈ the seat height.' : isBeam(kind) ? `one axle carries both wheels (left and right now share this design). Lower links run forward from the axle, ${kind === 'beam4' ? 'the upper links angle in to locate it sideways' : kind === 'beamWatts' ? 'one upper link in the middle and a Watt\'s linkage locate it (its pivot on the axle moves straight up and down: no sideways shift)' : 'one upper link in the middle and a Panhard rod locate it'}; coilovers sit on the axle. Move the link ends to shape it. Steered (Inspector → Steered axle): knuckles on kingpins at the axle ends.` : kind === 'singleArm' ? 'the knuckle now rides on the lower arm, turning on a kingpin from the lower to the upper ball joint\'s position (both on the arm); the arm swings on its frame pivots. Move the pivots along the car for a swing arm, across it for a trailing arm.' : kind === 'rigid' ? 'the wheel turns on a fixed kingpin through the ball joints\' positions; no spring or travel (only the tire gives).' : kind === 'macpherson' ? 'a strut was placed from the upright (top mount above the upper ball joint); adjust its points.' : kind === 'multilink' ? `each link now ends at its own point on the upright (moved 35 mm along the link: the same motion at ride height, nearly the same through travel); move them to shape the motion.${geom.kind === 'doubleWishbone' || !geom.kind ? ' The coilover now mounts on the upright (a multilink has no arm body), so check its motion ratio.' : ''}` : 'the links rejoin at one ball joint per arm.'}${steerNote}`, 'info', action);
   },
   fitSpring: () => {
     const s = get();

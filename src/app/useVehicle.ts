@@ -89,7 +89,7 @@ export interface VehicleModel {
 }
 
 const pickVehicleInputs = (s: DesignState) => ({
-  geom: s.geom, spring: s.spring, damper: s.damper, bumpStop: s.bumpStop, damperMode: s.damperMode, tireModel: s.tireModel, tire: s.tire,
+  geom: s.geom, spring: s.spring, damper: s.damper, bumpStop: s.bumpStop, damperMode: s.damperMode, damperCurve: s.damperCurve, tireModel: s.tireModel, tire: s.tire,
   volumeChange: s.volumeChange, tireSizeText: s.tireSizeText, corners: s.corners, links: s.links,
   settings: s.settings, activeCorner: s.activeCorner, vehicle: s.vehicle, autoPreload: s.autoPreload,
   droop: s.droop, bump: s.bump, shared: s.shared,
@@ -173,7 +173,8 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         const axleShared = s.shared[isFront(id) ? 'front' : 'rear'];
         const dl = axleShared.antiRollBar === 'torsionBar'
           ? vec3(axleShared.dropLink[0].value, axleShared.dropLink[1].value, axleShared.dropLink[2].value) : null;
-        const key = `${cornerRack.toFixed(3)}|${range[0]}|${range[1]}|${dl ? `${dl.x},${dl.y},${dl.z}` : '-'}`;
+        const dlOn = axleShared.dropLinkOn ?? 'lca';
+        const key = `${cornerRack.toFixed(3)}|${range[0]}|${range[1]}|${dl ? `${dl.x},${dl.y},${dl.z},${dlOn}` : '-'}`;
         const mu = d.spring.unsprungMass.value;
         const rigid = b.corner.kind === 'rigid';
         // A solid axle: one table over both wheels' travel (cached with the design), preload from its heave ratio.
@@ -182,10 +183,12 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         let freeLength = d.spring.freeLength.value;
         const coupled = b.corner.solidAxle ?? b.corner.twistBeam;
         if (coupled) {
-          const akey = `axle|${range[0]}|${range[1]}`;
+          const axRack = b.corner.geometry.steeredAxle && s.settings[id].steered ? rack : 0;
+          // A drop-link anti-roll bar: the table tracks its mount on the axle (or on each twist-beam arm).
+          const akey = `axle|${range[0]}|${range[1]}|${axRack}|${dl ? `${dl.x},${dl.y},${dl.z}` : '-'}`;
           let at = axleCache.current.get(b.corner)?.get(akey);
           if (!at) {
-            at = new AxleTable(coupled, range, 17);
+            at = new AxleTable(coupled, range, 17, axRack, dl ?? undefined);
             axleCache.current.set(b.corner, new Map([[akey, at]]));
           }
           const side = isLeft(id) ? 'L' : 'R';
@@ -196,7 +199,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         } else {
           let t = byRack.get(key);
           if (!t) {
-            t = new CornerTable(b.corner, cornerRack, range, 41, dl ? { body: 'lca', point: dl } : undefined);
+            t = new CornerTable(b.corner, cornerRack, range, 41, dl ? { body: dlOn, point: dl } : undefined);
             byRack.set(key, t);
             if (byRack.size > 24) byRack.delete(byRack.keys().next().value!);
           }
@@ -243,17 +246,31 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
 
       // Exact corner states at the solved travels, for drawing and characteristics.
       const views: Partial<Record<CornerId, VehicleCornerView>> = {};
+      // A solid axle or twist beam is one part under both wheels: solve it once at both travels and take
+      // each corner from that (the right one from the axle's right side), so both wheels sit on it.
+      const pairs = new Map<CornerId, ReturnType<DoubleWishbone['solveAxle']>>();
+      const stateOf = (id: CornerId, corner: DoubleWishbone) => {
+        if (!corner.solidAxle && !corner.twistBeam) return corner.solve({ travel: res.corners[id].travel, rack: racks[id] });
+        const l: CornerId = isFront(id) ? 'FL' : 'RL', r: CornerId = isFront(id) ? 'FR' : 'RR';
+        let pair = pairs.get(l);
+        if (!pair) {
+          const axRack = corner.geometry.steeredAxle && s.settings[l].steered ? rack : 0;
+          pair = corner.solveAxle({ left: res.corners[l].travel, right: res.corners[r].travel, rack: axRack });
+          pairs.set(l, pair);
+        }
+        return isLeft(id) ? pair.left : pair.right;
+      };
       for (const c of corners) {
         const d = all[rootOf(c.id, s.links)];
         const b = setup.built.get(d)!;
-        const state = b.corner.solve({ travel: res.corners[c.id].travel, rack: racks[c.id] });
+        const state = stateOf(c.id, b.corner);
         const pl = placement(c.id, wheelbase);
         const wcWorld = P.point(pl.point(state.points.wheelCenter));
         const axisWorld = P.rot(pl.dir(state.spinAxis));
         const patch = contactPatch(wcWorld, axisWorld, { point: vec3(0, res.corners[c.id].groundY, 0), normal: Y_AXIS }, b.profile, 24);
         const axleShared = s.shared[isFront(c.id) ? 'front' : 'rear'];
         const dropLink = axleShared.antiRollBar === 'torsionBar'
-          ? b.corner.pointOn(state, 'lca', vec3(axleShared.dropLink[0].value, axleShared.dropLink[1].value, axleShared.dropLink[2].value))
+          ? b.corner.pointOn(state, axleShared.dropLinkOn ?? 'lca', vec3(axleShared.dropLink[0].value, axleShared.dropLink[1].value, axleShared.dropLink[2].value))
           : null;
         views[c.id] = { id: c.id, root: rootOf(c.id, s.links), rack: racks[c.id], state, chars: characteristics(state), patch, axisWorld, profile: b.profile, dropLink, unsprungMass: c.unsprungMass };
       }

@@ -19,7 +19,8 @@ function useDefs() {
   const layout = useApp((s) => layoutOf(s.geom));
   const pushrodOn = useApp((s) => s.geom.pushrodOn ?? 'lca');
   const steer = useApp((s) => s.geom.steerMechanism ?? 'rack');
-  return componentDefs(arm, kind, layout, pushrodOn, steer);
+  const steeredAxle = useApp((s) => !!s.geom.steeredAxle);
+  return componentDefs(arm, kind, layout, pushrodOn, steer, steeredAxle);
 }
 const labelOf = (k: PointKey) => { const g = useApp.getState().geom; return pointLabel(k, g.kind, layoutOf(g)); };
 import { armMetrics } from '../../core/suspension/armGeometry';
@@ -80,7 +81,7 @@ function PointsTable({ points }: { points: PointKey[] }) {
             </td>
             {([0, 1, 2] as const).map((i) => (
               <td key={i} data-lock-key={lockKeys.point(root, k, i)}>
-                <ValueInput field={geom.points[k][i]} unit="mm" onCommit={(t) => setPoint(k, i, t)} locked={pointAxisLocked(locks, root, k, i, geom.damperArm, geom.kind, layoutOf(geom), geom.steerMechanism)} />
+                <ValueInput field={geom.points[k][i]} unit="mm" onCommit={(t) => setPoint(k, i, t)} locked={pointAxisLocked(locks, root, k, i, geom.damperArm, geom.kind, layoutOf(geom), geom.steerMechanism, geom.steeredAxle)} />
               </td>
             ))}
             <td><LockButton keys={([0, 1, 2] as const).map((i) => lockKeys.point(root, k, i))} title="Lock / unlock X, Y and Z of this point" /></td>
@@ -137,7 +138,7 @@ function CoiloverPlacement() {
   const c = coiloverGeometry(d.chassis, d.armPoint, arm);
   const put = (moves: { key: 'dmpChassis' | 'dmpArm'; p: Vec3 }[]) => {
     const updates = moves.flatMap(({ key, p }) => ([0, 1, 2] as const).map((axis) => ({ key, axis, value: [p.x, p.y, p.z][axis]! })));
-    const blocked = updates.filter((u) => Math.abs(u.value - geom.points[u.key][u.axis].value) > 1e-9 && pointAxisLocked(locks, root, u.key, u.axis, geom.damperArm, geom.kind, layoutOf(geom), geom.steerMechanism));
+    const blocked = updates.filter((u) => Math.abs(u.value - geom.points[u.key][u.axis].value) > 1e-9 && pointAxisLocked(locks, root, u.key, u.axis, geom.damperArm, geom.kind, layoutOf(geom), geom.steerMechanism, geom.steeredAxle));
     if (blocked.length) { notify(`${blocked.map((u) => `${labelOf(u.key)} ${'XYZ'[u.axis]}`).join(', ')} locked: unlock to move the ${kind === 'macpherson' ? 'strut' : 'coilover'}.`, 'warn'); return; }
     setPointsAxis(updates);
   };
@@ -235,6 +236,7 @@ function ChassisSection() {
           : [{ label: SPRING_META.cornerLoad.label, value: vehicleLoad.toFixed(0), unit: 'N', hint: 'Static weight on this corner from the vehicle mass and CG' }]),
         { label: SPRING_META.unsprungMass.label, field: spring.unsprungMass, unit: SPRING_META.unsprungMass.unit, onCommit: (t: string) => setSpringField('unsprungMass', t), lockKey: lockKeys.field(root, 'spring', 'unsprungMass') },
       ]} />
+      <BushingFields />
       <FieldRows rows={[
         { label: 'Droop travel', field: derivedField(droop, 1), unit: 'mm', onCommit: (t) => set('droop', Math.max(1, Math.abs(Number(t) || droop))) },
         { label: 'Bump travel', field: derivedField(bump, 1), unit: 'mm', onCommit: (t) => set('bump', Math.max(1, Math.abs(Number(t) || bump))) },
@@ -342,6 +344,16 @@ function PointInspector({ id }: { id: PointKey }) {
 /** Suspension type of the active corner (and the corners linked to it). */
 export function SuspensionTypeRow() {
   const kind = useApp((s) => s.geom.kind ?? 'doubleWishbone');
+  return (
+    <>
+      <TypeSelectRow />
+      {isBeam(kind) && <SteeredAxleCheck />}
+    </>
+  );
+}
+
+function TypeSelectRow() {
+  const kind = useApp((s) => s.geom.kind ?? 'doubleWishbone');
   const setKind = useApp((s) => s.setSuspensionKind);
   const active = useApp((s) => s.activeCorner);
   return (
@@ -351,6 +363,17 @@ export function SuspensionTypeRow() {
         {SUSPENSION_KINDS.map((k) => <option key={k} value={k}>{SUSPENSION_LABELS[k]}</option>)}
       </select>
     </div>
+  );
+}
+
+/** Solid axles: steered (knuckles on kingpins at the axle ends) or not. */
+function SteeredAxleCheck() {
+  const on = useApp((s) => !!s.geom.steeredAxle);
+  const set = useApp((s) => s.setSteeredAxle);
+  return (
+    <label className="check-row" title="Each wheel turns on a kingpin at the axle end; a cross tie rod joins the knuckle arms and a drag link runs from the steering to the left arm">
+      <input type="checkbox" checked={on} onChange={(e) => set(e.target.checked)} /> Steered axle (kingpins on the axle ends)
+    </label>
   );
 }
 
@@ -404,5 +427,18 @@ function PointsInspector({ ids }: { ids: PointKey[] }) {
       <Section title="Move together"><GroupMove ids={ids} /></Section>
       <Section title="Points"><PointsTable points={ids} /></Section>
     </div>
+  );
+}
+
+/** Arm pivot bushings: their stiffness sets the compliance steer and camber (Results). */
+function BushingFields() {
+  const b = useApp((s) => s.geom.bushing);
+  const setBushing = useApp((s) => s.setBushing);
+  const radial = b?.radial ?? { text: '5000', value: 5000 }, axial = b?.axial ?? { text: '1500', value: 1500 };
+  return (
+    <FieldRows rows={[
+      { label: 'Arm bushings, radial', field: radial, unit: 'N/mm', hint: 'Stiffness of each arm pivot bushing across its axis (typical rubber ≈ 2000–10000 N/mm; spherical bearings: very high). Used for the compliance steer / camber results.', onCommit: (t: string) => setBushing('radial', t) },
+      { label: 'Arm bushings, axial', field: axial, unit: 'N/mm', hint: 'Along the pivot axis (usually softer than radial).', onCommit: (t: string) => setBushing('axial', t) },
+    ]} />
   );
 }

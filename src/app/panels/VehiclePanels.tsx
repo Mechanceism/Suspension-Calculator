@@ -10,8 +10,9 @@ import { LocksPanel } from './LocksPanel';
 import { VehicleOptimizePanel } from './OptimizePanel';
 import { CORNER_IDS, type CornerId } from '../../core/vehicle/vehicle';
 import { deg } from '../../core/suspension/characteristics';
-import {
-  useApp, VEHICLE_KEYS, VEHICLE_META, CORNER_NAMES, SHARED_META, rootOf,
+import { isOneAxle, SUSPENSION_LABELS } from '../../core/suspension/doubleWishbone';
+import { angleInput, ratioSpecOf,
+  useApp, VEHICLE_KEYS, VEHICLE_META, CORNER_NAMES, SHARED_META, rootOf, resolvedCorner, canSteer,
   type CornerLinks, type DiffType, type Axle, type SharedDesign,
   BRAKE_KEYS, BRAKE_META, FADE_KEYS, FADE_META, TOW_KEYS, TOW_META,
 } from '../store';
@@ -36,6 +37,12 @@ export function CornerSetup({ compact = false }: { compact?: boolean }) {
   const setActiveCorner = useApp((s) => s.setActiveCorner);
   const setLink = useApp((s) => s.setLink);
   const setCornerSetting = useApp((s) => s.setCornerSetting);
+  // A solid axle or twist beam is one part under both wheels: its left / right link can't be undone.
+  const axleKind = (s: Parameters<typeof resolvedCorner>[0], id: CornerId) => { const k = resolvedCorner(s, id).geom.kind; return isOneAxle(k) ? k! : null; };
+  const frontAxle = useApp((s) => axleKind(s, 'FL'));
+  const rearAxle = useApp((s) => axleKind(s, 'RL'));
+  const activeKind = useApp((s) => resolvedCorner(s, s.activeCorner).geom.kind);
+  const lockedBy = (k: keyof CornerLinks) => (k === 'frontPair' ? frontAxle : k === 'rearPair' ? rearAxle : null);
   const root = rootOf(active, links);
   const sharedWith = CORNER_IDS.filter((id) => id !== active && rootOf(id, links) === root);
   return (
@@ -53,8 +60,8 @@ export function CornerSetup({ compact = false }: { compact?: boolean }) {
         {sharedWith.length > 0 && <> — dimensions shared with {sharedWith.join(', ')} (linked)</>}
       </p>
       <div className="setting-row">
-        <label className="check-inline">
-          <input type="checkbox" checked={settings[active].steered} onChange={(e) => setCornerSetting(active, 'steered', e.target.checked)} />
+        <label className="check-inline" title={canSteer(activeKind) ? undefined : "A twist beam doesn't steer: its hub is fixed to the trailing arm (no knuckle or tie rod)"}>
+          <input type="checkbox" checked={settings[active].steered} disabled={!canSteer(activeKind) && !settings[active].steered} onChange={(e) => setCornerSetting(active, 'steered', e.target.checked)} />
           Steers
         </label>
         <label className="check-inline" title="Drive forces come later; this marks the corner as powered">
@@ -107,8 +114,8 @@ export function CornerSetup({ compact = false }: { compact?: boolean }) {
       {!compact && (
         <div className="link-rows">
           {(Object.keys(LINK_LABELS) as (keyof CornerLinks)[]).map((k) => (
-            <label key={k} className="check-row">
-              <input type="checkbox" checked={links[k]} onChange={(e) => setLink(k, e.target.checked)} />
+            <label key={k} className="check-row" title={lockedBy(k) && links[k] ? `${SUSPENSION_LABELS[lockedBy(k)!]}: one axle under both wheels, so left and right share one design` : undefined}>
+              <input type="checkbox" checked={links[k]} disabled={!!lockedBy(k) && links[k]} onChange={(e) => setLink(k, e.target.checked)} />
               {LINK_LABELS[k]}
             </label>
           ))}
@@ -236,8 +243,17 @@ function SharedEditor({ axle }: { axle: Axle }) {
       {sh.antiRollBar === 'torsionBar' && (
         <>
           <FieldRows rows={[row('barRate'), row('lever')]} />
+          <div className="row" title="What the drop link is fixed to. On a pushrod layout's rocker the bar works through the rocker's motion ratio (on corners without a rocker it goes on the knuckle).">
+            <span className="muted">Drop link on</span>
+            <select value={sh.dropLinkOn ?? 'lca'} onChange={(e) => setShared(axle, { dropLinkOn: e.target.value as NonNullable<SharedDesign['dropLinkOn']> })}>
+              <option value="lca">Lower arm</option>
+              <option value="uca">Upper arm</option>
+              <option value="upright">Knuckle / upright</option>
+              <option value="rocker">Rocker (pushrod layouts)</option>
+            </select>
+          </div>
           <div className="row drop-link">
-            <span className="muted" title="Where the drop link attaches to the lower arm (corner frame; mirrored for the right side)">Drop link on LCA</span>
+            <span className="muted" title="Where the drop link attaches (corner frame; mirrored for the right side)">Drop link mount</span>
             {(['X', 'Y', 'Z'] as const).map((ax, i) => (
               <span key={ax} data-lock-key={`shared.${axle}.dropLink.${ax.toLowerCase()}`}>
                 <ValueInput field={sh.dropLink[i]!} unit="mm" width={58} onCommit={(t) => setDropLink(axle, i as 0 | 1 | 2, t)} lockKey={`shared.${axle}.dropLink.${ax.toLowerCase()}`} />
@@ -279,7 +295,8 @@ export function VehicleResults({ model }: { model: VehicleModel | null }) {
             { label: 'Drag', value: fmt(r.aero.drag, 0), unit: 'N', hint: 'On the body, rearward; the driven tires push against it' },
             { label: 'Downforce, front axle', value: fmt(-r.aero.liftF, 0), unit: 'N', hint: '− = lift' },
             { label: 'Downforce, rear axle', value: fmt(-r.aero.liftR, 0), unit: 'N' },
-            { label: 'Aero balance (front share)', value: Math.abs(r.aero.liftF + r.aero.liftR) > 1e-6 ? fmt((r.aero.liftF / (r.aero.liftF + r.aero.liftR)) * 100, 1) : '—', unit: '%' },
+            { label: 'Aero balance (front share)', value: Math.abs(r.aero.liftF + r.aero.liftR) > 1e-6 ? fmt((r.aero.liftF / (r.aero.liftF + r.aero.liftR)) * 100, 1) : '—', unit: '%', hint: 'Moves with ride height (maps), roll (roll sensitivity) and, over time, sideslip' },
+            { label: 'Center of pressure, behind the front axle', value: Math.abs(r.aero.liftF + r.aero.liftR) > 1e-6 ? fmt((r.aero.liftR / (r.aero.liftF + r.aero.liftR)) * model.wheelbase, 0) : '—', unit: 'mm', hint: 'Where the downforce acts along the car' },
           ]} />
         </Section>
       )}
@@ -377,10 +394,11 @@ export function VehicleMotionBar() {
   const rack = useApp((s) => s.rack);
   const cFactor = useApp((s) => s.steer.cFactor.value);
   const cFactorLock = useApp((s) => s.steer.cFactorLock.value);
-  const armMech = useApp((s) => s.geom.steerMechanism === 'arm');
+  const armMech = useApp((s) => angleInput(s.geom.steerMechanism));
   const rackLimit = useApp((s) => s.steer.rackLimit.value);
   const set = useApp((s) => s.set);
-  const ratio = { cFactor, cFactorLock, rackLimit };
+  const curveText = useApp((s) => s.steerCurve);
+  const ratio = { ...ratioSpecOf({ steer: useApp.getState().steer, steerCurve: curveText }), cFactor, cFactorLock, rackLimit };
   const swLimit = steeringWheelAngle(rackLimit, ratio);
   usePlay(playing, 5000, (s) => useApp.getState().set('lateralG', Number((1.2 * s).toFixed(3))));
   usePlay(playingSteer, 5000, (s) => useApp.getState().set('rack', s * rackLimit));
@@ -424,7 +442,7 @@ export function VehicleMotionBar() {
       </div>
       <div className="motion-group">
         <label className="slider">
-          <span>Steering wheel <b>{steeringWheelAngle(rack, ratio).toFixed(0)}</b>° · {armMech ? <>arm <b>{rack.toFixed(1)}°</b></> : <>rack <b><Num text={rack.toFixed(1)} unit="mm" withUnit /></b></>}</span>
+          <span>Steering wheel <b>{steeringWheelAngle(rack, ratio).toFixed(0)}</b>° · {armMech ? <>{useApp.getState().geom.steerMechanism === 'centerLink' ? 'pitman' : 'arm'} <b>{rack.toFixed(1)}°</b></> : <>rack <b><Num text={rack.toFixed(1)} unit="mm" withUnit /></b></>}</span>
           <input type="range" min={-swLimit} max={swLimit} step={1} value={steeringWheelAngle(rack, ratio)} onChange={(e) => setRack(inputForWheelAngle(Number(e.target.value), ratio))} onDoubleClick={() => setRack(0)} />
           <span className="quick">
             <button onClick={() => setRack(-rackLimit)}>◀ Lock</button>

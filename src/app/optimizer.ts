@@ -2,6 +2,7 @@
  * App side of the optimizers: turns the setups (free coordinates + ranges, goals, locks) into a
  * CornerProblem or a VehicleProblem, and runs them in a Web Worker so the UI stays responsive.
  */
+import { blendCurves, parseDamperCurve } from '../core/vehicle/vehicle';
 import { brakeCapacity, type BrakeSystem, type BrakeCapacity } from '../core/vehicle/brakes';
 import type { BrakeThermal } from '../core/vehicle/brakeThermal';
 import type { TrailerSpec } from '../core/vehicle/towing';
@@ -10,7 +11,7 @@ import {
   type CornerProblem, type CornerReport, type HardpointId, type ProgressInfo, type Variable, type Hold,
 } from '../core/optimize/corner';
 import {
-  VEHICLE_GOAL_KINDS, reportVehicle,
+  VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, reportVehicle,
   type VehicleProblem, type VehicleReport, type VehicleVariable, type VehicleHold,
 } from '../core/optimize/vehicle';
 import type { GripModel } from '../core/tire/grip';
@@ -21,9 +22,9 @@ import type { TireSample, TireFitResult } from '../core/tire/fit';
 import type { TireForceModel } from '../core/tire/model';
 import { CORNER_IDS, tirePressure, type AxleShared, type CornerId, type DamperSpec } from '../core/vehicle/vehicle';
 import { vec3 } from '../core/math/vec3';
-import { layoutOf,
+import { ratioSpecOf, layoutOf,
   POINT_KEYS, rootOf, toGeometry, toProfile, toForceModel, mergedCorners, vehicleStaticLoads, defaultOptimizerSetup, GRIP_KEYS, MF_KEYS,
-  type AppState, type FadeKey, type PointKey, type OptimizerSetup, type SharedDesign, type GripKey, type MFKey, type Field, type DamperKey, type DamperMode,
+  DEFAULT_DAMPER_CURVE, type DamperCurveText, type AppState, type FadeKey, type PointKey, type OptimizerSetup, type SharedDesign, type GripKey, type MFKey, type Field, type DamperKey, type DamperMode,
   type BrakeKey,
 } from './store';
 import { STATE_KEY } from './anchors';
@@ -41,6 +42,18 @@ export function parseVarKey(key: string): { k: PointKey; axis: 0 | 1 | 2 } | nul
   const [k, a] = key.split('.');
   const axis = AXES.indexOf(a as 'x');
   return (POINT_KEYS as readonly string[]).includes(k!) && axis >= 0 ? { k: k as PointKey, axis: axis as 0 | 1 | 2 } : null;
+}
+/** Custom linkage joint points: `custom.<joint>.<p|q>.<x|y|z>` ↔ the optimizer's `custom:<joint>:<p|q>`. */
+export const customVarKey = (joint: string, which: 'p' | 'q', axis: 0 | 1 | 2) => `custom.${joint}.${which}.${AXES[axis]}`;
+export function parseCustomVarKey(key: string): { joint: string; which: 'p' | 'q'; axis: 0 | 1 | 2 } | null {
+  const m = /^custom\.(.+)\.(p|q)\.([xyz])$/.exec(key);
+  return m ? { joint: m[1]!, which: m[2] as 'p' | 'q', axis: AXES.indexOf(m[3] as 'x') as 0 | 1 | 2 } : null;
+}
+/** The joint and point of a `custom:<joint>:<p|q>` optimizer variable (null for a hardpoint). */
+export function customOfVariable(id: string): { joint: string; which: 'p' | 'q' } | null {
+  if (!id.startsWith('custom:')) return null;
+  const [, joint, which] = id.split(':');
+  return { joint: joint!, which: which === 'q' ? 'q' : 'p' };
 }
 /** Vehicle optimizer keys carry the design (root corner): `FL.trInner.y`. */
 export const vehVarKey = (root: CornerId, k: PointKey, axis: 0 | 1 | 2) => `${root}.${varKey(k, axis)}`;
@@ -89,13 +102,20 @@ export function trailerOf(s: Pick<AppState, 'tow'>): TrailerSpec | undefined {
   return {
     mass: t.trailerMass.value, tongueShare: t.tongueShare.value / 100, hitchHeight: t.hitchHeight.value, hitchBehindRear: t.hitchBehindRear.value,
     hitchToAxle: t.hitchToAxle.value, cgHeight: t.trailerCgHeight.value, brakeShare: t.trailerBrakes.value / 100, yawRadius: t.trailerYawRadius.value,
+    ...(t.tongueLimit.value > 0 ? { tongueLimit: t.tongueLimit.value * 9.80665 } : {}),
   };
 }
 
 export function aeroOf(s: Pick<AppState, 'aero'>): { model: AeroModel; rho: number } | undefined {
   const a = s.aero;
   if (!a?.on) return undefined;
-  const model: AeroModel = a.file ?? { name: 'generic', CdA: a.CdA.value, ClAf: -a.downF.value, ClAr: -a.downR.value, rideHeightRef: 'absolute', dragHeight: a.dragHeight.value };
+  // The side force, roll sensitivity and balance shift (generic values) also apply to an imported model that has none.
+  const extra = {
+    ...(a.CsA.value ? { CsA: a.CsA.value, sideCp: a.sideCp.value } : {}),
+    ...(a.rollSensF.value || a.rollSensR.value ? { rollSens: { front: a.rollSensF.value, rear: a.rollSensR.value } } : {}),
+    ...(a.yawBalance.value ? { yawBalance: a.yawBalance.value } : {}),
+  };
+  const model: AeroModel = a.file ? { ...extra, ...a.file } : { name: 'generic', CdA: a.CdA.value, ClAf: -a.downF.value, ClAr: -a.downR.value, rideHeightRef: 'absolute', dragHeight: a.dragHeight.value, ...extra };
   return { model, rho: airDensity(a.altitude.value, a.temperature.value) };
 }
 
@@ -147,9 +167,21 @@ export function buildProblem(s: AppState): BuiltProblem<CornerProblem> {
   const variables: Variable[] = [];
   const skippedLocked: string[] = [];
   for (const [key, r] of Object.entries(o.ranges)) {
+    // Setup values: static camber / toe (deg), the tire's set pressure (kPa).
+    const sv = key.startsWith('scalar.') ? key.slice(7) : null;
+    if (sv) {
+      if (sv === 'staticCamber' || sv === 'staticToe' || (sv === 'tirePressure' && s.tireModel === 'gas')) variables.push({ point: sv, axis: 0, lo: r.lo.value, hi: r.hi.value });
+      continue;
+    }
+    const cv = parseCustomVarKey(key);
+    if (cv) {
+      // A custom linkage's joint point (only while the design is one).
+      if (s.geom.kind === 'custom' && s.geom.custom?.joints.some((j) => j.id === cv.joint)) variables.push({ point: `custom:${cv.joint}:${cv.which}`, axis: cv.axis, lo: r.lo.value, hi: r.hi.value });
+      continue;
+    }
     const v = parseVarKey(key);
     if (!v) continue;
-    if (pointAxisLocked(s.locks, root, v.k, v.axis, s.geom.damperArm, s.geom.kind, layoutOf(s.geom), s.geom.steerMechanism)) { skippedLocked.push(key); continue; }
+    if (pointAxisLocked(s.locks, root, v.k, v.axis, s.geom.damperArm, s.geom.kind, layoutOf(s.geom), s.geom.steerMechanism, s.geom.steeredAxle)) { skippedLocked.push(key); continue; }
     variables.push({ point: STATE_KEY[v.k] as HardpointId, axis: v.axis, lo: r.lo.value, hi: r.hi.value });
   }
   const goals = GOAL_KINDS.filter((k) => o.goals[k].on).map((k) => ({ kind: k, target: o.goals[k].target.value, weight: o.goals[k].weight.value }));
@@ -162,6 +194,12 @@ export function buildProblem(s: AppState): BuiltProblem<CornerProblem> {
     geometry, droop: -Math.abs(s.droop), bump: Math.abs(s.bump), samples: 9,
     rackPositions: rack > 0 && s.settings[s.activeCorner].steered ? [-rack, rack] : [],
     rollAngle: o.rollAngle.value, wheelbase: s.vehicle.wheelbase.value, goals, variables, holds: holdsFor(s, root), keepClose: Math.max(0, o.keepClose.value), starts: o.starts ?? 1,
+    ranges: (['uca', 'lca', 'tieRod'] as const).flatMap((k) => {
+      const r = o.lengthRanges?.[k];
+      if (!r) return [];
+      const hold: Hold = k === 'tieRod' ? { dimension: { a: 'trInner', b: 'trOuter', measure: 'distance', value: 0, travel: null } } : { arm: k, which: 'length' };
+      return [{ hold, lo: r.lo.value, hi: r.hi.value }];
+    }),
     tire: model ? { profile: toProfile(s.geom), model, staticLoad, rollLoadFactor: o.rollLoadFactor.value, grip: gripModelOf(s.grip), tireGrip: tireGripFor(s, s.activeCorner === 'FL' || s.activeCorner === 'FR' ? 'front' : 'rear'), pressure: tirePressure(model) } : undefined,
   };
   const blockers: string[] = [];
@@ -179,9 +217,19 @@ export function designRoots(s: Pick<AppState, 'links'>): { root: CornerId; corne
 }
 
 /** A design's damper for the ride model (high-speed rates and knees only for two-stage dampers). */
-export function damperOf(d: { damper: Record<DamperKey, Field>; damperMode: DamperMode }): DamperSpec {
+export function damperOf(d: { damper: Record<DamperKey, Field>; damperMode: DamperMode; damperCurve?: DamperCurveText }): DamperSpec {
   const v = (k: DamperKey) => Math.max(0, d.damper[k].value);
   const base = { bump: v('bumpDamping'), rebound: v('reboundDamping') };
+  if (d.damperMode === 'curve') {
+    // Dyno curves, at the clicker's position between full soft and full firm.
+    const c = d.damperCurve ?? DEFAULT_DAMPER_CURVE;
+    const t = c.clicks > 0 ? Math.min(1, Math.max(0, c.click / c.clicks)) : 0;
+    const curve = (soft: string, firm: string) => blendCurves(parseDamperCurve(soft).pts, parseDamperCurve(firm).pts, t);
+    const bump = curve(c.softBump, c.firmBump), rebound = curve(c.softRebound, c.firmRebound);
+    // The low-speed slope stands in for the rate where a single rate is needed (damping ratios).
+    const slope = (pts: [number, number][], fallback: number) => (pts.length ? pts[0]![1] / Math.max(pts[0]![0], 1e-6) : fallback);
+    return { bump: slope(bump, base.bump), rebound: slope(rebound, base.rebound), curve: { bump, rebound } };
+  }
   return d.damperMode === 'twoStage'
     ? { ...base, bumpHigh: v('bumpDampingHigh'), reboundHigh: v('reboundDampingHigh'), bumpKnee: v('bumpKnee'), reboundKnee: v('reboundKnee') }
     : base;
@@ -212,7 +260,7 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
   for (const [key, r] of Object.entries(o.ranges)) {
     const v = parseVehVarKey(key);
     if (!v) continue;
-    if (!roots.includes(v.root) || pointAxisLocked(s.locks, v.root, v.k, v.axis, all[v.root].geom.damperArm, all[v.root].geom.kind, layoutOf(all[v.root].geom), all[v.root].geom.steerMechanism)) { skippedLocked.push(key); continue; }
+    if (!roots.includes(v.root) || pointAxisLocked(s.locks, v.root, v.k, v.axis, all[v.root].geom.damperArm, all[v.root].geom.kind, layoutOf(all[v.root].geom), all[v.root].geom.steerMechanism, all[v.root].geom.steeredAxle)) { skippedLocked.push(key); continue; }
     variables.push({ root: v.root, point: STATE_KEY[v.k] as HardpointId, axis: v.axis, lo: r.lo.value, hi: r.hi.value });
   }
   const holds: VehicleHold[] = roots.flatMap((root) => holdsFor(s, root).map((h) => ({ ...h, root })));
@@ -229,8 +277,9 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
     steering: {
       steered: Object.fromEntries(CORNER_IDS.map((id) => [id, s.settings[id].steered])),
       rackLimit: Math.abs(s.steer.rackLimit.value), cFactor: s.steer.cFactor.value, cFactorLock: s.steer.cFactorLock.value,
+      ...(ratioSpecOf(s).curve ? { curve: ratioSpecOf(s).curve } : {}),
     },
-    ride: { rollInertia: Math.max(0.1, v.rollInertia.value), pitchInertia: Math.max(0.1, v.pitchInertia.value), yawInertia: Math.max(0.1, v.yawInertia.value), tireDamping: Math.max(0, v.tireDamping.value) },
+    ride: { rollInertia: Math.max(0.1, v.rollInertia.value), pitchInertia: Math.max(0.1, v.pitchInertia.value), yawInertia: Math.max(0.1, v.yawInertia.value), tireDamping: Math.max(0, v.tireDamping.value), relaxation: Math.max(0, v.relaxation.value) },
     mass: v.mass.value, cg: { x: v.cgX.value, height: v.cgY.value, z: v.cgZ.value }, wheelbase: v.wheelbase.value,
     brakeBias: brk?.useBias ?? v.brakeBias.value / 100, driveSplit: v.driveSplit.value / 100, autoPreload: s.autoPreload,
     ...(brk ? { brakeLimit: brk.limit } : {}),
@@ -238,8 +287,13 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
     ...(trailerOf(s) ? { trailer: trailerOf(s)! } : {}),
     shared: { front: toAxleShared(s.shared.front), rear: toAxleShared(s.shared.rear) },
     dropLinks: { front: dl(s.shared.front), rear: dl(s.shared.rear) },
+    dropLinkOn: { front: s.shared.front.dropLinkOn ?? 'lca', rear: s.shared.rear.dropLinkOn ?? 'lca' },
     droop: Math.abs(s.droop), bump: Math.abs(s.bump),
-    cases: { lateralG: Math.max(0, o.lateralG.value), brakingG: Math.max(0, o.brakingG.value), accelG: Math.max(0, o.accelG.value) },
+    cases: {
+      lateralG: Math.max(0, o.lateralG.value), brakingG: Math.max(0, o.brakingG.value), accelG: Math.max(0, o.accelG.value),
+      ...(o.combinedLatG && o.combinedBrakeG ? { combined: { lateralG: Math.max(0, o.combinedLatG.value), brakingG: Math.max(0, o.combinedBrakeG.value) } } : {}),
+      ...(o.caseWeights ? { weights: o.caseWeights } : {}),
+    },
     states: o.caseSource && (o.caseSource === 'all' || s.tests.some((x) => x.id === o.caseSource))
       ? statesForTests(s.tests, o.caseSource, { wheelbase: v.wheelbase.value, halfTrack: Math.abs(toGeometry(all[rootOf('FL', s.links)].geom).wheel.center.x) }) : undefined,
     goals, variables, holds, aero: aeroOf(s), grip: gripModelOf(s.grip), tireGrip: tireGripFor(s, 'front'), ...(s.tireFileRear ? { tireGripRear: tireGripFor(s, 'rear') } : {}), keepClose: Math.max(0, o.keepClose.value), starts: o.starts ?? 1,
@@ -249,8 +303,9 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
   if (!variables.length) blockers.push(skippedLocked.length ? 'Every free coordinate is locked.' : 'Add at least one free coordinate.');
   if (goals.length && goals.every((g) => g.weight <= 0)) blockers.push('Every goal has weight 0.');
   const c = problem.cases;
-  if (!problem.states?.length && !c.lateralG && !c.brakingG && !c.accelG && goals.some((g) => !['antiDive', 'antiSquat', 'bumpSteer'].includes(g.kind))) {
-    blockers.push('Turn on at least one load case (cornering, braking or accelerating).');
+  const anyCase = c.lateralG || c.brakingG || c.accelG || (c.combined && c.combined.lateralG && c.combined.brakingG);
+  if (!problem.states?.length && !anyCase && goals.some((g) => !['geometry', 'limit'].includes(VEHICLE_GOAL_META[g.kind].uses))) {
+    blockers.push('Turn on at least one load case (cornering, braking, accelerating or braking in a turn).');
   }
   return { problem, skippedLocked, blockers };
 }
@@ -312,7 +367,7 @@ export function runTestJob(problem: VehicleProblem, segments: SegmentSpec[], opt
 }
 
 /** Compute playback frames in the worker (`ride`: over time, Phase B, `handling`: steered by a driver, Phase C; otherwise steady states). */
-export function runPlaybackJob(problem: VehicleProblem, segments: SegmentSpec[], ride = false, handling = false): { done: Promise<PlaybackFrame[]>; cancel(): void } {
+export function runPlaybackJob(problem: VehicleProblem, segments: SegmentSpec[], ride = false, handling = false, driverSpeed = false): { done: Promise<PlaybackFrame[]>; cancel(): void } {
   const worker = new Worker(new URL('./optimizer.worker.ts', import.meta.url), { type: 'module' });
   const done = new Promise<PlaybackFrame[]>((res, rej) => {
     worker.onmessage = (e: MessageEvent) => {
@@ -322,7 +377,7 @@ export function runPlaybackJob(problem: VehicleProblem, segments: SegmentSpec[],
     };
     worker.onerror = (e) => { worker.terminate(); rej(new Error(e.message || 'Playback worker failed')); };
   });
-  worker.postMessage({ kind: 'playback', problem, segments, ride, handling });
+  worker.postMessage({ kind: 'playback', problem, segments, ride, handling, driverSpeed });
   return { done, cancel: () => worker.terminate() };
 }
 
@@ -352,5 +407,5 @@ export const runRatesJob = (problem: VehicleProblem, tests: RateTest[], vars: Ra
   progressJob<RateResult, RateProgress>({ kind: 'rates', problem, tests, vars, budget, mode }, onProgress);
 
 /** Fit a tire model to measured data, in the worker. */
-export const runTireFitJob = (samples: TireSample[], name: string, onProgress: (p: { stage: string; iteration: number }) => void) =>
-  progressJob<TireFitResult, { stage: string; iteration: number }>({ kind: 'tirefit', samples, name }, onProgress);
+export const runTireFitJob = (samples: TireSample[], name: string, onProgress: (p: { stage: string; iteration: number }) => void, unloadedRadius?: number) =>
+  progressJob<TireFitResult, { stage: string; iteration: number }>({ kind: 'tirefit', samples, name, ...(unloadedRadius ? { unloadedRadius } : {}) }, onProgress);

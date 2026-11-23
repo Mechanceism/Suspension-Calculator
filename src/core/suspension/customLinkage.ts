@@ -5,6 +5,8 @@
  *   ball joint   the two bodies share a point                         3 equations
  *   hinge        they turn about a common axis (two points on it)    5 equations (a bushing or pin)
  *   rod          a fixed-length link with ball ends between them     1 equation  (no body of its own)
+ *   cylinder     they slide along and turn about a common axis       4 equations (a strut tube, a sliding pillar)
+ *   slider       they only slide along a common axis                 5 equations (prismatic)
  *
  * The wheel is always carried by the body 'upright' (the knuckle). The corner needs exactly one free
  * motion (the travel) with the steering held: 6 · bodies − equations = 1. Its instant axis and steering
@@ -13,9 +15,9 @@
  */
 import { type Vec3, vec3, add, sub, scale, cross, dot, length, normalize, distance as dist } from '../math/vec3';
 import { mul, mulVec, transpose } from '../math/mat3';
-import { ConstraintSystem, type Pose, coincident, fixedDistance, revolute } from '../solver/system';
+import { ConstraintSystem, type Pose, coincident, fixedDistance, revolute, cylindrical, prismatic } from '../solver/system';
 
-export type CustomJointKind = 'ball' | 'hinge' | 'rod';
+export type CustomJointKind = 'ball' | 'hinge' | 'rod' | 'cylinder' | 'slider';
 
 export interface CustomJoint {
   id: string;
@@ -38,7 +40,7 @@ export interface CustomLinkage {
 }
 
 export const FIXED_BODIES = ['chassis', 'rack'] as const;
-export const JOINT_EQUATIONS: Record<CustomJointKind, number> = { ball: 3, hinge: 5, rod: 1 };
+export const JOINT_EQUATIONS: Record<CustomJointKind, number> = { ball: 3, hinge: 5, rod: 1, cylinder: 4, slider: 5 };
 
 /** Every point a joint has. */
 export const jointPoints = (j: CustomJoint): Vec3[] => (j.kind === 'ball' || !j.q ? [j.p] : [j.p, j.q]);
@@ -94,6 +96,8 @@ export function buildCustom(sys: ConstraintSystem, c: CustomLinkage, wheelCenter
   for (const j of c.joints) {
     if (j.kind === 'ball') sys.add(coincident(j.name, sys.attach(j.a, j.p), sys.attach(j.b, j.p)));
     else if (j.kind === 'hinge') sys.add(revolute(sys, j.name, j.a, j.b, j.p, j.q!));
+    else if (j.kind === 'cylinder') sys.add(cylindrical(sys, j.name, j.a, j.b, j.p, j.q!));
+    else if (j.kind === 'slider') sys.add(prismatic(sys, j.name, j.a, j.b, j.p, j.q!));
     else sys.add(fixedDistance(j.name, sys.attach(j.a, j.p), sys.attach(j.b, j.q!), dist(j.p, j.q!)));
   }
 }

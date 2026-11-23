@@ -41,6 +41,7 @@ export function CornerSetup({ compact = false }: { compact?: boolean }) {
   const axleKind = (s: Parameters<typeof resolvedCorner>[0], id: CornerId) => { const k = resolvedCorner(s, id).geom.kind; return isOneAxle(k) ? k! : null; };
   const frontAxle = useApp((s) => axleKind(s, 'FL'));
   const rearAxle = useApp((s) => axleKind(s, 'RL'));
+  const activeKind = useApp((s) => resolvedCorner(s, s.activeCorner).geom.kind);
   const lockedBy = (k: keyof CornerLinks) => (k === 'frontPair' ? frontAxle : k === 'rearPair' ? rearAxle : null);
   const root = rootOf(active, links);
   const sharedWith = CORNER_IDS.filter((id) => id !== active && rootOf(id, links) === root);
@@ -63,6 +64,7 @@ export function CornerSetup({ compact = false }: { compact?: boolean }) {
           <input type="checkbox" checked={settings[active].steered} onChange={(e) => setCornerSetting(active, 'steered', e.target.checked)} />
           Steers
         </label>
+        {settings[active].steered && activeKind === 'twistBeam' && <span className="hint" title="A twist beam's hub is fixed to its trailing arm: no knuckle or tie rod">(a twist beam doesn't steer)</span>}
         <label className="check-inline" title="Drive forces come later; this marks the corner as powered">
           <input type="checkbox" checked={settings[active].powered} onChange={(e) => setCornerSetting(active, 'powered', e.target.checked)} />
           Powered

@@ -868,7 +868,8 @@ function steeringOf(g: DoubleWishboneGeometry): NonNullable<SolidAxleGeometry['s
  * wind-up (it keeps its pitch, like a parallelogram), and a long virtual lateral link at seat height
  * locates it sideways (the leaves are stiff sideways: roll center ≈ seat height). The leaf's rate is a
  * vertical spring at each seat (its rate = the leaf rate at the seat; as long as the design's coilover was,
- * so its free length, damper stroke and bump stop still fit).
+ * so its free length, damper stroke and bump stop still fit). Steered, it has the same knuckles, cross tie
+ * rod and drag link as a steered link axle.
  */
 export function leafAxleOf(g: DoubleWishboneGeometry): SolidAxleGeometry {
   const eye = g.lca.fwd, seat = g.lca.out;
@@ -883,6 +884,8 @@ export function leafAxleOf(g: DoubleWishboneGeometry): SolidAxleGeometry {
       { name: 'leaf lateral (virtual)', chassis: vec3(-seat.x - 1500, seat.y, seat.z), axle: seat },
     ],
     springs: { left: { chassis: add(seat, vec3(0, L, 0)), axle: seat } },
+    // Steered (a leaf-sprung front axle): knuckles on kingpins at the axle ends, as for the link axles.
+    ...(g.steeredAxle ? { steering: steeringOf(g) } : {}),
   };
 }
 

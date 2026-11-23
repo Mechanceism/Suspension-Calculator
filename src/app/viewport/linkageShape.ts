@@ -85,7 +85,7 @@ export function linkageShape(p: CornerPoints, kind: SuspensionKind, part: 'whole
     const seatR = mirrorOnAxle(p, p.lcaOut);
     return {
       ucaTri: null, lcaTri: null, uca: [], lca: [[eye, p.lcaOut], [p.lcaOut, sh], ...(whole ? [[m(eye), seatR], [seatR, m(sh)]] as [Vec3, Vec3][] : [])],
-      upright: tube, axis: [p.contact, p.steerUpper],
+      upright: tube, axis: p.crossTieRod ? [p.steerLower, p.steerUpper] : [p.contact, p.steerUpper],
     };
   }
   if (kind === 'beam4' || kind === 'beam3' || kind === 'beamWatts') {

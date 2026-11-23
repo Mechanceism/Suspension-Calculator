@@ -442,6 +442,11 @@ Two operating modes:
 - **Tested** (`tests/sharedAxle.test.ts`): for 4-link, 3-link + Panhard, Watt's, leaf, steered and twist beam, in roll the left corner's axle end is the right wheel, both corners agree on the axle's ends, the right wheel is the axle's right wheel (not a separately heaved axle), and camber is equal and opposite; in heave it equals the single-corner solve; drop-link mounts resolve on both sides; the drawing splits into left (shared) + right (own links) with no part drawn twice.
 - **Still approximate:** a *torsion bar + drop links* on a solid axle or twist beam is evaluated in the whole-car solve from the wheel centers' heights, not the drop-link mounts' (the axle table doesn't track the mount), so its roll stiffness reads as if the mounts were at the wheels.
 
+### Steering on every type ✅ (2026-11-23)
+- **The bug.** A steered leaf-spring axle had no steering: the leaf model left out the kingpins, cross tie rod and drag link, so the rack (and the ▶ Steer play) did nothing and no tie rod was drawn. Ticking *Steers* on a solid axle made without steering didn't give it knuckles either, and a twist beam set to steer silently didn't.
+- **Now.** A steered leaf axle has the same knuckles on kingpins, cross tie rod and drag link as the link axles (its kingpin is the steering axis in the view). Ticking *Steers* on any solid-axle corner makes its axle a steered axle (also when it isn't the corner being edited). A twist beam has no knuckle (the hub is fixed to the trailing arm), so a steered twist-beam corner says it doesn't steer, by the checkbox and in a notice.
+- Tested (`tests/steerTypes.test.ts`): every type but the twist beam turns > 3° of toe for 20 mm of rack when its corner steers, with a tie rod (solid axles: drag link and cross tie rod); a steered leaf axle turns both wheels the same way.
+
 ### Planned for later (noted 2026-11-21)
 - **More shared-component types:** monoshock / roll-decoupled layouts, pushrods across corners, anti-roll bar geometry with chassis-mounted bar ends.
 - **CG from scales (page 6 of the hand math):** a utility to find the CG from four corner scale weights level and with one axle raised (tilt). For now the CG is entered directly.

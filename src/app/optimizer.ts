@@ -170,6 +170,9 @@ export function buildProblem(s: AppState): BuiltProblem<CornerProblem> {
     // Setup values: static camber / toe (deg), the tire's set pressure (kPa).
     const sv = key.startsWith('scalar.') ? key.slice(7) : null;
     if (sv) {
+      // Locked setup values (by hand, or entered in the setup wizard) stay as they are.
+      const lockKey = sv === 'tirePressure' ? lockKeys.field(root, 'tire', 'pressure') : lockKeys.field(root, 'scalar', sv);
+      if (s.locks[lockKey]) { skippedLocked.push(key); continue; }
       if (sv === 'staticCamber' || sv === 'staticToe' || (sv === 'tirePressure' && s.tireModel === 'gas')) variables.push({ point: sv, axis: 0, lo: r.lo.value, hi: r.hi.value });
       continue;
     }

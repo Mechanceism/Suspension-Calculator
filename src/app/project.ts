@@ -60,7 +60,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 36;
+export const FORMAT_VERSION = 37;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -115,6 +115,8 @@ export interface ProjectFile {
   }>;
   /** Locked values (keys as in locks.ts). */
   locks: string[];
+  /** Format 37: which locks the setup wizard set (lock key → wizard step). */
+  wizardLocks?: Record<string, string>;
   /** Optimizer setup per corner design (root corner). */
   optimizer: Partial<Record<CornerId, OptimizerJson>>;
   vehicleOptimizer: {
@@ -202,6 +204,7 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
       }];
     })) as unknown as ProjectFile['shared'],
     locks: Object.keys(d.locks).sort(),
+    wizardLocks: Object.fromEntries(Object.entries(d.wizardLocks).filter(([k]) => d.locks[k]).sort(([a], [b]) => a.localeCompare(b))),
     optimizer: Object.fromEntries(Object.entries(d.optimizer).filter(([, o]) => o).map(([id, o]) => [id, {
       ranges: Object.fromEntries(Object.entries(o!.ranges).map(([k, r]) => [k, { lo: fj(r.lo), hi: fj(r.hi) }])),
       goals: Object.fromEntries(Object.entries(o!.goals).map(([k, g]) => [k, { on: g.on, target: fj(g.target), weight: fj(g.weight) }])),
@@ -370,6 +373,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   33: (f) => ({ ...f, formatVersion: 34 }),
   // 35 → 36: no damper dyno curves.
   35: (f) => ({ ...f, formatVersion: 36 }),
+  // 36 → 37: no locks from the setup wizard (older locks are the user's own).
+  36: (f) => ({ ...f, formatVersion: 37 }),
   // 34 → 35: aero side force, roll sensitivity and balance shift off.
   34: (f) => ({ ...f, formatVersion: 35, ...(isObj(f.aero) && isObj(f.aero.fields) ? { aero: { ...f.aero, fields: { ...f.aero.fields, CsA: { text: '0', value: 0 }, sideCp: { text: '900', value: 900 }, rollSensF: { text: '0', value: 0 }, rollSensR: { text: '0', value: 0 }, yawBalance: { text: '0', value: 0 } } } } : {}) }),
 };
@@ -855,6 +860,8 @@ export function importProject(data: unknown): ImportResult {
     cornerLoadMode: vehicleRaw.cornerLoadMode === 'manual' ? 'manual' : 'vehicle',
     shared: { front: readShared(f.shared, 'front', older ? [] : warnings), rear: readShared(f.shared, 'rear', older ? [] : warnings) },
     locks: Object.fromEntries((Array.isArray(f.locks) ? f.locks : []).filter((k): k is string => typeof k === 'string').map((k) => [k, true as const])),
+    wizardLocks: Object.fromEntries(Object.entries(isObj(f.wizardLocks) ? f.wizardLocks : {})
+      .filter(([k, v]) => Array.isArray(f.locks) && f.locks.includes(k) && (SETUP_STEPS as readonly string[]).includes(v as string))) as DesignState['wizardLocks'],
     optimizer: readOptimizer(f.optimizer, warnings),
     vehicleOptimizer: readVehicleOptimizer(f.vehicleOptimizer, warnings),
     grip: isObj(f.grip) ? readRecord(f.grip, GRIP_KEYS, (k) => GRIP_META[k].quantity, defaultGrip(), 'grip', warnings) : defaultGrip(),

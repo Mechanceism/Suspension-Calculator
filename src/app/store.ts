@@ -638,6 +638,11 @@ export interface AppState extends DesignState {
   /** Lock or unlock several keys at once (e.g. all three coordinates of a point). */
   setLocks(keys: string[], locked: boolean): void;
   clearLocks(): void;
+  /**
+   * Lock values the setup wizard's step wrote (the user's own values), tagged with the step so "Use an
+   * estimate" on that step frees them again. Keys the user had already locked stay plain locks.
+   */
+  lockFromWizard(step: SetupStep, keys: string[]): void;
   /** Change the optimizer setup of the active corner's design. */
   updateOptimizer(fn: (o: OptimizerSetup) => OptimizerSetup): void;
   /** Write optimized coordinates into the design, keeping the previous geometry for Undo. */
@@ -1137,6 +1142,8 @@ export interface DesignState {
   shared: Record<Axle, SharedDesign>;
   /** Locked values (see locks.ts for the key format). The optimizer must work around them. */
   locks: Record<string, true>;
+  /** Locks set by the setup wizard: lock key → the step that set it (a subset of `locks`). */
+  wizardLocks: Record<string, SetupStep>;
   /** Optimizer setup per corner design (keyed by root corner). */
   optimizer: Partial<Record<CornerId, OptimizerSetup>>;
   /** Whole-vehicle optimizer setup. */
@@ -1211,7 +1218,7 @@ export const pickDesign = (s: DesignState): DesignState => ({
   tireModel: s.tireModel, tire: s.tire, volumeChange: s.volumeChange, tireSizeText: s.tireSizeText,
   droop: s.droop, bump: s.bump, driver: s.driver,
   corners: s.corners, links: s.links, settings: s.settings, activeCorner: s.activeCorner,
-  vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode, shared: s.shared, locks: s.locks,
+  vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode, shared: s.shared, locks: s.locks, wizardLocks: s.wizardLocks,
   optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, tireGrip: s.tireGrip, tireFile: s.tireFile, tireFileRear: s.tireFileRear, setupStatus: s.setupStatus, aero: s.aero, brakes: s.brakes, tow: s.tow, dimensions: s.dimensions, tests: s.tests,
 });
 
@@ -1289,6 +1296,7 @@ export function defaultDesign(presetId = 'C'): DesignState {
     cornerLoadMode: 'vehicle',
     shared: { front: defaultShared(), rear: defaultShared() },
     locks: {},
+    wizardLocks: {},
     optimizer: {},
     vehicleOptimizer: defaultVehicleOptimizerSetup(),
     grip: defaultGrip(),
@@ -1391,6 +1399,7 @@ export const useApp = create<AppState>((set, get) => ({
     // A corner that stops following another starts from a copy of the design it was using.
     const corners = { ...before };
     const locks = { ...s.locks };
+    const wizardLocks = { ...s.wizardLocks };
     const optimizer = { ...s.optimizer };
     const dimensions = [...s.dimensions];
     for (const id of CORNER_IDS) {
@@ -1399,26 +1408,46 @@ export const useApp = create<AppState>((set, get) => ({
       if (newRoot === id && oldRoot !== id) {
         corners[id] = before[oldRoot];
         // The new copy starts with the same locks as the design it came from.
-        for (const k of Object.keys(s.locks)) if (k.startsWith(`${oldRoot}.`)) locks[`${id}${k.slice(oldRoot.length)}`] = true;
+        for (const k of Object.keys(s.locks)) {
+          if (!k.startsWith(`${oldRoot}.`)) continue;
+          const nk = `${id}${k.slice(oldRoot.length)}`;
+          locks[nk] = true;
+          if (s.wizardLocks[k]) wizardLocks[nk] = s.wizardLocks[k];
+        }
         // ...and the same optimizer setup.
         if (s.optimizer[oldRoot]) optimizer[id] = structuredClone(s.optimizer[oldRoot]);
         // ...and the same held dimensions.
         for (const d of s.dimensions) if (d.root === oldRoot) dimensions.push({ ...d, id: newDimId(), root: id });
       }
     }
-    set({ links, corners, locks, optimizer, dimensions, ...corners[rootOf(s.activeCorner, links)] });
+    set({ links, corners, locks, wizardLocks, optimizer, dimensions, ...corners[rootOf(s.activeCorner, links)] });
   },
   toggleLock: (key) => {
     const locks = { ...get().locks };
-    if (locks[key]) delete locks[key]; else locks[key] = true;
-    set({ locks });
+    const wizardLocks = { ...get().wizardLocks };
+    if (locks[key]) { delete locks[key]; delete wizardLocks[key]; } else locks[key] = true;
+    set({ locks, wizardLocks });
   },
   setLocks: (keys, locked) => {
     const locks = { ...get().locks };
-    for (const k of keys) { if (locked) locks[k] = true; else delete locks[k]; }
-    set({ locks });
+    const wizardLocks = { ...get().wizardLocks };
+    for (const k of keys) { if (locked) locks[k] = true; else { delete locks[k]; delete wizardLocks[k]; } }
+    set({ locks, wizardLocks });
   },
-  clearLocks: () => set({ locks: {} }),
+  clearLocks: () => set({ locks: {}, wizardLocks: {} }),
+  lockFromWizard: (step, keys) => {
+    const s = get();
+    const locks = { ...s.locks };
+    const wizardLocks = { ...s.wizardLocks };
+    // Re-applying a step replaces what it locked before (e.g. a bar that is now off).
+    for (const [k, st] of Object.entries(s.wizardLocks)) if (st === step) { delete locks[k]; delete wizardLocks[k]; }
+    for (const k of keys) {
+      if (locks[k] && !wizardLocks[k]) continue; // the user's own lock stays theirs
+      locks[k] = true;
+      wizardLocks[k] = step;
+    }
+    set({ locks, wizardLocks });
+  },
   updateOptimizer: (fn) => {
     const s = get();
     const root = rootOf(s.activeCorner, s.links);
@@ -1491,6 +1520,14 @@ export const useApp = create<AppState>((set, get) => ({
   setSetupStatus: (step, status) => {
     const cur = { ...get().setupStatus };
     if (status) cur[step] = status; else delete cur[step];
+    // An estimate (or clearing the step) frees what the step had locked.
+    if (status !== 'entered') {
+      const locks = { ...get().locks };
+      const wizardLocks = { ...get().wizardLocks };
+      for (const [k, st] of Object.entries(wizardLocks)) if (st === step) { delete locks[k]; delete wizardLocks[k]; }
+      set({ setupStatus: cur, locks, wizardLocks });
+      return;
+    }
     set({ setupStatus: cur });
   },
   setTireScale: (key, value, axle = 'front') => {

@@ -140,6 +140,7 @@ export function rateVars(s: AppState, settings: RateSettings): RateVar[] {
   if (settings.bars) {
     for (const axle of ['front', 'rear'] as const) {
       const a = s.shared[axle];
+      if (s.locks[`shared.${axle}.${a.antiRollBar === 'torsionBar' ? 'barRate' : 'arbRate'}`]) continue;
       if (a.antiRollBar === 'wheelRate' && a.arbRate.value > 0) out.push({ kind: 'arb', axle, ...range(a.arbRate.value), value: a.arbRate.value, label: `${axle} anti-roll bar (N/mm at the wheel)` });
       if (a.antiRollBar === 'torsionBar' && a.barRate.value > 0) {
         // N·m/deg → N·mm/rad, as the problem uses.

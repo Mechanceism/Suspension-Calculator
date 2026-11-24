@@ -87,6 +87,7 @@ export function goToLock(info: LockInfo): void {
 
 export function LocksPanel({ compact = false }: { compact?: boolean }) {
   const locks = useApp((s) => s.locks);
+  const wizardLocks = useApp((s) => s.wizardLocks);
   const links = useApp((s) => s.links);
   const setLocks = useApp((s) => s.setLocks);
   const clearLocks = useApp((s) => s.clearLocks);
@@ -111,7 +112,8 @@ export function LocksPanel({ compact = false }: { compact?: boolean }) {
       {!compact && (
         <p className="hint">
           Locked values are fixed for the optimizer: it has to work around them. Lock anything you have already
-          built or bought with the 🔓 buttons next to values, joints and parts. Click an item to find it.
+          built or bought with the 🔓 buttons next to values, joints and parts. Values you enter in the setup
+          wizard are locked for you (marked &quot;setup wizard&quot;). Click an item to find it.
         </p>
       )}
       {items.length === 0 && dims.length === 0 && <p className="muted">Nothing is locked yet.</p>}
@@ -146,7 +148,7 @@ export function LocksPanel({ compact = false }: { compact?: boolean }) {
               <li key={it.key}>
                 <button className="lock-item" title="Show in the design and the inspector" onClick={() => goToLock(it)}>
                   <span className="lock-icon">🔒</span>
-                  <span className="lock-label">{it.label}</span>
+                  <span className="lock-label">{it.label}{wizardLocks[it.key] && <span className="muted" title="Entered in the setup wizard: locked so the optimizers keep your value. Unlock it to let them change it."> · setup wizard</span>}</span>
                   <span className="lock-val mono">{showValue(lockValue(state, it.key))}</span>
                 </button>
                 <button className="icon-btn lock-x" title="Unlock" onClick={() => setLocks([it.key], false)}>✕</button>

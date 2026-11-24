@@ -25,7 +25,7 @@ import { layoutOf, toGeometry,
 import { CORNER_IDS, type CornerId } from '../../core/vehicle/vehicle';
 import { POINT_LABELS, pointLabel } from '../components';
 import type { SuspensionKind, DoubleWishboneGeometry } from '../../core/suspension/doubleWishbone';
-import { pointAxisLocked } from '../locks';
+import { lockKeys, pointAxisLocked } from '../locks';
 import { armMetrics } from '../../core/suspension/armGeometry';
 import {
   buildProblem, buildVehicleProblem, runOptimizer, runVehicleOptimizer, varKey, parseVarKey, vehVarKey, parseVehVarKey, customVarKey, parseCustomVarKey, customOfVariable,
@@ -544,15 +544,17 @@ export function OptimizePanel() {
           <tbody>
             {Object.entries(SCALAR_LABEL).filter(([k]) => k !== 'tirePressure' || gas).map(([k, m]) => {
               const key = `scalar.${k}`, on = !!setup.ranges[key];
+              const isLocked = !!locks[k === 'tirePressure' ? lockKeys.field(root, 'tire', 'pressure') : lockKeys.field(root, 'scalar', k)];
               return (
                 <tr key={k} title={m.hint}>
                   <td>{m.label}</td>
-                  <td><button className={`chip axis-chip${on ? ' on' : ''}`} onClick={() => update((o) => {
+                  <td><button className={`chip axis-chip${on ? ' on' : ''}${isLocked ? ' locked' : ''}`} disabled={isLocked && !on}
+                    title={isLocked ? 'Locked — the optimizer keeps it' : undefined} onClick={() => update((o) => {
                     const r = { ...o.ranges };
                     if (r[key]) delete r[key];
                     else { const now = scalarNow(k); r[key] = { lo: numField(now - m.range), hi: numField(now + m.range) }; }
                     return { ...o, ranges: r };
-                  })}>{on ? 'free' : 'fixed'}</button></td>
+                  })}>{isLocked ? 'fixed🔒' : on ? 'free' : 'fixed'}</button></td>
                 </tr>
               );
             })}
@@ -591,7 +593,11 @@ export function OptimizePanel() {
         <RunArea
           useRun={useCornerRun} blockers={built.blockers} meta={GOAL_META} current={geom}
           label={`Optimize ${sharers.length > 1 ? `${root} (+ ${sharers.length - 1} linked)` : root}`}
-          notes={skippedNote(built.skippedLocked, (k) => { const v = parseVarKey(k)!; return `${POINT_LABELS[v.k]} ${AXES[v.axis]}`; }, built.problem.holds ?? [])}
+          notes={skippedNote(built.skippedLocked, (k) => {
+            if (k.startsWith('scalar.')) return SCALAR_LABEL[k.slice(7) as keyof typeof SCALAR_LABEL]?.label ?? k;
+            const v = parseVarKey(k);
+            return v ? `${POINT_LABELS[v.k]} ${AXES[v.axis]}` : k;
+          }, built.problem.holds ?? [])}
           start={(onP) => runOptimizer(built.problem, onP)}
           preview={(r) => (r as unknown as { geometry?: DoubleWishboneGeometry }).geometry ?? null}
           onApply={(r) => {

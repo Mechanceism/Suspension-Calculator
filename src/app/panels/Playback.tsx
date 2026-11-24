@@ -17,6 +17,7 @@ import { segmentSpec, type TestDesign } from '../tests';
 import { useRun } from './TestsPanels';
 import { useDisplay } from '../units';
 import { fmt } from './FieldRows';
+import { Local, Val } from './UnitText';
 
 interface PlaybackState {
   testId: string | null;
@@ -28,26 +29,61 @@ interface PlaybackState {
   rate: number;
   /** Design used (stale if it changed). */
   from: unknown;
+  /** Display only: body motion and wheel travel × this (to see small motions). */
+  motion: number;
 }
-export const usePlayback = create<PlaybackState>(() => ({ testId: null, frames: [], computing: false, error: null, playing: false, t: 0, rate: 1, from: null }));
+export const usePlayback = create<PlaybackState>(() => ({ testId: null, frames: [], computing: false, error: null, playing: false, t: 0, rate: 1, from: null, motion: 1 }));
 
-const frameAt = (frames: PlaybackFrame[], t: number) => {
+export const frameAt = (frames: PlaybackFrame[], t: number) => {
   let lo = 0, hi = frames.length - 1;
   while (lo < hi) { const m = (lo + hi + 1) >> 1; if (frames[m]!.t <= t) lo = m; else hi = m - 1; }
   return frames[lo];
 };
 
-/** Pose the 3D car for a frame (sets the Vehicle view's sliders and road). */
+/** Each frame's pose object, kept so the 3D view can reuse what it built for that frame. */
+type RideView = { pose: NonNullable<PlaybackFrame['ride']>['pose']; travel: NonNullable<PlaybackFrame['ride']>['travel'] };
+/** Per motion factor, each frame's pose object (kept so the 3D view can reuse what it built for that frame). */
+const rideViews = new Map<number, WeakMap<PlaybackFrame, RideView>>();
+
+/**
+ * A frame's body pose and wheel travels for the display: × the motion factor about the run's first frame
+ * (display only, to see small motions; the results are the real ones).
+ */
+export function rideViewOf(f: PlaybackFrame): RideView | undefined {
+  if (!f.ride) return undefined;
+  const k = Math.max(1, usePlayback.getState().motion);
+  let m = rideViews.get(k);
+  if (!m) { m = new WeakMap(); rideViews.set(k, m); }
+  let rv = m.get(f);
+  if (!rv) {
+    const r0 = usePlayback.getState().frames[0]?.ride ?? f.ride;
+    const x = (v: number, v0: number) => v0 + k * (v - v0);
+    rv = k === 1 ? { pose: f.ride.pose, travel: f.ride.travel } : {
+      pose: { heave: x(f.ride.pose.heave, r0.pose.heave), roll: x(f.ride.pose.roll, r0.pose.roll), pitch: x(f.ride.pose.pitch, r0.pose.pitch) },
+      travel: Object.fromEntries(Object.entries(f.ride.travel).map(([id, v]) => [id, x(v, r0.travel[id as keyof typeof r0.travel])])) as RideView['travel'],
+    };
+    m.set(f, rv);
+  }
+  return rv;
+}
+
+/** What posing the 3D car for a frame sets (the Vehicle view's sliders and road) — also a ghost car's pose (Compare). */
+export function framePatch(f: PlaybackFrame) {
+  const rv = rideViewOf(f);
+  return {
+    lateralG: Number(f.ay.toFixed(3)),
+    longitudinalG: Number(f.ax.toFixed(3)),
+    roadGrade: Number((Math.tan(f.grade) * 100).toFixed(2)),
+    roadBank: Number(((f.bank * 180) / Math.PI).toFixed(2)),
+    wheelBumps: { FL: 0, FR: 0, RL: 0, RR: 0, ...f.groundOffset },
+    rack: Number((f.rack ?? 0).toFixed(2)),
+    testView: null,
+    rideView: rv ?? null,
+  };
+}
+/** Pose the 3D car for a frame, in one store update. */
 function applyFrame(f: PlaybackFrame) {
-  const s = useApp.getState();
-  s.set('lateralG', Number(f.ay.toFixed(3)));
-  s.set('longitudinalG', Number(f.ax.toFixed(3)));
-  s.set('roadGrade', Number((Math.tan(f.grade) * 100).toFixed(2)));
-  s.set('roadBank', Number(((f.bank * 180) / Math.PI).toFixed(2)));
-  s.set('wheelBumps', { FL: 0, FR: 0, RL: 0, RR: 0, ...f.groundOffset });
-  s.set('rack', Number((f.rack ?? 0).toFixed(2)));
-  s.set('testView', null);
-  s.set('rideView', f.ride ? { pose: f.ride.pose, travel: f.ride.travel } : null);
+  useApp.setState(framePatch(f));
 }
 
 async function computeFrames(test: TestDesign) {
@@ -60,7 +96,16 @@ async function computeFrames(test: TestDesign) {
     const handling = test.ride !== false && test.handling !== false;
     const reuse = test.ride !== false && fresh && (last.test === undefined || last.test === test) && last.result.ride?.frames.length && !!last.result.ride.frames[0]!.handling === handling ? last.result.ride.frames : null;
     const { problem } = buildVehicleProblem(s);
-    const frames = reuse ?? await runPlaybackJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), test.ride !== false, handling, handling && !!test.driverSpeed).done;
+    // Speeds as maximums: the speeds the last run planned. Driver lifts: the segments it lifted are driven at the speed that passes.
+    const specs = test.segments.map((sg, i) => {
+      const spec = segmentSpec(sg, test);
+      const planned = test.speedMode === 'max' ? last?.result.segments[i]?.plan : undefined;
+      if (planned) return { ...spec, plan: planned };
+      const r = test.onFail === 'lift' ? last?.result.segments[i] : undefined;
+      const k = r?.drivenScale ?? (r?.lifted && r.speedLimit && r.speedLimit > 0 ? r.speedLimit : 1);
+      return k < 1 ? { ...spec, v0: spec.v0 * k, v1: spec.v1 * k } : spec;
+    });
+    const frames = reuse ?? await runPlaybackJob(problem, specs, test.ride !== false, handling, handling && !!test.driverSpeed).done;
     usePlayback.setState({ frames, computing: false, t: 0 });
     if (frames[0]) applyFrame(frames[0]);
     return frames;
@@ -80,19 +125,26 @@ function TrackMap({ frames, current }: { frames: PlaybackFrame[]; current: Playb
     const span = Math.max(maxX - minX, maxY - minY, 1);
     return { minX, minY, span, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2 };
   }, [frames]);
-  if (!frames.length) return null;
   const W = 150, H = 110, pad = 8;
   const k = Math.min((W - 2 * pad) / box.span, (H - 2 * pad) / box.span);
   const px = (x: number) => W / 2 + (x - box.cx) * k;
   const py = (y: number) => H / 2 - (y - box.cy) * k;
-  return (
-    <svg className="track-map" viewBox={`0 0 ${W} ${H}`} aria-label="Track map: the line driven, colored by result (grey: the path)">
+  // The path and the colored line driven don't change while playing: built once per run, not per tick.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const track = useMemo(() => (frames.length ? (
+    <>
       {frames[0]!.handling && (
         <polyline points={frames.map((f) => `${px(f.handling!.path.x).toFixed(1)},${py(f.handling!.path.y).toFixed(1)}`).join(' ')} fill="none" stroke="#8a93a3" strokeWidth={1} strokeDasharray="3 2" />
       )}
       {frames.slice(1).map((f, i) => (
         <line key={i} x1={px(frames[i]!.pos.x)} y1={py(frames[i]!.pos.y)} x2={px(f.pos.x)} y2={py(f.pos.y)} stroke={SEV_COLOR[f.severity]} strokeWidth={3} strokeLinecap="round" />
       ))}
+    </>
+  ) : null), [frames, box]);
+  if (!frames.length) return null;
+  return (
+    <svg className="track-map" viewBox={`0 0 ${W} ${H}`} aria-label="Track map: the line driven, colored by result (grey: the path)">
+      {track}
       {current && (
         <g transform={`translate(${px(current.pos.x)},${py(current.pos.y)}) rotate(${(-current.heading * 180) / Math.PI})`}>
           <polygon points="7,0 -5,-4 -5,4" fill="#ffffff" stroke="#16191e" strokeWidth={1} />
@@ -193,15 +245,19 @@ export function PlaybackBar({ test }: { test: TestDesign | null }) {
           <select value={pb.rate} onChange={(e) => usePlayback.setState({ rate: Number(e.target.value) })} title="Playback speed">
             {[0.25, 0.5, 1, 2].map((r) => <option key={r} value={r}>{r}×</option>)}
           </select>
+          <select value={pb.motion} title="Display only: body roll, pitch, heave and wheel travel exaggerated in the playback so small motions show (the results are the real ones)"
+            onChange={(e) => { usePlayback.setState({ motion: Number(e.target.value) }); const f = frames.length ? frameAt(frames, usePlayback.getState().t) : undefined; if (f) applyFrame(f); }}>
+            {[1, 2, 5, 10].map((m) => <option key={m} value={m}>{m === 1 ? 'Motion: real' : `Motion ×${m}`}</option>)}
+          </select>
         </div>
         {cur && test ? (
           <div className="small-text playback-hud">
             <b>{cur.segment + 1}. {test.segments[cur.segment]?.name}</b> · {disp.format(cur.speed, 'm/s', 0)} · lateral {fmt(cur.ay, 2)} g · long. {fmt(cur.ax, 2)} g
-            {cur.rack ? ` · rack ${fmt(cur.rack, 1)} mm` : ''}
+            {cur.rack ? <> · rack <Val v={cur.rack} unit="mm" digits={1} /></> : ''}
             {cur.ride ? ` · roll ${fmt((cur.ride.pose.roll * 180) / Math.PI, 2)}° · pitch ${fmt((cur.ride.pose.pitch * 180) / Math.PI, 2)}°` : ''}
             {cur.handling && (
               <span title="Handling (driver steering): distance off the path (+ = left of it), sideslip angle (where the car points vs where it goes) and the road-wheel steer angle">
-                {' · off line '}<span className={Math.abs(cur.handling.pathError) > 1 ? 'bad-text' : Math.abs(cur.handling.pathError) > 0.5 ? 'warn-text' : ''}>{fmt(cur.handling.pathError, 2)} m</span>
+                {' · off line '}<span className={Math.abs(cur.handling.pathError) > 1 ? 'bad-text' : Math.abs(cur.handling.pathError) > 0.5 ? 'warn-text' : ''}><Val v={cur.handling.pathError} unit="m" digits={2} /></span>
                 {' · sideslip '}<span className={Math.abs(cur.handling.sideslip) > 12 ? 'bad-text' : Math.abs(cur.handling.sideslip) > 6 ? 'warn-text' : ''}>{fmt(cur.handling.sideslip, 1)}°</span>
                 {` · steer ${fmt(cur.handling.steer, 1)}°`}{cur.handling.atLock ? <span className="warn-text"> (full lock)</span> : null}
               </span>

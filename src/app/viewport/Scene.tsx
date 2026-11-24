@@ -8,12 +8,12 @@ import { DoubleWishbone, isBeam, type CornerPoints, type CornerState } from '../
 import type { Characteristics } from '../../core/suspension/characteristics';
 import type { LoadedCorner } from '../../core/suspension/loaded';
 import { anyAxisLocked } from '../locks';
-import { layoutOf, activePointKeys, useApp, mountedTireWidth, POINT_NAMES, forCorner, selectedPoints, rootOf, type AnchorId, type ComponentId, type PointKey } from '../store';
+import { layoutOf, activePointKeys, useApp, mountedTireWidth, POINT_NAMES, forCorner, selectedPoints, rootOf, type AnchorId, type ComponentId, type PointKey, type VisKey } from '../store';
 import type { Model, Sample, Current } from '../useModel';
 import { STATE_KEY, anchorPosition } from '../anchors';
 import { Joint, Seg, Polyline, Tri, Wheel, Label, PatchMesh, Coilover, HitLink } from './primitives';
 import { MoveGizmo, AxisGizmo } from './JointGizmo';
-import { componentDefs } from '../components';
+import { componentDefs, ownersOf } from '../components';
 import { linkageShape, customShape } from './linkageShape';
 import { MeasureOverlay } from './MeasureOverlay';
 import { DimensionsOverlay } from './DimensionsOverlay';
@@ -474,13 +474,22 @@ function Ghosts({ sweep, radius }: { sweep: Sample[]; radius: number }) {
   );
 }
 
+/** A part's visibility switch (the rack is drawn with the chassis). */
+const visOf = (c: ComponentId): VisKey => (c === 'rack' ? 'chassis' : c);
+
 function Labels({ state }: { state: CornerState }) {
   const active = useApp((s) => s.activeCorner);
+  const vis = useApp((s) => s.visibility);
+  const g = useApp((s) => s.geom);
   const p = state.points;
+  // A point's name shows only while one of the parts it belongs to is shown.
+  const defs = componentDefs(g.damperArm, g.kind, layoutOf(g), g.pushrodOn ?? 'lca', g.steerMechanism, g.steeredAxle);
+  const shown = (k: PointKey) => { const owners = ownersOf(k, defs); return !owners.length || owners.some((c) => vis[visOf(c)]); };
   const entries: [Vec3, string][] = (Object.keys(STATE_KEY) as PointKey[])
+    .filter(shown)
     .map((k) => [p[STATE_KEY[k]] as Vec3 | undefined, forCorner(active, POINT_NAMES[k])] as const)
     .filter((e): e is [Vec3, string] => Boolean(e[0]));
-  entries.push([p.contact, 'Contact']);
+  if (vis.wheel || vis.patch) entries.push([p.contact, 'Contact']);
   return <>{entries.map(([q, t]) => <Label key={t} p={q} text={t} />)}</>;
 }
 

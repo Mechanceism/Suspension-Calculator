@@ -3,7 +3,7 @@
  * CornerProblem or a VehicleProblem, and runs them in a Web Worker so the UI stays responsive.
  */
 import { blendCurves, parseDamperCurve } from '../core/vehicle/vehicle';
-import { brakeCapacity, type BrakeSystem, type BrakeCapacity } from '../core/vehicle/brakes';
+import { brakeCapacity, type BrakeSystem, type BrakeCapacity, type BrakeAxle, type BrakeDetail, type WheelRoom } from '../core/vehicle/brakes';
 import type { BrakeThermal } from '../core/vehicle/brakeThermal';
 import type { TrailerSpec } from '../core/vehicle/towing';
 import {
@@ -11,8 +11,8 @@ import {
   type CornerProblem, type CornerReport, type HardpointId, type ProgressInfo, type Variable, type Hold,
 } from '../core/optimize/corner';
 import {
-  VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, reportVehicle,
-  type VehicleProblem, type VehicleReport, type VehicleVariable, type VehicleHold,
+  VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, reportVehicle, vehicleSteps, vehicleBounds, sensitivityPlan, sensitivityResult,
+  type SensitivitySample, type VehicleProblem, type VehicleReport, type VehicleVariable, type VehicleHold,
 } from '../core/optimize/vehicle';
 import type { GripModel } from '../core/tire/grip';
 import type { MFCoeffs, TireGrip } from '../core/tire/magicFormula';
@@ -22,10 +22,13 @@ import type { TireSample, TireFitResult } from '../core/tire/fit';
 import type { TireForceModel } from '../core/tire/model';
 import { CORNER_IDS, tirePressure, type AxleShared, type CornerId, type DamperSpec } from '../core/vehicle/vehicle';
 import { vec3 } from '../core/math/vec3';
+import type { EffortSpec } from '../core/suspension/steeringEffort';
+import { shimmyKicks, type ShimmySpec } from '../core/optimize/shimmyOf';
+import { inputPerRev } from '../core/tests/steer';
 import { ratioSpecOf, layoutOf,
   POINT_KEYS, rootOf, toGeometry, toProfile, toForceModel, mergedCorners, vehicleStaticLoads, defaultOptimizerSetup, GRIP_KEYS, MF_KEYS,
   DEFAULT_DAMPER_CURVE, type DamperCurveText, type AppState, type FadeKey, type PointKey, type OptimizerSetup, type SharedDesign, type GripKey, type MFKey, type Field, type DamperKey, type DamperMode,
-  type BrakeKey,
+  type BrakeKey, type BrakeMoreKey,
 } from './store';
 import { STATE_KEY } from './anchors';
 import { lockKeys, pointAxisLocked } from './locks';
@@ -33,7 +36,9 @@ import { toSpec } from './heldDimensions';
 import type { SegmentSpec } from '../core/tests/segments';
 import type { TestRun, TestRunOptions, PlaybackFrame } from '../core/tests/run';
 import type { VehicleSensitivity } from '../core/optimize/vehicle';
-import type { RateVar, RateTest, RateProgress, RateResult } from '../core/optimize/rates';
+import { rateSteps, type RateVar, type RateTest, type RateProgress, type RateResult } from '../core/optimize/rates';
+import { runSteps } from '../core/optimize/leastSquares';
+import { POOL_SIZE, createPool } from './workerPool';
 import { statesForTests } from './tests';
 
 const AXES = ['x', 'y', 'z'] as const;
@@ -76,23 +81,47 @@ export const RIGID_TIRE: TireForceModel = { kind: 'stiffness', rate: 1e5 };
 /** Magic Formula coefficients from their fields. */
 /** Aerodynamics for the solver (undefined when off): the imported model or the generic values, and the air density. */
 /** The brake system from the inputs (front / rear tire radii from the designs on each axle). */
-export function brakesOf(s: Pick<AppState, 'brakes'> & Parameters<typeof mergedCorners>[0]): { system: BrakeSystem; capacity: BrakeCapacity; thermal?: BrakeThermal } | null {
+export interface BrakesModel {
+  system: BrakeSystem;
+  capacity: BrakeCapacity;
+  thermal?: BrakeThermal;
+  /** Detailed hydraulics (fluid and pedal travel), when chosen. */
+  detail?: BrakeDetail;
+  /** Room for the brakes inside each axle's wheel. */
+  room: { front: WheelRoom; rear: WheelRoom };
+  /** Tire radius per axle, mm. */
+  tireRadius: { front: number; rear: number };
+}
+
+export function brakesOf(s: Pick<AppState, 'brakes'> & Parameters<typeof mergedCorners>[0]): BrakesModel | null {
   const b = s.brakes;
   if (!b?.on) return null;
-  const v = (k: BrakeKey) => b[k].value;
+  const v = (k: BrakeKey | BrakeMoreKey) => b[k].value;
+  const axle = (side: 'F' | 'R', drum: boolean): BrakeAxle => ({
+    kind: drum ? 'drum' : 'disc',
+    mcBore: v(`mcBore${side}`), pistonDiameter: v(`pistonDia${side}`), pistonsPerSide: v(`pistons${side}`), padMu: v(`padMu${side}`), rotorRadius: v(`rotorR${side}`),
+    wheelCylinder: v(`wcBore${side}`), drumRadius: v(`drumR${side}`), brakeFactor: v(`brakeFactor${side}`), fadeSensitivity: drum ? v('drumFadeK') : 1,
+  });
   const system: BrakeSystem = {
     maxPedalForce: v('maxPedalForce'), pedalRatio: v('pedalRatio'), boost: v('boost'), dualMc: b.dualMc, balanceFront: v('balanceFront') / 100,
-    front: { mcBore: v('mcBoreF'), pistonDiameter: v('pistonDiaF'), pistonsPerSide: v('pistonsF'), padMu: v('padMuF'), rotorRadius: v('rotorRF') },
-    rear: { mcBore: v('mcBoreR'), pistonDiameter: v('pistonDiaR'), pistonsPerSide: v('pistonsR'), padMu: v('padMuR'), rotorRadius: v('rotorRR') },
+    front: axle('F', !!b.drumF), rear: axle('R', !!b.drumR),
   };
   const all = mergedCorners(s);
-  const r = (id: CornerId) => all[rootOf(id, s.links)].geom.scalars.tireDiameter.value / 2;
+  const g = (id: CornerId) => all[rootOf(id, s.links)].geom.scalars;
+  const r = (id: CornerId) => g(id).tireDiameter.value / 2;
+  const room = (id: CornerId): WheelRoom => ({ rimDiameter: g(id).rimDiameter.value, clearance: v('brakeRoom'), padHeight: v('padHeight') });
   const f = (k: FadeKey) => b[k].value;
   const thermal: BrakeThermal | undefined = b.fade ? {
     rotorMass: { front: f('rotorMassF'), rear: f('rotorMassR') }, cooling: f('cooling'),
     fadeStart: f('fadeStart'), fadeEnd: f('fadeEnd'), fadeLoss: f('fadeLoss') / 100, air: f('fadeAir'), start: f('fadeStartTemp'),
+    sensitivity: { front: system.front.fadeSensitivity ?? 1, rear: system.rear.fadeSensitivity ?? 1 },
   } : undefined;
-  return { system, capacity: brakeCapacity(system, { front: r('FL'), rear: r('RL') }), ...(thermal ? { thermal } : {}) };
+  const detail: BrakeDetail | undefined = b.detail ? {
+    mcStroke: v('mcStroke'), maxPedalTravel: v('maxPedalTravel'), padClearance: v('padClearance'), shoeClearance: v('shoeClearance'),
+    compliance: { front: v('complianceF'), rear: v('complianceR') },
+  } : undefined;
+  const tireRadius = { front: r('FL'), rear: r('RL') };
+  return { system, capacity: brakeCapacity(system, tireRadius), ...(thermal ? { thermal } : {}), ...(detail ? { detail } : {}), room: { front: room('FL'), rear: room('RL') }, tireRadius };
 }
 
 /** The trailer from the towing inputs, or undefined when not towing. */
@@ -170,6 +199,9 @@ export function buildProblem(s: AppState): BuiltProblem<CornerProblem> {
     // Setup values: static camber / toe (deg), the tire's set pressure (kPa).
     const sv = key.startsWith('scalar.') ? key.slice(7) : null;
     if (sv) {
+      // Locked setup values (by hand, or entered in the setup wizard) stay as they are.
+      const lockKey = sv === 'tirePressure' ? lockKeys.field(root, 'tire', 'pressure') : lockKeys.field(root, 'scalar', sv);
+      if (s.locks[lockKey]) { skippedLocked.push(key); continue; }
       if (sv === 'staticCamber' || sv === 'staticToe' || (sv === 'tirePressure' && s.tireModel === 'gas')) variables.push({ point: sv, axis: 0, lo: r.lo.value, hi: r.hi.value });
       continue;
     }
@@ -201,6 +233,7 @@ export function buildProblem(s: AppState): BuiltProblem<CornerProblem> {
       return [{ hold, lo: r.lo.value, hi: r.hi.value }];
     }),
     tire: model ? { profile: toProfile(s.geom), model, staticLoad, rollLoadFactor: o.rollLoadFactor.value, grip: gripModelOf(s.grip), tireGrip: tireGripFor(s, s.activeCorner === 'FL' || s.activeCorner === 'FR' ? 'front' : 'rear'), pressure: tirePressure(model) } : undefined,
+    ...(s.settings[s.activeCorner].steered && s.geom.kind !== 'twistBeam' ? { steering: effortSpecOf(s, staticLoad) } : {}),
   };
   const blockers: string[] = [];
   if (!goals.length) blockers.push('Turn on at least one goal.');
@@ -208,6 +241,37 @@ export function buildProblem(s: AppState): BuiltProblem<CornerProblem> {
   if (goals.length && goals.every((g) => g.weight <= 0)) blockers.push('Every goal has weight 0.');
   if (!model && goals.some((g) => GOAL_META[g.kind].maximize)) blockers.push('Contact area and grip need a tire model (Tire: stiffness or air spring).');
   return { problem, skippedLocked, blockers };
+}
+
+/** The steering-effort goals' inputs: ratio at center, parking μ, pneumatic trail, the check's lateral g, the tire load. */
+export function effortSpecOf(s: Pick<AppState, 'steer' | 'steerCurve'>, load: number): EffortSpec {
+  return {
+    cFactor: inputPerRev(0, ratioSpecOf(s)), mu: s.steer.mu.value, load,
+    lateralG: s.steer.effortG.value, pneumaticTrail: s.steer.pneumaticTrail.value,
+  };
+}
+
+/** Steering-effort inputs for each steered design (by root corner), with that corner's static tire load. */
+function effortByDesign(s: AppState): Partial<Record<CornerId, EffortSpec>> {
+  const all = mergedCorners(s);
+  const loads = vehicleStaticLoads(s.vehicle, all, s.links);
+  const out: Partial<Record<CornerId, EffortSpec>> = {};
+  for (const { root, corners } of designRoots(s)) {
+    if (all[root].geom.kind === 'twistBeam' || !corners.some((id) => s.settings[id].steered)) continue;
+    out[root] = effortSpecOf(s, loads[root]);
+  }
+  return out;
+}
+
+/** The shimmy inputs (angles to rad, shares to fractions; the imbalance at the front rim, kg·m). */
+export function shimmySpecOf(s: AppState): ShimmySpec {
+  const m = s.shimmy;
+  const rim = mergedCorners(s)[rootOf('FL', s.links)].geom.scalars.rimDiameter.value / 2000;
+  return {
+    stiffness: Math.max(1, m.shimStiffness.value), damper: Math.max(0, m.shimDamper.value), steeringWheelInertia: Math.max(1e-4, m.swInertia.value),
+    handsOn: m.handsOn, maxSpeed: Math.max(5, m.shimMaxSpeed.value), imbalance: (Math.max(0, m.imbalance.value) / 1000) * rim, check: m.check,
+    wear: { freePlay: (Math.max(0, m.freePlay.value) * Math.PI) / 180, stiffness: Math.max(0.01, m.wornStiffness.value / 100), damper: Math.max(0, m.wornDamper.value / 100) },
+  };
 }
 
 /** The corner designs in use (root corners) and which corners share each. */
@@ -236,7 +300,7 @@ export function damperOf(d: { damper: Record<DamperKey, Field>; damperMode: Damp
 }
 
 /** `caseSource` overrides the optimizer's load-case source (a test id or 'all'), e.g. for the Tests optimize loop. */
-export function buildVehicleProblem(s: AppState, over: { caseSource?: string } = {}): BuiltProblem<VehicleProblem> {
+export function buildVehicleProblem(s: AppState, over: { caseSource?: string; plans?: Parameters<typeof statesForTests>[3] } = {}): BuiltProblem<VehicleProblem> {
   const brakes = brakesOf(s);
   const brk = brakes ? {
     limit: { front: brakes.capacity.axleForce.front, rear: brakes.capacity.axleForce.rear, maxPedal: brakes.system.maxPedalForce },
@@ -279,11 +343,15 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
       rackLimit: Math.abs(s.steer.rackLimit.value), cFactor: s.steer.cFactor.value, cFactorLock: s.steer.cFactorLock.value,
       ...(ratioSpecOf(s).curve ? { curve: ratioSpecOf(s).curve } : {}),
     },
+    ...(goals.some((g) => VEHICLE_GOAL_META[g.kind].limit) ? { effort: effortByDesign(s) } : {}),
     ride: { rollInertia: Math.max(0.1, v.rollInertia.value), pitchInertia: Math.max(0.1, v.pitchInertia.value), yawInertia: Math.max(0.1, v.yawInertia.value), tireDamping: Math.max(0, v.tireDamping.value), relaxation: Math.max(0, v.relaxation.value) },
     mass: v.mass.value, cg: { x: v.cgX.value, height: v.cgY.value, z: v.cgZ.value }, wheelbase: v.wheelbase.value,
+    rollingResistance: Math.max(0, v.rollingResistance.value), pneumaticTrail: s.steer.pneumaticTrail.value,
+    shimmy: shimmySpecOf(s),
     brakeBias: brk?.useBias ?? v.brakeBias.value / 100, driveSplit: v.driveSplit.value / 100, autoPreload: s.autoPreload,
     ...(brk ? { brakeLimit: brk.limit } : {}),
     ...(brakes?.thermal ? { brakeThermal: brakes.thermal } : {}),
+    ...(brakes?.detail ? { brakeDetail: { system: brakes.system, detail: brakes.detail } } : {}),
     ...(trailerOf(s) ? { trailer: trailerOf(s)! } : {}),
     shared: { front: toAxleShared(s.shared.front), rear: toAxleShared(s.shared.rear) },
     dropLinks: { front: dl(s.shared.front), rear: dl(s.shared.rear) },
@@ -295,7 +363,7 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
       ...(o.caseWeights ? { weights: o.caseWeights } : {}),
     },
     states: o.caseSource && (o.caseSource === 'all' || s.tests.some((x) => x.id === o.caseSource))
-      ? statesForTests(s.tests, o.caseSource, { wheelbase: v.wheelbase.value, halfTrack: Math.abs(toGeometry(all[rootOf('FL', s.links)].geom).wheel.center.x) }) : undefined,
+      ? statesForTests(s.tests, o.caseSource, { wheelbase: v.wheelbase.value, halfTrack: Math.abs(toGeometry(all[rootOf('FL', s.links)].geom).wheel.center.x) }, over.plans) : undefined,
     goals, variables, holds, aero: aeroOf(s), grip: gripModelOf(s.grip), tireGrip: tireGripFor(s, 'front'), ...(s.tireFileRear ? { tireGripRear: tireGripFor(s, 'rear') } : {}), keepClose: Math.max(0, o.keepClose.value), starts: o.starts ?? 1,
   };
   const blockers: string[] = [];
@@ -348,8 +416,71 @@ function run<P, R>(kind: 'corner' | 'vehicle', problem: P, onProgress: (p: Progr
 export const runOptimizer = (problem: CornerProblem, onProgress: (p: ProgressInfo) => void): RunHandle<CornerReport> =>
   run('corner', problem, onProgress, (x) => reportCorner(problem, x ?? problem.variables.map((v) => variableValue(problem.geometry, v))));
 
-export const runVehicleOptimizer = (problem: VehicleProblem, onProgress: (p: ProgressInfo) => void): RunHandle<VehicleReport> =>
-  run('vehicle', problem, onProgress, (x) => reportVehicle(problem, x ?? problem.variables.map((v) => variableValue(problem.designs[v.root]!.geometry, v))));
+const runVehicleOnce = (problem: VehicleProblem, onProgress: (p: ProgressInfo) => void): RunHandle<VehicleReport> =>
+  POOL_SIZE > 1 && problem.variables.length > 1
+    ? runVehicleParallel(problem, onProgress)
+    : run('vehicle', problem, onProgress, (x) => reportVehicle(problem, x ?? problem.variables.map((v) => variableValue(problem.designs[v.root]!.geometry, v))));
+
+/**
+ * The vehicle optimizer. With the Shimmy margin goal, a final check before the result is offered: the worn
+ * kick test (real free play, imbalance) at the fastest speeds; if the wheels still wobble the margin asked
+ * for goes up by 0.03 and the optimizer continues from there (at most twice).
+ */
+export function runVehicleOptimizer(problem: VehicleProblem, onProgress: (p: ProgressInfo) => void): RunHandle<VehicleReport> {
+  if (!problem.shimmy || !problem.goals.some((g) => g.kind === 'shimmy')) return runVehicleOnce(problem, onProgress);
+  let cur = runVehicleOnce(problem, onProgress);
+  let stopped = false;
+  const wobbles = (geoms: VehicleReport['geometries']) => [1, 0.8, 0.6].some((k) => shimmyKicks(problem, problem.shimmy!.maxSpeed * k, geoms as never)?.worn.shimmies);
+  const done = (async () => {
+    let q = problem;
+    let out = await cur.done;
+    for (let k = 0; k < 2 && !out.stopped && !stopped && wobbles(out.result.geometries); k++) {
+      const geoms = out.result.geometries as Partial<Record<CornerId, import('../core/suspension/doubleWishbone').DoubleWishboneGeometry>>;
+      q = {
+        ...q, goals: q.goals.map((g) => (g.kind === 'shimmy' ? { ...g, target: g.target + 0.03 } : g)),
+        designs: Object.fromEntries(Object.entries(q.designs).map(([r, d]) => [r, { ...d!, geometry: geoms[r as CornerId] ?? d!.geometry }])),
+      };
+      cur = runVehicleOnce(q, onProgress);
+      const next = await cur.done;
+      // Report against the original start (the moves add up).
+      const rep = reportVehicle(problem, next.result.variables.map((v) => v.after));
+      out = { result: { ...next.result, ...rep, shimmyRecheck: k + 1 } as RunResult<VehicleReport>, stopped: next.stopped };
+    }
+    return out;
+  })();
+  return { done, stop: () => { stopped = true; cur.stop(); } };
+}
+
+/**
+ * The vehicle optimizer over a pool of workers: the search runs here (light), every point it needs is
+ * evaluated in a worker (the Jacobian's columns at once, `pool.size` damping trials at once).
+ */
+function runVehicleParallel(problem: VehicleProblem, onProgress: (p: ProgressInfo) => void): RunHandle<VehicleReport> {
+  const pool = createPool({ type: 'vehicle', problem });
+  let last: ProgressInfo | null = null;
+  let stopped = false;
+  let finish: (v: Awaited<RunHandle<VehicleReport>['done']>) => void = () => {};
+  let fail: (e: unknown) => void = () => {};
+  const done = new Promise<Awaited<RunHandle<VehicleReport>['done']>>((res, rej) => { finish = res; fail = rej; });
+  const steps = vehicleSteps(problem, (info) => { last = info; onProgress(info); return !stopped; }, pool.size);
+  runSteps(steps, (xs) => pool.map<number[] | null>(xs.map((x) => ({ kind: 'residuals', x }))))
+    .then(async (lsq) => {
+      const report = await pool.run<VehicleReport>({ kind: 'report', x: lsq.x });
+      pool.terminate();
+      finish({ result: { ...report, lsq, status: lsq.status, iterations: lsq.iterations, cost0: lsq.cost0, cost: lsq.cost } as RunResult<VehicleReport>, stopped: false });
+    })
+    .catch((e: unknown) => { pool.terminate(); if (!stopped) fail(e); });
+  return {
+    done,
+    stop: () => {
+      if (stopped) return;
+      stopped = true;
+      pool.terminate();
+      const report = reportVehicle(problem, last?.x ?? vehicleBounds(problem).x0);
+      finish({ result: { ...report, status: 'stopped', iterations: last?.iteration ?? 0, cost0: last?.cost0 ?? NaN, cost: last?.cost ?? NaN }, stopped: true });
+    },
+  };
+}
 
 /** Run a test in the worker. */
 export function runTestJob(problem: VehicleProblem, segments: SegmentSpec[], opts: TestRunOptions): { done: Promise<TestRun>; cancel(): void } {
@@ -399,12 +530,28 @@ function progressJob<R, P>(msg: unknown, onProgress: (p: P) => void): { done: Pr
 }
 
 /** What matters most (DOE sensitivity) for a vehicle problem, in the worker. */
-export const runSensitivityJob = (problem: VehicleProblem, samples: number, onProgress: (p: { sample: number; of: number }) => void) =>
-  progressJob<VehicleSensitivity | null, { sample: number; of: number }>({ kind: 'sensitivity', problem, samples }, onProgress);
+export function runSensitivityJob(problem: VehicleProblem, samples: number, onProgress: (p: { sample: number; of: number }) => void): { done: Promise<VehicleSensitivity | null>; stop(): void } {
+  if (POOL_SIZE < 2) return progressJob<VehicleSensitivity | null, { sample: number; of: number }>({ kind: 'sensitivity', problem, samples }, onProgress);
+  // Every DOE sample in its own task, over the pool.
+  const pool = createPool({ type: 'vehicle', problem });
+  const { us, xs } = sensitivityPlan(problem, samples);
+  let n = 0;
+  const done = Promise.all(xs.map((x) => pool.run<SensitivitySample>({ kind: 'sensitivity', x }).then((r) => { onProgress({ sample: ++n, of: xs.length }); return r; })))
+    .then((out) => sensitivityResult(problem, us, out))
+    .finally(() => pool.terminate());
+  return { done, stop: () => pool.terminate() };
+}
 
 /** Tune springs / dampers / bars on the ride (Bayesian optimization), in the worker. */
-export const runRatesJob = (problem: VehicleProblem, tests: RateTest[], vars: RateVar[], budget: number, mode: 'pass' | 'improve', onProgress: (p: RateProgress) => void) =>
-  progressJob<RateResult, RateProgress>({ kind: 'rates', problem, tests, vars, budget, mode }, onProgress);
+export function runRatesJob(problem: VehicleProblem, tests: RateTest[], vars: RateVar[], budget: number, mode: 'pass' | 'improve', onProgress: (p: RateProgress) => void): { done: Promise<RateResult>; stop(): void } {
+  if (POOL_SIZE < 2) return progressJob<RateResult, RateProgress>({ kind: 'rates', problem, tests, vars, budget, mode }, onProgress);
+  // Bayesian batches of rate sets ("constant liar"), one set per worker at a time.
+  const pool = createPool({ type: 'rates', problem, tests, vars, mode });
+  let stopped = false;
+  const steps = rateSteps(vars, { budget, batch: pool.size }, (i) => { onProgress(i); return !stopped; });
+  const done = runSteps(steps, (xs) => pool.map<number[]>(xs.map((x) => ({ kind: 'score', x })))).finally(() => pool.terminate());
+  return { done, stop: () => { stopped = true; pool.terminate(); } };
+}
 
 /** Fit a tire model to measured data, in the worker. */
 export const runTireFitJob = (samples: TireSample[], name: string, onProgress: (p: { stage: string; iteration: number }) => void, unloadedRadius?: number) =>

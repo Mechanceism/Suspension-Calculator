@@ -7,6 +7,7 @@ import { formatValue, type Quantity } from '../core/units/units';
 import { segmentStates, type PathKind, type RoadState, type CarDims , racingLineRadius } from '../core/tests/segments';
 import type { RoadSpec } from '../core/tests/road';
 import type { TestSegmentSpec } from '../core/tests/run';
+import type { SegmentPlan } from '../core/tests/plan';
 import { PROFILES, cloneProfile, type CheckProfile } from '../core/tests/checks';
 import type { Field } from './store';
 
@@ -38,6 +39,8 @@ export interface TestSegment {
   rough: { on: boolean; seed: number; maxHeight: Field; scale: Field; coverage: Field };
   /** Placed bumps / potholes along the segment. */
   features: RoadFeatureDesign[];
+  /** Coast: no throttle, no brakes (with the driver working the pedals the speed follows the forces). */
+  coast?: boolean;
   /** Priority rank within its test (1 = most important; equal ranks = equal priority). Not the run order. */
   rank: number;
   /** Check override for this segment (null = the test's checks). */
@@ -73,8 +76,16 @@ export interface TestDesign {
   profile: string;
   /** Priority rank among tests (1 = most important; equal ranks = equal priority). Not the list order. */
   rank: number;
-  /** On a failing segment: report it, or let the driver lift to the speed that passes. */
+  /** Hold the set speeds exactly: on a failing segment, report it, or let the driver lift to the speed that passes. */
   onFail: 'report' | 'lift';
+  /**
+   * Speeds: **max** — the set speeds are maximums; the driver plans the speed to the grip target (brakes earlier,
+   * accelerates out) and tries other ways (then lower targets) before a segment fails; scored on time.
+   * **hold** — the set speeds are held exactly (as before; `onFail` applies). Missing = hold (files from before).
+   */
+  speedMode?: 'max' | 'hold';
+  /** Speeds as maximums: the share of the tires' grip the driver plans to (0–1, default 0.95). */
+  gripTarget?: number;
   /** Included in Run all / Optimize all (unchecked = skipped). */
   enabled: boolean;
   /** Also drive the test over time (Phase B ride: bumps at speed, transients) and check every moment. */
@@ -88,6 +99,12 @@ export interface TestDesign {
 }
 
 export const defaultChecks = () => cloneProfile(PROFILES.default.checks);
+
+/** New and preset tests: speeds as maximums at a 95 % grip target. */
+const MAXIMUMS = { speedMode: 'max' as const, gripTarget: 0.95 };
+/** The run options a test's speed mode adds (`ladder: false` for optimizers: plan once, no retries). */
+export const planOption = (t: Pick<TestDesign, 'speedMode' | 'gripTarget'>, ladder = true) =>
+  (t.speedMode === 'max' ? { plan: { gripTarget: t.gripTarget ?? 0.95, ...(ladder ? {} : { ladder: false }) } } : {});
 
 const f = (value: number, q: Quantity): Field => ({ text: formatValue(value, q), value });
 export const OFF: Field = { text: '', value: NaN };
@@ -136,9 +153,9 @@ export const SEGMENT_PRESETS: SegmentPreset[] = [
 /** Whole tests to start from. */
 export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }[] = [
   {
-    label: 'Autocross sequence',
+    label: 'Autocross (simple)',
     make: () => ({
-      name: 'Autocross sequence', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, ride: true, handling: true,
+      name: 'Autocross (simple)', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', ...MAXIMUMS, enabled: true, ride: true, handling: true,
       segments: [
         newSegment({ name: 'Launch 0–40', distance: f(50, 'distance'), speedStart: f(0, 'speed'), speedEnd: f(40 * MPH, 'speed') }),
         newSegment({ name: 'Brake 40–30', distance: f(15, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(30 * MPH, 'speed') }),
@@ -149,9 +166,39 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
     }),
   },
   {
+    label: 'Autocross (complex): slalom, offset gates, sweepers',
+    make: () => {
+      // Flat (no bank, no grade) and balanced: the same number and kind of left and right turns, so both
+      // sides of the car work equally. A slalom (R 25 m at 30 mph, ≈ 0.7 g, cones ≈ 15 m apart), two
+      // mirrored sets of offset gates (R 18 m at 25 mph), and a broad 90° sweeper each way (R 40 m at 35 mph).
+      // Every turn sequence ends on the heading it started on, so the course runs straight overall.
+      const arc = (name: string, path: 'left' | 'right', radius: number, d: number, mph: number) =>
+        newSegment({ name, path, radius: f(radius, 'distance'), distance: f(d, 'distance'), speedStart: f(mph * MPH, 'speed'), speedEnd: f(mph * MPH, 'speed') });
+      const seg = (name: string, d: number, v0: number, v1: number) => newSegment({ name, distance: f(d, 'distance'), speedStart: f(v0 * MPH, 'speed'), speedEnd: f(v1 * MPH, 'speed') });
+      const sweep = (Math.PI / 2) * 40;
+      return {
+        name: 'Autocross (complex)', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', ...MAXIMUMS, enabled: true, ride: true, handling: true,
+        segments: [
+          seg('Launch 0–30', 40, 0, 30),
+          // Slalom: half, full, full… half arcs, alternating; three left and three right, net heading 0.
+          arc('Slalom 1 (left, entry)', 'left', 25, 7.5, 30), arc('Slalom 2 (right)', 'right', 25, 15, 30), arc('Slalom 3 (left)', 'left', 25, 15, 30),
+          arc('Slalom 4 (right)', 'right', 25, 15, 30), arc('Slalom 5 (left)', 'left', 25, 15, 30), arc('Slalom 6 (right, exit)', 'right', 25, 7.5, 30),
+          seg('Accelerate 30–40', 50, 30, 40), seg('Brake 40–25', 25, 40, 25),
+          // Offset gates: a quick jog out and back, first to the left, then the mirror image to the right.
+          arc('Offset gate A1 (left)', 'left', 18, 12, 25), arc('Offset gate A2 (right)', 'right', 18, 24, 25), arc('Offset gate A3 (left)', 'left', 18, 12, 25),
+          seg('Between the gates', 20, 25, 25),
+          arc('Offset gate B1 (right)', 'right', 18, 12, 25), arc('Offset gate B2 (left)', 'left', 18, 24, 25), arc('Offset gate B3 (right)', 'right', 18, 12, 25),
+          seg('Accelerate 25–35', 40, 25, 35),
+          arc('Left sweeper (90°)', 'left', 40, sweep, 35), seg('Short straight', 30, 35, 35), arc('Right sweeper (90°)', 'right', 40, sweep, 35),
+          seg('Stop box 35–0', 30, 35, 0),
+        ],
+      };
+    },
+  },
+  {
     label: 'Pothole while braking in a turn',
     make: () => ({
-      name: 'Pothole while braking in a turn', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, ride: true, handling: true,
+      name: 'Pothole while braking in a turn', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', ...MAXIMUMS, enabled: true, ride: true, handling: true,
       segments: [
         newSegment({ name: 'Braking left turn + pothole', path: 'left', radius: f(45, 'distance'), distance: f(35, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(30 * MPH, 'speed'), features: [{ ...newFeature('pothole', 15), height: f(40, 'length') }] }),
       ],
@@ -160,7 +207,7 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
   {
     label: 'Hills: incline left, lumpy decline right',
     make: () => ({
-      name: 'Hills', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, ride: true, handling: true,
+      name: 'Hills', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', ...MAXIMUMS, enabled: true, ride: true, handling: true,
       segments: [
         newSegment({ name: 'Flat straight', distance: f(100, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(40 * MPH, 'speed') }),
         newSegment({ name: 'Bumps + potholes straight', distance: f(60, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(40 * MPH, 'speed'), features: [{ ...newFeature('bump', 15), side: 'left' }, newFeature('pothole', 35)] }),
@@ -177,7 +224,7 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
       const straight = (name: string) => newSegment({ name, bank: f(5, 'angle'), distance: f(150, 'distance'), speedStart: f(75 * MPH, 'speed'), speedEnd: f(85 * MPH, 'speed') });
       const brake = (name: string) => newSegment({ name, bank: f(5, 'angle'), distance: f(60, 'distance'), speedStart: f(85 * MPH, 'speed'), speedEnd: f(75 * MPH, 'speed') });
       return {
-        name: 'Oval: banked turns', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, ride: true, handling: true,
+        name: 'Oval: banked turns', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', ...MAXIMUMS, enabled: true, ride: true, handling: true,
         segments: [straight('Front straight'), brake('Brake into turn 1'), turn('Turns 1–2 (24° banking)'), straight('Back straight'), brake('Brake into turn 3'), turn('Turns 3–4 (24° banking)')],
       };
     },
@@ -190,7 +237,7 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
       const turn = (name: string, path: 'left' | 'right') => newSegment({ name, path, radius: f(30, 'distance'), distance: f((Math.PI / 2) * 30, 'distance'), speedStart: f(30 * MPH, 'speed'), speedEnd: f(30 * MPH, 'speed') });
       const seg = (name: string, d: number, v0: number, v1: number, grade = 0) => newSegment({ name, distance: f(d, 'distance'), speedStart: f(v0 * MPH, 'speed'), speedEnd: f(v1 * MPH, 'speed'), grade: f(grade, 'percent') });
       return {
-        name: 'Balanced', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, ride: true, handling: true,
+        name: 'Balanced', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', ...MAXIMUMS, enabled: true, ride: true, handling: true,
         segments: [
           seg('Launch 0–50', 80, 0, 50), seg('Brake 50–30', 25, 50, 30), turn('Left turn 1', 'left'),
           seg('Accelerate 30–45', 50, 30, 45), seg('Brake 45–30', 20, 45, 30), turn('Right turn 1', 'right'),
@@ -201,7 +248,7 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
       };
     },
   },
-  { label: 'Empty test', make: () => ({ name: 'New test', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, ride: true, handling: true, segments: [newSegment()] }) },
+  { label: 'Empty test', make: () => ({ name: 'New test', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', ...MAXIMUMS, enabled: true, ride: true, handling: true, segments: [newSegment()] }) },
 ];
 
 /**
@@ -231,6 +278,7 @@ export function segmentSpec(s: TestSegment, test?: TestDesign): TestSegmentSpec 
     bumps: Object.fromEntries(CORNER_IDS.filter((id) => s.bumps[id].value !== 0).map((id) => [id, s.bumps[id].value])),
     samples: 3,
     road: roadSpecOf(s),
+    ...(s.coast ? { coast: true } : {}),
   };
 }
 
@@ -246,14 +294,19 @@ export function roadSpecOf(s: TestSegment): RoadSpec | undefined {
  * (test priority × segment priority, from their ranks) and the segment's pass rules.
  * `source`: a test id, or 'all' for every enabled test (weighted by its priority rank).
  */
-export function statesForTests(tests: TestDesign[], source: string, dims?: CarDims): RoadState[] {
+/**
+ * `plans`: per test id, the speeds its last run planned per segment (speeds as maximums): its states are then
+ * taken at those speeds, not at the set maximums (which the car may never be driven at).
+ */
+export function statesForTests(tests: TestDesign[], source: string, dims?: CarDims, plans?: Record<string, (SegmentPlan | undefined)[] | undefined>): RoadState[] {
   const chosen = source === 'all' ? tests.filter((t) => t.enabled !== false) : tests.filter((t) => t.id === source);
   const tw = (t: TestDesign) => (source === 'all' ? rankWeight(t.rank, chosen.length) : 1);
   const totalPriority = chosen.reduce((a, t) => a + tw(t), 0) || 1;
   const out: RoadState[] = [];
   for (const t of chosen) {
     const tp = tw(t) / totalPriority;
-    const specs = t.segments.map((sg) => segmentSpec(sg, t));
+    const planned = t.speedMode === 'max' ? plans?.[t.id] : undefined;
+    const specs = t.segments.map((sg, i) => { const sp = segmentSpec(sg, t); const pl = planned?.[i]; return pl && pl.s.length > 1 ? { ...sp, plan: pl } : sp; });
     const segTotal = specs.reduce((a, sp) => a + (sp.weight ?? 1), 0) || 1;
     specs.forEach((sp, i) => {
       const st = segmentStates(sp, i, 1, dims);

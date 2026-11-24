@@ -150,7 +150,7 @@ export const DAMPER_META: Record<DamperKey, { label: string; quantity: Quantity;
 };
 
 /** Steering system and tire-force inputs (docs/MATH.md § Steering). */
-export const STEER_KEYS = ['cFactor', 'cFactorLock', 'rackLimit', 'lateral', 'longitudinal', 'pneumaticTrail', 'mu'] as const;
+export const STEER_KEYS = ['cFactor', 'cFactorLock', 'rackLimit', 'lateral', 'longitudinal', 'pneumaticTrail', 'mu', 'effortG'] as const;
 /** Steering values that belong to a mechanism (their units change with it): each mechanism keeps its own. */
 export const MECH_STEER_KEYS = ['cFactor', 'cFactorLock', 'rackLimit'] as const;
 export type MechSteerKey = (typeof MECH_STEER_KEYS)[number];
@@ -163,6 +163,7 @@ export const STEER_META: Record<SteerKey, { label: string; quantity: Quantity; u
   longitudinal: { label: 'Longitudinal tire force (+ drive, − brake)', quantity: 'force', unit: 'N', initial: 0 },
   pneumaticTrail: { label: 'Pneumatic trail', quantity: 'length', unit: 'mm', initial: 0 },
   mu: { label: 'Tire friction μ (parking)', quantity: 'ratio', unit: '×', initial: 1 },
+  effortG: { label: 'Effort check at (lateral g)', quantity: 'ratio', unit: 'g', initial: 0.5, hint: 'The steering-effort-at-speed goal holds the front wheels at this lateral acceleration (side force = g × tire load on each wheel).' },
 };
 
 export const ARM_DERIVED = ['length', 'inclination', 'planAngle', 'frontViewAngle'] as const;
@@ -208,7 +209,7 @@ export interface EditableGeometry {
 export const VIS_KEYS = [
   'chassis', 'uca', 'lca', 'upright', 'tieRod', 'wheel',
   'spring', 'patch', 'steeringAxis', 'icConstruction', 'rollCenter', 'ground', 'datum', 'labels', 'dimensions', 'ackermann',
-  'cg', 'arb', 'markerLabels',
+  'cg', 'arb',
 ] as const;
 export type VisKey = (typeof VIS_KEYS)[number];
 
@@ -638,6 +639,11 @@ export interface AppState extends DesignState {
   /** Lock or unlock several keys at once (e.g. all three coordinates of a point). */
   setLocks(keys: string[], locked: boolean): void;
   clearLocks(): void;
+  /**
+   * Lock values the setup wizard's step wrote (the user's own values), tagged with the step so "Use an
+   * estimate" on that step frees them again. Keys the user had already locked stay plain locks.
+   */
+  lockFromWizard(step: SetupStep, keys: string[]): void;
   /** Change the optimizer setup of the active corner's design. */
   updateOptimizer(fn: (o: OptimizerSetup) => OptimizerSetup): void;
   /** Write optimized coordinates into the design, keeping the previous geometry for Undo. */
@@ -656,8 +662,11 @@ export interface AppState extends DesignState {
   setAeroField(key: AeroKey, text: string): void;
   setAero(patch: Partial<Pick<AeroSettings, 'on' | 'file'>>): void;
   setBrakeField(key: BrakeKey, text: string): void;
-  setBrakes(patch: Partial<Pick<BrakeSettings, 'on' | 'fade' | 'dualMc' | 'useBias'>>): void;
+  setBrakes(patch: Partial<BrakeSettings>): void;
   setFadeField(key: FadeKey, text: string): void;
+  setBrakeMoreField(key: BrakeMoreKey, text: string): void;
+  setShimmyField(key: ShimmyKey, text: string): void;
+  setShimmy(patch: Partial<ShimmySettings>): void;
   setTowField(key: TowKey, text: string): void;
   setTow(patch: Partial<Pick<TowSettings, 'on'>>): void;
   /** Grip scale of a loaded file (λμ): side (LMUY) or braking / drive (LMUX). */
@@ -841,7 +850,7 @@ export function rootOf(id: CornerId, links: CornerLinks): CornerId {
 export const CORNER_NAMES: Record<CornerId, string> = { FL: 'Front left', FR: 'Front right', RL: 'Rear left', RR: 'Rear right' };
 
 /** Vehicle inputs (L6). */
-export const VEHICLE_KEYS = ['mass', 'cgX', 'cgY', 'cgZ', 'wheelbase', 'brakeBias', 'driveSplit', 'rollInertia', 'pitchInertia', 'yawInertia', 'tireDamping', 'relaxation'] as const;
+export const VEHICLE_KEYS = ['mass', 'cgX', 'cgY', 'cgZ', 'wheelbase', 'brakeBias', 'driveSplit', 'rollInertia', 'pitchInertia', 'yawInertia', 'tireDamping', 'relaxation', 'rollingResistance'] as const;
 /** Vehicle inputs only the ride over time (Phase B) and handling (Phase C) use. */
 export const RIDE_KEYS = ['rollInertia', 'pitchInertia', 'yawInertia', 'tireDamping', 'relaxation'] as const;
 export type VehicleKey = (typeof VEHICLE_KEYS)[number];
@@ -858,9 +867,10 @@ export const VEHICLE_META: Record<VehicleKey, { label: string; quantity: Quantit
   yawInertia: { label: 'Yaw inertia (whole car)', quantity: 'ratio', unit: 'kg·m²', hint: 'About the CG, around the vertical axis (handling over time). About total mass × (0.45 × wheelbase)².' },
   tireDamping: { label: 'Tire damping', quantity: 'damping', unit: 'N·s/m', hint: 'Vertical damping of each tire (ride over time). Small: rubber and air damp little.' },
   relaxation: { label: 'Tire relaxation length', quantity: 'length', unit: 'mm', hint: 'Handling over time: a tire\'s side force builds up over this distance rolled after its slip angle changes (≈ 0.5–1 × the tire radius for cars; 0 = at once). Slows the car\'s response to quick steering.' },
+  rollingResistance: { label: 'Rolling resistance (coefficient)', quantity: 'ratio', unit: '', hint: 'The tires\u2019 own drag ÷ their load while rolling (≈ 0.008–0.015 for road tires, 0.02–0.03 off-road; 0 = none). The powered wheels push against it like the air; with the driver working the pedals a coasting car slows by it.' },
 };
 
-export type Workspace = 'corner' | 'vehicle' | 'tests';
+export type Workspace = 'corner' | 'vehicle' | 'tests' | 'compare';
 
 /** Forces that can be drawn in the Vehicle view. */
 export const FORCE_KEYS = ['tireVertical', 'tireLateral', 'tireLongitudinal', 'springs', 'shared', 'weights', 'inertia'] as const;
@@ -930,7 +940,45 @@ export const FADE_META: Record<FadeKey, { label: string; quantity: Quantity; uni
   fadeAir: { label: 'Air temperature', quantity: 'temperature', unit: '°C', initial: 20 },
   fadeStartTemp: { label: 'Rotor temperature at the start of a test', quantity: 'temperature', unit: '°C', initial: 50 },
 };
-export interface BrakeSettings extends Record<BrakeKey, Field>, Record<FadeKey, Field> {
+/**
+ * More brake inputs (round 3, R5): drums, the room for the brakes inside the wheel, the detailed
+ * hydraulics (fluid and pedal travel) and the reserve the brake ladder sizes to.
+ */
+export const BRAKE_MORE_KEYS = [
+  'wcBoreF', 'wcBoreR', 'drumRF', 'drumRR', 'brakeFactorF', 'brakeFactorR', 'drumFadeK',
+  'brakeRoom', 'padHeight',
+  'mcStroke', 'maxPedalTravel', 'padClearance', 'shoeClearance', 'complianceF', 'complianceR',
+  'ladderReserve',
+] as const;
+export type BrakeMoreKey = (typeof BRAKE_MORE_KEYS)[number];
+export const BRAKE_MORE_META: Record<BrakeMoreKey, { label: string; quantity: Quantity; unit: string; initial: number; hint?: string }> = {
+  wcBoreF: { label: 'Wheel-cylinder bore, front', quantity: 'length', unit: 'mm', initial: 22.2, hint: 'Drum: the bore of the cylinder that pushes both shoes (3/4" = 19.05, 7/8" = 22.2 mm)' },
+  wcBoreR: { label: 'Wheel-cylinder bore, rear', quantity: 'length', unit: 'mm', initial: 19.05 },
+  drumRF: { label: 'Drum radius (inside), front', quantity: 'length', unit: 'mm', initial: 114.3, hint: 'Half the drum’s inside diameter (9" drum = 114 mm)' },
+  drumRR: { label: 'Drum radius (inside), rear', quantity: 'length', unit: 'mm', initial: 114.3 },
+  brakeFactorF: { label: 'Shoe brake factor, front', quantity: 'ratio', unit: '', initial: 2.2, hint: 'Torque ÷ (wheel-cylinder force × drum radius) for both shoes: leading / trailing ≈ 2–2.5, duo-servo ≈ 3–5 (lining μ ≈ 0.4). A disc’s is 2μ ≈ 0.9' },
+  brakeFactorR: { label: 'Shoe brake factor, rear', quantity: 'ratio', unit: '', initial: 2.2 },
+  drumFadeK: { label: 'Drum fade sensitivity', quantity: 'ratio', unit: '×', initial: 1.8, hint: 'A drum’s brake factor falls faster than its lining μ when hot: factor ∝ μ^k (leading / trailing ≈ 1.5–2, duo-servo ≈ 2.5–3; a disc is 1)' },
+  brakeRoom: { label: 'Room inside the rim for the caliper', quantity: 'length', unit: 'mm', initial: 38, hint: 'Radial room from the rim’s bead seat to the rotor’s outer edge (rim barrel + caliper body). Sets the largest rotor that fits the wheel (a drum gets half of it)' },
+  padHeight: { label: 'Pad height', quantity: 'length', unit: 'mm', initial: 36, hint: 'The effective rotor radius sits half the pad height inside the rotor’s edge' },
+  mcStroke: { label: 'Master-cylinder stroke', quantity: 'length', unit: 'mm', initial: 32, hint: 'A tandem master cylinder’s two chambers share it' },
+  maxPedalTravel: { label: 'Most pedal travel', quantity: 'length', unit: 'mm', initial: 100, hint: 'At the pedal pad, in the hardest stop: more = Long pedal' },
+  padClearance: { label: 'Pad clearance (each pad)', quantity: 'length', unit: 'mm', initial: 0.15, hint: 'How far each pad moves before it clamps (knock-back, run-out): ≈ 0.1–0.3 mm' },
+  shoeClearance: { label: 'Shoe clearance (drums, each shoe)', quantity: 'length', unit: 'mm', initial: 0.4, hint: 'Shoe travel at the wheel cylinder before the lining touches: ≈ 0.25–0.6 mm' },
+  complianceF: { label: 'Circuit swell, front', quantity: 'ratio', unit: 'mm³/MPa', initial: 150, hint: 'Fluid the front circuit takes per MPa (both wheels): hose swell, caliper flex, pad compression. Rubber hoses and floating calipers ≈ 150–300, braided lines and stiff race calipers ≈ 50–100' },
+  complianceR: { label: 'Circuit swell, rear', quantity: 'ratio', unit: 'mm³/MPa', initial: 120 },
+  ladderReserve: { label: 'Brake reserve to keep', quantity: 'ratio', unit: '%', initial: 25, hint: 'The brake ladder picks the smallest brakes that still have this much to spare in the hardest stop of the tests (fade included)' },
+};
+
+export interface BrakeSettings extends Record<BrakeKey, Field>, Record<FadeKey, Field>, Record<BrakeMoreKey, Field> {
+  /** Drum brakes on the front / rear axle (else discs). */
+  drumF: boolean;
+  drumR: boolean;
+  /** Detailed hydraulics: fluid volumes and pedal travel (else the simple pressure-only model). */
+  detail: boolean;
+  /** The brake ladder may switch a drum axle to discs (only with the user's permission). */
+  allowDiscF: boolean;
+  allowDiscR: boolean;
   /** Model the brake hydraulics (off = the brakes are always strong enough). */
   on: boolean;
   /** Model brake fade in tests (with the hydraulics). */
@@ -943,7 +991,32 @@ export interface BrakeSettings extends Record<BrakeKey, Field>, Record<FadeKey, 
 export const defaultBrakes = (): BrakeSettings => ({
   ...(Object.fromEntries(BRAKE_KEYS.map((k) => [k, field(BRAKE_META[k].initial, BRAKE_META[k].quantity)])) as Record<BrakeKey, Field>),
   ...(Object.fromEntries(FADE_KEYS.map((k) => [k, field(FADE_META[k].initial, FADE_META[k].quantity)])) as Record<FadeKey, Field>),
-  on: false, fade: false, dualMc: false, useBias: false,
+  ...(Object.fromEntries(BRAKE_MORE_KEYS.map((k) => [k, field(BRAKE_MORE_META[k].initial, BRAKE_MORE_META[k].quantity)])) as Record<BrakeMoreKey, Field>),
+  on: false, fade: false, dualMc: false, useBias: false, drumF: false, drumR: false, detail: false, allowDiscF: false, allowDiscR: false,
+});
+
+/** Shimmy / death wobble inputs (round 3, R8; docs/MATH.md § Shimmy). */
+export const SHIMMY_KEYS = ['shimStiffness', 'shimDamper', 'swInertia', 'freePlay', 'wornStiffness', 'wornDamper', 'imbalance', 'shimMaxSpeed'] as const;
+export type ShimmyKey = (typeof SHIMMY_KEYS)[number];
+export const SHIMMY_META: Record<ShimmyKey, { label: string; quantity: Quantity; unit: string; initial: number; hint?: string }> = {
+  shimStiffness: { label: 'Steering-system stiffness (at the wheels)', quantity: 'ratio', unit: 'N·m/rad', initial: 30000, hint: 'Torque per radian between the front wheels and the steering wheel (column, rack or box, tie rods, joints), both wheels together. Cars ≈ 20 000–60 000; a worn or long, soft linkage less' },
+  shimDamper: { label: 'Steering damper (at the wheels)', quantity: 'ratio', unit: 'N·m·s/rad', initial: 20, hint: 'A steering damper plus the system\u2019s own friction, as damping of the wheels\u2019 steer. No damper ≈ 10–30; a truck steering damper ≈ 100–300' },
+  swInertia: { label: 'Steering-wheel inertia', quantity: 'ratio', unit: 'kg·m²', initial: 0.04, hint: 'At the steering wheel (≈ 0.03–0.06 for a car\u2019s wheel)' },
+  freePlay: { label: 'Free play when worn (at the wheels)', quantity: 'angle', unit: '°', initial: 1, hint: 'Lash in the steering (joints, rack / box) of worn parts, as the wheels\u2019 steer angle before the steering pushes back' },
+  wornStiffness: { label: 'Worn: stiffness left', quantity: 'ratio', unit: '%', initial: 70, hint: 'Softer bushings and joints of worn parts' },
+  wornDamper: { label: 'Worn: damping left', quantity: 'ratio', unit: '%', initial: 50, hint: 'A tired steering damper' },
+  imbalance: { label: 'Wheel imbalance (at the rim, worn)', quantity: 'ratio', unit: 'g', initial: 40, hint: 'Out-of-balance mass at the rim: it shakes the wheels at their spin frequency in the kick test' },
+  shimMaxSpeed: { label: 'Fastest speed to check', quantity: 'speed', unit: 'm/s', initial: 40 },
+};
+export interface ShimmySettings extends Record<ShimmyKey, Field> {
+  /** Check shimmy in the tests (kick test). */
+  check: boolean;
+  /** The driver's hands lightly on the wheel (else hands off). */
+  handsOn: boolean;
+}
+export const defaultShimmy = (): ShimmySettings => ({
+  ...(Object.fromEntries(SHIMMY_KEYS.map((k) => [k, field(SHIMMY_META[k].initial, SHIMMY_META[k].quantity)])) as Record<ShimmyKey, Field>),
+  check: true, handsOn: true,
 });
 
 /** Towing inputs (docs/MATH.md § Towing). */
@@ -1137,6 +1210,8 @@ export interface DesignState {
   shared: Record<Axle, SharedDesign>;
   /** Locked values (see locks.ts for the key format). The optimizer must work around them. */
   locks: Record<string, true>;
+  /** Locks set by the setup wizard: lock key → the step that set it (a subset of `locks`). */
+  wizardLocks: Record<string, SetupStep>;
   /** Optimizer setup per corner design (keyed by root corner). */
   optimizer: Partial<Record<CornerId, OptimizerSetup>>;
   /** Whole-vehicle optimizer setup. */
@@ -1153,6 +1228,8 @@ export interface DesignState {
   aero: AeroSettings;
   /** Brake hydraulics (off = the brakes are always strong enough). */
   brakes: BrakeSettings;
+  /** Shimmy / death wobble inputs. */
+  shimmy: ShimmySettings;
   /** Towing a trailer (off = no trailer). */
   tow: TowSettings;
   /** Setup wizard: which steps hold the user's own values and which are estimates (results say so). */
@@ -1211,8 +1288,8 @@ export const pickDesign = (s: DesignState): DesignState => ({
   tireModel: s.tireModel, tire: s.tire, volumeChange: s.volumeChange, tireSizeText: s.tireSizeText,
   droop: s.droop, bump: s.bump, driver: s.driver,
   corners: s.corners, links: s.links, settings: s.settings, activeCorner: s.activeCorner,
-  vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode, shared: s.shared, locks: s.locks,
-  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, tireGrip: s.tireGrip, tireFile: s.tireFile, tireFileRear: s.tireFileRear, setupStatus: s.setupStatus, aero: s.aero, brakes: s.brakes, tow: s.tow, dimensions: s.dimensions, tests: s.tests,
+  vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode, shared: s.shared, locks: s.locks, wizardLocks: s.wizardLocks,
+  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, tireGrip: s.tireGrip, tireFile: s.tireFile, tireFileRear: s.tireFileRear, setupStatus: s.setupStatus, aero: s.aero, brakes: s.brakes, shimmy: s.shimmy, tow: s.tow, dimensions: s.dimensions, tests: s.tests,
 });
 
 /** The default layout (File → New). */
@@ -1242,7 +1319,7 @@ export const defaultVehicle = (): Record<VehicleKey, Field> => ({
   rollInertia: field(35, 'ratio'),
   pitchInertia: field(100, 'ratio'),
   yawInertia: field(140, 'ratio'),
-  tireDamping: field(100, 'damping'), relaxation: field(0),
+  tireDamping: field(100, 'damping'), relaxation: field(0), rollingResistance: field(0.012, 'ratio'),
 });
 
 export function defaultDesign(presetId = 'C'): DesignState {
@@ -1289,6 +1366,7 @@ export function defaultDesign(presetId = 'C'): DesignState {
     cornerLoadMode: 'vehicle',
     shared: { front: defaultShared(), rear: defaultShared() },
     locks: {},
+    wizardLocks: {},
     optimizer: {},
     vehicleOptimizer: defaultVehicleOptimizerSetup(),
     grip: defaultGrip(),
@@ -1298,6 +1376,7 @@ export function defaultDesign(presetId = 'C'): DesignState {
     setupStatus: {},
     aero: defaultAero(),
     brakes: defaultBrakes(),
+    shimmy: defaultShimmy(),
     tow: defaultTow(),
     dimensions: [],
     tests: [],
@@ -1324,8 +1403,8 @@ export const useApp = create<AppState>((set, get) => ({
   ghosts: true,
   visibility: {
     chassis: true, uca: true, lca: true, upright: true, tieRod: true, wheel: true, spring: true,
-    patch: true, steeringAxis: true, icConstruction: true, rollCenter: true, ground: true, datum: true, labels: params.get('labels') === '1',
-    dimensions: true, ackermann: true, cg: true, arb: true, markerLabels: true,
+    patch: true, steeringAxis: true, icConstruction: true, rollCenter: true, ground: true, datum: true, labels: params.get('labels') !== '0',
+    dimensions: true, ackermann: true, cg: true, arb: true,
   },
   projection: params.get('projection') === 'perspective' ? 'perspective' : 'orthographic',
   focus: 'corner',
@@ -1391,6 +1470,7 @@ export const useApp = create<AppState>((set, get) => ({
     // A corner that stops following another starts from a copy of the design it was using.
     const corners = { ...before };
     const locks = { ...s.locks };
+    const wizardLocks = { ...s.wizardLocks };
     const optimizer = { ...s.optimizer };
     const dimensions = [...s.dimensions];
     for (const id of CORNER_IDS) {
@@ -1399,26 +1479,46 @@ export const useApp = create<AppState>((set, get) => ({
       if (newRoot === id && oldRoot !== id) {
         corners[id] = before[oldRoot];
         // The new copy starts with the same locks as the design it came from.
-        for (const k of Object.keys(s.locks)) if (k.startsWith(`${oldRoot}.`)) locks[`${id}${k.slice(oldRoot.length)}`] = true;
+        for (const k of Object.keys(s.locks)) {
+          if (!k.startsWith(`${oldRoot}.`)) continue;
+          const nk = `${id}${k.slice(oldRoot.length)}`;
+          locks[nk] = true;
+          if (s.wizardLocks[k]) wizardLocks[nk] = s.wizardLocks[k];
+        }
         // ...and the same optimizer setup.
         if (s.optimizer[oldRoot]) optimizer[id] = structuredClone(s.optimizer[oldRoot]);
         // ...and the same held dimensions.
         for (const d of s.dimensions) if (d.root === oldRoot) dimensions.push({ ...d, id: newDimId(), root: id });
       }
     }
-    set({ links, corners, locks, optimizer, dimensions, ...corners[rootOf(s.activeCorner, links)] });
+    set({ links, corners, locks, wizardLocks, optimizer, dimensions, ...corners[rootOf(s.activeCorner, links)] });
   },
   toggleLock: (key) => {
     const locks = { ...get().locks };
-    if (locks[key]) delete locks[key]; else locks[key] = true;
-    set({ locks });
+    const wizardLocks = { ...get().wizardLocks };
+    if (locks[key]) { delete locks[key]; delete wizardLocks[key]; } else locks[key] = true;
+    set({ locks, wizardLocks });
   },
   setLocks: (keys, locked) => {
     const locks = { ...get().locks };
-    for (const k of keys) { if (locked) locks[k] = true; else delete locks[k]; }
-    set({ locks });
+    const wizardLocks = { ...get().wizardLocks };
+    for (const k of keys) { if (locked) locks[k] = true; else { delete locks[k]; delete wizardLocks[k]; } }
+    set({ locks, wizardLocks });
   },
-  clearLocks: () => set({ locks: {} }),
+  clearLocks: () => set({ locks: {}, wizardLocks: {} }),
+  lockFromWizard: (step, keys) => {
+    const s = get();
+    const locks = { ...s.locks };
+    const wizardLocks = { ...s.wizardLocks };
+    // Re-applying a step replaces what it locked before (e.g. a bar that is now off).
+    for (const [k, st] of Object.entries(s.wizardLocks)) if (st === step) { delete locks[k]; delete wizardLocks[k]; }
+    for (const k of keys) {
+      if (locks[k] && !wizardLocks[k]) continue; // the user's own lock stays theirs
+      locks[k] = true;
+      wizardLocks[k] = step;
+    }
+    set({ locks, wizardLocks });
+  },
   updateOptimizer: (fn) => {
     const s = get();
     const root = rootOf(s.activeCorner, s.links);
@@ -1483,6 +1583,15 @@ export const useApp = create<AppState>((set, get) => ({
     const b = get().brakes;
     set({ brakes: { ...b, [key]: parseField(text, FADE_META[key].quantity, b[key]) } });
   },
+  setShimmyField: (key, text) => {
+    const m = get().shimmy;
+    set({ shimmy: { ...m, [key]: parseField(text, SHIMMY_META[key].quantity, m[key]) } });
+  },
+  setShimmy: (patch) => set({ shimmy: { ...get().shimmy, ...patch } }),
+  setBrakeMoreField: (key, text) => {
+    const b = get().brakes;
+    set({ brakes: { ...b, [key]: parseField(text, BRAKE_MORE_META[key].quantity, b[key]) } });
+  },
   setTowField: (key, text) => {
     const t = get().tow;
     set({ tow: { ...t, [key]: parseField(text, TOW_META[key].quantity, t[key]) } });
@@ -1491,6 +1600,14 @@ export const useApp = create<AppState>((set, get) => ({
   setSetupStatus: (step, status) => {
     const cur = { ...get().setupStatus };
     if (status) cur[step] = status; else delete cur[step];
+    // An estimate (or clearing the step) frees what the step had locked.
+    if (status !== 'entered') {
+      const locks = { ...get().locks };
+      const wizardLocks = { ...get().wizardLocks };
+      for (const [k, st] of Object.entries(wizardLocks)) if (st === step) { delete locks[k]; delete wizardLocks[k]; }
+      set({ setupStatus: cur, locks, wizardLocks });
+      return;
+    }
     set({ setupStatus: cur });
   },
   setTireScale: (key, value, axle = 'front') => {

@@ -10,6 +10,7 @@ import { useApp, AERO_KEYS, AERO_META } from '../store';
 import { aeroOf } from '../optimizer';
 import { FieldRows, fmt } from './FieldRows';
 import { useDisplay } from '../units';
+import { Local, Val } from './UnitText';
 
 /** Load aero characteristics (File → Import → Aero data, or the Aero panel). */
 export async function importAeroFile(file: File) {
@@ -47,7 +48,7 @@ export function AeroPanel() {
         <>
           <p className="hint">
             <b>{aero.file.name}</b>: {aero.file.map ? `map over ${aero.file.map.rhFront.length} front × ${aero.file.map.rhRear.length} rear ride heights (${aero.file.rideHeightRef === 'change' ? 'change from design' : 'absolute'}, mm)` : 'constant coefficients'}
-            {' '}· drag at {fmt(aero.file.dragHeight, 0)} mm. Saved in your project.
+            {' '}· drag at <Val v={aero.file.dragHeight} unit="mm" digits={0} />. Saved in your project.
           </p>
           <FieldRows rows={(['altitude', 'temperature'] as const).map((k) => ({ label: AERO_META[k].label, field: aero[k], unit: AERO_META[k].unit, hint: AERO_META[k].hint, onCommit: (t: string) => setField(k, t) }))} />
           <div className="jm-row"><button className="chip" onClick={() => setAero({ file: null })}>Remove the file (generic values)</button></div>

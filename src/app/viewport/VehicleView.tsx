@@ -22,6 +22,7 @@ import { SafeHtml as Html } from './SafeHtml';
 import { pointAxisLocked } from '../locks';
 import type { VehicleModel, VehicleCornerView, AckermannAxle } from '../useVehicle';
 import { CameraRig, DevProjectBridge, ViewButtons, useMiddleDoubleClick, type FocusTarget } from './Viewport';
+import { FadeRoot } from './viewFade';
 import { COLORS, CustomDrawing } from './Scene';
 import { Joint, Seg, Polyline, Tri, Wheel, PatchMesh, Coilover, Arrow } from './primitives';
 
@@ -180,7 +181,8 @@ function ForceArrows({ arrows }: { arrows: ForceArrow[] }) {
   );
 }
 
-function VehicleScene({ model, arrows }: { model: VehicleModel; arrows: ForceArrow[] }) {
+/** The car (and its forces, markers). `ground`: its own ground grid (off when it sits on a course). */
+export function VehicleScene({ model, arrows, ground = true }: { model: VehicleModel; arrows: ForceArrow[]; ground?: boolean }) {
   const setActiveCorner = useApp((s) => s.setActiveCorner);
   const activeCorner = useApp((s) => s.activeCorner);
   const vis = useApp((s) => s.visibility);
@@ -197,7 +199,8 @@ function VehicleScene({ model, arrows }: { model: VehicleModel; arrows: ForceArr
     <group>
       <ambientLight intensity={0.8} />
       <directionalLight position={[1500, 2500, 2000]} intensity={1.2} />
-      {vis.ground && (
+      {/* Its own ground grid (off when the car sits on a course: the road is the ground there). */}
+      {vis.ground && ground && (
         <Grid
           position={[0, model.groundY, -model.wheelbase / 2]} args={[8000, 8000]} cellSize={50} sectionSize={250}
           cellColor={COLORS.ground} sectionColor="#566075" fadeDistance={12000} infiniteGrid
@@ -565,7 +568,8 @@ function overlayLabels(model: VehicleModel | null, arrows: ForceArrow[], showVal
   const P = poseFns(model.result.pose);
   const L = model.wheelbase;
   const mark = (key: string, text: string, pos: Vec3) => out.push({ key, text, pos, className: 'cg' });
-  if (vis.markerLabels) {
+  // Labels: one switch, and each label only with its item.
+  if (vis.labels) {
     if (vis.cg && model.sprungCgWorld) mark('cg', 'CG (sprung)', model.sprungCgWorld);
     const rcF = model.rollCenters.front, rcR = model.rollCenters.rear;
     if (vis.rollCenter && rcF && rcR) {
@@ -590,8 +594,8 @@ function overlayLabels(model: VehicleModel | null, arrows: ForceArrow[], showVal
   const v = model.corners[active];
   if (vis.labels && v && v.state.kind !== 'custom') {
     const pl = placement(active, L), p = v.state.points;
-    if (v.state.kind !== 'macpherson') mark('ubj', `${active} upper ball joint`, P.point(pl.point(p.ucaOut)));
-    mark('lbj', `${active} lower ball joint`, P.point(pl.point(p.lcaOut)));
+    if (v.state.kind !== 'macpherson' && (vis.uca || vis.upright)) mark('ubj', `${active} upper ball joint`, P.point(pl.point(p.ucaOut)));
+    if (vis.lca || vis.upright) mark('lbj', `${active} lower ball joint`, P.point(pl.point(p.lcaOut)));
   }
   return out;
 }
@@ -653,7 +657,36 @@ function vehicleTarget(model: VehicleModel | null): FocusTarget {
   return { center: vec3(s.center.x, s.center.y, s.center.z), radius: s.radius };
 }
 
-export function VehicleViewport({ model }: { model: VehicleModel | null }) {
+/**
+ * Another design's car drawn see-through over this one (Compare, R9): its own scene, every material made a
+ * tinted, see-through copy (checked each frame, so parts rebuilt since are caught too). Not pickable.
+ */
+const GHOST = new THREE.Color('#ffb703');
+export function GhostScene({ model }: { model: VehicleModel }) {
+  const group = useRef<THREE.Group>(null);
+  useFrame(() => {
+    group.current?.traverse((o) => {
+      const obj = o as THREE.Object3D & { material?: THREE.Material | THREE.Material[] };
+      if (!obj.material || obj.userData.ghostOf === obj.material) return;
+      // The part got a new material since: drop the old see-through copy.
+      const old = obj.userData.ghostOf as THREE.Material | THREE.Material[] | undefined;
+      if (old) (Array.isArray(old) ? old : [old]).forEach((m) => m.dispose());
+      const ghost = (m: THREE.Material) => {
+        const g = m.clone() as THREE.Material & { color?: THREE.Color };
+        g.transparent = true; g.opacity = 0.35; g.depthWrite = false;
+        if (g.color) g.color.lerp(GHOST, 0.6);
+        return g;
+      };
+      obj.material = Array.isArray(obj.material) ? obj.material.map(ghost) : ghost(obj.material);
+      obj.userData.ghostOf = obj.material;
+      obj.raycast = () => {};
+    });
+  }, -1);
+  return <group ref={group}><VehicleScene model={model} arrows={[]} ground={false} /></group>;
+}
+
+/** `ghost` (Compare): another design's car, drawn see-through over this one. */
+export function VehicleViewport({ model, memoryKey = 'vehicle', active = true, ghost }: { model: VehicleModel | null; memoryKey?: string; active?: boolean; ghost?: VehicleModel | null }) {
   const projection = useApp((s) => s.projection);
   const bg = useMemo(() => getComputedStyle(document.documentElement).getPropertyValue('--viewport-bg').trim() || '#16191e', []);
   const target = vehicleTarget(model);
@@ -662,24 +695,26 @@ export function VehicleViewport({ model }: { model: VehicleModel | null }) {
   const showValues = useApp((s) => s.forceValues);
   const arrows = useMemo(() => forceList(model ?? ({} as VehicleModel)).filter((a) => vis[a.kind]), [model, vis]);
   const visAll = useApp((s) => s.visibility);
-  const active = useApp((s) => s.activeCorner);
-  const labels = useMemo(() => overlayLabels(model, arrows, showValues, k, visAll, active), [model, arrows, showValues, k, visAll, active]);
+  const activeCorner = useApp((s) => s.activeCorner);
+  const labels = useMemo(() => overlayLabels(model, arrows, showValues, k, visAll, activeCorner), [model, arrows, showValues, k, visAll, activeCorner]);
   const layer = useRef<HTMLDivElement>(null);
   const onMiddle = useMiddleDoubleClick();
   // Force labels are written in N; show them in the display force unit.
   const disp = useDisplay();
-  const forceText = (t: string) => t.replace(/(-?\d+(?:\.\d+)?) N\b/g, (_, n: string) => disp.format(Number(n), 'N', 0));
+  const forceText = (t: string) => disp.local(t);
   return (
     <div className="viewport" onMouseDown={onMiddle}>
-      <Canvas key={projection} dpr={[1, 2]} style={{ position: 'absolute', inset: 0 }}
+      <Canvas key={projection} dpr={[1, 2]} style={{ position: 'absolute', inset: 0 }} frameloop={active ? 'always' : 'never'}
         onPointerMissed={(e) => { const s = useApp.getState(); if (e.type === 'click' && !s.measureMode) s.select(null); }}>
         <color attach="background" args={[bg]} />
         {projection === 'orthographic'
           ? <OrthographicCamera makeDefault position={[0, 300, 8000]} zoom={0.3} near={1} far={200000} />
           : <PerspectiveCamera makeDefault position={[0, 300, 6000]} fov={30} near={1} far={200000} />}
-        <CameraRig target={target} />
+        <CameraRig target={target} memoryKey={memoryKey} fallbackKey={memoryKey === 'vehicle' ? 'testsStatic' : 'vehicle'} active={active} />
+        <FadeRoot viewKey={memoryKey} />
         <DevProjectBridge />
         {model && <VehicleScene model={model} arrows={arrows} />}
+        {ghost?.result && <GhostScene model={ghost} />}
         <LabelSync labels={labels} layer={layer} />
       </Canvas>
       <div className="label-layer" ref={layer}>
@@ -688,7 +723,7 @@ export function VehicleViewport({ model }: { model: VehicleModel | null }) {
       <ViewButtons />
       <ForceToggles />
       <div className="viewport-hint">Click a joint to move it (linked corners move mirrored) · 📏 Measure between any points · double-click a corner to edit it in the Corner view · arrows start where each force acts</div>
-      {model?.error && <div className="viewport-error">{model.error}</div>}
+      {model?.error && <div className="viewport-error">{disp.local(model.error)}</div>}
     </div>
   );
 }

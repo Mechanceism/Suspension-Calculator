@@ -15,8 +15,10 @@ function niceRange(lo: number, hi: number): [number, number] {
   return [lo - pad, hi + pad];
 }
 
-function Chart({ title, unit: baseUnit, data: raw, current: rawCurrent, digits: baseDigits = 2, xUnit: baseX = 'mm' }: {
+function Chart({ title, unit: baseUnit, data: raw, current: rawCurrent, digits: baseDigits = 2, xUnit: baseX = 'mm', other: rawOther }: {
   title: string; unit: string; data: { x: number; y: number }[]; current: { x: number; y: number } | null; digits?: number; xUnit?: string;
+  /** Compare: the other design's curve, drawn dashed over this one (both in the same scale). */
+  other?: { x: number; y: number }[];
 }) {
   // Display units (Units menu): convert both axes.
   const disp = useDisplay();
@@ -28,14 +30,16 @@ function Chart({ title, unit: baseUnit, data: raw, current: rawCurrent, digits: 
   const data = raw.map((d) => ({ x: toDisplay(d.x, cx), y: toDisplay(d.y, cy) }));
   const current = rawCurrent ? { x: toDisplay(rawCurrent.x, cx), y: toDisplay(rawCurrent.y, cy) } : null;
   const pts = data.filter((d) => Number.isFinite(d.y));
-  if (pts.length < 2) return null;
-  const xs = pts.map((d) => d.x);
-  const ys = pts.map((d) => d.y);
+  const opts = (rawOther ?? []).map((d) => ({ x: toDisplay(d.x, cx), y: toDisplay(d.y, cy) })).filter((d) => Number.isFinite(d.y));
+  if (pts.length < 2 && opts.length < 2) return null;
+  const xs = [...pts, ...opts].map((d) => d.x);
+  const ys = [...pts, ...opts].map((d) => d.y);
   const [x0, x1] = [Math.min(...xs), Math.max(...xs)];
   const [y0, y1] = niceRange(Math.min(...ys), Math.max(...ys));
   const sx = (x: number) => PAD.l + ((x - x0) / (x1 - x0)) * (W - PAD.l - PAD.r);
   const sy = (y: number) => H - PAD.b - ((y - y0) / (y1 - y0)) * (H - PAD.t - PAD.b);
-  const path = pts.map((d, i) => `${i ? 'L' : 'M'}${sx(d.x).toFixed(1)},${sy(d.y).toFixed(1)}`).join('');
+  const line = (ps: { x: number; y: number }[]) => ps.map((d, i) => `${i ? 'L' : 'M'}${sx(d.x).toFixed(1)},${sy(d.y).toFixed(1)}`).join('');
+  const path = line(pts);
   const zeroY = y0 < 0 && y1 > 0 ? sy(0) : null;
   return (
     <figure className="chart">
@@ -51,7 +55,8 @@ function Chart({ title, unit: baseUnit, data: raw, current: rawCurrent, digits: 
         <text className="tick" x={PAD.l - 4} y={sy(y0)} textAnchor="end">{y0.toFixed(digits)}</text>
         <text className="tick" x={PAD.l} y={H - 6} textAnchor="start">{x0.toFixed(digitsFor(0, cx))}</text>
         <text className="tick" x={W - PAD.r} y={H - 6} textAnchor="end">{x1.toFixed(digitsFor(0, cx))} {xUnit}</text>
-        <path className="series" d={path} />
+        {pts.length > 1 && <path className="series" d={path} />}
+        {opts.length > 1 && <path className="series other" d={line(opts)} />}
         {current && Number.isFinite(current.y) && (
           <>
             <line className="cursor" x1={sx(current.x)} x2={sx(current.x)} y1={PAD.t} y2={H - PAD.b} />
@@ -65,11 +70,15 @@ function Chart({ title, unit: baseUnit, data: raw, current: rawCurrent, digits: 
 
 type Getter = (s: Sample) => number;
 
-export function Plots({ model }: { model: Model }) {
+/** `other` (Compare): the snapshot's corner, its curves drawn dashed over the current design's. */
+export function Plots({ model, other }: { model: Model; other?: Model }) {
   const travel = useApp((s) => s.travel);
   const cur = model.current;
   const base = model.sweep.reduce<Sample | null>((b, q) => (!b || Math.abs(q.travel) < Math.abs(b.travel) ? q : b), null);
   const baseTrack = base?.chars.halfTrack ?? 0;
+  const otherBase = other?.sweep.reduce<Sample | null>((b, q) => (!b || Math.abs(q.travel) < Math.abs(b.travel) ? q : b), null);
+  // Half-track change is from each design's own static half track.
+  const otherOf = (get: Getter, title: string) => other?.sweep.map((q) => ({ x: q.travel, y: title === 'Half track change' ? q.chars.halfTrack - (otherBase?.chars.halfTrack ?? 0) : get(q) }));
   const series: { title: string; unit: string; get: Getter; digits?: number }[] = [
     { title: 'Camber', unit: '°', get: (s) => deg(s.chars.camber), digits: 3 },
     { title: 'Toe (bump steer)', unit: '°', get: (s) => deg(s.chars.toe), digits: 3 },
@@ -106,13 +115,14 @@ export function Plots({ model }: { model: Model }) {
   const ns = nearestSteer(sw);
   return (
     <section className="panel">
-      <h2>Curves</h2>
+      <h2>Curves{other && <span className="muted small-text"> — current · <span className="dash-key">- - -</span> snapshot</span>}</h2>
       <Section title="Through travel">
         {series.map((s) => (
           <Chart
             key={s.title} title={s.title} unit={s.unit} digits={s.digits}
             data={model.sweep.map((q) => ({ x: q.travel, y: s.get(q) }))}
             current={cur ? { x: curTravel, y: s.get(cur) } : null}
+            other={otherOf(s.get, s.title)}
           />
         ))}
       </Section>
@@ -122,6 +132,7 @@ export function Plots({ model }: { model: Model }) {
             <Chart
               key={s.title} title={s.title} unit={s.unit} digits={s.digits} xUnit="° sw"
               data={model.steerSweep.map((q) => ({ x: q.steeringWheelAngle, y: s.get(q) }))}
+              other={other?.steerSweep.map((q) => ({ x: q.steeringWheelAngle, y: s.get(q) }))}
               current={ns ? { x: sw, y: s.now ?? s.get(ns) } : null}
             />
           ))}

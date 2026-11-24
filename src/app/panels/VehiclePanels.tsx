@@ -1,9 +1,15 @@
+import { vehicleResultRows } from '../resultRows';
 import { steeringWheelAngle, inputForWheelAngle } from '../../core/tests/steer';
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { Num, UnitLabel } from './UnitText';
 import { openWizard, EstimatedNote } from './SetupWizard';
 import { AeroPanel } from './AeroPanel';
-import { brakesOf } from '../optimizer';
+import { brakesOf, buildVehicleProblem } from '../optimizer';
+import { shimmyReport, shimmyKicks } from '../../core/optimize/shimmyOf';
+import type { ShimmyScan } from '../../core/vehicle/shimmy';
+import { maxRotor, fitsWheel, pedalTravel, brakeFixes, pedalFixes } from '../../core/vehicle/brakes';
+import { hardestUse } from '../brakeLadder';
+import { useRun } from './TestsPanels';
 import { useConversion, toDisplay, fromDisplay, useDisplay } from '../units';
 import type { GripSummary, SlipState } from '../../core/vehicle/vehicle';
 import { LocksPanel } from './LocksPanel';
@@ -14,12 +20,13 @@ import { isOneAxle, SUSPENSION_LABELS } from '../../core/suspension/doubleWishbo
 import { angleInput, ratioSpecOf,
   useApp, VEHICLE_KEYS, VEHICLE_META, CORNER_NAMES, SHARED_META, rootOf, resolvedCorner, canSteer,
   type CornerLinks, type DiffType, type Axle, type SharedDesign,
-  BRAKE_KEYS, BRAKE_META, FADE_KEYS, FADE_META, TOW_KEYS, TOW_META,
+  BRAKE_KEYS, BRAKE_META, FADE_KEYS, FADE_META, BRAKE_MORE_META, type BrakeMoreKey, SHIMMY_KEYS, SHIMMY_META, TOW_KEYS, TOW_META,
 } from '../store';
 import type { BrakeMount } from '../../core/vehicle/vehicle';
 import { ValueInput } from './ValueInput';
 import type { VehicleModel } from '../useVehicle';
 import { FieldRows, Section, fmt } from './FieldRows';
+import { Local, Val } from './UnitText';
 
 const G = 9.80665;
 
@@ -183,6 +190,9 @@ export function VehicleInputs({ model }: { model: VehicleModel | null }) {
       <Section title="Brake system" open={false} extra={<span className="muted small-text">{useApp.getState().brakes.on ? 'hydraulics' : 'off'}</span>}>
         <BrakePanel />
       </Section>
+      <Section title="Shimmy / death wobble" open={false}>
+        <ShimmyPanel />
+      </Section>
       <Section title="Static corner weights (from CG)">
         {loads && (
           <>
@@ -280,7 +290,8 @@ export function VehicleResults({ model }: { model: VehicleModel | null }) {
   const r = model?.result;
   if (!model || !r) return <section className="panel"><h2>Vehicle results</h2><p className="muted">{model?.error ?? 'Solving…'}</p></section>;
   const corners = CORNER_IDS.map((id) => ({ id, c: r.corners[id], v: model.corners[id], s: model.staticLoads[id] }));
-  const t = model.transfer;
+  // The rows (shared with the Compare tab).
+  const shared = vehicleResultRows(model);
   return (
     <section className="panel">
       <h2>
@@ -289,65 +300,14 @@ export function VehicleResults({ model }: { model: VehicleModel | null }) {
       </h2>
       <EstimatedNote />
       {r.grip && <GripSection grip={r.grip} />}
-      {r.aero && (
-        <Section title="Aero">
-          <FieldRows rows={[
-            { label: 'Drag', value: fmt(r.aero.drag, 0), unit: 'N', hint: 'On the body, rearward; the driven tires push against it' },
-            { label: 'Downforce, front axle', value: fmt(-r.aero.liftF, 0), unit: 'N', hint: '− = lift' },
-            { label: 'Downforce, rear axle', value: fmt(-r.aero.liftR, 0), unit: 'N' },
-            { label: 'Aero balance (front share)', value: Math.abs(r.aero.liftF + r.aero.liftR) > 1e-6 ? fmt((r.aero.liftF / (r.aero.liftF + r.aero.liftR)) * 100, 1) : '—', unit: '%', hint: 'Moves with ride height (maps), roll (roll sensitivity) and, over time, sideslip' },
-            { label: 'Center of pressure, behind the front axle', value: Math.abs(r.aero.liftF + r.aero.liftR) > 1e-6 ? fmt((r.aero.liftR / (r.aero.liftF + r.aero.liftR)) * model.wheelbase, 0) : '—', unit: 'mm', hint: 'Where the downforce acts along the car' },
-          ]} />
-        </Section>
-      )}
-      <Section title="Body">
-        <FieldRows rows={[
-          { label: 'Roll', value: fmt(deg(r.pose.roll), 3), unit: '°', hint: '+ = top leans toward −X (right)' },
-          { label: 'Pitch', value: fmt(deg(r.pose.pitch), 3), unit: '°', hint: '+ = nose down' },
-          { label: 'Heave', value: fmt(r.pose.heave, 2), unit: 'mm', hint: 'chassis rise from design' },
-          { label: 'Ride height, front axle', value: fmt(model.rideHeight.front, 1), unit: 'mm', hint: 'frame bottom to ground' },
-          { label: 'Ride height, rear axle', value: fmt(model.rideHeight.rear, 1), unit: 'mm' },
-          { label: 'Roll center height, front', value: fmt(model.rollCenters.front?.h, 1), unit: 'mm', hint: 'from the actual left/right corners' },
-          { label: 'Roll center height, rear', value: fmt(model.rollCenters.rear?.h, 1), unit: 'mm' },
-          { label: 'Roll center lateral, front', value: fmt(model.rollCenters.front?.x, 1), unit: 'mm', hint: '+ = left of centerline' },
-          { label: 'Rollover threshold (rigid)', value: fmt(model.rolloverG, 2), unit: 'g', hint: 'half track ÷ CG height' },
-          ...model.ackermannLines.map((a) => ({
-            label: `Ackermann lines cross, ${a.axle}`, unit: 'mm',
-            value: a.lines.length < 2 ? 'one steered wheel' : !a.cross ? 'parallel' : fmt(a.axle === 'front' ? a.cross.z - a.target.z : a.target.z - a.cross.z, 0),
-            hint: `Top view: lines from each steered wheel's steering axis through its steering arm's outer joint (View → Ackermann lines). Distance of their crossing past (+) or short of (−) the ${a.target.label.toLowerCase()}, where classic 100 % Ackermann puts it. Parallel = parallel steer. Drag the crossing or a line's handle in the Vehicle view to move the outer tie-rod joints. A rule for near straight ahead: Ackermann % in the Corner view shows what the linkage really does.`,
-          })),
-        ]} />
-      </Section>
-      <Section title="Lateral load transfer">
-        <FieldRows rows={[
-          { label: 'Front total', value: fmt(t.front.total, 0), unit: 'N', hint: '+ = outside tire gains load' },
-          { label: 'Front, through links (roll center)', value: fmt(t.front.geometric, 0), unit: 'N' },
-          { label: 'Front, through springs (body roll)', value: fmt(t.front.elastic, 0), unit: 'N' },
-          { label: 'Rear total', value: fmt(t.rear.total, 0), unit: 'N' },
-          { label: 'Rear, through links (roll center)', value: fmt(t.rear.geometric, 0), unit: 'N' },
-          { label: 'Rear, through springs (body roll)', value: fmt(t.rear.elastic, 0), unit: 'N' },
-          { label: 'Front share (LLTD)', value: Math.abs(t.front.total + t.rear.total) < 1 ? '—' : fmt(100 * t.lltdFront, 1), unit: '%', hint: 'Front axle share of the total lateral load transfer' },
-          { label: 'Roll stiffness, front', value: fmt(model.rollStiffness.front, 0), unit: 'N·m/°', hint: 'Load moved through the springs (springs, anti-roll bar, heave spring) × track ÷ body roll, at this cornering. — without cornering' },
-          { label: 'Roll stiffness, rear', value: fmt(model.rollStiffness.rear, 0), unit: 'N·m/°' },
-          { label: 'Roll stiffness, front share', value: fmt(100 * model.rollStiffness.front / (model.rollStiffness.front + model.rollStiffness.rear), 1), unit: '%' },
-          { label: 'Roll gradient', value: fmt(model.rollGradient, 2), unit: '°/g', hint: 'Body roll per g of cornering (this state)' },
-        ]} />
-      </Section>
-      <Section title="Braking & acceleration">
-        <FieldRows rows={[
-          { label: 'Load moved onto the front axle', value: fmt(model.frontLoadGain, 0), unit: 'N', hint: 'Front axle load minus its static load (negative = moved to the rear)' },
-          ...(r.hitch ? [
-            { label: 'Hitch: tongue load (down on the car)', value: fmt(-r.hitch.force.y, 0), unit: 'N', hint: 'Static tongue weight plus the load shift from braking / accelerating' },
-            { label: 'Hitch: trailer push (+) / pull (−)', value: fmt(r.hitch.force.z, 0), unit: 'N', hint: 'Along the car: + pushes it forward (braking without trailer brakes)' },
-            { label: 'Hitch: side force on the car', value: fmt(r.hitch.force.x, 0), unit: 'N', hint: '+ = toward the left; cornering, the trailer pulls the hitch outward' },
-          ] : []),
-          ...(r.brakePedal ? [{ label: 'Pedal force this braking needs', value: `${fmt(r.brakePedal.needed, 0)} of ${fmt(r.brakePedal.max, 0)}`, unit: 'N', hint: 'Brake hydraulics: more than the most = the brakes are too weak for this braking' }] : []),
-          { label: 'Anti-dive, braking (front)', value: fmt(model.antiDive, 1), unit: '%', hint: 'tan θ · (wheelbase / CG height) · front brake share; θ from the side-view IC (contact patch for outboard brakes, wheel center for inboard)' },
-          { label: 'Anti-lift, braking (rear)', value: fmt(model.antiLift, 1), unit: '%' },
-          { label: 'Anti-squat, accelerating (rear)', value: fmt(model.antiSquat, 1), unit: '%', hint: 'Powered rear corners: θ from the wheel center (chassis diff) or contact patch (hub motor), × rear drive share' },
-          { label: 'Anti-lift, accelerating (front)', value: fmt(model.antiLiftAccel, 1), unit: '%', hint: 'Powered front corners' },
-        ]} />
-      </Section>
+      {(['Aero', 'Body', 'Lateral load transfer', 'Braking & acceleration'] as const).map((g) => {
+        const rows = shared.filter((x) => x.group === g);
+        return rows.length ? (
+          <Section key={g} title={g}>
+            <FieldRows rows={rows.map((x) => ({ label: x.label, unit: x.unit, hint: x.hint, value: x.text ?? (x.of !== undefined ? `${fmt(x.value, x.digits)} of ${fmt(x.of, x.digits)}` : fmt(x.value, x.digits)) }))} />
+          </Section>
+        ) : null;
+      })}
       <Section title="Corners">
         <table className="corner-table">
           <thead><tr><th /><th>Load <UnitLabel unit="N" /></th><th>Δ static</th><th title="Longitudinal tire force: − braking, + drive">Long. <UnitLabel unit="N" /></th><th>Travel <UnitLabel unit="mm" /></th><th>Incl. °</th><th>Toe °</th></tr></thead>
@@ -500,8 +460,19 @@ function BrakePanel() {
   const disp = useDisplay();
   const st = useApp.getState();
   const brk = brakesOf(st);
-  const keys = BRAKE_KEYS.filter((k) => b.dualMc || k !== 'balanceFront');
+  const setMore = useApp((s) => s.setBrakeMoreField);
+  const results = useRun((r) => r.results);
+  // Disc fields only on a disc axle; a drum axle shows its own (wheel cylinder, drum, shoe factor).
+  const DISC_F: string[] = ['pistonDiaF', 'pistonsF', 'padMuF', 'rotorRF'], DISC_R: string[] = ['pistonDiaR', 'pistonsR', 'padMuR', 'rotorRR'];
+  const keys = BRAKE_KEYS.filter((k) => (b.dualMc || k !== 'balanceFront') && !(b.drumF && DISC_F.includes(k)) && !(b.drumR && DISC_R.includes(k)));
+  const moreKeys = (ks: BrakeMoreKey[]) => ks.map((k) => ({ label: BRAKE_MORE_META[k].label, field: b[k], unit: BRAKE_MORE_META[k].unit, hint: BRAKE_MORE_META[k].hint, onCommit: (t: string) => setMore(k, t) }));
+  const drumKeys: BrakeMoreKey[] = [...(b.drumF ? ['wcBoreF', 'drumRF', 'brakeFactorF'] as const : []), ...(b.drumR ? ['wcBoreR', 'drumRR', 'brakeFactorR'] as const : [])];
   const mass = st.vehicle.mass.value;
+  // Fit in the wheel, the pedal (detailed hydraulics) and what the last test runs asked of the brakes.
+  const fit = brk ? (['front', 'rear'] as const).map((a) => ({ a, m: maxRotor(brk.room[a]), ok: fitsWheel(brk.system[a], brk.room[a]), drum: brk.system[a].kind === 'drum' })) : [];
+  const full = brk?.detail ? pedalTravel(brk.system, brk.detail, 1) : null;
+  const use = hardestUse(Object.values(results).map((e) => e.result));
+  const worst = use ? Math.max(use.front, use.rear) : 0;
   return (
     <>
       <div className="jm-row" title="Off: the brakes can always make the braking asked (only grip limits it). On: from the pedal through the master cylinders, calipers and rotors, the braking is limited to what they make at the most pedal force.">
@@ -511,7 +482,35 @@ function BrakePanel() {
       {b.on && (
         <>
           <label className="check-row"><input type="checkbox" checked={b.dualMc} onChange={(e) => setB({ dualMc: e.target.checked })} /> Two master cylinders on a balance bar (else one tandem master cylinder)</label>
+          <div className="jm-row" title="Disc: a caliper clamps a rotor. Drum: a wheel cylinder pushes two shoes out into a drum; the shoes wrap into it (more torque per pressure) and fade sooner.">
+            {(['F', 'R'] as const).map((x) => (
+              <label key={x} className="check-label">{x === 'F' ? 'Front' : 'Rear'}{' '}
+                <select value={(x === 'F' ? b.drumF : b.drumR) ? 'drum' : 'disc'} onChange={(e) => setB(x === 'F' ? { drumF: e.target.value === 'drum' } : { drumR: e.target.value === 'drum' })}>
+                  <option value="disc">Disc</option><option value="drum">Drum</option>
+                </select>
+              </label>
+            ))}
+          </div>
           <FieldRows rows={keys.map((k) => ({ label: BRAKE_META[k].label, field: b[k], unit: BRAKE_META[k].unit, hint: BRAKE_META[k].hint, onCommit: (t: string) => setF(k, t) }))} />
+          {drumKeys.length > 0 && <FieldRows rows={moreKeys(drumKeys)} />}
+          <FieldRows rows={moreKeys(['brakeRoom', 'padHeight'])} />
+          {fit.map(({ a, m, ok, drum }) => (
+            <p key={a} className={`small-text ${ok ? 'muted' : 'bad-text'}`} title="From the rim diameter, the room for the caliper and the pad height">
+              {a === 'front' ? 'Front' : 'Rear'} wheel fits <Local text={drum ? `a drum up to ${fmt(m.drumRadius, 0)} mm radius` : `a rotor up to ${fmt(m.diameter, 0)} mm (effective radius ${fmt(m.effectiveRadius, 0)} mm)`} />{ok ? '' : ': the brake is larger than fits!'}
+            </p>
+          ))}
+          <div className="jm-row" title="Simple: pressure and force only. Detailed: also the fluid the master cylinder pushes, so the pedal travel and the master cylinder's stroke (Long pedal, Master cylinder runs out in the tests).">
+            <span className="muted">Hydraulics</span>
+            <button className={`chip${!b.detail ? ' on' : ''}`} onClick={() => setB({ detail: false })}>Simple</button>
+            <button className={`chip${b.detail ? ' on' : ''}`} onClick={() => setB({ detail: true })}>Detailed (pedal travel)</button>
+          </div>
+          {b.detail && <FieldRows rows={moreKeys(['mcStroke', 'maxPedalTravel', 'padClearance', ...(b.drumF || b.drumR ? ['shoeClearance' as const] : []), 'complianceF', 'complianceR'])} />}
+          {full && (
+            <FieldRows rows={[
+              { label: 'Pedal travel at the most pedal force', value: fmt(full.pedal, 0), unit: 'mm', hint: 'Pads closing their clearance plus the circuits swelling at full pressure, through the master cylinders and the pedal ratio' },
+              { label: 'Master-cylinder stroke used', value: fmt(full.strokeUse * 100, 0), unit: '%' },
+            ]} />
+          )}
           <label className="check-row" title="Use the front / rear split the hydraulics make as the brake bias (instead of the Brake bias input)"><input type="checkbox" checked={b.useBias} onChange={(e) => setB({ useBias: e.target.checked })} /> Brake bias from the hydraulics</label>
           {brk && (
             <FieldRows rows={[
@@ -522,9 +521,64 @@ function BrakePanel() {
               { label: 'Hydraulic bias (front share)', value: fmt(brk.capacity.bias * 100, 1), unit: '%' },
             ]} />
           )}
+          {use && (
+            <div className="small-text" title="From the last run of each test (Tests workspace): the hardest stop's braking divided by what the (faded) brakes make at the most pedal force">
+              <p className={worst > 1 ? 'bad-text' : 'muted'}>Last test runs: the hardest stop needs {fmt(use.front * 100, 0)} % of the front brakes, {fmt(use.rear * 100, 0)} % of the rear{worst > 1 ? ': too weak.' : '.'}</p>
+              {worst > 1 && brk && (
+                <>
+                  <p className="muted">What would fix it (any one of these, per axle):</p>
+                  <ul className="fix-list">
+                    {(['front', 'rear'] as const).filter((a) => use[a] > 1).flatMap((a) => brakeFixes(brk.system[a], use[a], brk.room[a]).map((f) => (
+                      <li key={`${a}${f.what}`} className={f.fits ? '' : 'muted'}>{a === 'front' ? 'Front' : 'Rear'} {f.what.toLowerCase()}: {fmt(f.now, 2)} → {fmt(f.needed, 2)} {f.unit}{f.fits ? '' : ' (does not fit / not available)'}</li>
+                    )))}
+                    {pedalFixes(brk.system, worst).map((f) => <li key={f.what} className={f.fits ? '' : 'muted'}>{f.what}: {fmt(f.now, 2)} → {fmt(f.needed, 2)} {f.unit}{f.fits ? '' : ' (beyond the usual)'}</li>)}
+                  </ul>
+                  <p className="muted">Or let the brake ladder pick sizes: Tests → Optimize → Brakes (step ladder).</p>
+                </>
+              )}
+            </div>
+          )}
           <label className="check-row" title="Tests heat the rotors with every stop (and cool them with the air); hot pads lose grip, so a long or repeated stop can need more pedal force than the driver has."><input type="checkbox" checked={b.fade} onChange={(e) => setB({ fade: e.target.checked })} /> Brake fade in tests (rotors heat up, pads lose grip when hot)</label>
           {b.fade && <FieldRows rows={FADE_KEYS.map((k) => ({ label: FADE_META[k].label, field: b[k], unit: FADE_META[k].unit, hint: FADE_META[k].hint, onCommit: (t: string) => setFade(k, t) }))} />}
+          {b.fade && (b.drumF || b.drumR) && <FieldRows rows={moreKeys(['drumFadeK'])} />}
         </>
+      )}
+    </>
+  );
+}
+
+/** Shimmy: the inputs and, live, whether the front wheels' steer oscillation dies out (new / worn parts). */
+function ShimmyPanel() {
+  const m = useApp((s) => s.shimmy);
+  const setF = useApp((s) => s.setShimmyField);
+  const setM = useApp((s) => s.setShimmy);
+  const disp = useDisplay();
+  const geom = useApp((s) => s.geom), corners = useApp((s) => s.corners), steer = useApp((s) => s.steer), vehicle = useApp((s) => s.vehicle), settings = useApp((s) => s.settings);
+  const rep = useMemo(() => {
+    try {
+      const { problem } = buildVehicleProblem(useApp.getState());
+      const r = shimmyReport(problem, undefined, 40);
+      const kick = r ? shimmyKicks(problem, problem.shimmy!.maxSpeed) : null;
+      return r ? { r, kick } : null;
+    } catch { return null; }
+  }, [m, geom, corners, steer, vehicle, settings]);
+  const kmh = (u: number) => disp.format(u, 'm/s', 0);
+  const line = (sc: ShimmyScan) => sc.onset !== null
+    ? <span className="bad-text">shimmies from {kmh(sc.onset)} (least damping {fmt(sc.minZeta, 3)} at {kmh(sc.worstSpeed)})</span>
+    : <span className={sc.minZeta < 0.05 ? 'warn-text' : 'ok-text'}>stable to {kmh(m.shimMaxSpeed.value)} (least damping {fmt(sc.minZeta, 3)} at {kmh(sc.worstSpeed)})</span>;
+  return (
+    <>
+      <p className="hint">The front wheels' oscillation about their steering axes (4–25 Hz): trail and tire relaxation, the steering system's stiffness and damping, the steering wheel, and on a steered solid axle its tramp with the wheels' gyroscopic coupling (death wobble). Checked with new parts and worn ones (free play, softer, a tired damper). The car's path is held straight in this model, so the slow hands-off steering response isn't judged.</p>
+      <FieldRows rows={SHIMMY_KEYS.map((k) => ({ label: SHIMMY_META[k].label, field: m[k], unit: SHIMMY_META[k].unit, hint: SHIMMY_META[k].hint, onCommit: (t: string) => setF(k, t) }))} />
+      <label className="check-row" title="Hands lightly on the wheel (else hands off, the worst case)"><input type="checkbox" checked={m.handsOn} onChange={(e) => setM({ handsOn: e.target.checked })} /> Driver's hands lightly on the wheel</label>
+      <label className="check-row" title="Each test kicks the front wheels at its fastest speeds (one-sided bump) with new and worn parts: Shimmy fails when they keep wobbling"><input type="checkbox" checked={m.check} onChange={(e) => setM({ check: e.target.checked })} /> Check shimmy in the tests</label>
+      {!rep ? <p className="muted small-text">The front corners don't steer (or the design can't be solved): no shimmy model.</p> : (
+        <div className="small-text">
+          <p>New parts: {line(rep.r.fresh)}</p>
+          <p>Worn parts: {line(rep.r.worn)}</p>
+          {rep.kick && <p className={rep.kick.worn.shimmies || rep.kick.fresh.shimmies ? 'bad-text' : 'muted'}>Kicked at {kmh(m.shimMaxSpeed.value)} (free play and wheel imbalance as set): {rep.kick.fresh.shimmies ? 'wobbles even with new parts' : rep.kick.worn.shimmies ? `wobbles with worn parts (${fmt(rep.kick.worn.late, 2)}° a second later)` : 'settles'}.</p>}
+          <p className="muted">Trail <Val v={rep.r.params.trail * 1000} unit="mm" digits={0} /> + pneumatic <Val v={rep.r.params.pneumaticTrail * 1000} unit="mm" digits={0} />{steer.pneumaticTrail.value > 0 ? '' : ' (estimated)'}, relaxation length <Val v={rep.r.params.relaxation * 1000} unit="mm" digits={0} />{vehicle.relaxation.value > 0 ? '' : ' (estimated)'}{rep.r.params.axle ? ', solid axle: tramp included' : ''}. Goal: Vehicle → Optimize → Shimmy margin.</p>
+        </div>
       )}
     </>
   );
@@ -596,7 +650,7 @@ function GripSection({ grip }: { grip: GripSummary }) {
         </tbody>
       </table>
       <p className="small-text">Axles (cornering): front {fmt(grip.axles.front * 100, 0)} % · rear {fmt(grip.axles.rear * 100, 0)} %</p>
-      {grip.limits.map((l) => <p key={l.text} className="hint warn-text">{l.text}</p>)}
+      {grip.limits.map((l) => <p key={l.text} className="hint warn-text"><Local text={l.text} /></p>)}
       <p className="hint">Tire grip: Magic Formula with generic coefficients (edit in Optimize → Tire grip model). Lean = inclination toward the turn: leaning into it adds camber thrust.</p>
     </Section>
   );

@@ -1,8 +1,9 @@
 /// <reference lib="webworker" />
 /** Runs optimizers (corner / whole vehicle) and tests off the main thread; posts progress after every iteration. */
 import { optimizeCorner, type CornerProblem } from '../core/optimize/corner';
-import { optimizeVehicle, vehicleSensitivity, type VehicleProblem } from '../core/optimize/vehicle';
-import { tuneRates, type RateVar, type RateTest } from '../core/optimize/rates';
+import { optimizeVehicle, vehicleSensitivity, vehicleObjective, reportVehicle, sensitivitySample, type VehicleProblem } from '../core/optimize/vehicle';
+import { tuneRates, scoreTests, withRates, type RateVar, type RateTest } from '../core/optimize/rates';
+import type { PoolContext, PoolTask } from './workerPool';
 import { fitTire, type TireSample } from '../core/tire/fit';
 import { runTest, playbackFrames, withBrakeTemps, type TestRunOptions } from '../core/tests/run';
 import { rideRun } from '../core/tests/ride';
@@ -17,9 +18,28 @@ type Job =
   | { kind: 'tirefit'; samples: TireSample[]; name: string; unloadedRadius?: number }
   | { kind: 'rates'; problem: VehicleProblem; tests: RateTest[]; vars: RateVar[]; budget: number; mode: 'pass' | 'improve' };
 
-self.onmessage = (e: MessageEvent<Job>) => {
+// Pool worker (workerPool.ts): one context, then many small tasks.
+let pool: { ctx: PoolContext; obj?: ReturnType<typeof vehicleObjective> } | null = null;
+function poolTask(t: PoolTask): unknown {
+  if (!pool) throw new Error('Pool worker has no context');
+  const c = pool.ctx;
+  if (c.type === 'rates') {
+    const p = c.problem as VehicleProblem;
+    return [scoreTests(withRates(p, c.vars as RateVar[], t.x), c.tests as RateTest[], c.mode).score];
+  }
+  const p = c.problem as VehicleProblem;
+  if (t.kind === 'report') return reportVehicle(p, t.x);
+  pool.obj ??= vehicleObjective(p);
+  if (t.kind === 'sensitivity') return sensitivitySample(p, pool.obj, t.x);
+  return pool.obj.residuals(t.x);
+}
+
+self.onmessage = (e: MessageEvent<Job | { kind: 'pool-init'; ctx: PoolContext } | { kind: 'pool-task'; task: PoolTask }>) => {
   try {
-    const j = e.data;
+    const m = e.data;
+    if (m.kind === 'pool-init') { pool = { ctx: m.ctx }; return; }
+    if (m.kind === 'pool-task') { self.postMessage({ type: 'pool-result', result: poolTask(m.task) }); return; }
+    const j = m;
     if (j.kind === 'playback') {
       const geometries = Object.fromEntries(Object.entries(j.problem.designs).map(([r, d]) => [r, d!.geometry]));
       self.postMessage({ type: 'done', result: j.ride ? withBrakeTemps(j.problem, rideRun(j.problem, geometries, j.segments, { handling: !!j.handling, driverSpeed: !!j.driverSpeed }).frames) : playbackFrames(j.problem, geometries, j.segments) });

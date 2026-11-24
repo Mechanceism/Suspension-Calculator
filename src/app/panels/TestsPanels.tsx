@@ -14,20 +14,26 @@ import { CORNER_IDS, type CornerId } from '../../core/vehicle/vehicle';
 import { segmentLongG, segmentLatG, segmentDuration, type PathKind } from '../../core/tests/segments';
 import type { TestRun, StateResult } from '../../core/tests/run';
 import { CHECK_IDS, CHECK_META, PROFILES, cloneProfile, type CheckProfile, type Severity, type BuiltinProfile, type Finding } from '../../core/tests/checks';
-import { useApp, type Field } from '../store';
-import { SEGMENT_PRESETS, TEST_PRESETS, newSegment, newTestId, segmentSpec, isOff, OFF, type TestDesign, type TestSegment } from '../tests';
+import { useApp, BRAKE_MORE_META, type Field } from '../store';
+import { SEGMENT_PRESETS, TEST_PRESETS, newSegment, newTestId, planOption, segmentSpec, isOff, OFF, type TestDesign, type TestSegment } from '../tests';
 import { buildVehicleProblem, runTestJob } from '../optimizer';
+import { POOL_SIZE, runLimited } from '../workerPool';
+import { useTireChoice, TIRE_CATALOG, rankTires, applyTire, currentTire, type TireAxleChoice } from '../tireChoice';
 import { useProfiles } from '../settings';
 import { switchWorkspace } from '../viewport/SafeHtml';
 import { ValueInput } from './ValueInput';
 import { RoadEditor } from './RoadEditor';
 import { PlaybackBar, SegmentMap } from './Playback';
-import { Section, fmt } from './FieldRows';
-import { useDisplay } from '../units';
-import { useLoop, optimizeTests, exploreRanges, acceptExploration, setMaxWiden, isUnfixable, WIDEN_CHOICES, widenLabel, tuneSpringsDampers, setRateSettings, rateVars } from '../testOptimize';
+import { Section, fmt, FieldRows } from './FieldRows';
+import { fromDisplay, localNow, toDisplay, useDisplay } from '../units';
+import { useLoop, optimizeTests, exploreRanges, acceptExploration, setMaxWiden, isUnfixable, WIDEN_CHOICES, widenLabel, tuneSpringsDampers, setRateSettings, rateVars, setSizeBrakes, sizeBrakesFrom, testsInScope } from '../testOptimize';
 import { SearchSelect, SensitivityReport } from './SearchTools';
 import { EstimatedNote } from './SetupWizard';
 import { VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META } from '../../core/optimize/vehicle';
+import { Local, Val } from './UnitText';
+import { SHAPE_LABEL } from '../../core/tests/plan';
+import { setResultsSource } from '../fileActions';
+import { saveResult, type SavedResult } from '../savedResults';
 
 const parse = (text: string, q: Quantity, prev: Field): Field => {
   const r = parseValue(text, q);
@@ -41,6 +47,8 @@ interface RunEntry {
   from: DesignRef;
   /** The test as it was run (its playback frames are reused only for the same test). */
   test?: TestDesign;
+  /** When it ran (ISO). */
+  ranAt?: string;
 }
 interface RunStore {
   running: boolean;
@@ -50,14 +58,28 @@ interface RunStore {
   results: Record<string, RunEntry>;
   error: string | null;
   cancel: (() => void) | null;
-  /** Run all: which test of how many. */
+  /** Several tests at once (Run all, the optimize loop): how many are done of how many. */
   batch: { index: number; total: number } | null;
+  /** Tests running now (several at once, one per worker). */
+  runningIds: string[];
 }
-export const useRun = create<RunStore>(() => ({ running: false, testId: null, results: {}, error: null, cancel: null, batch: null }));
+export const useRun = create<RunStore>(() => ({ running: false, testId: null, results: {}, error: null, cancel: null, batch: null, runningIds: [] }));
 
 /** What a result depends on: when any of these change, the result is stale. */
 type DesignRef = { geom: unknown; corners: unknown; settings: unknown; steer: unknown; vehicle: unknown };
 const designRef = (s: ReturnType<typeof useApp.getState>): DesignRef => ({ geom: s.geom, corners: s.corners, settings: s.settings, steer: s.steer, vehicle: s.vehicle });
+const sameDesign = (a: DesignRef, b: DesignRef) => a.geom === b.geom && a.corners === b.corners && a.settings === b.settings && a.steer === b.steer && a.vehicle === b.vehicle;
+// A model-and-tests file saves the results run on the design and the tests as they are now (scores only).
+setResultsSource(() => {
+  const s = useApp.getState(), now = designRef(s), results = useRun.getState().results;
+  const out: Record<string, SavedResult> = {};
+  for (const t of s.tests) {
+    const e = results[t.id];
+    if (!e || !sameDesign(e.from, now) || (e.test && e.test !== t)) continue;
+    out[t.id] = saveResult(t.name, e.result, e.ranAt);
+  }
+  return out;
+});
 /** True when the design changed since `from`. */
 export function useStale(from: DesignRef | undefined): boolean {
   const geom = useApp((s) => s.geom);
@@ -97,34 +119,64 @@ export function startTestRun(test: TestDesign) {
   run.cancel?.();
   const s = useApp.getState();
   const { problem } = buildVehicleProblem(s);
-  const job = runTestJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), { onFail: test.onFail, speedLimits: true, ride: test.ride !== false, handling: test.ride !== false && test.handling !== false, driverSpeed: !!test.driverSpeed });
+  const job = runTestJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), { onFail: test.onFail, speedLimits: true, ride: test.ride !== false, handling: test.ride !== false && test.handling !== false, driverSpeed: !!test.driverSpeed, ...planOption(test) });
   const from = designRef(s);
-  useRun.setState({ running: true, testId: test.id, error: null, cancel: job.cancel });
+  useRun.setState({ running: true, testId: test.id, runningIds: [test.id], error: null, cancel: job.cancel });
   return job.done
     .then((result) => {
-      useRun.setState((r) => ({ running: false, cancel: null, results: { ...r.results, [test.id]: { result, from, test } } }));
+      useRun.setState((r) => ({ running: false, cancel: null, runningIds: [], results: { ...r.results, [test.id]: { result, from, test, ranAt: new Date().toISOString() } } }));
       useApp.getState().set('testView', null);
       return result;
     })
-    .catch((e: unknown) => { useRun.setState({ running: false, error: e instanceof Error ? e.message : String(e), cancel: null }); return null; });
+    .catch((e: unknown) => { useRun.setState({ running: false, runningIds: [], error: e instanceof Error ? e.message : String(e), cancel: null }); return null; });
 }
 
-let batchStopped = false;
-/** Run every enabled test, in list order. */
+/**
+ * Run several tests at once, each in its own worker (up to one per spare core); the results land in the
+ * Tests panel as they finish. Answers in the tests' order (null = failed or stopped).
+ */
+export async function runTestsTogether(tests: TestDesign[]): Promise<(TestRun | null)[]> {
+  if (tests.length === 1) return [await startTestRun(tests[0]!)];
+  useRun.getState().cancel?.();
+  const s = useApp.getState();
+  const { problem } = buildVehicleProblem(s);
+  const from = designRef(s);
+  const stops = new Set<() => void>();
+  let stopped = false, done = 0;
+  useRun.setState({ running: true, testId: tests[0]?.id ?? null, runningIds: [], error: null, batch: { index: 0, total: tests.length }, cancel: () => { stopped = true; for (const f of [...stops]) f(); } });
+  const out = await runLimited(tests, POOL_SIZE, async (test) => {
+    const job = runTestJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), { onFail: test.onFail, speedLimits: true, ride: test.ride !== false, handling: test.ride !== false && test.handling !== false, driverSpeed: !!test.driverSpeed, ...planOption(test) });
+    useRun.setState((r) => ({ runningIds: [...r.runningIds, test.id] }));
+    // Stopping ends the wait too (a terminated worker never answers).
+    let stop = () => {};
+    const cancelled = new Promise<null>((res) => { stop = () => { job.cancel(); res(null); }; });
+    stops.add(stop);
+    try {
+      const result = await Promise.race([job.done, cancelled]);
+      if (result) useRun.setState((r) => ({ results: { ...r.results, [test.id]: { result, from, test, ranAt: new Date().toISOString() } } }));
+      return result;
+    } catch (e) {
+      useRun.setState({ error: e instanceof Error ? e.message : String(e) });
+      return null;
+    } finally {
+      stops.delete(stop);
+      done++;
+      useRun.setState((r) => ({ runningIds: r.runningIds.filter((id) => id !== test.id), batch: r.batch ? { ...r.batch, index: done } : null }));
+    }
+  }, () => stopped);
+  useRun.setState({ running: false, cancel: null, batch: null, runningIds: [] });
+  useApp.getState().set('testView', null);
+  return out.map((r) => r ?? null);
+}
+
+/** Run every enabled test (several at once). */
 export async function runAllTests() {
-  const tests = useApp.getState().tests.filter((t) => t.enabled !== false);
-  batchStopped = false;
-  for (let i = 0; i < tests.length && !batchStopped; i++) {
-    useRun.setState({ batch: { index: i, total: tests.length } });
-    await startTestRun(tests[i]!);
-  }
-  useRun.setState({ batch: null });
+  await runTestsTogether(useApp.getState().tests.filter((t) => t.enabled !== false));
 }
 /** Stop the running test (and Run all). */
 export function stopRuns() {
-  batchStopped = true;
   useRun.getState().cancel?.();
-  useRun.setState({ running: false, cancel: null, batch: null, error: null });
+  useRun.setState({ running: false, cancel: null, batch: null, error: null, runningIds: [] });
 }
 
 const SEV_LABEL: Record<Severity, string> = { pass: 'Pass', warn: 'Warning', fail: 'Fail' };
@@ -150,9 +202,22 @@ function ProfilePicker({ value, onPick, allowInherit }: { value: string | null; 
   );
 }
 
+/** A pass-rule threshold typed and shown in the display units (stored in base units: m, N·m; %, ° as they are). */
+function ThresholdInput({ value, unit, onChange }: { value: number | undefined; unit: string; onChange: (v: number | undefined) => void }) {
+  const conv = useDisplay().conv(unit);
+  const shown = (v: number | undefined) => { const d = toDisplay(v ?? 0, conv); return String(Number(d.toFixed(conv.identity ? 3 : 2))); };
+  const [text, setText] = useState<string | null>(null); // while typing
+  return (
+    <>
+      <input className="value-input small" value={text ?? shown(value)}
+        onChange={(e) => { setText(e.target.value); const n = Number(e.target.value); if (e.target.value.trim() !== '' && Number.isFinite(n)) onChange(fromDisplay(n, conv)); }}
+        onBlur={() => setText(null)} /> {conv.unit}
+    </>
+  );
+}
+
 function ChecksTable({ checks, onChange }: { checks: CheckProfile; onChange: (c: CheckProfile) => void }) {
   const set = (id: keyof CheckProfile, patch: Partial<CheckProfile[keyof CheckProfile]>) => onChange({ ...checks, [id]: { ...checks[id], ...patch } });
-  const num = (v: string, prev: number | undefined) => { const n = Number(v); return Number.isFinite(n) ? n : prev; };
   return (
     <table className="opt-table checks-table">
       <tbody>
@@ -160,7 +225,7 @@ function ChecksTable({ checks, onChange }: { checks: CheckProfile; onChange: (c:
           const m = CHECK_META[id];
           const c = checks[id];
           return (
-            <tr key={id} title={m.hint} className={`sev-${c.severity}`}>
+            <tr key={id} title={localNow(m.hint)} className={`sev-${c.severity}`}>
               <td>{m.label}</td>
               <td>
                 <select value={c.severity} disabled={m.fixed} onChange={(e) => set(id, { severity: e.target.value as Severity })}>
@@ -170,12 +235,12 @@ function ChecksTable({ checks, onChange }: { checks: CheckProfile; onChange: (c:
               <td className="nowrap">
                 {m.threshold && (
                   <label title={m.threshold.label}>
-                    <input className="value-input small" value={c.threshold ?? 0} onChange={(e) => set(id, { threshold: num(e.target.value, c.threshold) })} /> {m.threshold.unit}
+                    <ThresholdInput value={c.threshold} unit={m.threshold.unit} onChange={(v) => set(id, { threshold: v })} />
                   </label>
                 )}
                 {m.threshold2 && (
                   <label title={m.threshold2.label}>
-                    {' '}<input className="value-input small" value={c.threshold2 ?? 0} onChange={(e) => set(id, { threshold2: num(e.target.value, c.threshold2) })} /> {m.threshold2.unit}
+                    {' '}<ThresholdInput value={c.threshold2} unit={m.threshold2.unit} onChange={(v) => set(id, { threshold2: v })} />
                   </label>
                 )}
               </td>
@@ -283,6 +348,10 @@ function SegmentEditor({ test, seg, index, wheelbase }: { test: TestDesign; seg:
             <td><ValueInput field={seg.speedEnd} unit="m/s" width={56} onCommit={(t) => upd((s) => ({ ...s, speedEnd: parse(t, 'speed', s.speedEnd) }))} /></td>
             <td className="unit">{disp.conv('m/s').unit}</td>
           </tr>
+          <tr title="No throttle, no brakes: with the test's driver working the pedals (Handling options), the car's speed follows the forces only: drag, grade, rolling resistance and the bumps' push. The end speed is then only shown, not aimed for.">
+            <td>Coast</td>
+            <td colSpan={3}><label className="check-label"><input type="checkbox" checked={!!seg.coast} onChange={(e) => upd((s) => ({ ...s, coast: e.target.checked || undefined }))} /> no throttle or brakes (with the driver working the pedals)</label></td>
+          </tr>
           <tr>
             <td>Distance</td>
             <td><ValueInput field={seg.distance} unit="m" width={56} onCommit={(t) => upd((s) => ({ ...s, distance: parse(t, 'distance', s.distance) }))} /></td>
@@ -369,7 +438,7 @@ function RankSelect({ rank, n, onChange, kind = 'segment' }: { rank: number; n: 
 /** Pass / warning / fail icon of a test's last run (faded when the design changed since). */
 function TestStatus({ test }: { test: TestDesign }) {
   const entry = useRun((s) => s.results[test.id]);
-  const running = useRun((s) => s.running && s.testId === test.id);
+  const running = useRun((s) => s.running && (s.runningIds.includes(test.id) || (!s.batch && s.testId === test.id)));
   const stale = useStale(entry?.from);
   if (running) return <span className="spinner" title="Running…" />;
   if (!entry) return <span className="test-status muted" title="Not run yet">·</span>;
@@ -472,7 +541,7 @@ export function TestsSidebar() {
           ? <button className="chip" disabled={!enabledCount || loopRunning} onClick={() => void runAllTests()} title="Run every ticked test, in list order">▶▶ Run all ({enabledCount})</button>
           : <button className="chip" onClick={stopRuns}>■ Stop</button>}
       </div>
-      {run.batch && <p className="muted small-text run-line"><span className="spinner" /> Running test {run.batch.index + 1} of {run.batch.total}: {tests.find((t) => t.id === run.testId)?.name ?? ''}…</p>}
+      {run.batch && <p className="muted small-text run-line"><span className="spinner" /> Running {run.batch.total} tests, {Math.min(POOL_SIZE, run.batch.total)} at a time · {run.batch.index} done…</p>}
       <details className="presets" open={!tests.length}>
         <summary>Presets</summary>
         {presets.map((p) => <button key={p.label} className="wide-btn" onClick={() => addTest(p.make)}>{p.label}</button>)}
@@ -510,13 +579,30 @@ export function TestsSidebar() {
                   </label>
                 </td>
               </tr>
-              <tr title="Report: show the failure. Driver lifts: also re-run the failing segment at the fastest speed that passes.">
-                <td>When a segment fails</td>
+              <tr title="Maximums: the set speeds are the most the driver may go; the driver plans the speed to its push — how much of the tires' grip it uses — (braking earlier before turns, accelerating out), tries other ways of taking a failing segment (brake in, coast in, hold the speed, speed up in) and then pushes less there (with a finding saying so); the test is scored on time. Hold exactly: the set speeds are driven as they are (to check a car can do a given speed).">
+                <td>Speeds</td>
                 <td>
-                  <button className={`chip${test.onFail === 'report' ? ' on' : ''}`} onClick={() => updateTest(test.id, (t) => ({ ...t, onFail: 'report' }))}>Report</button>
-                  <button className={`chip${test.onFail === 'lift' ? ' on' : ''}`} onClick={() => updateTest(test.id, (t) => ({ ...t, onFail: 'lift' }))}>Driver lifts</button>
+                  <button className={`chip${test.speedMode === 'max' ? ' on' : ''}`} onClick={() => updateTest(test.id, (t) => ({ ...t, speedMode: 'max', gripTarget: t.gripTarget ?? 0.95 }))}>Maximums</button>
+                  <button className={`chip${test.speedMode !== 'max' ? ' on' : ''}`} onClick={() => updateTest(test.id, (t) => ({ ...t, speedMode: 'hold' }))}>Hold exactly</button>
                 </td>
               </tr>
+              {test.speedMode === 'max' ? (
+                <tr title="The share of the tires' grip the driver plans to (in turns, braking and accelerating). Lower is steadier; 100 % is at the limit, where transients often tip it over.">
+                  <td title="How much of the tires' grip the driver plans to use (not the grip itself): lower leaves a reserve for what the plan doesn't see — the weight shifting, the car taking time to turn in, corrections, bumps">Driver push</td>
+                  <td>
+                    <input className="value-input small" type="number" min={30} max={100} step={1} value={Math.round((test.gripTarget ?? 0.95) * 100)}
+                      onChange={(e) => { const v = Number(e.target.value); if (Number.isFinite(v) && v >= 30 && v <= 100) updateTest(test.id, (t) => ({ ...t, gripTarget: v / 100 })); }} /> % of the grip
+                  </td>
+                </tr>
+              ) : (
+                <tr title="Report: show the failure. Driver lifts: also re-run the failing segment at the fastest speed that passes.">
+                  <td>When a segment fails</td>
+                  <td>
+                    <button className={`chip${test.onFail === 'report' ? ' on' : ''}`} onClick={() => updateTest(test.id, (t) => ({ ...t, onFail: 'report' }))}>Report</button>
+                    <button className={`chip${test.onFail === 'lift' ? ' on' : ''}`} onClick={() => updateTest(test.id, (t) => ({ ...t, onFail: 'lift' }))}>Driver lifts</button>
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
           <PassRules test={test} />
@@ -540,7 +626,7 @@ export function TestsSidebar() {
               : <button className="wide-btn" onClick={stopRuns}>■ Stop</button>}
           </div>
           {run.running && !run.batch && <p className="muted small-text run-line"><span className="spinner" /> Running {tests.find((t) => t.id === run.testId)?.name ?? 'the test'}…</p>}
-          {run.error && <p className="hint warn-text">Test failed to run: {run.error}</p>}
+          {run.error && <p className="hint warn-text">Test failed to run: <Local text={run.error} /></p>}
           {sel && <SegmentEditor test={test} seg={sel} index={Math.max(0, selIndex)} wheelbase={wheelbase} />}
           <p className="hint">
             Order = the sequence the car drives; priority (tests A, B…; segments P1, P2…) = how much it counts when optimizing. Combine in one segment
@@ -556,8 +642,10 @@ export function TestsSidebar() {
 
 const STATE_TEXT: Record<string, string> = { grip: 'grip', sliding: 'sliding', 'abs-limit': 'ABS limit', locked: 'locked', wheelspin: 'wheelspin' };
 
+/** The findings, their values in the display units (the core writes them in mm, m, km/h, N, …). */
 function Findings({ list }: { list: Finding[] }) {
-  return <>{list.map((f) => <div key={`${f.check}${f.text}`} className={`small-text finding sev-${f.severity}`}>{SEV_ICON[f.severity]} {f.text}</div>)}</>;
+  const disp = useDisplay();
+  return <>{list.map((f) => <div key={`${f.check}${f.text}`} className={`small-text finding sev-${f.severity}`}>{SEV_ICON[f.severity]} {disp.local(f.text)}</div>)}</>;
 }
 
 /** Every test's last result (after Run all), click to open one. */
@@ -597,7 +685,7 @@ export function TestResults() {
       <section className="panel">
         <h2>Test results</h2>
         <AllTests />
-        <p className="muted">{run.running && run.testId === test.id ? <><span className="spinner" /> Running…</> : 'Run the test (or Run all) to see whether it passes in every segment.'}</p>
+        <p className="muted">{run.running && (run.runningIds.includes(test.id) || run.testId === test.id) ? <><span className="spinner" /> Running…</> : 'Run the test (or Run all) to see whether it passes in every segment.'}</p>
         <OptimizeSection test={test} onOpenOptimizer={() => openOptimizer(test)} />
       </section>
     );
@@ -629,14 +717,19 @@ export function TestResults() {
   return (
     <section className="panel">
       <h2>
-        Test results{run.running && run.testId === test.id && <span className="spinner" title="Running…" />}
+        Test results{run.running && (run.runningIds.includes(test.id) || run.testId === test.id) && <span className="spinner" title="Running…" />}
         <span className={`status ${r.severity === 'fail' ? 'status-not-converged' : r.severity === 'warn' ? 'status-singular' : 'status-converged'}`}>{status}</span>
       </h2>
       <AllTests />
       <EstimatedNote />
       {stale && <p className="hint warn-text">The design changed since this run: run again.</p>}
+      {r.time !== undefined && r.time > 0 && (
+        <p className="small-text" title="Speeds as maximums: the planned time over the whole test and its average speed (faster is better, within the pass rules)">
+          Time <b>{fmt(r.time, 1)} s</b> · average <b>{disp.format((r.distance ?? 0) / r.time, 'm/s', 0)}</b> over {disp.format(r.distance ?? 0, 'm', 0)} · driver pushing to {fmt((test.gripTarget ?? 0.95) * 100, 0)} % of the grip
+        </p>
+      )}
       <table className="corner-table test-table">
-        <thead><tr><th>#</th><th>Segment</th><th title="Worst tire grip use">Grip</th>{r.segments.some((s) => s.brakeTemp) && <th title="Brake fade: rotor temperature at the end of the segment, front / rear">Brakes</th>}<th /></tr></thead>
+        <thead><tr><th>#</th><th>Segment</th>{r.time !== undefined && <th title="Planned speed through the segment (lowest – highest) and its time">Speed</th>}<th title="Worst tire grip use">Grip</th>{r.segments.some((s) => s.brakeTemp) && <th title="Brake fade: rotor temperature at the end of the segment, front / rear">Brakes</th>}<th /></tr></thead>
         <tbody>
           {r.segments.map((s) => {
             const def = test.segments[s.index];
@@ -644,6 +737,12 @@ export function TestResults() {
               <tr key={s.index} className={`sev-${s.severity}${view?.segment === s.index ? ' sel' : ''}`} onClick={() => pick(s.index, 0)} title="Show this segment">
                 <td>{s.index + 1}</td>
                 <td>{def?.name ?? ''}</td>
+                {r.time !== undefined && (
+                  <td className="small-text nowrap" title={s.approach && s.approach !== 'plan' ? `Taken: ${SHAPE_LABEL[s.approach]}` : undefined}>
+                    {s.plan ? <Local text={`${Math.round(Math.min(...s.plan.v) * 3.6)}–${Math.round(Math.max(...s.plan.v) * 3.6)} km/h`} /> : '—'}
+                    {s.time !== undefined ? ` · ${fmt(s.time, 1)} s` : ''}
+                  </td>
+                )}
                 <td>{Number.isFinite(s.maxUtilization) ? `${fmt(s.maxUtilization * 100, 0)} %` : '—'}</td>
                 {s.brakeTemp && <td className="small-text">{disp.format(s.brakeTemp.end.front, '°C', 0)} / {disp.format(s.brakeTemp.end.rear, '°C', 0)}</td>}
                 <td>{SEV_ICON[s.severity]}</td>
@@ -659,13 +758,19 @@ export function TestResults() {
           <div key={s.index} className={`seg-fail sev-${s.severity}`}>
             <b>{s.index + 1}. {def?.name}</b>
             <Findings list={s.findings} />
+            {s.approach && (s.approach !== 'plan' || (s.gripTarget ?? 1) < (test.gripTarget ?? 0.95) - 1e-9) && (
+              <div className="small-text">Taken: {SHAPE_LABEL[s.approach]} with the driver pushing to {fmt((s.gripTarget ?? 0.95) * 100, 0)} % of the grip.</div>
+            )}
             {s.impossible && <div className="small-text warn-text">No suspension change can make this pass: the tires can't give that much force. Lower the speed, enlarge the radius, or improve the tires.</div>}
             {s.findings.some((f) => f.check === 'steerLimit' && f.severity === 'fail') && <div className="small-text warn-text">Slowing down doesn't help: enlarge the radius, or allow more rack travel / a longer-reach steering arm (Corner view → Steering rack).</div>}
             {s.rideFail && <div className="small-text warn-text">Passes as steady states but fails over time (bumps at speed, transients): softer / firmer damping, more travel or a lower speed can help. Play it back to watch.</div>}
-            {s.speedLimit !== undefined && !s.rideFail && !s.findings.some((f) => f.check === 'steerLimit' && f.severity === 'fail') && (
+            {s.drivenScale !== undefined && (
+              <div className="small-text">Driver lifts: driven at {fmt(s.drivenScale * 100, 0)}% of its speed (≈ {disp.format(vmax * s.drivenScale, 'm/s', 0)}) and judged there.</div>
+            )}
+            {s.drivenScale === undefined && s.speedLimit !== undefined && !s.rideFail && !s.findings.some((f) => f.check === 'steerLimit' && f.severity === 'fail') && (
               <div className="small-text">
                 {s.speedLimit > 0
-                  ? <>Passes at {fmt(s.speedLimit * 100, 0)}% of its speed (max ≈ {disp.format(vmax * s.speedLimit, 'm/s', 0)}){s.lifted ? ' — driver lifts: re-run at that speed passes.' : '.'}</>
+                  ? <>Passes at {fmt(s.speedLimit * 100, 0)}% of its speed (max ≈ {disp.format(vmax * s.speedLimit, 'm/s', 0)}){s.lifted ? ' — driver lifts: judged at that speed.' : '.'}</>
                   : 'Fails even at a crawl: check the pass rules, bumps, travel limits or powered / braked wheels.'}
               </div>
             )}
@@ -692,7 +797,7 @@ export function TestResults() {
                   {segRes.steer.none ? 'Steering: no steered wheels.' : <>
                     Steering: road wheels {fmt(Math.abs(segRes.steer.wheelAngle), 1)}° {segRes.steer.wheelAngle > 0 ? 'left' : 'right'}
                     {Math.abs(segRes.steer.slip) > 0.05 ? ` (${segRes.steer.slip > 0 ? '+' : '−'}${fmt(Math.abs(segRes.steer.slip), 1)}° for the tires' slip: ${segRes.steer.slip > 0 ? 'understeer' : 'oversteer'})` : ''}
-                    {' '}· rack {fmt(Math.abs(segRes.steer.rack), 1)} of ±{fmt(segRes.steer.limit, 0)} mm
+                    {' '}· rack {disp.format(Math.abs(segRes.steer.rack), 'mm', 1)} of ±{disp.format(segRes.steer.limit, 'mm', 0)}
                     {Number.isFinite(segRes.steer.steeringWheel) ? ` · steering wheel ${fmt(Math.abs(segRes.steer.steeringWheel), 0)}°` : ''}
                     {segRes.steer.over ? ` · full lock gives only ${fmt(segRes.steer.maxAngle, 1)}°` : ''}
                   </>}
@@ -787,7 +892,10 @@ function OptimizeSection({ test, onOpenOptimizer }: { test: TestDesign; onOpenOp
   const tests = useApp((s) => s.tests);
   const results = useRun((s) => s.results);
   const free = Object.keys(vo.ranges).length;
-  const goals = VEHICLE_GOAL_KINDS.filter((k) => vo.goals[k].on && k !== 'testPass' && k !== 'testReserve').map((k) => VEHICLE_GOAL_META[k].short);
+  const goals = VEHICLE_GOAL_KINDS.filter((k) => vo.goals[k].on && k !== 'testPass' && k !== 'testReserve' && k !== 'testTime').map((k) => VEHICLE_GOAL_META[k].short);
+  // Speeds as maximums: score on time too (the Test time goal; its weight: how much time counts).
+  const timeGoal = vo.goals.testTime;
+  const setTimeGoal = (patch: Partial<typeof timeGoal>) => useApp.getState().updateVehicleOptimizer((o) => ({ ...o, goals: { ...o.goals, testTime: { ...o.goals.testTime, ...patch } } }));
   const enabled = tests.filter((t) => t.enabled !== false);
   const inScope = loop.scope === 'all' ? enabled : [test];
   const runs = inScope.map((t) => results[t.id]?.result).filter((x): x is TestRun => !!x);
@@ -811,6 +919,15 @@ function OptimizeSection({ test, onOpenOptimizer }: { test: TestDesign; onOpenOp
           {WIDEN_CHOICES.map((v) => <option key={v} value={v}>{widenLabel(v)}</option>)}
         </select>
       </div>
+      {inScope.some((t) => t.speedMode === 'max') && (
+        <div className="jm-row" title="Speeds as maximums: score the tests on their time too. The weight is how much time counts against the grip reserve and the ride — 0: safest (time ignored); 1: 1 % faster ≈ 1 point; higher: fastest. A Fail still rules a setup out (100 points); warnings cost nothing. (The Test time goal in Vehicle → Optimize.)">
+          <label className="check"><input type="checkbox" checked={timeGoal.on} disabled={loop.running} onChange={() => setTimeGoal({ on: !timeGoal.on })} /> Score on time</label>
+          {timeGoal.on && <><span className="muted">weight</span>
+            <input className="value-input small" type="number" min={0} step={0.5} value={timeGoal.weight.value} disabled={loop.running}
+              onChange={(e) => { const v = Number(e.target.value); if (Number.isFinite(v) && v >= 0) setTimeGoal({ weight: { ...timeGoal.weight, text: String(v), value: v } }); }} />
+            <span className="muted small-text">safest 0 … fastest</span></>}
+        </div>
+      )}
       <div className="jm-row" title="Geometry rounds: local from your design, or wide (several starts from a design of experiments, keeping the best)">
         <span className="muted">Search</span>
         <SearchSelect value={vo.starts} onChange={(n) => useApp.getState().updateVehicleOptimizer((o) => ({ ...o, starts: n }))} />
@@ -823,7 +940,7 @@ function OptimizeSection({ test, onOpenOptimizer }: { test: TestDesign; onOpenOp
       {!loop.running && (
         <div className="jm-row">
           {failing && fixable && <button className="wide-btn primary" disabled={busy || !inScope.length} onClick={() => void optimizeTests(loop.scope, test, 'pass')} title="Optimize, apply, re-run, until it passes; widens the ranges when it stops making progress">▶ Optimize until {many ? 'they pass' : 'it passes'}</button>}
-          {(!failing || !known) && <button className="wide-btn primary" disabled={busy || !inScope.length} onClick={() => void optimizeTests(loop.scope, test, 'improve')} title="Lower grip use everywhere (priority-weighted; failing segments get extra weight)">▶ Improve (more grip reserve)</button>}
+          {(!failing || !known) && <button className="wide-btn primary" disabled={busy || !inScope.length} onClick={() => void optimizeTests(loop.scope, test, 'improve')} title={timeGoal.on ? 'Faster (the test time) and lower grip use everywhere (priority-weighted; failing segments get extra weight)' : 'Lower grip use everywhere (priority-weighted; failing segments get extra weight)'}>▶ Improve ({timeGoal.on ? 'faster, more grip reserve' : 'more grip reserve'})</button>}
           <button className="wide-btn" disabled={busy || !inScope.length} onClick={() => void exploreRanges(loop.scope, test)} title="One run with the ranges widened to the maximum; shows the result before using it">Preview wider ranges</button>
         </div>
       )}
@@ -831,6 +948,8 @@ function OptimizeSection({ test, onOpenOptimizer }: { test: TestDesign; onOpenOp
         <p className="hint warn-text">These failures can't be fixed by moving suspension points (no powered / braked wheels, more than the tires can give, or too tight for the steering): change the corner or steering settings, the test, or the tires.</p>
       )}
       <RateTuning test={test} busy={busy} />
+      <BrakeLadderBox busy={busy} />
+      <TireChoiceBox test={test} busy={busy} />
       {loop.running && (
         <div className="jm-row">
           <span className="run-line"><span className="spinner" /> {loop.rateProgress
@@ -839,7 +958,7 @@ function OptimizeSection({ test, onOpenOptimizer }: { test: TestDesign; onOpenOp
           <button className="chip" onClick={() => loop.cancel?.()} title="Stop (rate tuning keeps the best found so far)">■ Stop</button>
         </div>
       )}
-      {loop.log.length > 0 && <ol className="loop-log">{loop.log.map((l, i) => <li key={i} className="small-text">{l}</li>)}</ol>}
+      {loop.log.length > 0 && <ol className="loop-log">{loop.log.map((l, i) => <li key={i} className="small-text"><Local text={l} /></li>)}</ol>}
       {loop.outcome === 'passed' && <p className="small-text ok-text">✓ Passes now. Each applied round can be undone (Ctrl+Z).</p>}
       {loop.outcome === 'improved' && <p className="small-text ok-text">Done improving. Each applied round can be undone (Ctrl+Z).</p>}
       {loop.outcome === 'stopped' && <p className="small-text muted">Stopped.</p>}
@@ -876,6 +995,116 @@ function OptimizeSection({ test, onOpenOptimizer }: { test: TestDesign; onOpenOp
         />
       </details>
     </Section>
+  );
+}
+
+/** Tire choice: rank candidate tire sizes on the tests in scope (a .tir approximated at each size). */
+function TireChoiceBox({ test, busy }: { test: TestDesign; busy: boolean }) {
+  const tc = useTireChoice();
+  const loop = useLoop();
+  const [own, setOwn] = useState('');
+  const set = (patch: Partial<typeof tc.settings>) => useTireChoice.setState({ settings: { ...tc.settings, ...patch } });
+  const toggle = (z: string) => useTireChoice.setState({ picked: tc.picked.includes(z) ? tc.picked.filter((x) => x !== z) : [...tc.picked, z] });
+  const texts = [...tc.picked, ...own.split(/[\n,;]+/)];
+  const n = texts.filter((t) => t.trim()).length;
+  const cur = currentTire(useApp.getState() as never, tc.settings.axle === 'rear' ? 'rear' : 'front');
+  return (
+    <details className="tire-advanced rate-tuning">
+      <summary>Tires (choose a size)</summary>
+      <p className="hint">Tries other tire sizes on the {loop.scope === 'all' ? 'enabled tests' : 'test'} and ranks them. A loaded .tir is approximated at each size (its nominal load, radius and width scaled; the further from the measured size, the rougher); the generic model only changes when both axles do. The tire + wheel's estimated weight counts (unsprung). Now: {cur.text}.</p>
+      <div className="jm-row">
+        <span className="muted">Axle</span>
+        <select value={tc.settings.axle} onChange={(e) => set({ axle: e.target.value as TireAxleChoice })}>
+          <option value="both">both</option><option value="front">front</option><option value="rear">rear</option>
+        </select>
+        <label className="check-label"><input type="checkbox" checked={tc.settings.rimsMayChange} onChange={(e) => set({ rimsMayChange: e.target.checked })} /> other rim sizes</label>
+        <label className="check-label" title="Run the vehicle optimizer (its goals and free coordinates) for each tire before testing it: slower"><input type="checkbox" checked={tc.settings.reoptimize} onChange={(e) => set({ reoptimize: e.target.checked })} /> re-optimize geometry for each</label>
+      </div>
+      <div className="jm-row" title="Room around the tire: how much taller and wider than the current one it may be">
+        <span className="muted">Room: taller by</span>
+        <input className="value-input" style={{ width: 48 }} type="number" value={tc.settings.maxGrowDiameter} onChange={(e) => set({ maxGrowDiameter: Number(e.target.value) || 0 })} />
+        <span className="muted">mm, wider by</span>
+        <input className="value-input" style={{ width: 48 }} type="number" value={tc.settings.maxGrowWidth} onChange={(e) => set({ maxGrowWidth: Number(e.target.value) || 0 })} />
+        <span className="muted">mm</span>
+      </div>
+      {TIRE_CATALOG.map((g) => (
+        <div key={g.group} className="jm-row small-text">
+          <span className="muted">{g.group}</span>
+          {g.sizes.map((z) => <button key={z} className={`chip${tc.picked.includes(z) ? ' on' : ''}`} onClick={() => toggle(z)}>{z}</button>)}
+        </div>
+      ))}
+      <textarea className="value-input wide-text" rows={2} placeholder="Your own sizes, one per line (e.g. 215/45R17)" value={own} onChange={(e) => setOwn(e.target.value)} />
+      <div className="jm-row">
+        {!tc.running
+          ? <button className="wide-btn" disabled={busy || !n} onClick={() => void rankTires(testsInScope(loop.scope, test), texts)}>▶ Rank {n} tire{n === 1 ? '' : 's'} (and the current one)</button>
+          : <button className="wide-btn" onClick={() => tc.cancel?.()}><span className="spinner" /> Testing {tc.progress} · Stop</button>}
+      </div>
+      {tc.results.length > 0 && (
+        <table className="opt-table small-text">
+          <thead><tr><th>Tire</th><th>Tests</th><th title="Priority-weighted score: lower is better">Score</th><th title="Unsprung mass change per corner">kg</th><th /></tr></thead>
+          <tbody>
+            {tc.results.map((r) => (
+              <tr key={r.text} title={localNow(r.skipped ?? r.error ?? r.model ?? '')} className={r.skipped || r.error ? 'off' : ''}>
+                <td>{r.text}{r.change !== undefined && r.change > 0.2 && <span className="warn-text" title="Far from the measured tire: a rough guess"> ⚠</span>}</td>
+                <td>{r.skipped ? <span className="muted"><Local text={r.skipped} /></span> : r.error ? <span className="bad-text"><Local text={r.error} /></span> : r.passed === undefined ? '—' : r.passed ? <span className="ok-text">pass</span> : <span className="bad-text">fail</span>}</td>
+                <td className="mono">{r.score !== undefined ? fmt(r.score, 2) : ''}</td>
+                <td className="mono">{r.massChange !== undefined ? fmt(r.massChange, 1) : ''}</td>
+                <td>{!r.skipped && !r.error && !r.text.endsWith('(now)') && <button className="chip" onClick={() => applyTire(r.text)} title="Put this tire on the car (Ctrl+Z undoes)">Use</button>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </details>
+  );
+}
+
+/** The brake ladder: size the brakes to the tests' hardest stop, keeping a reserve. */
+function BrakeLadderBox({ busy }: { busy: boolean }) {
+  const loop = useLoop();
+  const b = useApp((s) => s.brakes);
+  const setB = useApp((s) => s.setBrakes);
+  const setMore = useApp((s) => s.setBrakeMoreField);
+  const [last, setLast] = useState<{ changes: string[]; blocked: string[] } | null>(null);
+  if (!b.on) return null;
+  const axleName = (a: 'front' | 'rear') => (a === 'front' ? 'front' : 'rear');
+  return (
+    <details className="tire-advanced rate-tuning" open>
+      <summary>Brakes (step ladder)</summary>
+      <p className="hint">Picks the smallest brakes that still have the reserve in the hardest stop of the tests (fade included): more pistons first, larger rotors last, only rotors that fit the wheel; steps down when there is a lot to spare.</p>
+      <FieldRows rows={[{ label: BRAKE_MORE_META.ladderReserve.label, field: b.ladderReserve, unit: '%', hint: BRAKE_MORE_META.ladderReserve.hint, onCommit: (t: string) => setMore('ladderReserve', t) }]} />
+      {(b.drumF || b.drumR) && (
+        <div className="jm-row" title="A drum axle stays on drums unless you allow discs here (it depends on your project).">
+          {b.drumF && <label className="check-label"><input type="checkbox" checked={b.allowDiscF} onChange={(e) => setB({ allowDiscF: e.target.checked })} /> front may switch to discs</label>}
+          {b.drumR && <label className="check-label"><input type="checkbox" checked={b.allowDiscR} onChange={(e) => setB({ allowDiscR: e.target.checked })} /> rear may switch to discs</label>}
+        </div>
+      )}
+      <label className="check-label small-text"><input type="checkbox" checked={loop.sizeBrakes} onChange={(e) => setSizeBrakes(e.target.checked)} /> also inside Optimize until it passes / Improve</label>
+      {!loop.running && (
+        <div className="jm-row">
+          <button className="wide-btn" disabled={busy} title="From the last run of every test (run them first)"
+            onClick={() => { const z = sizeBrakesFrom(); setLast(z ? { changes: z.changes, blocked: z.blocked } : { changes: [], blocked: ['Run the tests first (with the brake hydraulics on).'] }); }}>
+            ▶ Size the brakes from the last test runs
+          </button>
+        </div>
+      )}
+      {last && (
+        <div className="small-text">
+          {last.changes.length ? last.changes.map((c) => <p key={c} className="ok-text">{c}</p>) : !last.blocked.length && <p className="muted">The brakes already fit the tests with the reserve: nothing changed.</p>}
+          {last.blocked.map((c) => <p key={c} className="warn-text">{c}</p>)}
+          {last.changes.length > 0 && <p className="muted">Run the tests again to see the new brakes (Ctrl+Z undoes).</p>}
+        </div>
+      )}
+      {loop.askDisc.length > 0 && (
+        <div className="jm-row">
+          {loop.askDisc.map((a) => (
+            <button key={a} className="chip" onClick={() => { setB(a === 'front' ? { allowDiscF: true } : { allowDiscR: true }); const z = sizeBrakesFrom(); setLast(z ? { changes: z.changes, blocked: z.blocked } : null); }}>
+              Allow discs on the {axleName(a)} and size again
+            </button>
+          ))}
+        </div>
+      )}
+    </details>
   );
 }
 

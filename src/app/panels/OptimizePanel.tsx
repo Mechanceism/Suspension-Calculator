@@ -25,7 +25,7 @@ import { layoutOf, toGeometry,
 import { CORNER_IDS, type CornerId } from '../../core/vehicle/vehicle';
 import { POINT_LABELS, pointLabel } from '../components';
 import type { SuspensionKind, DoubleWishboneGeometry } from '../../core/suspension/doubleWishbone';
-import { pointAxisLocked } from '../locks';
+import { lockKeys, pointAxisLocked } from '../locks';
 import { armMetrics } from '../../core/suspension/armGeometry';
 import {
   buildProblem, buildVehicleProblem, runOptimizer, runVehicleOptimizer, varKey, parseVarKey, vehVarKey, parseVehVarKey, customVarKey, parseCustomVarKey, customOfVariable,
@@ -36,6 +36,7 @@ import { Section, FieldRows, fmt } from './FieldRows';
 import { useDisplay } from '../units';
 import { TireGripFields } from './TireGripPanel';
 import { SearchSelect, SensitivityReport } from './SearchTools';
+import { Local, Val } from './UnitText';
 
 const AXES = ['X', 'Y', 'Z'] as const;
 
@@ -74,7 +75,8 @@ function GoalTable<K extends string>({ kinds, meta, goals, now, onChange }: {
               <td className="nowrap">
                 {m.maximize
                   ? <span className="muted" title="Maximized: as large as possible">max</span>
-                  : <ValueInput field={g.target} unit={m.unit} width={50} onCommit={(t) => onChange(k, { target: parseField(t, 'ratio', g.target) })} />}
+                  : 'minimize' in m && m.minimize ? <span className="muted" title="Minimized: as short as possible">min</span>
+                  : <>{m.limit && <span className="muted" title="A limit: only a value above it counts">≤ </span>}{'atLeast' in m && m.atLeast && <span className="muted" title="A floor: only a value below it counts">≥ </span>}<ValueInput field={g.target} unit={m.unit} width={50} onCommit={(t) => onChange(k, { target: parseField(t, 'ratio', g.target) })} /></>}
               </td>
               <td><ValueInput field={g.weight} unit="" width={36} onCommit={(t) => onChange(k, { weight: parseField(t, 'ratio', g.weight) })} /></td>
               <td className="mono muted nowrap">{now ? disp.text(goalNumber(m.unit, now[k] ?? null), m.unit).text : '…'}</td>
@@ -283,7 +285,7 @@ function RunArea({ useRun, blockers, notes, label, start, current, meta, onApply
                     <td className="mono">{disp.text(goalNumber(m.unit, g.before), m.unit).text}</td>
                     <td className="mono"><b>{disp.text(goalNumber(m.unit, g.after), m.unit).text}</b></td>
                     <td className="mono muted nowrap">
-                      {m.maximize ? 'max' : g.kind === 'bumpSteer' ? '0°' : disp.text(fmt(g.target, 2), m.unit).text}{' '}
+                      {m.maximize ? 'max' : g.kind === 'bumpSteer' ? '0°' : `${m.limit ? '≤ ' : 'atLeast' in m && m.atLeast ? '≥ ' : ''}${disp.text(fmt(g.target, 2), m.unit).text}`}{' '}
                       <span className="unit">{m.maximize || g.kind === 'bumpSteer' ? '' : disp.conv(m.unit).unit}</span>
                     </td>
                   </tr>
@@ -352,7 +354,7 @@ const useProblemDeps = () => [
   useApp((s) => s.locks), useApp((s) => s.links), useApp((s) => s.activeCorner), useApp((s) => s.droop), useApp((s) => s.bump),
   useApp((s) => s.settings), useApp((s) => s.tire), useApp((s) => s.tireModel), useApp((s) => s.volumeChange), useApp((s) => s.spring),
   useApp((s) => s.damper), useApp((s) => s.bumpStop), useApp((s) => s.vehicle), useApp((s) => s.grip), useApp((s) => s.shared),
-  useApp((s) => s.cornerLoadMode), useApp((s) => s.autoPreload), useApp((s) => s.tests),
+  useApp((s) => s.cornerLoadMode), useApp((s) => s.autoPreload), useApp((s) => s.tests), useApp((s) => s.steer), useApp((s) => s.steerCurve),
 ];
 
 // ---------------------------------------------------------------- corner optimizer
@@ -461,7 +463,7 @@ export function OptimizePanel() {
   const now = useMemo(() => {
     if (interacting) return null;
     const p = built.problem;
-    const s = sampleCorner(p.geometry, { droop: p.droop, bump: p.bump, samples: p.samples, rackPositions: p.rackPositions, rollAngle: p.rollAngle, tire: p.tire });
+    const s = sampleCorner(p.geometry, { droop: p.droop, bump: p.bump, samples: p.samples, rackPositions: p.rackPositions, rollAngle: p.rollAngle, tire: p.tire, steering: p.steering });
     if (!s) return null;
     return Object.fromEntries(GOAL_KINDS.map((k) => [k, goalValue(k, s, setup.goals[k].target.value)])) as Record<GoalKind, number | null>;
   }, [built, setup, interacting]);
@@ -504,7 +506,7 @@ export function OptimizePanel() {
       <p className="hint">
         Optimizes the <b>{root}</b> design{sharers.length > 1 ? ` (shared with ${sharers.filter((s) => s !== root).join(', ')})` : ''}: it moves only the
         free coordinates, each within its range, to meet the goals. Locked values never move; locked arm dimensions are held.
-        Travel range {-Math.abs(droop)} to +{Math.abs(bump)} mm (motion bar). For goals across the whole car, use Optimize in the Vehicle view.
+        Travel range <Val v={-Math.abs(droop)} unit="mm" digits={0} /> to +<Val v={Math.abs(bump)} unit="mm" digits={0} /> (motion bar). For goals across the whole car, use Optimize in the Vehicle view.
       </p>
       <CornerPresets />
       <Section title="Goals">
@@ -544,15 +546,17 @@ export function OptimizePanel() {
           <tbody>
             {Object.entries(SCALAR_LABEL).filter(([k]) => k !== 'tirePressure' || gas).map(([k, m]) => {
               const key = `scalar.${k}`, on = !!setup.ranges[key];
+              const isLocked = !!locks[k === 'tirePressure' ? lockKeys.field(root, 'tire', 'pressure') : lockKeys.field(root, 'scalar', k)];
               return (
                 <tr key={k} title={m.hint}>
                   <td>{m.label}</td>
-                  <td><button className={`chip axis-chip${on ? ' on' : ''}`} onClick={() => update((o) => {
+                  <td><button className={`chip axis-chip${on ? ' on' : ''}${isLocked ? ' locked' : ''}`} disabled={isLocked && !on}
+                    title={isLocked ? 'Locked — the optimizer keeps it' : undefined} onClick={() => update((o) => {
                     const r = { ...o.ranges };
                     if (r[key]) delete r[key];
                     else { const now = scalarNow(k); r[key] = { lo: numField(now - m.range), hi: numField(now + m.range) }; }
                     return { ...o, ranges: r };
-                  })}>{on ? 'free' : 'fixed'}</button></td>
+                  })}>{isLocked ? 'fixed🔒' : on ? 'free' : 'fixed'}</button></td>
                 </tr>
               );
             })}
@@ -591,7 +595,11 @@ export function OptimizePanel() {
         <RunArea
           useRun={useCornerRun} blockers={built.blockers} meta={GOAL_META} current={geom}
           label={`Optimize ${sharers.length > 1 ? `${root} (+ ${sharers.length - 1} linked)` : root}`}
-          notes={skippedNote(built.skippedLocked, (k) => { const v = parseVarKey(k)!; return `${POINT_LABELS[v.k]} ${AXES[v.axis]}`; }, built.problem.holds ?? [])}
+          notes={skippedNote(built.skippedLocked, (k) => {
+            if (k.startsWith('scalar.')) return SCALAR_LABEL[k.slice(7) as keyof typeof SCALAR_LABEL]?.label ?? k;
+            const v = parseVarKey(k);
+            return v ? `${POINT_LABELS[v.k]} ${AXES[v.axis]}` : k;
+          }, built.problem.holds ?? [])}
           start={(onP) => runOptimizer(built.problem, onP)}
           preview={(r) => (r as unknown as { geometry?: DoubleWishboneGeometry }).geometry ?? null}
           onApply={(r) => {

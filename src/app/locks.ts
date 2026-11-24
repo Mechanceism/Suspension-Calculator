@@ -140,3 +140,31 @@ export function copyCornerLocks(locks: Locks, from: CornerId, to: CornerId): Loc
   for (const k of Object.keys(locks)) if (k.startsWith(`${from}.`)) out[`${to}${k.slice(from.length)}`] = true;
   return out;
 }
+
+/** The designs (root corners) an axle's values live in: one when the axle's corners share a design. */
+export function axleRoots(links: CornerLinks, axle: 'front' | 'rear'): CornerId[] {
+  const ids: CornerId[] = axle === 'front' ? ['FL', 'FR'] : ['RL', 'RR'];
+  return [...new Set(ids.map((id) => rootOf(id, links)))];
+}
+
+/**
+ * Lock keys for the values a setup-wizard step writes (docs/MATH.md § Setup wizard): what the user
+ * enters there is locked so no optimizer changes it. Steps with nothing an optimizer could move return [].
+ */
+export const wizardKeys = {
+  tires: (roots: CornerId[]) => roots.flatMap((r) => [
+    ...(['tireDiameter', 'tireWidth', 'rimDiameter', 'rimWidth', 'wheelOffset'] as const).map((k) => lockKeys.field(r, 'scalar', k)),
+    ...(['pressure', 'setTemperature', 'setAltitude'] as const).map((k) => lockKeys.field(r, 'tire', k)),
+  ]),
+  /** Wheelbase and track: the wheel centers keep their X (track) and Z (wheelbase). */
+  size: (roots: CornerId[]) => ['vehicle.wheelbase', ...roots.flatMap((r) => [lockKeys.point(r, 'wheelCenter', 0), lockKeys.point(r, 'wheelCenter', 2)])],
+  weight: () => ['vehicle.mass', 'vehicle.cgX', 'vehicle.cgY', 'vehicle.cgZ'],
+  unsprung: (roots: CornerId[]) => roots.map((r) => lockKeys.field(r, 'spring', 'unsprungMass')),
+  springs: (roots: CornerId[]) => roots.map((r) => lockKeys.field(r, 'spring', 'springRate')),
+  dampers: (roots: CornerId[], barAxles: ('front' | 'rear')[]) => [
+    ...roots.flatMap((r) => [lockKeys.field(r, 'damper', 'bumpDamping'), lockKeys.field(r, 'damper', 'reboundDamping')]),
+    ...barAxles.map((a) => `shared.${a}.arbRate`),
+  ],
+  steering: () => ['steer.rackLimit', 'steer.cFactor'],
+  inertia: () => ['vehicle.rollInertia', 'vehicle.pitchInertia', 'vehicle.yawInertia'],
+};

@@ -42,7 +42,13 @@ import {
   handlingCar, handlingForces, stepHandling, driverCommand, wheelAngles, rackFor, effAt, kinematicForces, slipUse, handlingGrip,
   KINEMATIC_SPEED, type HandlingState, type HandlingForces, type TireNow, type DriverSpec,
 } from './handling';
+import { planAt, planAtTime, planDuration } from './plan';
 import { stateFacts, slipDifference, dimsOf, type PlaybackFrame, type TestSegmentSpec } from './run';
+import { steeringEffort } from '../suspension/steeringEffort';
+import { steeringLoads } from '../suspension/steering';
+import { characteristics } from '../suspension/characteristics';
+import { inputPerRev } from './steer';
+import { vec3, sub, dot, cross, normalize } from '../math/vec3';
 
 export interface RideOptions {
   /** Time step, s (default 2 ms). */
@@ -70,6 +76,26 @@ export interface RideOptions {
    */
   driverSpeed?: boolean;
   driver?: DriverSpec;
+  /**
+   * Resume from the car's state saved at the start of a segment (`RideRun.checkpoints`), the segments before
+   * it the same as when it was saved: only that segment on is driven (frames and findings from it on).
+   */
+  resume?: RideCheckpoint;
+  /** Stop after this segment (index): a ladder judging one segment needn't drive the rest. */
+  stopAfter?: number;
+  /** Stop after the first segment this says yes to (given its findings over time): a ladder fixing segments in order. */
+  stopWhen?: (segment: number, findings: Finding[]) => boolean;
+  /** Time between recorded frames, s (default from the test's length); a resumed run keeps its checkpoint's. */
+  frameDt?: number;
+}
+
+/** The car's whole state at the start of a segment (opaque), to resume a ride from there. */
+export interface RideCheckpoint {
+  segment: number;
+  /** Frames recorded before it (over the whole run). */
+  frameCount: number;
+  frameDt: number;
+  state: unknown;
 }
 
 export interface RideRun {
@@ -79,6 +105,32 @@ export interface RideRun {
   /** Smooth measures of how well the car rode (for tuning springs and dampers). */
   metrics: RideMeasures;
   error?: string;
+  /** The state at the start of each segment driven, and after the last one (index = segment). */
+  checkpoints?: (RideCheckpoint | undefined)[];
+  frameDt?: number;
+  /** The last segment driven (index). */
+  last?: number;
+}
+
+/**
+ * A resumed run (from segment `from`) joined to the run it resumed: what came before `from` from the old one,
+ * the rest from the new one (its metrics: they carry on from the checkpoint). Segments past where the new
+ * one stopped have no findings or checkpoints yet.
+ */
+export function joinRide(prev: RideRun, next: RideRun, from: number): RideRun {
+  if (from <= 0) return next;
+  const n = Math.max(prev.findings.length, next.findings.length);
+  const cut = next.checkpoints?.[from]?.frameCount ?? prev.checkpoints?.[from]?.frameCount ?? prev.frames.length;
+  const cps = Array.from({ length: n + 1 }, (_, i) => (i < from ? prev.checkpoints?.[i] : next.checkpoints?.[i]));
+  return {
+    frames: [...prev.frames.slice(0, cut), ...next.frames],
+    findings: Array.from({ length: n }, (_, i) => (i < from ? prev.findings[i] ?? [] : next.findings[i] ?? [])),
+    metrics: next.metrics,
+    ...(next.error ?? prev.error ? { error: next.error ?? prev.error } : {}),
+    checkpoints: cps,
+    ...(next.frameDt ?? prev.frameDt ? { frameDt: next.frameDt ?? prev.frameDt } : {}),
+    ...(next.last !== undefined ? { last: next.last } : {}),
+  };
 }
 
 export interface RideMeasures {
@@ -97,6 +149,14 @@ export interface RideMeasures {
   /** Handling (driver steering): largest distance off the path (m) and largest sideslip (deg). */
   maxPathError?: number;
   maxSideslip?: number;
+  /**
+   * Energy (J): what the road's push on the bump faces took from (+) or gave to the forward motion, and
+   * what the dampers and the tires' damping turned into heat. Over a run that ends settled the two match.
+   */
+  bumpWork?: number;
+  dissipated?: number;
+  /** Largest steering-wheel kick (N·m): the jolt above the 0.3 s running mean (front tires' forces). */
+  maxKickback?: number;
 }
 
 const NO_METRICS: RideMeasures = { liftTime: 0, bumpStopTime: 0, loadVariation: 0, heaveAccRms: 0, duration: 0 };
@@ -175,10 +235,15 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     return { ...c, tireForceAt: tables.get(key)! };
   });
   const byId = Object.fromEntries(corners.map((c) => [c.id, c])) as Record<CornerId, VehicleCorner>;
-  const durations = segments.map((sg) => { const v = (sg.v0 + sg.v1) / 2; return v > 0 ? sg.distance / v : 0; });
+  // A planned segment (speeds as maximums) takes its plan's time; otherwise v₀ → v₁ at constant acceleration.
+  const durations = segments.map((sg) => { if (sg.plan && sg.plan.s.length > 1) return planDuration(sg.plan); const v = (sg.v0 + sg.v1) / 2; return v > 0 ? sg.distance / v : 0; });
   const total = durations.reduce((a, b) => a + b, 0);
   const maxFrames = o.maxFrames ?? 1500;
-  const frameDt = Math.max(1 / (o.hz ?? 25), total / maxFrames);
+  const resume = o.resume && o.resume.segment > 0 && o.resume.segment < segments.length ? o.resume : undefined;
+  const frameDt = resume?.frameDt ?? o.frameDt ?? Math.max(1 / (o.hz ?? 25), total / maxFrames);
+  const from = resume?.segment ?? 0;
+  let stop = Math.min(segments.length - 1, o.stopAfter ?? segments.length - 1);
+  const checkpoints: (RideCheckpoint | undefined)[] = [];
   const findings: Finding[][] = segments.map(() => []);
   const frames: PlaybackFrame[] = [];
   const checkDt = o.checkEvery ?? 0.01;
@@ -186,7 +251,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
   const handling = !!o.handling;
   // Driven by a driver, a moment at full lock (catching a slide) isn't a failure; running off the line is.
   const INSTANT = new Set(['wheelLift', 'bumpStop', 'bottoming', 'rollover', 'noSolution', ...(handling ? ['pathError', 'spin', 'trailerSway'] : ['steerLimit'])]);
-  if (!(total > 0)) return { frames, findings, metrics: { ...NO_METRICS } };
+  if (!(total > 0)) return { frames, findings, metrics: { ...NO_METRICS }, frameDt };
   // The path's curvature at a distance along the whole test (1/m, + = left); past the end, the last segment's.
   const starts: number[] = [];
   segments.reduce((a, sg) => { starts.push(a); return a + sg.distance; }, 0);
@@ -198,6 +263,20 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     return sign / Math.max(sg.radius, 0.1);
   };
   const kappas = segments.map(kappaOf);
+  // The road's height along the test (m; each segment a straight slope, as the course is drawn), and the grade
+  // the car is at: the slope from where its rear axle is to where its front axle is (s is the front axle's
+  // distance). Over a change of grade the car pitches as the wheelbase passes it — not in a fixed time — so it
+  // sits on the road with both axles (before, the grade eased over 0.3 s from when the front reached it, and
+  // the rear sank into the road past a crest).
+  const zStart: number[] = [];
+  segments.reduce((z, sg) => { zStart.push(z); return z + sg.distance * Math.sin(sg.grade); }, 0);
+  const zAt = (S: number) => {
+    if (S <= 0 || !segments.length) return S * Math.sin(segments[0]?.grade ?? 0);
+    let j = 0;
+    while (j < segments.length - 1 && S >= starts[j + 1]!) j++;
+    return zStart[j]! + (S - starts[j]!) * Math.sin(segments[j]!.grade);
+  };
+  const gradeAt = (S: number) => (wb > 0 ? Math.asin(Math.max(-1, Math.min(1, (zAt(S) - zAt(S - wb)) / wb))) : segments[0]?.grade ?? 0);
   const kappaAt = (S: number) => {
     let j = 0;
     while (j < segments.length - 1 && S >= starts[j + 1]!) j++;
@@ -207,6 +286,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
   // The road and accelerations at time t.
   const kinAt = (i: number, tt: number) => {
     const sg = segments[i]!;
+    if (sg.plan && sg.plan.s.length > 1) { const q = planAtTime(sg.plan, tt); return kinFrom(i, q.s, q.v, q.a, tt); }
     const T = durations[i]!;
     const a = (sg.v1 - sg.v0) / T;
     return kinFrom(i, sg.v0 * tt + 0.5 * a * tt * tt, sg.v0 + a * tt, a, tt);
@@ -223,14 +303,18 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       const u = smooth(tt / ramp);
       k = { ay: prev.ay + (k.ay - prev.ay) * u, ax: prev.ax + (k.ax - prev.ax) * u, grade: prev.grade + (k.grade - prev.grade) * u, bank: prev.bank + (k.bank - prev.bank) * u };
     }
+    k = { ...k, grade: gradeAt(starts[i]! + s) };
     const wh = sg.road ? wheelHeights(sg.road, s, wb, ht) : { FL: 0, FR: 0, RL: 0, RR: 0 };
     const ground = {} as Record<CornerId, number>;
     for (const id of CORNER_IDS) ground[id] = (sg.bumps?.[id] ?? 0) + wh[id];
     return { s, v, ...k, ground };
   };
+  /** The handling model's yaw rate now (rad/s), once it runs. */
+  let yawNow: number | undefined;
   const inputAt = (k: ReturnType<typeof kinAt>, ayH?: number) => {
     const eff = roadEffective(ayH ?? k.ay, k.ax, k.grade, k.bank);
-    return { ...vehicleInputOf(p, asm, { lateralG: eff.lateralG, brakingG: eff.brakingG, accelG: eff.accelG, gravityScale: eff.gravityScale, groundOffset: k.ground, speed: k.v }), corners };
+    // With handling, the car's own yaw rate (a locked axle's wheel slips follow it).
+    return { ...vehicleInputOf(p, asm, { lateralG: eff.lateralG, brakingG: eff.brakingG, accelG: eff.accelG, gravityScale: eff.gravityScale, groundOffset: k.ground, speed: k.v }), corners, ...(yawNow !== undefined ? { yawRate: yawNow } : {}) };
   };
 
   // Start from the steady state at t = 0.
@@ -254,6 +338,38 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     fz: res[id].tireLoad, gammaLeft: res[id].inclination * (isLeft(id) ? 1 : -1), fx: res[id].longitudinalForce,
   }])) as Record<CornerId, TireNow>;
   let tires = tireNow(steady.corners);
+  // Speed from forces (driver mode): rolling resistance, drag at the design ride height, the bumps' push.
+  const crr = Math.max(0, p.rollingResistance ?? 0);
+  const rh0 = { front: -asm.groundY, rear: -asm.groundY };
+  const dragAt = (u: number) => (p.aero && u > 0 ? aeroForces({ model: p.aero.model, rho: p.aero.rho, speed: u }, rh0, rh0).drag : 0);
+  let bumpPush = 0, bumpWork = 0, dissipated = 0;
+  const push = { FL: 0, FR: 0, RL: 0, RR: 0 } as Record<CornerId, number>;
+  // Kickback: each steered front corner's design state, its steering ratio and the forces' torque about
+  // its steering axis (brake / drive at the contact through the scrub radius, side force through the
+  // trail, load through the axis's tilt, and the bump's push through the wheel center: the kingpin offset
+  // there). Net at the steering wheel: left − right (each corner's + turns its wheel's front outboard).
+  const kickers = p.steering ? (['FL', 'FR'] as const).filter((id) => p.steering!.steered[id]).flatMap((id) => {
+    const corner = asm.built.get(p.roots[id]);
+    if (!corner) return [];
+    const st0 = corner.solve({ travel: 0 });
+    if (st0.solve.status !== 'converged') return [];
+    const eff = steeringEffort(corner, st0, { cFactor: inputPerRev(0, p.steering!), mu: 1, load: 1, lateralG: 0, pneumaticTrail: 0 });
+    return eff ? [{ id, st0, ratio: eff.ratio, contact: characteristics(st0).contactPoint }] : [];
+  }) : [];
+  const kickTorque = (res: Record<CornerId, CornerResult>) => {
+    let t = 0;
+    for (const k of kickers) {
+      const r = res[k.id];
+      const side = isLeft(k.id) ? 1 : -1;
+      const pt = k.st0.points;
+      const u = normalize(sub(pt.steerUpper, pt.steerLower));
+      const contactT = steeringLoads(k.st0, k.contact, { vertical: r.tireLoad, lateral: side * r.lateralForce, longitudinal: r.longitudinalForce, pneumaticTrail: p.pneumaticTrail ?? 0 }, vec3(1, 0, 0), 1).axisTorque;
+      const pushT = dot(u, cross(sub(pt.wheelCenter, pt.steerLower), vec3(0, 0, push[k.id])));
+      t += side * (contactT + pushT) * k.ratio / 1000; // N·m at the steering wheel
+    }
+    return t;
+  };
+  let kickMean = NaN, maxKick = 0;
   let H: HandlingState | null = null;
   let maxPathError = 0, maxSideslip = 0, maxSway = 0;
   /** Forces of the tires on the handling state; in the slow (kinematic) mode, what the motion needs. */
@@ -323,8 +439,8 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     const d0 = Math.atan(car.L * kap0) + (K0 * (u0 * u0 * kap0 - grav0)) / G;
     const rk = rackFor(car.table, d0);
     H = { v: 0, r: u0 * kap0, eY: 0, ePsi: 0, delta: effAt(car.table, rk.rack, d0), rack: rk.rack, cmd: rk.needed, atLock: rk.atLock, K: K0, want: d0 };
-    // Settle on the first segment's curve (held at t = 0) before the clock starts.
-    for (let n = 0; n < 750; n++) advance(u0, 0, grav0, dt, () => kap0);
+    // Settle on the first segment's curve (held at t = 0) before the clock starts (resumed: restored below).
+    if (!resume) for (let n = 0; n < 750; n++) advance(u0, 0, grav0, dt, () => kap0);
   }
 
   /** Accelerations, corner results and body forces at state (x, v). */
@@ -335,6 +451,8 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     const Q = new Array<number>(7).fill(0);
     const M = Array.from({ length: 7 }, () => new Array<number>(7).fill(0));
     const res = {} as Record<CornerId, CornerResult>;
+    // Power turned into heat by the dampers and the tires' damping, W.
+    let diss = 0;
     // Velocity Jacobian of a point (world, mm) w.r.t. heave (m), roll, pitch: columns, in m per unit.
     const jac = (pt: { x: number; y: number; z: number }) => {
       const rx = pt.x / 1000, ry = (pt.y - pose.heave) / 1000, rz = pt.z / 1000;
@@ -375,6 +493,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       const dLX = dwcX && Number.isFinite(sx.dLX ?? NaN) ? sx.dLX! : 0;
       const Ldot = dL * vs[3 + k]! + dLX * vs[3 + kp]!;
       const fd = c.damper ? damperForce(c.damper, Ldot) : 0;
+      diss += fd * Ldot + ride.tireDamping * (gdot[id] - vy) * (gdot[id] - vy);
       Q[3 + k]! += cw.work - dL * fd;
       if (dwcX) Q[3 + kp]! += cw.cross - dLX * fd;
       res[id] = cornerResult(c, input, f[id], q(k), status[id], cw);
@@ -396,7 +515,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       M[3 + k]![3 + k] = 1; Q[3 + k] = 0;
     });
     const acc = solveLinear(M, Q) ?? new Array<number>(7).fill(0);
-    return { acc, res, pose };
+    return { acc, res, pose, diss };
   };
 
   let t0 = 0, nextFrame = 0;
@@ -406,7 +525,34 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
   let uDrv = segments[0]?.v0 ?? 0, sCarry = 0;
   const muEst = steady.grip ? CORNER_IDS.reduce((a, id) => a + steady.grip!.corners[id].capacity, 0) / (p.mass * G * Math.max(in0.gravityScale ?? 1, 0.1)) : 1;
   const canDrive = corners.some((c) => c.drive !== 'none'), canBrake = corners.some((c) => c.brake !== 'none');
+  // Save / restore everything that carries from one segment to the next.
+  const save = (segment: number): RideCheckpoint => ({
+    segment, frameCount: (resume?.frameCount ?? 0) + frames.length, frameDt,
+    state: structuredClone({
+      x, v, loads, caps, groundPrev, loadMean, status, tires, bumpPush, bumpWork, dissipated, push, kickMean, maxKick, H, TS, rtdot, yawNow,
+      maxPathError, maxSideslip, maxSway, t0, nextFrame, x2d, y2d, heading, uDrv, sCarry, liftTime, bumpStopTime, loadVarSum, accSum, metricCount, lastMetricT,
+    }),
+  });
+  if (resume) {
+    const st = structuredClone(resume.state) as {
+      x: number[]; v: number[]; loads: typeof loads; caps: typeof caps; groundPrev: typeof groundPrev; loadMean: typeof loadMean; status: typeof status;
+      tires: typeof tires; bumpPush: number; bumpWork: number; dissipated: number; push: typeof push; kickMean: number; maxKick: number; H: HandlingState | null;
+      TS: SwayState | null; rtdot: number; yawNow: number | undefined; maxPathError: number; maxSideslip: number; maxSway: number; t0: number; nextFrame: number;
+      x2d: number; y2d: number; heading: number; uDrv: number; sCarry: number; liftTime: number; bumpStopTime: number; loadVarSum: number; accSum: number;
+      metricCount: number; lastMetricT: number;
+    };
+    x.splice(0, x.length, ...st.x); v.splice(0, v.length, ...st.v);
+    loads = st.loads; caps = st.caps; groundPrev = st.groundPrev; tires = st.tires;
+    Object.assign(loadMean, st.loadMean); Object.assign(status, st.status); Object.assign(push, st.push);
+    bumpPush = st.bumpPush; bumpWork = st.bumpWork; dissipated = st.dissipated; kickMean = st.kickMean; maxKick = st.maxKick;
+    H = st.H; if (TS && st.TS) Object.assign(TS, st.TS); rtdot = st.rtdot; yawNow = st.yawNow;
+    maxPathError = st.maxPathError; maxSideslip = st.maxSideslip; maxSway = st.maxSway;
+    t0 = st.t0; nextFrame = st.nextFrame; x2d = st.x2d; y2d = st.y2d; heading = st.heading; uDrv = st.uDrv; sCarry = st.sCarry;
+    liftTime = st.liftTime; bumpStopTime = st.bumpStopTime; loadVarSum = st.loadVarSum; accSum = st.accSum; metricCount = st.metricCount; lastMetricT = st.lastMetricT;
+  }
   segments.forEach((sg, i) => {
+    if (i < from || i > stop) return;
+    checkpoints[i] = save(i);
     const T = durations[i]!;
     if (!(T > 0)) return;
     const checks = sg.checks ?? PROFILES.default.checks;
@@ -419,7 +565,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     // Driver speed control: the segment lasts until its distance is covered (at most a few times its nominal time).
     const maxSteps = drv ? nSteps * 4 + Math.ceil(5 / h) : nSteps;
     const aProf = sg.distance > 0 ? (sg.v1 * sg.v1 - sg.v0 * sg.v0) / (2 * sg.distance) : 0;
-    let sDrv = sCarry, segEnd = false, tEnd = T, lifted = 0, slowed = 0;
+    let sDrv = sCarry, segEnd = false, tEnd = T, lifted = 0, slowed = 0, held = 0, kickSeg = 0, kickT = 0, vMin = Infinity;
     for (let n = 1; n <= maxSteps && !(drv && segEnd); n++) {
       const tt = n * h;
       let kin: ReturnType<typeof kinFrom>;
@@ -427,7 +573,8 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
         // Target: the profile's speed here; command: the profile's acceleration plus a correction toward it.
         // The driver never aims above what the tires can corner (0.95 μ g R) here, or than they can still
         // brake down to it for a tighter bend up to 40 m ahead.
-        let vT = Math.sqrt(Math.max(0.01, sg.v0 * sg.v0 + 2 * aProf * Math.min(sDrv, sg.distance)));
+        const planned = sg.plan && sg.plan.s.length > 1 ? planAt(sg.plan, Math.min(sDrv, sg.distance)) : null;
+        let vT = planned ? Math.max(0.1, planned.v) : Math.sqrt(Math.max(0.01, sg.v0 * sg.v0 + 2 * aProf * Math.min(sDrv, sg.distance)));
         const vSet = vT;
         const aBrake = 0.8 * muEst * G;
         for (let d = 0; d <= 40; d += 2) {
@@ -435,7 +582,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
           if (kd > 1e-6) vT = Math.min(vT, Math.sqrt((0.95 * muEst * G) / kd + 2 * aBrake * d));
         }
         if (vT < vSet - 0.05) slowed += h;
-        let aCmd = aProf + 1.5 * (vT - uDrv);
+        let aCmd = (planned ? planned.a : aProf) + 1.5 * (vT - uDrv);
         // Running wide of the line (off it toward the outside of the turn): lift / brake to tighten the line.
         const kap = kappaAt(starts[i]! + sDrv);
         const wide = H && Math.abs(kap) > 1e-6 ? -Math.sign(kap) * H.eY : 0;
@@ -443,12 +590,23 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
         // Within the tires: what is left of their grip after the cornering, and only the pedals the car has.
         const ayNow = (uDrv * uDrv * Math.abs(kap)) / G;
         const axMax = G * Math.sqrt(Math.max(0, muEst * muEst - ayNow * ayNow));
-        aCmd = Math.max(canBrake ? -axMax : 0, Math.min(canDrive ? axMax : 0, aCmd));
-        uDrv = Math.max(0.5, uDrv + h * aCmd);
+        // Speed from forces: the tires push what the driver asks (the target's acceleration plus the drag,
+        // grade and rolling resistance the driver expects), within their grip and the pedals the car has;
+        // coasting, nothing. The car then speeds up or slows by what the forces leave, bumps included.
+        const mass = p.mass;
+        const drag = dragAt(uDrv), gradeF = mass * G * Math.sin(sg.grade), rr = crr * mass * G * Math.cos(sg.grade);
+        let Ft = sg.coast ? 0 : mass * aCmd + drag + gradeF + rr;
+        const FtMax = mass * axMax;
+        const want = Ft;
+        Ft = Math.max(canBrake ? -FtMax : 0, Math.min(canDrive ? FtMax : 0, Ft));
+        if (!sg.coast && Math.abs(Ft - want) > 0.02 * mass * G) held += h;
+        const aSmooth = (Ft - drag - gradeF - rr) / mass;
+        uDrv = Math.max(0.5, uDrv + h * (aSmooth - bumpPush / mass));
+        vMin = Math.min(vMin, uDrv);
         sDrv += h * uDrv;
         segEnd = sDrv >= sg.distance || n === maxSteps;
         if (segEnd) { tEnd = tt; sCarry = Math.max(0, sDrv - sg.distance); }
-        kin = kinFrom(i, Math.min(sDrv, sg.distance), uDrv, aCmd, tt);
+        kin = kinFrom(i, Math.min(sDrv, sg.distance), uDrv, aSmooth, tt);
       } else {
         kin = kinAt(i, tt);
         segEnd = n === nSteps;
@@ -459,6 +617,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       if (H) {
         const grav = G * Math.sin(kin.bank) * Math.cos(kin.grade);
         hf = advance(kin.v, starts[i]! + kin.s, grav, h, kappaAt, kin.ax * G);
+        yawNow = H.r;
         ayH = (hf.sumFy / car!.mass + grav) / (G * Math.max(Math.cos(kin.bank), 0.1));
       }
       const input = inputAt(kin, ayH);
@@ -492,6 +651,22 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       });
       if (!x.every(Number.isFinite)) return void findings[i]!.push({ check: 'noSolution', severity: 'fail', text: `The ride simulation became unstable at ${(t0 + tt).toFixed(2)} s` });
       const now = evaluate(input, fs, f, gdot, x, v);
+      // The road's push on the tires climbing (or rolling off) a bump face: the load tilted with the road,
+      // horizontal = load × road slope (= load × ground rise speed ÷ car speed), through the wheel center.
+      const uNow = Math.max(kin.v, 0.5);
+      bumpPush = 0;
+      for (const id of CORNER_IDS) {
+        push[id] = -now.res[id].tireLoad * gdot[id] / uNow;
+        bumpPush -= push[id];
+        bumpWork += now.res[id].tireLoad * gdot[id] * h;
+      }
+      dissipated += (now.diss ?? 0) * h;
+      if (kickers.length) {
+        const T = kickTorque(now.res);
+        kickMean = Number.isFinite(kickMean) ? kickMean + (T - kickMean) * Math.min(1, h / 0.3) : T;
+        const kick = Math.abs(T - kickMean);
+        if (kick > kickSeg) { kickSeg = kick; kickT = t0 + tt; }
+      }
       loads = Object.fromEntries(CORNER_IDS.map((id) => [id, now.res[id].tireLoad])) as Record<CornerId, number>;
       caps = capacities(input, now.res, Math.sign(fs.latTotal));
       tires = tireNow(now.res);
@@ -591,14 +766,25 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       const ft = sp2.firstT ?? 0;
       findings[i]!.push({ ...x, t: ft, text: `${x.text} (at ${ft.toFixed(1)} s${sp2.count > 1 ? `, ${sp2.count} times` : ''})` });
     }
-    // The driver lifted and the car ended the segment well short of its speed: say so.
-    if (drv && (lifted > 0 || slowed > 0) && uDrv < sg.v1 - 0.5) {
+    // Kickback: a jolt at the steering wheel above the limit.
+    maxKick = Math.max(maxKick, kickSeg);
+    {
+      const kc = checks.kickback ?? PROFILES.default.checks.kickback;
+      if (kc && kc.severity !== 'pass' && kickSeg > (kc.threshold ?? 5)) findings[i]!.push({ check: 'kickback', severity: kc.severity, text: `Kickback: a ${kickSeg.toFixed(1)} N·m jolt at the steering wheel (bump / braking forces through the scrub radius and the kingpin offset) at ${kickT.toFixed(1)} s`, t: kickT });
+    }
+    // The driver lifted, or the tires / pedals couldn't hold the speed, and the car ended well short of it: say so.
+    const vEnd = sg.plan && sg.plan.v.length ? sg.plan.v[sg.plan.v.length - 1]! : sg.v1;
+    if (drv && !sg.coast && (lifted > 0 || slowed > 0 || held > 0.2) && uDrv < vEnd - 0.5) {
       const sev = (checks.speedNotReached ?? PROFILES.default.checks.speedNotReached).severity;
-      const why = lifted > 0 ? `lifted to stay on the line (${lifted.toFixed(1)} s)` : 'slowed for the turn (the tires cannot take it at the set speed)';
-      if (sev !== 'pass') findings[i]!.push({ check: 'speedNotReached', severity: sev, text: `The driver ${why}: ${(uDrv * 3.6).toFixed(0)} km/h at the end instead of ${(sg.v1 * 3.6).toFixed(0)}`, t: t0 + tEnd });
+      // (Not the "Driver lifts" option: the pedal driver slows down by itself when the car runs wide.)
+      const why = lifted > 0 ? `slowed down to stay on the line (for ${lifted.toFixed(1)} s)` : slowed > 0 ? 'slowed for the turn (the tires cannot take it at the set speed)' : `couldn't hold the speed (${!canDrive ? 'no powered wheels against drag, grade and rolling resistance' : 'not enough grip or brakes'})`;
+      const low = Number.isFinite(vMin) && vMin < uDrv - 0.5 ? `down to ${(vMin * 3.6).toFixed(0)} km/h, ` : '';
+      if (sev !== 'pass') findings[i]!.push({ check: 'speedNotReached', severity: sev, text: `The driver ${why}: ${low}${(uDrv * 3.6).toFixed(0)} km/h at the end instead of ${(vEnd * 3.6).toFixed(0)} km/h${sg.plan ? ' (planned)' : ''}`, t: t0 + tEnd });
     }
     t0 += drv ? tEnd : T;
+    if (i < stop && o.stopWhen?.(i, findings[i]!)) stop = i;
   });
+  checkpoints[stop + 1] = save(stop + 1);
   const nAcc = Math.max(1, metricCount);
   const metrics: RideMeasures = {
     liftTime, bumpStopTime, duration: total,
@@ -606,8 +792,9 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     heaveAccRms: Math.sqrt(accSum / nAcc),
     ...(H ? { maxPathError, maxSideslip } : {}),
     ...(TS ? { maxSway } : {}),
+    bumpWork, dissipated, ...(kickers.length ? { maxKickback: maxKick } : {}),
   };
-  return { frames, findings, metrics };
+  return { frames, findings, metrics, checkpoints, frameDt, last: stop };
 
   /** The driver's steering as a steering need (for the Steering lock check and the display). */
   function handlingSteer(hs: HandlingState, straight: boolean, kappa: number): SteerNeed | null {
@@ -615,10 +802,14 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     if (tb.ideal || (tb.none && straight)) return null;
     const lockEff = Math.abs(effAt(tb, Math.sign(hs.cmd || hs.rack || 1) * tb.limit, 0));
     const wheel = hs.want;
+    const turn = Math.atan(car!.L * kappa);
+    // Mostly steering back toward the line (well off it, and most of the angle isn't the turn's).
+    const recovering = Math.abs(hs.eY) > 0.5 && Math.abs(wheel - turn) > Math.abs(turn);
     return {
-      rack: hs.cmd, rackUsed: hs.rack, wheelAngle: wheel * DEG, slip: (wheel - Math.atan(car!.L * kappa)) * DEG, maxAngle: lockEff * DEG,
+      rack: hs.cmd, rackUsed: hs.rack, wheelAngle: wheel * DEG, slip: (wheel - turn) * DEG, maxAngle: lockEff * DEG,
       steeringWheel: p.steering && p.steering.cFactor > 0 ? steeringWheelAngle(hs.cmd, p.steering) : NaN,
       limit: tb.limit, over: tb.none || Math.abs(hs.cmd) > tb.limit + 1e-6, none: tb.none,
+      ...(recovering ? { offLine: hs.eY, turnAngle: turn * DEG } : {}),
     };
   }
 }

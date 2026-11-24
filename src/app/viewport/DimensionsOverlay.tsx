@@ -37,7 +37,7 @@ export function DimensionsOverlay({ cur }: { cur: Current }) {
             <Seg a={a} b={b} color={color} width={1.5} dashed />
             <Html position={[mid.x, mid.y, mid.z]} style={{ pointerEvents: 'auto' }}>
               <button className={`dim-label${bad ? ' bad' : ''}`} onClick={() => startMeasure([d.a, d.b])}
-                title={`Held ${MEASURE_LABELS[d.measure]}${d.travel === null ? ' (permanent)' : d.travel === 0 ? ' at ride height' : ` at ${d.travel} mm travel`}${bad ? ' — NOT MET' : ''}. Click to edit.`}>
+                title={`Held ${MEASURE_LABELS[d.measure]}${d.travel === null ? ' (permanent)' : d.travel === 0 ? ' at ride height' : ` at ${disp.local(`${d.travel} mm`)} travel`}${bad ? ' — NOT MET' : ''}. Click to edit.`}>
                 🔒 {d.measure === 'distance' ? '' : `${MEASURE_LABELS[d.measure]} `}{value}{where}
               </button>
             </Html>

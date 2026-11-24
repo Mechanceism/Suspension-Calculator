@@ -12,7 +12,7 @@
  *    Gaussian process models the cost from every test so far; the next test is where the expected
  *    improvement is largest.
  */
-import { boundedLeastSquares, type LsqOptions, type LsqResult, type ResidualFn } from './leastSquares';
+import { lsqSteps, runStepsSync, type LsqOptions, type LsqResult, type ResidualFn, type Steps } from './leastSquares';
 import { solveLinear } from '../math/linalg';
 
 /** Small, fast seeded random numbers (mulberry32). */
@@ -57,21 +57,29 @@ export function multiStartLeastSquares(
   f: ResidualFn, x0: number[], lo: number[], hi: number[], opts: LsqOptions, ms: MultiStartOptions,
   onStart?: (start: number, of: number) => void,
 ): LsqResult & { start: number; starts: number } {
+  return runStepsSync(multiStartSteps(x0, lo, hi, opts, ms, onStart), f);
+}
+
+/** The steps of multiStartLeastSquares (batches of points to evaluate; see lsqSteps). */
+export function* multiStartSteps(
+  x0: number[], lo: number[], hi: number[], opts: LsqOptions, ms: MultiStartOptions,
+  onStart?: (start: number, of: number) => void,
+): Steps<LsqResult & { start: number; starts: number }> {
   const starts = Math.max(1, Math.round(ms.starts));
-  const first = boundedLeastSquares(f, x0, lo, hi, opts);
+  const first = yield* lsqSteps(x0, lo, hi, opts);
   if (starts === 1) return { ...first, start: 0, starts: 1 };
   let stopped = first.status === 'cancelled';
   const rand = rng(ms.seed ?? 7);
   const n = Math.max(12, ms.samples ?? 8 * starts);
-  const scored = latinHypercube(n, x0.length, rand).map((u) => {
-    const x = scaleTo(u, lo, hi);
-    return { x, cost: costOf(f(x)) };
-  }).filter((s) => Number.isFinite(s.cost)).sort((a, b) => a.cost - b.cost);
+  const xs = latinHypercube(n, x0.length, rand).map((u) => scaleTo(u, lo, hi));
+  const rs = stopped ? [] : yield xs;
+  const scored = xs.map((x, i) => ({ x, cost: costOf(rs[i] ?? null) }))
+    .filter((s) => Number.isFinite(s.cost)).sort((a, b) => a.cost - b.cost);
   let best = { ...first, start: 0 };
   let iterBase = first.iterations;
   for (let k = 0; k < starts - 1 && k < scored.length && !stopped; k++) {
     onStart?.(k + 1, starts);
-    const r = boundedLeastSquares(f, scored[k]!.x, lo, hi, {
+    const r = yield* lsqSteps(scored[k]!.x, lo, hi, {
       ...opts,
       onIteration: opts.onIteration ? (i) => opts.onIteration!({ ...i, iteration: iterBase + i.iteration, cost0: first.cost0 }) : undefined,
     });
@@ -232,6 +240,24 @@ export class BayesOpt {
       if (e > bestEi) { bestEi = e; bestX = c; } else step *= 0.9;
     }
     return bestX;
+  }
+
+  /**
+   * q points to test together (in parallel): each one is suggested as if the ones before it had come
+   * back at the best cost so far ("constant liar"), so they spread out instead of piling up.
+   */
+  suggestBatch(q: number): number[][] {
+    const out: number[][] = [];
+    const lie = this.ys.length ? Math.min(...this.ys) : 0;
+    for (let k = 0; k < Math.max(1, q); k++) {
+      const u = this.suggest();
+      out.push(u);
+      this.xs.push(u.map((v) => Math.min(1, Math.max(0, v))));
+      this.ys.push(lie);
+    }
+    this.xs.splice(this.xs.length - out.length);
+    this.ys.splice(this.ys.length - out.length);
+    return out;
   }
 
   /** Gaussian process on the standardized costs, length scale by maximum likelihood over a grid. */

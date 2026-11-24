@@ -29,10 +29,13 @@ import {
   CORNER_IDS, isFront, isLeft, placement, poseFns, solveVehicle, staticCornerLoads, designGroundY,
   type AxleShared, type BrakeMount, type CornerId, type DriveMount, type VehicleCorner, type VehicleResult, type ChassisPose, type DiffType, type VehicleInput, type DamperSpec,
 } from '../vehicle/vehicle';
-import { type LsqResult } from './leastSquares';
-import { multiStartLeastSquares, latinHypercube, rng, sensitivity, type Sensitivity } from './search';
+import { runStepsSync, type LsqResult } from './leastSquares';
+import { multiStartSteps, latinHypercube, rng, sensitivity, type Sensitivity } from './search';
 import type { RoadState } from '../tests/segments';
 import { checkResiduals } from '../tests/checks';
+import type { EffortSpec } from '../suspension/steeringEffort';
+import type { BrakeSystem, BrakeDetail } from '../vehicle/brakes';
+import { shimmyReport, type ShimmySpec } from './shimmyOf';
 import {
   withVariables, variableValue, sampleCorner, cornerGoalResiduals, goalValue, holdValue, holdTarget, getPoint,
   type Variable, type Hold, type ProgressInfo,
@@ -41,10 +44,17 @@ import {
 const G = 9.80665;
 
 export type VehicleGoalKind =
-  | 'grip' | 'lateralLimit' | 'contactArea' | 'inclination' | 'roll' | 'lltd' | 'rollStiffness' | 'pitch' | 'antiDive' | 'antiSquat' | 'bumpSteer' | 'testPass' | 'testReserve';
+  | 'grip' | 'lateralLimit' | 'contactArea' | 'inclination' | 'roll' | 'lltd' | 'rollStiffness' | 'pitch' | 'antiDive' | 'antiSquat' | 'bumpSteer' | 'testPass' | 'testReserve' | 'testTime'
+  | 'steeringEffort' | 'parkingEffort' | 'scrubLimit' | 'shimmy';
 
 export interface VehicleGoalMeta {
   short: string; label: string; unit: string; target: number; tolerance: number; hint: string; maximize?: boolean;
+  /** Made as small as possible (no target; shown as “min”). */
+  minimize?: boolean;
+  /** A limit (the target is a maximum): only a value above it counts. */
+  limit?: boolean;
+  /** A floor (the target is a minimum): only a value below it counts. */
+  atLeast?: boolean;
   /** Load case the goal is evaluated in ('limit': its own steady cornering cases up to the grip limit). */
   uses: 'all' | 'lateral' | 'braking' | 'accel' | 'geometry' | 'limit';
 }
@@ -61,7 +71,12 @@ export const VEHICLE_GOAL_META: Record<VehicleGoalKind, VehicleGoalMeta> = {
   antiDive: { short: 'Anti-dive', label: 'Anti-dive (front, braking)', unit: '%', target: 20, tolerance: 1, uses: 'geometry', hint: 'Classic geometric anti-dive at static height from the side-view IC, brake mount and bias.' },
   antiSquat: { short: 'Anti-squat', label: 'Anti-squat (rear, accelerating)', unit: '%', target: 30, tolerance: 1, uses: 'geometry', hint: 'Classic geometric anti-squat of the powered rear corners (needs powered rear corners).' },
   testReserve: { short: 'Test reserve', label: 'More grip reserve in the tests (largest)', unit: '%', target: 0, tolerance: 1, maximize: true, uses: 'all', hint: 'Lowers every state\'s worst tire grip use, weighted by test priority and segment weight (the worst states count most). Use it to improve a test that already passes. Placeholder grip model.' },
+  testTime: { short: 'Test time', label: 'Fastest test time (speeds as maximums)', unit: '', target: 0, tolerance: 1, minimize: true, uses: 'all', hint: 'The tests whose speeds are maximums are scored on their time (the driver planning to its push, the ladder included) in the Tests optimize loop: its weight is how much time counts against the grip reserve and the ride (0: not at all; 1: 1 % faster ≈ 1 point of score; a Fail still costs 100, a warning nothing). Within each round the geometry is moved toward less grip use at the planned speeds (the same push then plans them faster). Shown in the optimize log as the time before → after.' },
   testPass: { short: 'Test passes', label: 'Every tire within its grip (test must pass)', unit: '%', target: 90, tolerance: 1, uses: 'all', hint: 'No tire in any load case may use more than this share of its grip (100% = sliding). With a test selected as the load cases, this makes the test pass with margin. Grip model is a placeholder until real tire data.' },
+  steeringEffort: { short: 'Effort at speed', label: 'Steering effort at speed (steered designs)', unit: 'N·m', target: 8, tolerance: 0.2, limit: true, uses: 'geometry', hint: 'Steering-wheel torque to hold both front wheels at the lateral g set in the Steering panel (Effort check at), from the side force on the mechanical + pneumatic trail, through the steering ratio. Only above the limit counts. Reported: the heaviest steered design.' },
+  parkingEffort: { short: 'Parking effort', label: 'Steering effort when parking (steered designs)', unit: 'N·m', target: 20, tolerance: 0.5, limit: true, uses: 'geometry', hint: 'Steering-wheel torque to turn both front wheels at standstill (patch twisted about the steering axis’s ground point). Grows with the scrub radius. Only above the limit counts.' },
+  scrubLimit: { short: 'Scrub limit', label: 'Scrub radius limit (steered designs)', unit: 'mm', target: 50, tolerance: 1, limit: true, uses: 'geometry', hint: 'Keeps each steered design’s scrub radius (+ or −) under this size: a large one lets braking and bump forces kick the steering. Only above the limit counts.' },
+  shimmy: { short: 'Shimmy margin', label: 'Shimmy margin with worn parts (least damping ratio)', unit: '', target: 0.05, tolerance: 0.005, atLeast: true, uses: 'geometry', hint: 'The least damping of the front wheels’ oscillation about their steering axes (4–25 Hz) at any speed up to the shimmy check’s fastest, with worn parts (free play, softer steering, a weaker damper). Below 0 the wheels shimmy (death wobble on a solid axle). Only a value below the target counts. Inputs: Vehicle → Inputs → Shimmy.' },
   bumpSteer: { short: 'Bump steer', label: 'Bump steer (every design)', unit: '°', target: 0, tolerance: 0.01, uses: 'geometry', hint: 'Keeps every corner design free of bump steer over the travel range while the rest is optimized. Reported: worst deviation, °.' },
 };
 export const VEHICLE_GOAL_KINDS = Object.keys(VEHICLE_GOAL_META) as VehicleGoalKind[];
@@ -99,6 +114,8 @@ export interface VehicleProblem {
   designs: Partial<Record<CornerId, VehicleDesignIn>>;
   /** Root (design) of each corner. */
   roots: Record<CornerId, CornerId>;
+  /** Steered designs (by root) and their steering-effort inputs, for the steering goals. */
+  effort?: Partial<Record<CornerId, EffortSpec>>;
   settings: Record<CornerId, { brake: BrakeMount; drive: DriveMount; abs?: boolean }>;
   /** Differential per axle (chassis-driven axles). */
   diff?: { front?: DiffType; rear?: DiffType };
@@ -145,6 +162,14 @@ export interface VehicleProblem {
   brakeLimit?: { front: number; rear: number; maxPedal: number };
   /** Brake fade (with brakeLimit): the rotors heat through a test and the pads lose grip when hot. */
   brakeThermal?: BrakeThermal;
+  /** Rolling resistance coefficient (force ÷ load, ≈ 0.012); 0 / omitted = none. */
+  rollingResistance?: number;
+  /** Pneumatic trail of the front tires, mm (steering kickback over time; 0 = estimated where needed). */
+  pneumaticTrail?: number;
+  /** Shimmy inputs (steering stiffness, damper, wear…); omitted = no shimmy model. */
+  shimmy?: ShimmySpec;
+  /** Detailed brake hydraulics (with brakeLimit): the system and its fluid volumes, for pedal travel in tests. */
+  brakeDetail?: { system: BrakeSystem; detail: BrakeDetail };
   /** Towing a trailer (static). */
   trailer?: TrailerSpec;
   /**
@@ -358,6 +383,8 @@ export const vehicleInputOf = (p: VehicleProblem, asm: AssembledVehicle, c: Omit
   gravityScale: c.gravityScale, groundOffset: c.groundOffset, tireGrip: p.tireGrip ?? DEFAULT_MF, diff: p.diff,
   ...(p.brakeLimit ? { brakeLimit: p.brakeLimit } : {}),
   ...(p.trailer ? { trailer: p.trailer } : {}),
+  ...(p.rollingResistance && (c.speed ?? c.state?.speed ?? 0) > 0 ? { rollingResistance: p.rollingResistance } : {}),
+  ...((c.speed ?? c.state?.speed ?? 0) > 0 ? { speed: c.speed ?? c.state?.speed ?? 0 } : {}),
 });
 
 /** Solve one load case on an assembled car. null = didn't converge. */
@@ -496,6 +523,18 @@ function antiOf(p: VehicleProblem, e: VehicleEval, kind: 'antiDive' | 'antiSquat
 
 const bumpOpts = (p: VehicleProblem) => ({ droop: -Math.abs(p.droop), bump: Math.abs(p.bump), samples: 9, goals: [{ kind: 'bumpSteer' as const, target: 0, weight: 1 }] });
 
+const STEER_GOALS = { steeringEffort: 'steeringEffort', parkingEffort: 'parkingEffort', scrubLimit: 'scrubLimit' } as const;
+/** Each steered design's value of a steering goal (at ride height), or null for a design that can't be solved. */
+function steeredValues(kind: keyof typeof STEER_GOALS, p: VehicleProblem, e: VehicleEval): (number | null)[] {
+  return Object.entries(p.effort ?? {}).flatMap(([root, spec]) => {
+    const g = e.geometries[root as CornerId];
+    const d = p.designs[root as CornerId];
+    if (!g || !spec || !d) return [];
+    const s = sampleCorner(g, { droop: 0, bump: 0, samples: 3, goals: [{ kind: STEER_GOALS[kind], target: 0, weight: 1 }], steering: { ...spec, tire: spec.tire ?? { profile: d.profile, model: d.model } } });
+    return [s ? goalValue(STEER_GOALS[kind], s) : null];
+  });
+}
+
 /** Reported value of a vehicle goal. */
 export function vehicleGoalValue(kind: VehicleGoalKind, p: VehicleProblem, e: VehicleEval): number | null {
   const lat = latCase(e);
@@ -509,10 +548,17 @@ export function vehicleGoalValue(kind: VehicleGoalKind, p: VehicleProblem, e: Ve
     case 'roll': return lat ? Math.abs(deg(lat.result.pose.roll)) / Math.abs(latGOf(lat)) : null;
     case 'testPass': return e.cases.length ? 100 * Math.max(...e.cases.map((c) => c.result.grip?.maxUtilization ?? 0)) : null;
     case 'testReserve': return e.cases.length ? 100 * wmean(e, (c) => 1 - (c.result.grip?.maxUtilization ?? 1)) : null;
+    case 'testTime': return null; // measured by the test runs (the optimize loop), not here
     case 'lltd': return lat ? lltdOf(lat) : null;
     case 'rollStiffness': return lat ? rollStiffnessShareOf(lat, e.chars) : null;
     case 'pitch': return brk ? deg(brk.result.pose.pitch) : null;
     case 'antiDive': case 'antiSquat': return antiOf(p, e, kind);
+    case 'shimmy': return shimmyReport(p, e.geometries, 15)?.worn.minZeta ?? null;
+    case 'steeringEffort': case 'parkingEffort': case 'scrubLimit': {
+      const v = steeredValues(kind, p, e);
+      if (!v.length) return null;
+      return v.some((x) => x === null) ? NaN : Math.max(...(v as number[]));
+    }
     case 'bumpSteer': {
       let worst = 0;
       for (const g of Object.values(e.geometries)) {
@@ -546,9 +592,19 @@ function vehicleResiduals(goal: VehicleGoal, p: VehicleProblem, e: VehicleEval, 
       return CORNER_IDS.map((id) => (Math.sqrt(c.weight) * Math.max(0, (c.result.grip?.corners[id].utilization ?? 0) - limit)) / (meta.tolerance / 100));
     });
   }
-  if (goal.kind === 'testReserve') {
-    // Lower grip use everywhere; squares make the worst states count most.
+  if (goal.kind === 'testReserve' || goal.kind === 'testTime') {
+    // Lower grip use everywhere; squares make the worst states count most. (Test time: at the planned speeds,
+    // less grip use lets the same push plan them faster — the time itself is scored on the test runs.)
     return e.cases.map((c) => (Math.sqrt(c.weight) * (c.result.grip?.maxUtilization ?? 1)) / 0.05);
+  }
+  if (meta.limit && (goal.kind === 'steeringEffort' || goal.kind === 'parkingEffort' || goal.kind === 'scrubLimit')) {
+    // Every steered design under the limit; only the excess counts.
+    return steeredValues(goal.kind, p, e).map((v) => (v === null || !Number.isFinite(v) ? BAD : Math.max(0, v - goal.target) / meta.tolerance));
+  }
+  if (meta.atLeast) {
+    const v = vehicleGoalValue(goal.kind, p, e);
+    if (v === null) return [];
+    return [Number.isFinite(v) ? Math.max(0, goal.target - v) / meta.tolerance : BAD];
   }
   if (goal.kind === 'bumpSteer') {
     const r: number[] = [];
@@ -594,7 +650,7 @@ export function reportVehicle(p: VehicleProblem, x: number[]): VehicleReport {
 }
 
 /** The vehicle optimizer's objective: residuals of the goals, holds, keep-close and packaging at x. */
-function vehicleObjective(p: VehicleProblem) {
+export function vehicleObjective(p: VehicleProblem) {
   const goals = p.goals.filter((g) => g.weight > 0);
   const x0 = p.variables.map((v) => variableValue(p.designs[v.root]!.geometry, v));
   const lo = p.variables.map((v) => Math.min(v.lo, v.hi));
@@ -623,12 +679,30 @@ function vehicleObjective(p: VehicleProblem) {
 }
 
 export function optimizeVehicle(p: VehicleProblem, onIteration?: (info: ProgressInfo) => boolean | void): VehicleOptimizeResult {
-  const { x0, lo, hi, residuals } = vehicleObjective(p);
-  const lsq = multiStartLeastSquares(residuals, x0, lo, hi, {
-    maxIterations: p.maxIterations ?? 40, step: 0.02, relTol: 1e-6,
+  const { residuals } = vehicleObjective(p);
+  const lsq = runStepsSync(vehicleSteps(p, onIteration), residuals);
+  return { lsq, ...reportVehicle(p, lsq.x) };
+}
+
+/** The free variables' start and range (without evaluating anything). */
+export function vehicleBounds(p: VehicleProblem): { x0: number[]; lo: number[]; hi: number[] } {
+  return {
+    x0: p.variables.map((v) => variableValue(p.designs[v.root]!.geometry, v)),
+    lo: p.variables.map((v) => Math.min(v.lo, v.hi)),
+    hi: p.variables.map((v) => Math.max(v.lo, v.hi)),
+  };
+}
+
+/**
+ * The vehicle optimizer's search as batches of points to evaluate (`vehicleObjective(p).residuals` at each),
+ * so they can be spread over workers; `parallel` damping trials per batch (leastSquares.ts).
+ */
+export function vehicleSteps(p: VehicleProblem, onIteration?: (info: ProgressInfo) => boolean | void, parallel = 1) {
+  const { x0, lo, hi } = vehicleBounds(p);
+  return multiStartSteps(x0, lo, hi, {
+    maxIterations: p.maxIterations ?? 40, step: 0.02, relTol: 1e-6, parallel,
     onIteration: onIteration ? (i) => onIteration({ iteration: i.iteration, cost: i.cost, cost0: i.cost0, evaluations: i.evaluations, x: i.x }) : undefined,
   }, { starts: p.starts ?? 1 });
-  return { lsq, ...reportVehicle(p, lsq.x) };
 }
 
 export interface VehicleSensitivity {
@@ -643,19 +717,40 @@ export interface VehicleSensitivity {
  * strongest pairwise interactions of the total miss and of each goal's value (search.ts § sensitivity).
  */
 export function vehicleSensitivity(p: VehicleProblem, samples: number, onSample?: (k: number, n: number) => boolean | void): VehicleSensitivity | null {
-  const { goals, lo, hi, residuals, guesses } = vehicleObjective(p);
-  const n = Math.max(8, Math.round(samples));
-  const us = latinHypercube(n, lo.length, rng(23));
-  const costs: number[] = [];
-  const values: number[][] = goals.map(() => []);
-  for (let k = 0; k < us.length; k++) {
-    const x = us[k]!.map((u, i) => lo[i]! + u * (hi[i]! - lo[i]!));
-    const r = residuals(x);
-    costs.push(r ? 0.5 * r.reduce((a, v) => a + v * v, 0) : NaN);
-    const e = r ? evaluateVehicle(p, geometriesFor(p, x), guesses) : null;
-    goals.forEach((g, j) => values[j]!.push(e ? vehicleGoalValue(g.kind, p, e) ?? NaN : NaN));
-    if (onSample?.(k + 1, us.length) === false) return null;
+  const obj = vehicleObjective(p);
+  const { us, xs } = sensitivityPlan(p, samples);
+  const out: SensitivitySample[] = [];
+  for (let k = 0; k < xs.length; k++) {
+    out.push(sensitivitySample(p, obj, xs[k]!));
+    if (onSample?.(k + 1, xs.length) === false) return null;
   }
+  return sensitivityResult(p, us, out);
+}
+
+/** The DOE points of the sensitivity report (unit samples and the points in the free ranges). */
+export function sensitivityPlan(p: VehicleProblem, samples: number): { us: number[][]; xs: number[][] } {
+  const { lo, hi } = vehicleBounds(p);
+  const us = latinHypercube(Math.max(8, Math.round(samples)), lo.length, rng(23));
+  return { us, xs: us.map((u) => u.map((v, i) => lo[i]! + v * (hi[i]! - lo[i]!))) };
+}
+
+export interface SensitivitySample { cost: number; values: number[] }
+
+/** One DOE point: the optimizer's total miss and each goal's value (NaN where it can't be evaluated). */
+export function sensitivitySample(p: VehicleProblem, obj: ReturnType<typeof vehicleObjective>, x: number[]): SensitivitySample {
+  const r = obj.residuals(x);
+  const e = r ? evaluateVehicle(p, geometriesFor(p, x), obj.guesses) : null;
+  return {
+    cost: r ? 0.5 * r.reduce((a, v) => a + v * v, 0) : NaN,
+    values: obj.goals.map((g) => (e ? vehicleGoalValue(g.kind, p, e) ?? NaN : NaN)),
+  };
+}
+
+/** The sensitivity report from the DOE points' samples. */
+export function sensitivityResult(p: VehicleProblem, us: number[][], out: SensitivitySample[]): VehicleSensitivity | null {
+  const goals = p.goals.filter((g) => g.weight > 0);
+  const costs = out.map((o) => o.cost);
+  const values = goals.map((_, j) => out.map((o) => o.values[j] ?? NaN));
   const cost = sensitivity(us, costs);
   if (!cost) return null;
   return {

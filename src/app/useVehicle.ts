@@ -4,10 +4,11 @@
  */
 import { rollStiffness, ackermannLinesCross } from '../core/suspension/derived';
 import { brakesOf, trailerOf } from './optimizer';
+import { useDesignApp } from './designOverride';
 import { useMemo, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import {
-  useApp, toGeometry, toProfile, toForceModel, mergedCorners, rootOf, vehicleStaticLoads,
+  toGeometry, toProfile, toForceModel, mergedCorners, rootOf, vehicleStaticLoads,
   type CornerDesign, type DesignState,
 } from './store';
 import { DoubleWishbone, type CornerState } from '../core/suspension/doubleWishbone';
@@ -95,24 +96,28 @@ const pickVehicleInputs = (s: DesignState) => ({
   droop: s.droop, bump: s.bump, shared: s.shared,
 });
 
+/** Playback's corner tables, shared by every view of the same corner design (keyed by its design, rack and range). */
+const PLAYBACK_TABLES = new Map<string, CornerTable>();
+
 export function useVehicle(enabled: boolean): VehicleModel | null {
-  const s = useApp(useShallow(pickVehicleInputs));
+  const s = useDesignApp(useShallow(pickVehicleInputs));
   // Motion inputs are separate so moving a slider doesn't rebuild the corners (or their cached curves).
-  const rack = useApp((st) => st.rack);
-  const lateralGKin = useApp((st) => st.lateralG);
-  const longitudinalG = useApp((st) => st.longitudinalG);
-  const roadGrade = useApp((st) => st.roadGrade);
-  const roadBank = useApp((st) => st.roadBank);
-  const wheelBumps = useApp((st) => st.wheelBumps);
-  const gripFields = useApp((st) => st.tireGrip);
+  const rack = useDesignApp((st) => st.rack);
+  const lateralGKin = useDesignApp((st) => st.lateralG);
+  const longitudinalG = useDesignApp((st) => st.longitudinalG);
+  const roadGrade = useDesignApp((st) => st.roadGrade);
+  const roadBank = useDesignApp((st) => st.roadBank);
+  const wheelBumps = useDesignApp((st) => st.wheelBumps);
+  const gripFields = useDesignApp((st) => st.tireGrip);
   // The test playback's pose (ride over time) belongs to the Tests workspace only: elsewhere the car is solved.
-  const rideView = useApp((st) => (st.workspace === 'tests' ? st.rideView : null));
-  const tireFile = useApp((st) => st.tireFile);
-  const tireFileRear = useApp((st) => st.tireFileRear);
-  const aeroSettings = useApp((st) => st.aero);
-  const brakeSettings = useApp((st) => st.brakes);
-  const towSettings = useApp((st) => st.tow);
-  const speed = useApp((st) => st.vehicleSpeed);
+  // The playback's pose (Tests, and Compare's test views).
+  const rideView = useDesignApp((st) => (st.workspace === 'tests' || st.workspace === 'compare' ? st.rideView : null));
+  const tireFile = useDesignApp((st) => st.tireFile);
+  const tireFileRear = useDesignApp((st) => st.tireFileRear);
+  const aeroSettings = useDesignApp((st) => st.aero);
+  const brakeSettings = useDesignApp((st) => st.brakes);
+  const towSettings = useDesignApp((st) => st.tow);
+  const speed = useDesignApp((st) => st.vehicleSpeed);
   // Grade and bank fold into what the tires must supply (see core/tests/segments.ts).
   const road = roadEffective(lateralGKin, longitudinalG, Math.atan(roadGrade / 100), (roadBank * Math.PI) / 180);
   const lateralG = road.lateralG;
@@ -127,12 +132,13 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
     if (!enabled) return null;
     try {
       const all = mergedCorners(s as unknown as DesignState);
-      const built = new Map<CornerDesign, { corner: DoubleWishbone; model: TireForceModel; profile: ReturnType<typeof toProfile> }>();
+      const built = new Map<CornerDesign, { corner: DoubleWishbone; model: TireForceModel; profile: ReturnType<typeof toProfile>; key: string }>();
       for (const id of CORNER_IDS) {
         const d = all[rootOf(id, s.links)];
         if (!built.has(d)) {
           built.set(d, {
             corner: new DoubleWishbone(toGeometry(d.geom)),
+            key: JSON.stringify(d.geom),
             model: toForceModel(d.tireModel, d.tire, d.volumeChange) ?? RIGID_TIRE,
             profile: toProfile(d.geom),
           });
@@ -144,7 +150,19 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
     }
   }, [enabled, s.geom, s.spring, s.damper, s.bumpStop, s.tireModel, s.tire, s.volumeChange, s.tireSizeText, s.corners, s.links, s.activeCorner]);
 
+  // Playback: each frame's pose object is stable, so a frame shown once is shown again from here (until
+  // anything else about the car changes).
+  const frameCache = useMemo(() => new WeakMap<object, VehicleModel | null>(),
+    [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, gripFields, tireFile, tireFileRear, aeroSettings, brakeSettings, towSettings, speed]);
   const result = useMemo<VehicleModel | null>(() => {
+    if (rideView && frameCache.has(rideView)) return frameCache.get(rideView)!;
+    const out = computeModel();
+    if (rideView && out && !out.error) frameCache.set(rideView, out);
+    return out;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, rack, lateralG, brakingG, accelG, road.gravityScale, wheelBumps, gripFields, rideView, tireFile, tireFileRear, aeroSettings, brakeSettings, towSettings, speed, frameCache]);
+
+  function computeModel(): VehicleModel | null {
     if (!enabled || !setup) return null;
     const v = s.vehicle;
     const wheelbase = v.wheelbase.value;
@@ -168,13 +186,18 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         const b = setup.built.get(d)!;
         const cornerRack = s.settings[id].steered ? (isLeft(id) ? rack : -rack) : 0;
         racks[id] = cornerRack;
+        // Playing back (pose and travels given): the tables at the rack rounded to 1 mm, with 21 points, kept in
+        // one cache for every view of the same design (the current car, a snapshot's ghost and its results). In a
+        // turn the rack moves every frame, and a table per frame (41 solves per steered corner, per view) made
+        // playback lag in turns; the corners drawn are still solved at the exact rack.
+        const tableRack = rideView ? Math.round(cornerRack) : cornerRack;
         let byRack = tableCache.current.get(b.corner);
         if (!byRack) { byRack = new Map(); tableCache.current.set(b.corner, byRack); }
         const axleShared = s.shared[isFront(id) ? 'front' : 'rear'];
         const dl = axleShared.antiRollBar === 'torsionBar'
           ? vec3(axleShared.dropLink[0].value, axleShared.dropLink[1].value, axleShared.dropLink[2].value) : null;
         const dlOn = axleShared.dropLinkOn ?? 'lca';
-        const key = `${cornerRack.toFixed(3)}|${range[0]}|${range[1]}|${dl ? `${dl.x},${dl.y},${dl.z},${dlOn}` : '-'}`;
+        const key = `${tableRack.toFixed(3)}|${range[0]}|${range[1]}|${dl ? `${dl.x},${dl.y},${dl.z},${dlOn}` : '-'}`;
         const mu = d.spring.unsprungMass.value;
         const rigid = b.corner.kind === 'rigid';
         // A solid axle: one table over both wheels' travel (cached with the design), preload from its heave ratio.
@@ -183,13 +206,17 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         let freeLength = d.spring.freeLength.value;
         const coupled = b.corner.solidAxle ?? b.corner.twistBeam;
         if (coupled) {
-          const axRack = b.corner.geometry.steeredAxle && s.settings[id].steered ? rack : 0;
+          const axRack0 = b.corner.geometry.steeredAxle && s.settings[id].steered ? rack : 0;
+          const axRack = rideView ? Math.round(axRack0) : axRack0;
           // A drop-link anti-roll bar: the table tracks its mount on the axle (or on each twist-beam arm).
           const akey = `axle|${range[0]}|${range[1]}|${axRack}|${dl ? `${dl.x},${dl.y},${dl.z}` : '-'}`;
           let at = axleCache.current.get(b.corner)?.get(akey);
           if (!at) {
             at = new AxleTable(coupled, range, 17, axRack, dl ?? undefined);
-            axleCache.current.set(b.corner, new Map([[akey, at]]));
+            const byKey = axleCache.current.get(b.corner) ?? new Map<string, AxleTable>();
+            byKey.set(akey, at);
+            if (byKey.size > 12) byKey.delete(byKey.keys().next().value!);
+            axleCache.current.set(b.corner, byKey);
           }
           const side = isLeft(id) ? 'L' : 'R';
           axleRef = { table: at, side };
@@ -197,11 +224,17 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
           const s0 = at.at(side, 0, 0), mr = -(s0.dL + s0.dLX);
           if (s.autoPreload && Number.isFinite(s0.L) && mr > 1e-6) freeLength = s0.L + Math.max(0, staticLoads[id] - mu * G) / mr / d.spring.springRate.value;
         } else {
-          let t = byRack.get(key);
+          const shared = rideView ? `${b.key}|${key}` : null;
+          let t = shared ? PLAYBACK_TABLES.get(shared) : byRack.get(key);
           if (!t) {
-            t = new CornerTable(b.corner, cornerRack, range, 41, dl ? { body: dlOn, point: dl } : undefined);
-            byRack.set(key, t);
-            if (byRack.size > 24) byRack.delete(byRack.keys().next().value!);
+            t = new CornerTable(b.corner, tableRack, range, rideView ? 21 : 41, dl ? { body: dlOn, point: dl } : undefined);
+            if (shared) {
+              PLAYBACK_TABLES.set(shared, t);
+              if (PLAYBACK_TABLES.size > 160) PLAYBACK_TABLES.delete(PLAYBACK_TABLES.keys().next().value!);
+            } else {
+              byRack.set(key, t);
+              if (byRack.size > 24) byRack.delete(byRack.keys().next().value!);
+            }
           }
           table = t;
           if (s.autoPreload && !rigid) freeLength = fitFreeLength(b.corner, d.spring.springRate.value, Math.max(0, staticLoads[id] - mu * G));
@@ -236,6 +269,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         gravityScale: road.gravityScale, groundOffset: wheelBumps, tireGrip: tireGripFor({ tireGrip: gripFields, tireFile, tireFileRear }, 'front'),
         diff: { front: s.settings.FL.diff, rear: s.settings.RL.diff },
         ...(aeroOf({ aero: aeroSettings }) && speed > 0 ? { aero: { ...aeroOf({ aero: aeroSettings })!, speed } } : {}),
+        ...(speed > 0 && v.rollingResistance.value > 0 ? { rollingResistance: v.rollingResistance.value } : {}),
         ...(brk ? { brakeLimit: { front: brk.capacity.axleForce.front, rear: brk.capacity.axleForce.rear, maxPedal: brk.system.maxPedalForce } } : {}),
         ...(trailerOf({ tow: towSettings }) ? { trailer: trailerOf({ tow: towSettings })! } : {}),
       };
@@ -353,7 +387,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
     } catch (e) {
       return { ...empty, error: e instanceof Error ? e.message : String(e) };
     }
-  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, rack, lateralG, brakingG, accelG, road.gravityScale, wheelBumps, gripFields, rideView, tireFile, tireFileRear, aeroSettings, brakeSettings, towSettings, speed]);
+  }
 
   return result;
 }

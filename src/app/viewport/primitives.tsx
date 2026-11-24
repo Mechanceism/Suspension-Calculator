@@ -1,12 +1,88 @@
 /** Small reusable 3D pieces. Scene units are mm; axes map 1:1 (X outboard, Y up, Z forward). */
 import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
-import { Line } from '@react-three/drei';
+import { useThree } from '@react-three/fiber';
+import { Line2 } from 'three/examples/jsm/lines/Line2.js';
+import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
+import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { SafeHtml as Html } from './SafeHtml';
 import type { Vec3 } from '../../core/math/vec3';
 
 export type V3 = [number, number, number];
 export const arr = (v: Vec3): V3 => [v.x, v.y, v.z];
+
+/**
+ * A fat line (Line2) whose points update in place. drei's <Line> builds a new geometry for every change
+ * of its points and disposes its material with it, so while the car moves (playback, dragging) every
+ * line's material was thrown away each frame and the line shader recompiled: most of the playback lag.
+ * Here one geometry and one material live as long as the line; the vertex buffer is rewritten.
+ */
+export function Line({ points, color, lineWidth = 1, transparent = false, opacity = 1, dashed = false, dashSize = 1, gapSize = 1 }: {
+  points: V3[]; color: string; lineWidth?: number; transparent?: boolean; opacity?: number; dashed?: boolean; dashSize?: number; gapSize?: number;
+}) {
+  const size = useThree((st) => st.size);
+  // Both sides: a scene drawn mirrored (a right-hand corner in the Corner view) turns the lines' screen-space
+  // quads round, and one-sided they'd be culled.
+  const line = useMemo(() => { const m = new LineMaterial(); m.side = THREE.DoubleSide; return new Line2(new LineGeometry(), m); }, []);
+  useEffect(() => () => { line.geometry.dispose(); line.material.dispose(); }, [line]);
+  useLayoutEffect(() => {
+    const m = line.material;
+    m.color.set(color);
+    m.linewidth = lineWidth;
+    if (m.transparent !== transparent) { m.transparent = transparent; m.needsUpdate = true; }
+    m.opacity = opacity;
+    if (m.dashed !== dashed) m.dashed = dashed;
+    m.dashSize = dashSize;
+    m.gapSize = gapSize;
+  }, [line, color, lineWidth, transparent, opacity, dashed, dashSize, gapSize]);
+  useLayoutEffect(() => { line.material.resolution.set(size.width, size.height); }, [line, size.width, size.height]);
+  useLayoutEffect(() => {
+    if (points.length < 2) { line.visible = false; return; }
+    line.visible = true;
+    if (!setSegmentsInPlace(line.geometry, points)) {
+      // A different number of points: a new geometry (rare).
+      const g = new LineGeometry();
+      g.setPositions(points.flat());
+      line.geometry.dispose();
+      line.geometry = g;
+    }
+    if (dashed) lineDistancesInPlace(line);
+  }, [line, points, dashed]);
+  return <primitive object={line} />;
+}
+
+/** Write a polyline into a line geometry's segment buffer when it has room for exactly these points. */
+function setSegmentsInPlace(g: LineGeometry, pts: V3[]): boolean {
+  const start = g.getAttribute('instanceStart') as THREE.InterleavedBufferAttribute | undefined;
+  const n = pts.length - 1;
+  if (!start || start.data.array.length !== n * 6) return false;
+  const a = start.data.array as Float32Array;
+  for (let i = 0; i < n; i++) {
+    const p = pts[i]!, q = pts[i + 1]!;
+    a[6 * i] = p[0]; a[6 * i + 1] = p[1]; a[6 * i + 2] = p[2];
+    a[6 * i + 3] = q[0]; a[6 * i + 4] = q[1]; a[6 * i + 5] = q[2];
+  }
+  start.data.needsUpdate = true;
+  g.computeBoundingBox();
+  g.computeBoundingSphere();
+  return true;
+}
+
+/** Dash distances along the line, rewritten in place when the buffer exists. */
+function lineDistancesInPlace(line: Line2) {
+  const g = line.geometry;
+  const d = g.getAttribute('instanceDistanceStart') as THREE.InterleavedBufferAttribute | undefined;
+  const start = g.getAttribute('instanceStart') as THREE.InterleavedBufferAttribute;
+  if (!d || d.data.array.length !== 2 * start.count) { line.computeLineDistances(); return; }
+  const a = d.data.array as Float32Array;
+  const s = start.data.array as Float32Array;
+  let acc = 0;
+  for (let i = 0; i < start.count; i++) {
+    const len = Math.hypot(s[6 * i + 3]! - s[6 * i]!, s[6 * i + 4]! - s[6 * i + 1]!, s[6 * i + 5]! - s[6 * i + 2]!);
+    a[2 * i] = acc; a[2 * i + 1] = acc + len; acc += len;
+  }
+  d.data.needsUpdate = true;
+}
 
 export function Joint({ p, color, r = 7 }: { p: Vec3; color: string; r?: number }) {
   return (

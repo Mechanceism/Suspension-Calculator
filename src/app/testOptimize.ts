@@ -23,9 +23,11 @@ import { buildVehicleProblem, runVehicleOptimizer, runTestJob, runRatesJob, desi
 import { testScore as coreTestScore, isUnfixable as coreUnfixable } from '../core/tests/score';
 import type { RateVar, RateTest, RateProgress } from '../core/optimize/rates';
 import { lockKeys } from './locks';
-import { rankWeight, segmentSpec, type TestDesign } from './tests';
+import { planOption, rankWeight, segmentSpec, type TestDesign } from './tests';
 import { pointAxisLocked } from './locks';
-import { startTestRun, useRun } from './panels/TestsPanels';
+import { startTestRun, runTestsTogether, useRun } from './panels/TestsPanels';
+import { POOL_SIZE, runLimited } from './workerPool';
+import { sizeBrakes, hardestUse, type BrakeSizing } from './brakeLadder';
 
 export type Scope = 'test' | 'all';
 
@@ -77,6 +79,10 @@ interface LoopState {
   explanation: string[];
   exploration: Exploration | null;
   cancel: (() => void) | null;
+  /** Size the brakes with the ladder inside Optimize until it passes / Improve (with the brake hydraulics on). */
+  sizeBrakes: boolean;
+  /** Drum axles whose drums ran out at the last sizing (the user may allow discs). */
+  askDisc: ('front' | 'rear')[];
 }
 
 const loadWiden = (): number => {
@@ -88,7 +94,27 @@ const loadRates = (): RateSettings => {
 export const useLoop = create<LoopState>(() => ({
   running: false, mode: null, scope: 'test', maxWiden: loadWiden(), widen: 1, round: 0, log: [], outcome: null, explanation: [], exploration: null, cancel: null,
   rates: loadRates(), rateProgress: null,
+  sizeBrakes: (() => { try { return localStorage.getItem('susp.sizeBrakes') === '1'; } catch { return false; } })(), askDisc: [],
 }));
+export function setSizeBrakes(on: boolean) {
+  useLoop.setState({ sizeBrakes: on });
+  try { localStorage.setItem('susp.sizeBrakes', on ? '1' : '0'); } catch { /* private mode */ }
+}
+
+/**
+ * Size the brakes (the ladder) from test runs and apply it; returns what changed (empty: nothing).
+ * Without runs, from the last result of every test in the Tests panel.
+ */
+export function sizeBrakesFrom(runs?: TestRun[]): BrakeSizing | null {
+  const all = runs ?? Object.values(useRun.getState().results).map((e) => e.result);
+  const use = hardestUse(all);
+  if (!use) return null;
+  const z = sizeBrakes(useApp.getState(), use);
+  if (!z) return null;
+  useLoop.setState({ askDisc: z.askDisc });
+  if (Object.keys(z.patch).length) useApp.getState().setBrakes(z.patch);
+  return z;
+}
 export function setRateSettings(patch: Partial<RateSettings>) {
   const rates = { ...useLoop.getState().rates, ...patch };
   useLoop.setState({ rates });
@@ -111,7 +137,16 @@ const smallGain = (a: number, b: number): string[] => (a > 0 && (a - b) / a < 0.
   : []);
 
 /** Lower is better: fixable Fail findings dominate, then grip use over the limit, then (improve) average grip use, plus the ride measures. */
-export const testScore = (r: TestRun, mode: 'pass' | 'improve' | 'explore'): number => coreTestScore(r, mode);
+/** The Test time goal (speeds as maximums): its weight (0 = off), and each test's time when the optimizing began. */
+const timeWeight = () => { const g = useApp.getState().vehicleOptimizer.goals.testTime; return g?.on ? Math.max(0, g.weight.value) : 0; };
+const timeRefs = new Map<string, number>();
+export const testScore = (r: TestRun, mode: 'pass' | 'improve' | 'explore', testId?: string): number => {
+  const w = timeWeight();
+  if (w > 0 && testId && r.time && !timeRefs.has(testId)) timeRefs.set(testId, r.time);
+  return coreTestScore(r, mode, w > 0 ? { weight: w, ref: testId ? timeRefs.get(testId) : undefined } : undefined);
+};
+/** The planned speeds of the tests' last runs (speeds as maximums), for the geometry optimizer's states. */
+const lastPlans = () => Object.fromEntries(Object.entries(useRun.getState().results).map(([id, e]) => [id, e.result.segments.map((s) => s.plan)]));
 
 /** The springs, dampers and bars to tune (locked values left out), with their search ranges. */
 export function rateVars(s: AppState, settings: RateSettings): RateVar[] {
@@ -140,6 +175,7 @@ export function rateVars(s: AppState, settings: RateSettings): RateVar[] {
   if (settings.bars) {
     for (const axle of ['front', 'rear'] as const) {
       const a = s.shared[axle];
+      if (s.locks[`shared.${axle}.${a.antiRollBar === 'torsionBar' ? 'barRate' : 'arbRate'}`]) continue;
       if (a.antiRollBar === 'wheelRate' && a.arbRate.value > 0) out.push({ kind: 'arb', axle, ...range(a.arbRate.value), value: a.arbRate.value, label: `${axle} anti-roll bar (N/mm at the wheel)` });
       if (a.antiRollBar === 'torsionBar' && a.barRate.value > 0) {
         // N·m/deg → N·mm/rad, as the problem uses.
@@ -183,7 +219,7 @@ export async function tuneSpringsDampers(scope: Scope, active: TestDesign | null
     return null;
   }
   const rateTests: RateTest[] = tests.map((t) => ({
-    segments: t.segments.map((sg) => segmentSpec(sg, t)), weight: tests.length > 1 ? rankWeight(t.rank, tests.length) : 1, onFail: t.onFail, handling: t.handling !== false, driverSpeed: t.handling !== false && !!t.driverSpeed,
+    segments: t.segments.map((sg) => segmentSpec(sg, t)), weight: tests.length > 1 ? rankWeight(t.rank, tests.length) : 1, onFail: t.onFail, handling: t.handling !== false, driverSpeed: t.handling !== false && !!t.driverSpeed, ...planOption(t, false),
   }));
   const { problem } = buildVehicleProblem(s);
   let last: RateProgress | null = null;
@@ -215,7 +251,7 @@ export async function tuneSpringsDampers(scope: Scope, active: TestDesign | null
       log(`Springs & dampers: no better rates found (score ${before.toFixed(2)}); kept yours.`);
     }
     if (!inLoop) {
-      for (const t of tests) { const fresh = useApp.getState().tests.find((q) => q.id === t.id); if (fresh) await startTestRun(fresh); }
+      await runTestsTogether(tests.map((t) => useApp.getState().tests.find((q) => q.id === t.id)).filter((t): t is TestDesign => !!t));
       useLoop.setState({ outcome: stopped ? 'stopped' : improved ? 'improved' : 'stuck', explanation: improved ? [] : ['Your current springs and dampers already scored best among the rates tried. Widen the search range or try more tests.'] });
     }
     return { improved, before, after };
@@ -298,26 +334,31 @@ function growRanges(moves: { key: string; value: number }[]) {
 
 interface SetRun { runs: { test: TestDesign; run: TestRun }[]; passed: boolean; score: number }
 
-/** Run each test in turn (the results show in the Tests panel); priority-weighted score. */
+/** Run the tests (several at once; the results show in the Tests panel); priority-weighted score. */
 async function runSet(tests: TestDesign[], mode: 'pass' | 'improve' | 'explore', isStopped: () => boolean): Promise<SetRun | null> {
+  if (isStopped()) return null;
+  const fresh = tests.map((t) => useApp.getState().tests.find((x) => x.id === t.id) ?? t);
+  const results = await runTestsTogether(fresh);
+  if (isStopped()) return null;
   const runs: SetRun['runs'] = [];
-  for (const t of tests) {
-    if (isStopped()) return null;
-    const fresh = useApp.getState().tests.find((x) => x.id === t.id) ?? t;
-    const run = await startTestRun(fresh);
-    if (!run) throw new Error(useRun.getState().error ?? `Test “${t.name}” could not run`);
-    runs.push({ test: fresh, run });
+  for (let i = 0; i < fresh.length; i++) {
+    const run = results[i];
+    if (!run) throw new Error(useRun.getState().error ?? `Test “${fresh[i]!.name}” could not run`);
+    runs.push({ test: fresh[i]!, run });
   }
   const w = (t: TestDesign) => (tests.length > 1 ? rankWeight(t.rank, tests.length) : 1);
   const tw = runs.reduce((a, r) => a + w(r.test), 0) || 1;
-  return { runs, passed: runs.every((r) => r.run.passed), score: runs.reduce((a, r) => a + w(r.test) * testScore(r.run, mode), 0) / tw };
+  return { runs, passed: runs.every((r) => r.run.passed), score: runs.reduce((a, r) => a + w(r.test) * testScore(r.run, mode, r.test.id), 0) / tw };
 }
 
 const describe = (set: SetRun) => {
   const failing = set.runs.filter((r) => !r.run.passed).length;
   const warn = set.runs.some((r) => r.run.severity === 'warn');
-  if (set.runs.length === 1) return set.passed ? (warn ? 'passes with warnings' : 'passes') : 'fails';
-  return set.passed ? `all ${set.runs.length} pass${warn ? ' (some with warnings)' : ''}` : `${failing} of ${set.runs.length} fail`;
+  // Speeds as maximums: the time too.
+  const timed = set.runs.filter((r) => r.run.time);
+  const time = timed.length ? ` · time ${timed.map((r) => `${r.run.time!.toFixed(2)} s`).join(' + ')}` : '';
+  if (set.runs.length === 1) return (set.passed ? (warn ? 'passes with warnings' : 'passes') : 'fails') + time;
+  return (set.passed ? `all ${set.runs.length} pass${warn ? ' (some with warnings)' : ''}` : `${failing} of ${set.runs.length} fail`) + time;
 };
 
 const MAX_ROUNDS = 40;
@@ -336,6 +377,7 @@ export async function optimizeTests(scope: Scope, active: TestDesign | null, mod
   let currentCancel: (() => void) | null = null;
   const isStopped = () => stopped;
   useLoop.setState({ running: true, mode, scope, widen: 1, round: 0, log: [], outcome: null, explanation: [], exploration: null, cancel: () => { stopped = true; currentCancel?.(); useRun.getState().cancel?.(); } });
+  timeRefs.clear(); // times count against where this optimizing began
   try {
     const first = await runSet(tests, mode, isStopped);
     if (!first) { useLoop.setState({ outcome: 'stopped' }); return; }
@@ -346,6 +388,22 @@ export async function optimizeTests(scope: Scope, active: TestDesign | null, mod
     let lastAtLimit: string[] = [];
     let ratesTried = false;
     const rates = useLoop.getState().rates;
+    // The brake ladder: after a test run, size the brakes to the hardest stop and run again if they changed.
+    let brakeSizings = 0;
+    const sizeAndRerun = async (): Promise<boolean> => {
+      if (!useLoop.getState().sizeBrakes || !useApp.getState().brakes.on || brakeSizings >= 6) return false;
+      const z = sizeBrakesFrom(set.runs.map((r) => r.run));
+      if (!z) return false;
+      for (const b of z.blocked) log(`Brakes: ${b}`);
+      if (!z.changes.length) return false;
+      brakeSizings++;
+      log(`Brakes sized: ${z.changes.join('; ')}`);
+      const next = await runSet(tests, mode, isStopped);
+      if (!next) return false;
+      set = next;
+      return true;
+    };
+    await sizeAndRerun();
     // Springs / dampers on the ride, when geometry alone stops helping (once per stall).
     const tryRates = async (): Promise<boolean> => {
       if (!rates.withLoop || ratesTried || !rateVars(useApp.getState(), rates).length) return false;
@@ -372,7 +430,7 @@ export async function optimizeTests(scope: Scope, active: TestDesign | null, mod
       }
       const k = steps[wi]!;
       useLoop.setState({ round, widen: k });
-      const built = buildVehicleProblem(useApp.getState(), { caseSource });
+      const built = buildVehicleProblem(useApp.getState(), { caseSource, plans: lastPlans() });
       if (built.blockers.length) throw new Error(built.blockers.join(' '));
       const vars = widened(built.problem, k);
       log(`Round ${round}: optimizing ${vars.length} coordinates over ${built.problem.states?.length ?? 0} states${k > 1 ? ` (ranges ×${k})` : ''}…`);
@@ -391,8 +449,20 @@ export async function optimizeTests(scope: Scope, active: TestDesign | null, mod
         const next = await runSet(tests, mode, isStopped);
         if (!next) { useLoop.setState({ outcome: 'stopped' }); return; }
         gain = set.score > 0 ? (set.score - next.score) / set.score : 0;
-        log(`Round ${round}: ${describe(next)} · score ${set.score.toFixed(2)} → ${next.score.toFixed(2)} (${(gain * 100).toFixed(1)}% better) · largest move ${moved.toFixed(1)} mm`);
-        set = next;
+        if (next.score > set.score * 1.0005 + 1e-6) {
+          // Worse on the tests (the round's steady states improved, the runs didn't): undo it, run again so
+          // the results shown are the kept design's, and go on as if nothing moved (wider ranges next).
+          log(`Round ${round}: ${describe(next)} · score ${set.score.toFixed(2)} → ${next.score.toFixed(2)}: worse, undone`);
+          useApp.getState().applyVehicleOptimized(result.variables.map((v) => ({ root: v.root!, key: pointKeyOf(v.point), axis: v.axis, value: v.before })));
+          const back = await runSet(tests, mode, isStopped);
+          if (!back) { useLoop.setState({ outcome: 'stopped' }); return; }
+          set = back;
+          gain = 0;
+        } else {
+          log(`Round ${round}: ${describe(next)} · score ${set.score.toFixed(2)} → ${next.score.toFixed(2)} (${(gain * 100).toFixed(1)}% better) · largest move ${moved.toFixed(1)} mm`);
+          set = next;
+          await sizeAndRerun();
+        }
       } else {
         log(`Round ${round}: nothing moved${k > 1 ? ` at ×${k}` : ' within your ranges'}.`);
       }
@@ -449,7 +519,7 @@ export async function exploreRanges(scope: Scope, active: TestDesign | null): Pr
   useLoop.setState({ running: true, mode: 'explore', scope, widen: k, round: 1, log: [], outcome: null, explanation: [], exploration: null, cancel: () => { stopped = true; currentCancel?.(); } });
   try {
     const s = useApp.getState();
-    const built = buildVehicleProblem(s, { caseSource: scope === 'all' ? 'all' : tests[0]!.id });
+    const built = buildVehicleProblem(s, { caseSource: scope === 'all' ? 'all' : tests[0]!.id, plans: lastPlans() });
     if (built.blockers.length) throw new Error(built.blockers.join(' '));
     const p = built.problem;
     const wide = widened(p, k);
@@ -462,16 +532,21 @@ export async function exploreRanges(scope: Scope, active: TestDesign | null): Pr
     const before = await runSet(tests, 'pass', () => stopped);
     if (!before) { useLoop.setState({ outcome: 'stopped' }); return; }
     const candidate = { ...p, designs: Object.fromEntries(Object.entries(p.designs).map(([r, d]) => [r, { ...d!, geometry: (result.geometries as Partial<Record<CornerId, DoubleWishboneGeometry>>)[r as CornerId] ?? d!.geometry }])) };
-    const after: TestRun[] = [];
-    for (const t of tests) {
-      const job = runTestJob(candidate, t.segments.map((sg) => segmentSpec(sg, t)), { onFail: t.onFail, speedLimits: false });
-      currentCancel = job.cancel;
-      after.push(await job.done);
-      if (stopped) { useLoop.setState({ outcome: 'stopped' }); return; }
-    }
+    // The candidate on every test, several at once.
+    const jobs = new Set<() => void>();
+    currentCancel = () => { for (const c of jobs) c(); };
+    const after = await runLimited(tests, POOL_SIZE, async (t) => {
+      const job = runTestJob(candidate, t.segments.map((sg) => segmentSpec(sg, t)), { onFail: t.onFail, speedLimits: false, ...planOption(t, false) });
+      let stop = () => {};
+      const cancelled = new Promise<null>((res) => { stop = () => { job.cancel(); res(null); }; });
+      jobs.add(stop);
+      try { return await Promise.race([job.done, cancelled]); } finally { jobs.delete(stop); }
+    }, () => stopped);
+    if (stopped || after.some((r) => !r)) { useLoop.setState({ outcome: 'stopped' }); return; }
+    const runsAfter = after as TestRun[];
     const w = (t: TestDesign) => (tests.length > 1 ? rankWeight(t.rank, tests.length) : 1);
     const tw = tests.reduce((a, t) => a + w(t), 0) || 1;
-    const afterScore = tests.reduce((a, t, i) => a + w(t) * testScore(after[i]!, 'pass'), 0) / tw;
+    const afterScore = tests.reduce((a, t, i) => a + w(t) * testScore(runsAfter[i]!, 'pass', t.id), 0) / tw;
     const moves = result.variables.map((v, i) => {
       const orig = p.variables[i]!;
       return {
@@ -479,10 +554,10 @@ export async function exploreRanges(scope: Scope, active: TestDesign | null): Pr
         before: v.before, after: v.after, outside: v.after < Math.min(orig.lo, orig.hi) - 1e-6 || v.after > Math.max(orig.lo, orig.hi) + 1e-6,
       };
     }).filter((m) => Math.abs(m.after - m.before) > 0.05);
-    const passed = after.every((r) => r.passed);
+    const passed = runsAfter.every((r) => r.passed);
     const exploration: Exploration = {
       before: before.score, after: afterScore, moves, testIds: tests.map((t) => t.id),
-      candidate: { passed, severity: after.some((r) => r.severity === 'fail') ? 'fail' : after.some((r) => r.severity === 'warn') ? 'warn' : 'pass' },
+      candidate: { passed, severity: runsAfter.some((r) => r.severity === 'fail') ? 'fail' : runsAfter.some((r) => r.severity === 'warn') ? 'warn' : 'pass' },
       updates: result.variables.map((v) => ({ root: v.root!, key: pointKeyOf(v.point), axis: v.axis, value: v.after })),
     };
     useLoop.setState({ exploration, outcome: null });

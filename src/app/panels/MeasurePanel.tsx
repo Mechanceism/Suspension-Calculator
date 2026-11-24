@@ -23,6 +23,7 @@ import type { Current } from '../useModel';
 import { ValueInput } from './ValueInput';
 import { derivedField } from './FieldRows';
 import { useConversion } from '../units';
+import { Local, Val } from './UnitText';
 
 const isPoint = (id: AnchorId): id is PointKey => id in STATE_KEY;
 const fieldPos = (g: EditableGeometry, k: PointKey): Vec3 => vec3(g.points[k][0].value, g.points[k][1].value, g.points[k][2].value);
@@ -153,7 +154,7 @@ export function MeasurePanel({ cur }: { cur: Current | null }) {
     <div className="measure-panel" onPointerDown={(e) => e.stopPropagation()}>
       <div className="measure-head">
         <b>Set dimension</b>
-        <span className="muted">{useTravel ? `at ${t} mm travel` : 'ride height (design)'}</span>
+        <span className="muted">{useTravel ? <>at <Val v={t} unit="mm" digits={1} /> travel</> : 'ride height (design)'}</span>
         <button className="icon-btn measure-close" onClick={close} title="Close the measure tool (Esc)">✕ Close</button>
       </div>
       <div className="muted small-text">{anchorLabel(ia)} → {anchorLabel(ib)}</div>
@@ -175,7 +176,7 @@ export function MeasurePanel({ cur }: { cur: Current | null }) {
               <span className="muted">Values at</span>
               <button className={`chip${!useTravel ? ' on' : ''}`} onClick={() => setAtTravel(false)}>Ride height</button>
               <button className={`chip${useTravel ? ' on' : ''}`} onClick={() => setAtTravel(true)} disabled={!bothPoints}>
-                Current travel ({t} mm)
+                Current travel (<Val v={t} unit="mm" digits={1} />)
               </button>
             </div>
           )}
@@ -184,7 +185,7 @@ export function MeasurePanel({ cur }: { cur: Current | null }) {
               <span className="muted">When set</span>
               <label title="Just move the point"><input type="radio" checked={mode === 'once'} onChange={() => setMode('once')} /> Once</label>
               <label title="Keep this value at this position; it still moves through travel and comes back">
-                <input type="radio" checked={mode === 'hold'} onChange={() => setMode('hold')} /> Hold {useTravel ? `at ${t} mm` : 'at ride height'}
+                <input type="radio" checked={mode === 'hold'} onChange={() => setMode('hold')} /> Hold {useTravel ? <>at <Val v={t} unit="mm" digits={1} /></> : 'at ride height'}
               </label>
               <label title={permanentAny ? 'A part dimension: true at every travel' : permanentFor('distance').why} className={permanentAny && !useTravel ? '' : 'off'}>
                 <input type="radio" checked={mode === 'permanent'} disabled={!permanentAny || useTravel} onChange={() => setMode('permanent')} /> Permanent

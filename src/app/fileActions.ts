@@ -13,6 +13,7 @@ import { resetHistory } from './history';
 import { exportSettingsFile, applySettingsFile } from './settingsFile';
 import { newTestId } from './tests';
 import { create } from 'zustand';
+import type { SavedResult } from './savedResults';
 
 /** An import waiting for the user's answer (it replaces something). */
 export const usePendingImport = create<{ file: File | null; part: Part | 'settings' | 'tire' | 'aero' }>(() => ({ file: null, part: 'all' }));
@@ -21,6 +22,14 @@ let afterSave: (() => void) | null = null;
 export const setAfterSave = (fn: (() => void) | null) => { afterSave = fn; };
 
 export type Part = 'all' | 'model' | 'tests';
+
+/**
+ * The tests' last results worth saving (a model-and-tests file): those run on the design as it is now and on
+ * the test as it is now (a stale result isn't saved).
+ */
+let resultsSource: () => Record<string, SavedResult> = () => ({});
+export const setResultsSource = (fn: () => Record<string, SavedResult>) => { resultsSource = fn; };
+export const currentResults = () => resultsSource();
 
 /** Which parts differ from their last save / export. */
 export function useDirtyParts(): { model: boolean; tests: boolean } {
@@ -59,13 +68,16 @@ export function newLayout(dirty: boolean | { model: boolean; tests: boolean }): 
 
 /** File → New from car profile: a whole-car starting point (carProfiles.ts). */
 export function newFromProfile(id: string, dirty: boolean | { model: boolean; tests: boolean }): void {
-  if (!confirmDiscard(dirty)) return;
+  // A car profile replaces the model only (like importing a model): the tests stay, with their saved state.
+  if (!confirmDiscard(dirty, { model: true, tests: false })) return;
   const p = CAR_PROFILES.find((c) => c.id === id);
   if (!p) return;
-  const d = carProfileDesign(id);
-  useApp.getState().applyDesign(d, null, modelSnapshot(d), testsSnapshot(d));
+  const s = useApp.getState();
+  const d = { ...carProfileDesign(id), tests: s.tests };
+  s.applyDesign(d, null, modelSnapshot(d), s.savedTests);
+  useApp.getState().set('activeTestId', s.activeTestId && s.tests.some((t) => t.id === s.activeTestId) ? s.activeTestId : s.tests[0]?.id ?? null);
   resetHistory();
-  useApp.getState().notify(`New ${p.label}: ${p.hint} Springs from a ride frequency, dampers from critical damping; every value is a starting point to edit.`);
+  useApp.getState().notify(`New ${p.label} (your tests kept): ${p.hint} Springs from a ride frequency, dampers from critical damping; every value is a starting point to edit.`);
 }
 
 export function saveAs(name: string): void {
@@ -129,7 +141,7 @@ export function exportParts(part: Part): void {
     s.notify(`Exported ${d.tests.length} test(s) to “${f}”.`);
     return;
   }
-  const file = serializeProject(d, name, { tests: part === 'all' });
+  const file = serializeProject(d, name, { tests: part === 'all', ...(part === 'all' ? { results: currentResults() } : {}) });
   const f = download(file, `${name}${part === 'model' ? ' model' : ''}.susp.json`);
   s.markSaved(s.fileName, snap.model, part === 'all' ? snap.tests : undefined);
   s.notify(`Exported ${part === 'all' ? 'model and tests' : 'the model'} to “${f}” (file format v${file.formatVersion}, app ${file.appVersion}).`);

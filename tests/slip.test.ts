@@ -109,10 +109,15 @@ describe('test segments', () => {
       { distance: 40, v0: 40 * MPH, v1: 40 * MPH, path: 'left', radius: 15, grade: 0, bank: 0 },
       { distance: 30, v0: 30 * MPH, v1: 0, path: 'straight', radius: 0, grade: 0, bank: 0 },
     ];
+    // Report: the turn fails at its own speed.
+    const report = runTest(base(), { FL: geom }, segs, { onFail: 'report' });
+    expect(report.segments[1]!.passed).toBe(false);
+    expect(report.segments[1]!.findings.some((f) => f.severity === 'fail')).toBe(true);
+    // Driver lifts: the turn is driven at its speed limit and judged there, so it passes.
     const run = runTest(base(), { FL: geom }, segs, { onFail: 'lift' });
     expect(run.segments[0]!.passed).toBe(true);
-    expect(run.segments[1]!.passed).toBe(false);
-    expect(run.segments[1]!.findings.some((f) => f.severity === 'fail')).toBe(true);
+    expect(run.segments[1]!.passed).toBe(true);
+    expect(run.segments[1]!.findings.some((f) => f.severity === 'fail')).toBe(false);
     const k = run.segments[1]!.speedLimit!;
     expect(k).toBeGreaterThan(0.3);
     expect(k).toBeLessThan(1);

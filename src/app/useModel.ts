@@ -6,28 +6,14 @@
  * In both modes, a selected tire model carries the tire load and the coilover is evaluated
  * (motion ratio, wheel rate, ride rate, ride frequency).
  */
+import { useDesignApp } from './designOverride';
 import { useMemo, useRef } from 'react';
-import { useApp, ratioSpecOf, toGeometry, toProfile, toForceModel, sprungLoad, vehicleStaticLoads, mergedCorners } from './store';
+import { ratioSpecOf, toGeometry, toProfile, toForceModel, sprungLoad, vehicleStaticLoads, mergedCorners } from './store';
 import { DoubleWishbone, type CornerState } from '../core/suspension/doubleWishbone';
 import { rollCamber, ackermann } from '../core/suspension/derived';
 import { steeringWheelAngle, inputPerRev } from '../core/tests/steer';
-import type { SteeringMechanism } from '../core/suspension/steering';
-import { normalize as normV, sub as subV, add as addV } from '../core/math/vec3';
-import { mulVec } from '../core/math/mat3';
-import { centerLinkPose } from '../core/suspension/steering';
 
-/** How the corner's steering input moves the inner tie-rod joint. */
-const mechanismOf = (c: { rackAxis: import('../core/math/vec3').Vec3; geometry: import('../core/suspension/doubleWishbone').DoubleWishboneGeometry }, input = 0): SteeringMechanism => {
-  const s = c.geometry.steering;
-  if (s?.kind === 'centerLink') {
-    // The inner joint rides on the center link: its motion per radian of pitman angle (central difference at the input).
-    const at = (deg: number) => { const cl = centerLinkPose(s, deg); return cl ? addV(cl.A, mulVec(cl.R, subV(c.geometry.tieRod.inner, cl.A0))) : null; };
-    const a = at(input - 0.05), b = at(input + 0.05);
-    const k = 180 / Math.PI / 0.1;
-    return { kind: 'arm', pivot: s.pivot1, axis: normV(subV(s.pivot2, s.pivot1)), ...(a && b ? { rate: { x: (b.x - a.x) * k, y: (b.y - a.y) * k, z: (b.z - a.z) * k } } : {}) };
-  }
-  return s?.kind === 'arm' ? { kind: 'arm', pivot: s.pivot1, axis: normV(subV(s.pivot2, s.pivot1)) } : { kind: 'rack', axis: c.rackAxis };
-};
+const mechanismOf = steeringMechanism;
 import { characteristics, deg, type Characteristics } from '../core/suspension/characteristics';
 import { loadCorner, type LoadedCorner } from '../core/suspension/loaded';
 import {
@@ -39,7 +25,7 @@ import { patchSamples } from '../core/tire/geometry';
 import { dot, vec3, Y_AXIS, type Vec3 } from '../core/math/vec3';
 import { damperTravelLimits, type TravelLimits } from '../core/suspension/spring';
 import {
-  headingAngle, lowerArmAngle, steeringLoads, steeringArmLever, parkingTorque, type SteeringLoads,
+  headingAngle, lowerArmAngle, steeringLoads, steeringMechanism, steeringArmLever, parkingTorque, type SteeringLoads,
 } from '../core/suspension/steering';
 import { normalize, sub } from '../core/math/vec3';
 
@@ -141,39 +127,41 @@ const SWEEP_STEPS = 41;
 const G = 9.80665;
 
 export function useModel(): Model {
-  const geom = useApp((s) => s.geom);
-  const sliderTravel = useApp((s) => s.travel);
-  const rawRack = useApp((s) => s.rack);
+  const geom = useDesignApp((s) => s.geom);
+  const sliderTravel = useDesignApp((s) => s.travel);
+  // The corner model is shown only in the Corner workspace: elsewhere (the Vehicle view's steering, test
+  // playback moving the rack every frame) it doesn't follow the rack, so it isn't re-solved for nothing.
+  const rawRack = useDesignApp((s) => (s.workspace === 'corner' ? s.rack : 0));
   // Corners that don't steer keep the rack (toe link) fixed.
-  const steered = useApp((s) => s.settings[s.activeCorner].steered);
+  const steered = useDesignApp((s) => s.settings[s.activeCorner].steered);
   const rack = steered ? rawRack : 0;
-  const sliderDriver = useApp((s) => s.driver);
-  const droop = useApp((s) => s.droop);
-  const bump = useApp((s) => s.bump);
-  const tireModel = useApp((s) => s.tireModel);
-  const tire = useApp((s) => s.tire);
-  const volumeChange = useApp((s) => s.volumeChange);
-  const mode = useApp((s) => s.mode);
-  const loadFactor = useApp((s) => s.loadFactor);
-  const manualSpring = useApp((s) => s.spring);
+  const sliderDriver = useDesignApp((s) => s.driver);
+  const droop = useDesignApp((s) => s.droop);
+  const bump = useDesignApp((s) => s.bump);
+  const tireModel = useDesignApp((s) => s.tireModel);
+  const tire = useDesignApp((s) => s.tire);
+  const volumeChange = useDesignApp((s) => s.volumeChange);
+  const mode = useDesignApp((s) => s.mode);
+  const loadFactor = useDesignApp((s) => s.loadFactor);
+  const manualSpring = useDesignApp((s) => s.spring);
   // The corner load follows the vehicle's static weight on this corner unless set manually.
-  const vehicleLoad = useApp((s) => (s.cornerLoadMode === 'vehicle' ? vehicleStaticLoads(s.vehicle, mergedCorners(s), s.links)[s.activeCorner] : null));
+  const vehicleLoad = useDesignApp((s) => (s.cornerLoadMode === 'vehicle' ? vehicleStaticLoads(s.vehicle, mergedCorners(s), s.links)[s.activeCorner] : null));
   const spring = useMemo(
     () => (vehicleLoad === null ? manualSpring : { ...manualSpring, cornerLoad: { text: vehicleLoad.toFixed(0), value: vehicleLoad } }),
     [manualSpring, vehicleLoad],
   );
-  const damper = useApp((s) => s.damper);
-  const bumpStop = useApp((s) => s.bumpStop);
-  const steer = useApp((s) => s.steer);
+  const damper = useDesignApp((s) => s.damper);
+  const bumpStop = useDesignApp((s) => s.bumpStop);
+  const steer = useDesignApp((s) => s.steer);
   const cFactor = steer.cFactor.value;
-  const curveText = useApp((s) => s.steerCurve);
+  const curveText = useDesignApp((s) => s.steerCurve);
   const ratioSpec = { ...ratioSpecOf({ steer, steerCurve: curveText }), cFactor };
   const driver = mode === 'loaded' ? 'wheelCenter' : sliderDriver;
   const factor = mode === 'loaded' ? loadFactor : 1;
 
   // While a joint is being dragged, the heavy sweeps (trails, curves, limits) keep the last settled
   // geometry and catch up on release; the current position always uses the live geometry.
-  const interacting = useApp((s) => s.interacting);
+  const interacting = useDesignApp((s) => s.interacting);
   const settledGeom = useRef(geom);
   if (!interacting) settledGeom.current = geom;
   const sweepGeom = settledGeom.current;
@@ -375,7 +363,7 @@ export function useModel(): Model {
       rollKpi: -1 + ((deg(plus.kpi) - deg(minus.kpi)) / (2 * h)) * (Math.PI / 180) * chars.halfTrack,
       rollCaster: ((deg(plus.caster) - deg(minus.caster)) / (2 * h)) * (Math.PI / 180) * chars.halfTrack,
       compliance: interacting ? lastSlow.current.compliance ?? null : (() => {
-        const b = useApp.getState().geom.bushing;
+        const b = geom.bushing;
         try { const r = corner.compliance(state, { radial: b?.radial.value ?? 5000, axial: b?.axial.value ?? 1500 }); lastSlow.current.compliance = r; return r; } catch { return null; }
       })(),
     };
@@ -386,7 +374,7 @@ export function useModel(): Model {
   const armKey = current && built.corner ? Math.round((built.corner.solidAxle ? current.state.inputs.travel : lowerArmAngle(built.corner.geometry, current.state)) * 1e5) : 0;
   const heightDriver = current?.state.inputs.driver ?? 'wheelCenter';
   const rackLimit = steer.rackLimit.value;
-  const wheelbase = useApp((s) => s.vehicle.wheelbase.value);
+  const wheelbase = useDesignApp((s) => s.vehicle.wheelbase.value);
   const curTireLoad = Math.round(current?.tireLoad ?? spring.cornerLoad.value);
   const steerSweep = useMemo<SteerSample[]>(() => {
     const corner = built.corner;

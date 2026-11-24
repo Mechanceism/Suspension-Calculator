@@ -10,7 +10,7 @@ export type Severity = 'pass' | 'warn' | 'fail';
 
 export type CheckId =
   | 'nearLimit' | 'understeer' | 'oversteer' | 'wheelspin' | 'absActive' | 'lockup' | 'speedNotReached'
-  | 'bumpStop' | 'bottoming' | 'wheelLift' | 'rollover' | 'noSolution' | 'beyondGrip' | 'steerLimit' | 'pathError' | 'spin' | 'brakeLimit' | 'brakeFade' | 'trailerSway' | 'hitchLoad' | 'lightTongue';
+  | 'bumpStop' | 'bottoming' | 'wheelLift' | 'rollover' | 'noSolution' | 'beyondGrip' | 'steerLimit' | 'pathError' | 'spin' | 'brakeLimit' | 'brakeFade' | 'longPedal' | 'mcStroke' | 'kickback' | 'shimmy' | 'trailerSway' | 'hitchLoad' | 'lightTongue' | 'gripTarget';
 
 export interface CheckSetting {
   severity: Severity;
@@ -47,10 +47,15 @@ export const CHECK_META: Record<CheckId, CheckMeta> = {
   hitchLoad: { label: 'Hitch overloaded', hint: 'Towing: the load on the hitch ball (tongue weight plus what braking, accelerating and bumps add) is above the hitch\'s rated tongue load (Towing → Hitch rating).' },
   lightTongue: { label: 'Light tongue', hint: 'Towing: the trailer\'s static tongue weight is below this share of its weight. Below about 10 % a trailer tends to sway.', threshold: { label: 'least tongue share', unit: '%' } },
   trailerSway: { label: 'Trailer sway', hint: 'Towing, driving over time with the driver steering: the trailer swings side to side about the line it would follow without tire slip by more than this (or jackknifes). More tongue weight, a lighter or shorter trailer (less yaw inertia), a longer hitch-to-axle distance or a lower speed help.', threshold: { label: 'allowed', unit: '°' } },
+  longPedal: { label: 'Long pedal', hint: 'Detailed brake hydraulics: in this stop the pedal travels further than the most you set (pad clearance, the circuit swelling under pressure, the master-cylinder bore). A larger master cylinder, less piston area, stiffer hoses or less pedal ratio shorten it (and raise the pedal force).' },
+  kickback: { label: 'Kickback', hint: 'Over time with the steering modeled: a jolt at the steering wheel above this (N·m above its 0.3 s running mean) from the front tires\u2019 forces: a bump\u2019s push through the kingpin offset at the wheel center, braking through the scrub radius, load changes through the axis\u2019 tilt, side force through the trail. A smaller scrub radius / kingpin offset or a slower steering ratio reduces it.', threshold: { label: 'allowed jolt', unit: 'N·m' } },
+  shimmy: { label: 'Shimmy / death wobble', hint: 'With the shimmy check on (Vehicle → Inputs → Shimmy): the front wheels, knocked by a one-sided bump at the test’s fastest speeds, keep oscillating about their steering axes instead of settling, with worn parts (free play, softer steering, weaker damper, wheel imbalance) or even new ones. More trail, a stiffer steering system, a steering damper, less free play help.' },
+  mcStroke: { label: 'Master cylinder runs out', hint: 'Detailed brake hydraulics: the master cylinder would need more than its stroke to make this stop (the pedal hits the floor). A larger bore or a longer stroke, less piston area or stiffer hoses help.' },
   brakeFade: { label: 'Brake fade', hint: 'With brake fade modeled: the rotors are hot enough that the pads have lost more than this share of their grip. If the faded brakes can no longer make the braking asked, it counts as Brakes too weak. Heavier rotors, more cooling, or pads that fade hotter help.', threshold: { label: 'allowed pad grip loss', unit: '%' } },
   pathError: { label: 'Off the line', hint: 'Driving over time with the driver steering: the car is further than this from the path (runs wide or cuts in).', threshold: { label: 'allowed', unit: 'm' } },
   spin: { label: 'Spin / slide', hint: 'Driving over time with the driver steering: the car\'s sideslip angle (how far it points away from where it travels) is beyond this.', threshold: { label: 'allowed', unit: '°' } },
   steerLimit: { label: 'Steering lock', hint: 'The turn is tighter than the steering allows: its road-wheel angle (atan(wheelbase ÷ radius), plus the front − rear tire slip angle at speed) needs more rack travel than the rack limit, or no wheel steers.' },
+  gripTarget: { label: 'Driver push lowered', hint: 'Speeds as maximums: every way of taking the segment with the driver pushing to the test’s share of the tires’ grip (brake before, brake in, coast in, hold the speed, speed up in) failed over time, so the driver pushes less there (slower, a reserve for what the plan doesn’t see). The finding says to what; it also says when slowing down didn’t cure it.' },
   beyondGrip: { label: 'Beyond the tires', hint: 'The state asks for more total force than all four tires can give: no suspension can pass it. Lower the speed, enlarge the radius, or improve the tires.', fixed: true },
 };
 export const CHECK_IDS = Object.keys(CHECK_META) as CheckId[];
@@ -73,10 +78,15 @@ const base: CheckProfile = {
   pathError: { severity: 'fail', threshold: 1 },
   brakeLimit: { severity: 'fail' },
   brakeFade: { severity: 'warn', threshold: 10 },
+  longPedal: { severity: 'warn' },
+  mcStroke: { severity: 'fail' },
+  kickback: { severity: 'warn', threshold: 5 },
+  shimmy: { severity: 'fail' },
   trailerSway: { severity: 'fail', threshold: 5 },
   hitchLoad: { severity: 'fail' },
   lightTongue: { severity: 'warn', threshold: 10 },
   spin: { severity: 'fail', threshold: 12 },
+  gripTarget: { severity: 'warn' },
 };
 
 export type BuiltinProfile = 'default' | 'street' | 'track' | 'drift' | 'offroad';
@@ -136,7 +146,11 @@ export function classifyState(f: StateFacts, profile: CheckProfile): Finding[] {
   if (f.requiredG > f.availableG * 1.001) add('beyondGrip', `Needs ${f.requiredG.toFixed(2)} g, the tires give at most about ${f.availableG.toFixed(2)} g: no suspension can pass this`);
   const st = f.steer;
   if (st?.none) add('steerLimit', "No steered wheels (or the rack doesn't turn them): the car can't follow the turn");
-  else if (st?.over) {
+  else if (st?.over && st.offLine !== undefined) {
+    // Over time, steering back to the line (the car ran wide or slid): not the turn being too tight.
+    add('steerLimit', `Steering at full lock to get back to the line (${Math.abs(st.offLine).toFixed(2)} m ${st.offLine > 0 ? 'left' : 'right'} of it): it asks ${Math.abs(st.wheelAngle).toFixed(1)}° at the road wheels`
+      + `${(st.turnAngle ?? 0) !== 0 ? `, the turn itself ${Math.abs(st.turnAngle!).toFixed(1)}°` : ' on a straight'}; full lock gives ${st.maxAngle.toFixed(1)}°`);
+  } else if (st?.over) {
     add('steerLimit', `Too tight for the steering: needs ${Math.abs(st.wheelAngle).toFixed(1)}° at the road wheels${Math.abs(st.slip) > 0.05 ? ` (${st.slip > 0 ? '+' : '−'}${Math.abs(st.slip).toFixed(1)}° of it for the tires' slip)` : ''}`
       + `${Number.isFinite(st.rack) ? ` (rack ${Math.abs(st.rack).toFixed(1)} mm, limit ±${st.limit.toFixed(0)} mm)` : ''}; full lock gives ${st.maxAngle.toFixed(1)}°`);
   }
@@ -252,3 +266,12 @@ export function checkResiduals(r: VehicleResult | null, profile: CheckProfile): 
 }
 
 export const worstSeverity = (fs: Finding[]): Severity => (fs.some((x) => x.severity === 'fail') ? 'fail' : fs.some((x) => x.severity === 'warn') ? 'warn' : 'pass');
+
+/** Detailed hydraulics at a stop: the pedal travel and master-cylinder stroke it takes (brakes.ts § pedalTravel). */
+export function pedalFindings(t: { pedal: number; strokeUse: number }, maxPedalTravel: number, profile: CheckProfile): Finding[] {
+  const out: Finding[] = [];
+  const add = (check: CheckId, text: string) => { const severity = sevOf(profile, check); if (severity !== 'pass') out.push({ check, severity, text }); };
+  if (t.strokeUse > 1 + 1e-9) add('mcStroke', `The master cylinder runs out: this stop needs ${(100 * t.strokeUse).toFixed(0)} % of its stroke`);
+  else if (maxPedalTravel > 0 && t.pedal > maxPedalTravel * (1 + 1e-9)) add('longPedal', `Long pedal: ${t.pedal.toFixed(0)} mm of pedal travel (most ${maxPedalTravel.toFixed(0)} mm)`);
+  return out;
+}

@@ -19,9 +19,11 @@ import { angleInput,
 } from '../store';
 import { importTireFile } from '../tireActions';
 import { switchWorkspace } from '../viewport/SafeHtml';
+import { axleRoots, wizardKeys } from '../locks';
 import { ValueInput } from './ValueInput';
 import { fmt } from './FieldRows';
 import { useDisplay } from '../units';
+import { Local, Val } from './UnitText';
 
 export const useWizard = create<{ open: boolean; step: number }>(() => ({ open: false, step: 0 }));
 export const openWizard = (step?: SetupStep) => useWizard.setState({ open: true, step: step ? SETUP_STEPS.indexOf(step) : 0 });
@@ -63,7 +65,10 @@ function motionRatio(d: CornerDesign): number {
 
 // ---------------------------------------------------------------- steps
 
-interface StepProps { apply: (fn: () => void) => void }
+/** `fn` writes the step's values and returns the lock keys of what it wrote (locked as the user's values). */
+interface StepProps { apply: (fn: () => string[] | void) => void }
+/** Every design the front and rear axles use (one when all four corners share a design). */
+const allRoots = () => { const l = useApp.getState().links; return [...new Set([...axleRoots(l, 'front'), ...axleRoots(l, 'rear')])]; };
 type StepView = (p: StepProps) => ReactNode;
 
 const TypeStep: StepView = ({ apply }) => {
@@ -180,6 +185,7 @@ const TiresStep: StepView = ({ apply }) => {
     };
     if (same) set('both', sizeF, pF, rimF, etF);
     else { set('front', sizeF, pF, rimF, etF); set('rear', sizeR, pR, rimR, etR); }
+    return wizardKeys.tires(allRoots());
   });
   const widthOn = (text: string, rim: number, d: CornerDesign = front) => { const z = parseTireSize(text); return mountedTireWidth({ ...d.geom.scalars, tireWidth: f(z ? z.sectionWidth : d.geom.scalars.tireWidth.value), rimWidth: f(rim) }); };
   return (
@@ -208,7 +214,7 @@ const TiresStep: StepView = ({ apply }) => {
       <div className="wizard-figs">
         <OffsetDiagram />
         <p className="small-text muted">
-          Tire width on this rim: {fmt(widthOn(sizeF, rimF), 0)} mm{!same ? ` front, ${fmt(widthOn(sizeR, rimR, rear), 0)} mm rear` : ''} (section width is quoted on the tire&apos;s measuring rim).
+          Tire width on this rim: <Val v={widthOn(sizeF, rimF)} unit="mm" digits={0} />{!same ? <Local text={` front, ${fmt(widthOn(sizeR, rimR, rear), 0)} mm rear`} /> : ''} (section width is quoted on the tire&apos;s measuring rim).
           The suspension&apos;s wheel-center point is the <b>hub mounting face</b>: the tire&apos;s centerline sits the offset inboard of it.
         </p>
       </div>
@@ -244,6 +250,7 @@ const SizeStep: StepView = ({ apply }) => {
     };
     shift('front', trackOf(tF, front), halfF);
     if (!linked) shift('rear', trackOf(tR, rear), halfR);
+    return wizardKeys.size(allRoots());
   });
   return (
     <>
@@ -260,7 +267,7 @@ const SizeStep: StepView = ({ apply }) => {
           {!linked && <Row label={mode === 'track' ? 'Rear track' : 'Rear overall width'}><Num value={tR} unit="mm" q="length" onChange={setTR} /></Row>}
         </tbody>
       </table>
-      {mode === 'width' && <p className="small-text muted">Track: front {fmt(trackOf(tF, front), 0)} mm{!linked ? `, rear ${fmt(trackOf(tR, rear), 0)} mm` : ''}.</p>}
+      {mode === 'width' && <p className="small-text muted">Track: front <Val v={trackOf(tF, front)} unit="mm" digits={0} />{!linked ? <Local text={`, rear ${fmt(trackOf(tR, rear), 0)} mm`} /> : ''}.</p>}
       {linked && <p className="hint">The rear uses the front&apos;s dimensions (step 1), so it gets the front track.</p>}
       <p className="hint">Changing the track moves each corner sideways as a whole (its arms keep their lengths and angles).</p>
       <div className="jm-row"><button className="wide-btn primary" onClick={go}>Apply and next</button></div>
@@ -294,6 +301,7 @@ const WeightStep: StepView = ({ apply }) => {
     st.setVehicleField('cgZ', String(Number(z.toFixed(1))));
     st.setVehicleField('cgX', String(Number(x.toFixed(1))));
     st.setVehicleField('cgY', String(Number(h.toFixed(1))));
+    return wizardKeys.weight();
   });
   return (
     <>
@@ -330,8 +338,8 @@ const WeightStep: StepView = ({ apply }) => {
           </tbody></table>
           {cg && (
             <p className="small-text">
-              <b>{fmt(cg.mass, 1)} kg</b> · {fmt(cg.front * 100, 1)} % front · {fmt(cg.left * 100, 1)} % left · CG {fmt(-cg.z, 0)} mm behind the front axle
-              {cg.height !== null ? <>, <b>{fmt(cg.height, 0)} mm high</b></> : ' (height: step 2)'}
+              <b><Val v={cg.mass} unit="kg" digits={1} /></b> · {fmt(cg.front * 100, 1)} % front · {fmt(cg.left * 100, 1)} % left · CG <Val v={-cg.z} unit="mm" digits={0} /> behind the front axle
+              {cg.height !== null ? <>, <b><Val v={cg.height} unit="mm" digits={0} /> high</b></> : ' (height: step 2)'}
             </p>
           )}
         </>
@@ -354,6 +362,7 @@ const UnsprungStep: StepView = ({ apply }) => {
   const axles: ('front' | 'rear')[] = linked ? ['front'] : ['front', 'rear'];
   const go = () => apply(() => {
     for (const a of axles) useApp.getState().updateDesigns(linked ? 'both' : a, (d) => ({ ...d, spring: { ...d.spring, unsprungMass: f(unsprungFromParts(parts[a])) } }));
+    return wizardKeys.unsprung(allRoots());
   });
   return (
     <>
@@ -367,7 +376,7 @@ const UnsprungStep: StepView = ({ apply }) => {
               {axles.map((a) => <td key={a}><Num value={parts[a][k]} unit="kg" q="mass" width={56} onChange={(x) => setParts((p) => ({ ...p, [a]: { ...p[a], [k]: x } }))} /></td>)}
             </tr>
           ))}
-          <tr><td><b>Unsprung per corner</b></td>{axles.map((a) => <td key={a}><b>{fmt(unsprungFromParts(parts[a]), 1)} kg</b></td>)}</tr>
+          <tr><td><b>Unsprung per corner</b></td>{axles.map((a) => <td key={a}><b><Val v={unsprungFromParts(parts[a])} unit="kg" digits={1} /></b></td>)}</tr>
         </tbody>
       </table>
       <div className="jm-row"><button className="wide-btn primary" onClick={go}>Apply and next</button></div>
@@ -406,12 +415,17 @@ const SpringsStep: StepView = ({ apply }) => {
   const result = (a: 'front' | 'rear') => { const i = info(a); return springFromWeight(meas[a].kg, meas[a].drop, i.mr, i.kt); };
   const go = () => apply(() => {
     const st = useApp.getState();
+    const roots: string[] = [];
     for (const a of axles) {
       const k = mode === 'know' ? rate[a] : result(a)?.springRate;
-      if (k && k > 0) st.updateDesigns(linked ? 'both' : a, (d) => ({ ...d, spring: { ...d.spring, springRate: f(k) } }));
+      if (k && k > 0) {
+        st.updateDesigns(linked ? 'both' : a, (d) => ({ ...d, spring: { ...d.spring, springRate: f(k) } }));
+        roots.push(...wizardKeys.springs(linked ? allRoots() : axleRoots(st.links, a)));
+      }
     }
     // Keep the design ride height: free lengths follow the springs.
     st.set('autoPreload', true);
+    return roots;
   });
   return (
     <>
@@ -430,7 +444,7 @@ const SpringsStep: StepView = ({ apply }) => {
               <td>
                 add <Num value={meas[a].kg} unit="kg" q="mass" width={50} onChange={(x) => setMeas((m) => ({ ...m, [a]: { ...m[a], kg: x } }))} />
                 {' '}body drops <Num value={meas[a].drop} unit="mm" q="length" width={50} onChange={(x) => setMeas((m) => ({ ...m, [a]: { ...m[a], drop: x } }))} />
-                {result(a) && <div className="small-text">→ spring <b>{fmt(result(a)!.springRate, 1)} N/mm</b> (wheel rate {fmt(result(a)!.wheelRate, 1)} N/mm, motion ratio {fmt(info(a).mr, 2)}{info(a).kt ? `, tire ${fmt(info(a).kt!, 0)} N/mm taken out` : ''})</div>}
+                {result(a) && <div className="small-text">→ spring <b><Val v={result(a)!.springRate} unit="N/mm" digits={1} /></b> (wheel rate <Val v={result(a)!.wheelRate} unit="N/mm" digits={1} />, motion ratio {fmt(info(a).mr, 2)}{info(a).kt ? <Local text={`, tire ${fmt(info(a).kt!, 0)} N/mm taken out`} /> : ''})</div>}
               </td>
             </tr>
           ))}
@@ -471,6 +485,7 @@ const DampersStep: StepView = ({ apply }) => {
       if (bars[a] > 0) { st.setShared(a, { antiRollBar: 'wheelRate' }); st.setSharedField(a, 'arbRate', String(bars[a])); }
       else if (st.shared[a].antiRollBar === 'wheelRate') st.setShared(a, { antiRollBar: 'none' });
     }
+    return wizardKeys.dampers(allRoots(), (['front', 'rear'] as const).filter((a) => bars[a] > 0));
   });
   return (
     <>
@@ -485,7 +500,7 @@ const DampersStep: StepView = ({ apply }) => {
             <>
               <Row label="Damping ratio, bump" hint="0.25–0.4 comfort, up to 0.7 for handling"><Num value={ratio.bump} unit="" q="ratio" onChange={(x) => setRatio((r) => ({ ...r, bump: x }))} /></Row>
               <Row label="Damping ratio, rebound"><Num value={ratio.rebound} unit="" q="ratio" onChange={(x) => setRatio((r) => ({ ...r, rebound: x }))} /></Row>
-              {axles.map((a) => { const r = fromRatio(a); return <Row key={a} label={`→ ${linked ? '' : a + ' '}rates`}><span className="small-text">bump {fmt(r.bump, 0)} · rebound {fmt(r.rebound, 0)} N·s/m</span></Row>; })}
+              {axles.map((a) => { const r = fromRatio(a); return <Row key={a} label={`→ ${linked ? '' : a + ' '}rates`}><span className="small-text">bump <Val v={r.bump} unit="N·s/m" digits={0} /> · rebound <Val v={r.rebound} unit="N·s/m" digits={0} /></span></Row>; })}
             </>
           ) : axles.map((a) => (
             <Row key={a} label={`${linked ? '' : a === 'front' ? 'Front ' : 'Rear '}bump / rebound`}>
@@ -522,6 +537,7 @@ const SteeringStep: StepView = ({ apply }) => {
     const st = useApp.getState();
     st.setSteerField('rackLimit', String(Number(lock.rack.toFixed(2))));
     st.setSteerField('cFactor', String(Number(cFactor.toFixed(2))));
+    return wizardKeys.steering();
   });
   return (
     <>
@@ -545,9 +561,9 @@ const SteeringStep: StepView = ({ apply }) => {
       </table>
       {lock ? (
         <p className="small-text">
-          {armMech ? 'Steering-arm angle' : 'Rack travel'} <b>±{fmt(lock.rack, 1)} {armMech ? '°' : 'mm'}</b> · <b>{fmt(cFactor, 1)} {armMech ? '°' : 'mm'}</b> per steering-wheel turn ·
+          {armMech ? 'Steering-arm angle' : 'Rack travel'} <b>{armMech ? `±${fmt(lock.rack, 1)} °` : <>±<Val v={lock.rack} unit="mm" digits={1} /></>}</b> · <b>{armMech ? `${fmt(cFactor, 1)} °` : <Val v={cFactor} unit="mm" digits={1} />}</b> per steering-wheel turn ·
           full lock: inside wheel <b>{fmt(deg(lock.inside), 1)}°</b>, outside <b>{fmt(deg(lock.outside), 1)}°</b> (max steering angle) ·
-          overall ratio {fmt((centerTurns * 360) / deg(mean), 1)}:1 · tightest turn about {fmt(wheelbase / 1000 / Math.tan(mean), 1)} m radius
+          overall ratio {fmt((centerTurns * 360) / deg(mean), 1)}:1 · tightest turn about <Val v={wheelbase / 1000 / Math.tan(mean)} unit="m" digits={1} /> radius
         </p>
       ) : <p className="hint warn-text">The steering geometry can&apos;t turn the wheel that far: check the angle (and the tie-rod points).</p>}
       <p className="hint">The inside and outside wheels turn by different amounts (Ackermann); the {armMech ? 'steering-arm angle' : 'rack travel'} comes from your steering geometry (tie-rod points{armMech ? " and the arm's pivot" : ''}). Rack or steering arm / plate: Steering → Mechanism.</p>
@@ -640,7 +656,7 @@ const InertiaStep: StepView = ({ apply }) => {
     const e = estimateInertia(v.mass.value - unsprung, track, v.wheelbase.value, v.mass.value);
     setRoll(Number(e.roll.toFixed(1))); setPitch(Number(e.pitch.toFixed(1))); setYaw(Number(e.yaw.toFixed(0)));
   };
-  const go = () => apply(() => { const st = useApp.getState(); st.setVehicleField('rollInertia', String(roll)); st.setVehicleField('pitchInertia', String(pitch)); st.setVehicleField('yawInertia', String(yaw)); });
+  const go = () => apply(() => { const st = useApp.getState(); st.setVehicleField('rollInertia', String(roll)); st.setVehicleField('pitchInertia', String(pitch)); st.setVehicleField('yawInertia', String(yaw)); return wizardKeys.inertia(); });
   return (
     <>
       <p>How hard the body is to roll and pitch (for the ride over time) and the whole car to turn (yaw, for handling). Rarely measured: the estimate from the weight and size is usually fine.</p>
@@ -683,7 +699,14 @@ export function SetupWizard() {
   const key = SETUP_STEPS[Math.min(step, SETUP_STEPS.length - 1)]!;
   const View = VIEWS[key];
   const next = () => useWizard.setState({ step: step + 1 });
-  const apply = (fn: () => void) => { fn(); useApp.getState().setSetupStatus(key, 'entered'); next(); };
+  const apply = (fn: () => string[] | void) => {
+    const keys = fn() ?? [];
+    const st = useApp.getState();
+    st.setSetupStatus(key, 'entered');
+    // What the user entered is locked so no optimizer changes it (Locks tab, marked "from setup wizard").
+    st.lockFromWizard(key, keys);
+    next();
+  };
   const estimate = () => { useApp.getState().setSetupStatus(key, 'estimated'); next(); };
   const close = () => useWizard.setState({ open: false });
   return (
@@ -719,7 +742,7 @@ export function SetupWizard() {
                   </tr>
                 ))}
               </tbody></table>
-              <p className="hint">Estimates stay marked: results that rest on them say so. Come back any time (File → Setup wizard). Every change can be undone (Ctrl+Z).</p>
+              <p className="hint">Values you entered are locked (Locks tab, marked &quot;setup wizard&quot;) so the optimizers keep them; unlock any you want optimized. Estimates stay free and marked: results that rest on them say so. Come back any time (File → Setup wizard). Every change can be undone (Ctrl+Z).</p>
               <div className="modal-actions"><button className="primary" onClick={close}>Done</button></div>
             </>
           )}

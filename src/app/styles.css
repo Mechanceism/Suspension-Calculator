@@ -689,3 +689,5 @@ tr.clickable:hover { background: var(--panel-2); }
 .pin { background: none; border: none; color: var(--muted); cursor: pointer; padding: 0 2px; font-size: 13px; }
 .pin.on { color: #ffb703; }
 .compare-who { margin: -4px 0 8px; }
+.compare-table tr.picked td { background: rgba(77, 163, 255, 0.08); }
+.compare-table tr.playing td { background: rgba(255, 183, 3, 0.14); }

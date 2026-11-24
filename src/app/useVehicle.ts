@@ -107,7 +107,8 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
   const wheelBumps = useDesignApp((st) => st.wheelBumps);
   const gripFields = useDesignApp((st) => st.tireGrip);
   // The test playback's pose (ride over time) belongs to the Tests workspace only: elsewhere the car is solved.
-  const rideView = useDesignApp((st) => (st.workspace === 'tests' ? st.rideView : null));
+  // The playback's pose (Tests, and Compare's test views).
+  const rideView = useDesignApp((st) => (st.workspace === 'tests' || st.workspace === 'compare' ? st.rideView : null));
   const tireFile = useDesignApp((st) => st.tireFile);
   const tireFileRear = useDesignApp((st) => st.tireFileRear);
   const aeroSettings = useDesignApp((st) => st.aero);

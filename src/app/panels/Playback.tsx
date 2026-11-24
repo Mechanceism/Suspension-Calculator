@@ -34,7 +34,7 @@ interface PlaybackState {
 }
 export const usePlayback = create<PlaybackState>(() => ({ testId: null, frames: [], computing: false, error: null, playing: false, t: 0, rate: 1, from: null, motion: 1 }));
 
-const frameAt = (frames: PlaybackFrame[], t: number) => {
+export const frameAt = (frames: PlaybackFrame[], t: number) => {
   let lo = 0, hi = frames.length - 1;
   while (lo < hi) { const m = (lo + hi + 1) >> 1; if (frames[m]!.t <= t) lo = m; else hi = m - 1; }
   return frames[lo];
@@ -49,7 +49,7 @@ const rideViews = new Map<number, WeakMap<PlaybackFrame, RideView>>();
  * A frame's body pose and wheel travels for the display: × the motion factor about the run's first frame
  * (display only, to see small motions; the results are the real ones).
  */
-function rideViewOf(f: PlaybackFrame): RideView | undefined {
+export function rideViewOf(f: PlaybackFrame): RideView | undefined {
   if (!f.ride) return undefined;
   const k = Math.max(1, usePlayback.getState().motion);
   let m = rideViews.get(k);
@@ -67,10 +67,10 @@ function rideViewOf(f: PlaybackFrame): RideView | undefined {
   return rv;
 }
 
-/** Pose the 3D car for a frame (sets the Vehicle view's sliders and road), in one store update. */
-function applyFrame(f: PlaybackFrame) {
+/** What posing the 3D car for a frame sets (the Vehicle view's sliders and road) — also a ghost car's pose (Compare). */
+export function framePatch(f: PlaybackFrame) {
   const rv = rideViewOf(f);
-  useApp.setState({
+  return {
     lateralG: Number(f.ay.toFixed(3)),
     longitudinalG: Number(f.ax.toFixed(3)),
     roadGrade: Number((Math.tan(f.grade) * 100).toFixed(2)),
@@ -79,7 +79,11 @@ function applyFrame(f: PlaybackFrame) {
     rack: Number((f.rack ?? 0).toFixed(2)),
     testView: null,
     rideView: rv ?? null,
-  });
+  };
+}
+/** Pose the 3D car for a frame, in one store update. */
+function applyFrame(f: PlaybackFrame) {
+  useApp.setState(framePatch(f));
 }
 
 async function computeFrames(test: TestDesign) {

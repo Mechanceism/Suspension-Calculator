@@ -657,7 +657,36 @@ function vehicleTarget(model: VehicleModel | null): FocusTarget {
   return { center: vec3(s.center.x, s.center.y, s.center.z), radius: s.radius };
 }
 
-export function VehicleViewport({ model, memoryKey = 'vehicle', active = true }: { model: VehicleModel | null; memoryKey?: string; active?: boolean }) {
+/**
+ * Another design's car drawn see-through over this one (Compare, R9): its own scene, every material made a
+ * tinted, see-through copy (checked each frame, so parts rebuilt since are caught too). Not pickable.
+ */
+const GHOST = new THREE.Color('#ffb703');
+function GhostScene({ model }: { model: VehicleModel }) {
+  const group = useRef<THREE.Group>(null);
+  useFrame(() => {
+    group.current?.traverse((o) => {
+      const obj = o as THREE.Object3D & { material?: THREE.Material | THREE.Material[] };
+      if (!obj.material || obj.userData.ghostOf === obj.material) return;
+      // The part got a new material since: drop the old see-through copy.
+      const old = obj.userData.ghostOf as THREE.Material | THREE.Material[] | undefined;
+      if (old) (Array.isArray(old) ? old : [old]).forEach((m) => m.dispose());
+      const ghost = (m: THREE.Material) => {
+        const g = m.clone() as THREE.Material & { color?: THREE.Color };
+        g.transparent = true; g.opacity = 0.35; g.depthWrite = false;
+        if (g.color) g.color.lerp(GHOST, 0.6);
+        return g;
+      };
+      obj.material = Array.isArray(obj.material) ? obj.material.map(ghost) : ghost(obj.material);
+      obj.userData.ghostOf = obj.material;
+      obj.raycast = () => {};
+    });
+  }, -1);
+  return <group ref={group}><VehicleScene model={model} arrows={[]} ground={false} /></group>;
+}
+
+/** `ghost` (Compare): another design's car, drawn see-through over this one. */
+export function VehicleViewport({ model, memoryKey = 'vehicle', active = true, ghost }: { model: VehicleModel | null; memoryKey?: string; active?: boolean; ghost?: VehicleModel | null }) {
   const projection = useApp((s) => s.projection);
   const bg = useMemo(() => getComputedStyle(document.documentElement).getPropertyValue('--viewport-bg').trim() || '#16191e', []);
   const target = vehicleTarget(model);
@@ -685,6 +714,7 @@ export function VehicleViewport({ model, memoryKey = 'vehicle', active = true }:
         <FadeRoot viewKey={memoryKey} />
         <DevProjectBridge />
         {model && <VehicleScene model={model} arrows={arrows} />}
+        {ghost?.result && <GhostScene model={ghost} />}
         <LabelSync labels={labels} layer={layer} />
       </Canvas>
       <div className="label-layer" ref={layer}>

@@ -8,11 +8,13 @@ import { createContext, useContext } from 'react';
 import { useApp, mergedCorners, rootOf, type AppState, type DesignState } from './store';
 import type { CornerId } from '../core/vehicle/vehicle';
 
-export const DesignOverride = createContext<DesignState | null>(null);
+/** A design, and optionally its own pose state (a ghost car posed by its own run: sliders, road, ride view). */
+export type DesignOverrideValue = DesignState & Partial<AppState>;
+export const DesignOverride = createContext<DesignOverrideValue | null>(null);
 
 // One merged state per (app state, design): the selectors see the same object across calls.
-const merged = new WeakMap<AppState, WeakMap<DesignState, AppState>>();
-export function withDesign(s: AppState, design: DesignState): AppState {
+const merged = new WeakMap<AppState, WeakMap<DesignOverrideValue, AppState>>();
+export function withDesign(s: AppState, design: DesignOverrideValue): AppState {
   let byDesign = merged.get(s);
   if (!byDesign) { byDesign = new WeakMap(); merged.set(s, byDesign); }
   let m = byDesign.get(design);

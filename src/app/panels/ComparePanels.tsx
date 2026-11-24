@@ -6,7 +6,7 @@
  *   scores side by side, with the snapshot's saved last run), and the whole car's results of both.
  *   Any row can be pinned (☆): pinned rows are listed first, so the ones that matter needn't be searched for.
  */
-import { Fragment, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { create } from 'zustand';
 import { useApp, type DesignState } from '../store';
 import { DesignOverride, withActiveCorner } from '../designOverride';
@@ -18,13 +18,33 @@ import { useCompare, runCompare, runKey, designDifferences, type CompareTest } f
 import { Section, fmt } from './FieldRows';
 import { Plots } from './Plots';
 import { useDisplay } from '../units';
-import type { TestRun } from '../../core/tests/run';
+import type { TestRun, PlaybackFrame } from '../../core/tests/run';
+import { usePlayback, framePatch, frameAt } from './Playback';
 import type { SavedResult } from '../savedResults';
 import type { Severity } from '../../core/tests/checks';
 
 export type CompareMode = 'vehicles' | 'tests';
 const loadPins = (): string[] => { try { return JSON.parse(localStorage.getItem('susp.comparePins') ?? '[]') as string[]; } catch { return []; } };
-export const useCompareView = create<{ mode: CompareMode; pins: string[]; onlyDiff: boolean }>(() => ({ mode: 'vehicles', pins: loadPins(), onlyDiff: false }));
+export const useCompareView = create<{ mode: CompareMode; pins: string[]; onlyDiff: boolean; picked: string | null }>(() => ({ mode: 'vehicles', pins: loadPins(), onlyDiff: false, picked: null }));
+/** Vehicles: the cars at the Vehicle view's sliders (no playback pose). */
+export function setCompareMode(mode: CompareMode) {
+  useCompareView.setState({ mode });
+  if (mode === 'vehicles') { usePlayback.setState({ playing: false }); useApp.setState({ rideView: null }); }
+  else { const row = pickedRow(); if (row) pickRow(row); }
+}
+/** The row shown in the 3D views and played (Tests): its runs' frames, the current design's driven, the snapshot's as the ghost. */
+export const pickedRow = (): CompareTest | null => { const c = useCompare.getState(); return c.rows.find((r) => r.key === useCompareView.getState().picked) ?? c.rows[0] ?? null; };
+export function pickRow(row: CompareTest) {
+  useCompareView.setState({ picked: row.key });
+  const run = useCompare.getState().runs[runKey(row, 'A')];
+  const frames = run?.ride?.frames ?? [];
+  const test = (row.a ?? row.b)!;
+  const s = useApp.getState();
+  usePlayback.setState({ testId: test.id, frames, t: 0, playing: false, error: null, computing: false, from: { geom: s.geom, corners: s.corners, test } });
+  if (frames[0]) useApp.setState(framePatch(frames[0]));
+}
+/** The snapshot's frames for the picked row (its ghost car). */
+export const ghostFrames = (row: CompareTest | null): PlaybackFrame[] => (row ? useCompare.getState().runs[runKey(row, 'B')]?.ride?.frames ?? [] : []);
 function togglePin(key: string) {
   const pins = useCompareView.getState().pins;
   const next = pins.includes(key) ? pins.filter((k) => k !== key) : [...pins, key];
@@ -66,8 +86,8 @@ export function CompareSidebar() {
       </Section>
       <Section title="Compare">
         <div className="jm-row" role="tablist">
-          <button className={`chip${mode === 'vehicles' ? ' on' : ''}`} onClick={() => useCompareView.setState({ mode: 'vehicles' })} title="The two cars: the Corner results, their curves, and the design values that differ">Vehicles</button>
-          <button className={`chip${mode === 'tests' ? ' on' : ''}`} onClick={() => useCompareView.setState({ mode: 'tests' })} title="Both cars on both sets of tests: the scores side by side, and the whole car's results">Tests</button>
+          <button className={`chip${mode === 'vehicles' ? ' on' : ''}`} onClick={() => setCompareMode('vehicles')} title="The two cars: the Corner results, their curves, and the design values that differ">Vehicles</button>
+          <button className={`chip${mode === 'tests' ? ' on' : ''}`} onClick={() => setCompareMode('tests')} title="Both cars on both sets of tests: the scores side by side, and the whole car's results">Tests</button>
         </div>
         {mode === 'tests' && active && (
           <>
@@ -83,23 +103,43 @@ export function CompareSidebar() {
   );
 }
 
-/** The snapshot's models, worked out by the same hooks with its design in place (the app's sliders kept). */
-function SnapshotModels({ design, children }: { design: DesignState; children: (b: { corner: Model; vehicle: VehicleModel | null }) => ReactNode }) {
-  return <DesignOverride.Provider value={design}><Inner>{children}</Inner></DesignOverride.Provider>;
-}
-function Inner({ children }: { children: (b: { corner: Model; vehicle: VehicleModel | null }) => ReactNode }) {
-  const corner = useModel();
-  const vehicle = useVehicle(true);
-  return <>{children({ corner, vehicle })}</>;
-}
+export interface SnapshotModels { corner: Model; vehicle: VehicleModel | null }
 
-/** Right: the comparison. */
-export function CompareResults({ corner, vehicle }: { corner: Model; vehicle: VehicleModel | null }) {
+/**
+ * The snapshot's models, worked out by the same hooks with its design in place (the app's sliders kept; the
+ * same active corner). Comparing tests, its car is posed by its own run at the playhead (its ghost).
+ * Rendered once (App) and handed to the tables and the 3D views.
+ */
+export function CompareSource({ onModels }: { onModels: (b: SnapshotModels | null) => void }) {
   const snap = useSnapshots((s) => s.list.find((x) => x.id === s.activeId) ?? null);
   const activeCorner = useApp((s) => s.activeCorner);
-  const bDesign = useMemo(() => (snap ? withActiveCorner(snap.design, activeCorner) : null), [snap, activeCorner]);
-  if (!snap || !bDesign) return <section className="panel"><h2>Compare</h2><p className="muted">Take a snapshot (File → Take snapshot, or here on the left) or import one, then change the design: the two are compared here.</p></section>;
-  return <SnapshotModels design={bDesign}>{(b) => <CompareBody a={{ corner, vehicle }} b={b} snap={snap} />}</SnapshotModels>;
+  const mode = useCompareView((s) => s.mode);
+  const picked = useCompareView((s) => s.picked);
+  const runs = useCompare((s) => s.runs);
+  const t = usePlayback((s) => s.t);
+  const base = useMemo(() => (snap ? withActiveCorner(snap.design, activeCorner) : null), [snap, activeCorner]);
+  const frames = useMemo(() => (mode === 'tests' ? ghostFrames(pickedRow()) : []), [mode, picked, runs]); // eslint-disable-line react-hooks/exhaustive-deps
+  const frame = frames.length ? frameAt(frames, t) : undefined;
+  const value = useMemo(() => (base && frame ? { ...base, ...framePatch(frame) } : base), [base, frame]);
+  useEffect(() => { if (!value) onModels(null); }, [value, onModels]);
+  if (!value) return null;
+  return <DesignOverride.Provider value={value}><Inner onModels={onModels} /></DesignOverride.Provider>;
+}
+function Inner({ onModels }: { onModels: (b: SnapshotModels) => void }) {
+  const m = useModel();
+  const vehicle = useVehicle(true);
+  // useModel answers a new object each render: keep one while its parts are the same (else this reports forever).
+  const corner = useMemo(() => m, [m.error, m.corner, m.sweep, m.current, m.steerSweep, m.damperLimits]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { onModels({ corner, vehicle }); }, [corner, vehicle, onModels]);
+  return null;
+}
+
+/** Right: the comparison (`b`: the snapshot's models, from CompareSource). */
+export function CompareResults({ corner, vehicle, b }: { corner: Model; vehicle: VehicleModel | null; b: SnapshotModels | null }) {
+  const snap = useSnapshots((s) => s.list.find((x) => x.id === s.activeId) ?? null);
+  if (!snap) return <section className="panel"><h2>Compare</h2><p className="muted">Take a snapshot (File → Take snapshot, or here on the left) or import one, then change the design: the two are compared here.</p></section>;
+  if (!b) return <section className="panel"><h2>Compare</h2><p className="muted">Working out the snapshot…</p></section>;
+  return <CompareBody a={{ corner, vehicle }} b={b} snap={snap} />;
 }
 
 interface Pair { key: string; group: string; label: string; unit: string; digits: number; hint?: string; a?: ResultRow; b?: ResultRow }
@@ -220,7 +260,13 @@ function TestScores({ snap }: { snap: Snapshot }) {
   const cmp = useCompare();
   const pins = useCompareView((s) => s.pins);
   const [open, setOpen] = useState<string | null>(null);
+  const picked = useCompareView((s) => s.picked);
+  // The playhead: the segment being driven (of the picked test).
+  const playSeg = usePlayback((s) => (s.frames.length ? frameAt(s.frames, s.t)?.segment : undefined));
   const fresh = cmp.snapshotId === snap.id;
+  // When the runs are in, show the first test (or the one picked) in the 3D views.
+  const allIn = fresh && !cmp.running && cmp.rows.length > 0;
+  useEffect(() => { if (allIn) { const row = pickedRow(); if (row) pickRow(row); } }, [allIn, cmp.runs]); // eslint-disable-line react-hooks/exhaustive-deps
   const rows = fresh ? cmp.rows : [];
   const order = [...rows].sort((x, y) => Number(pins.includes(`test|${y.name}`)) - Number(pins.includes(`test|${x.name}`)));
   const score = (r: TestRun | SavedResult | undefined) => (r ? <span className={`sev-text-${r.severity}`}>{SEV_ICON[r.severity]}{typeof r.time === 'number' ? ` ${r.time.toFixed(2)} s` : ''}</span> : <span className="muted">—</span>);
@@ -242,15 +288,15 @@ function TestScores({ snap }: { snap: Snapshot }) {
               const k = `test|${row.name}`;
               return (
                 <Fragment key={row.key}>
-                  <tr className={ra && rb && (ra.severity !== rb.severity || Math.abs((ra.time ?? 0) - (rb.time ?? 0)) > 0.005) ? 'differs' : ''}>
+                  <tr className={`${ra && rb && (ra.severity !== rb.severity || Math.abs((ra.time ?? 0) - (rb.time ?? 0)) > 0.005) ? 'differs' : ''}${picked === row.key ? ' picked' : ''}`}>
                     <td><button className={`pin${pins.includes(k) ? ' on' : ''}`} onClick={() => togglePin(k)} title="Pin: listed first">{pins.includes(k) ? '★' : '☆'}</button></td>
-                    <td><button className="link-btn" onClick={() => setOpen(open === row.key ? null : row.key)} title={`${row.from === 'both' ? 'A track both designs have' : row.from === 'A' ? 'The current design’s test' : 'The snapshot’s test'} — click for its segments`}>{row.name}</button> <span className="muted small-text">{row.from === 'both' ? 'both' : row.from === 'A' ? 'current' : 'snapshot'}</span></td>
+                    <td><button className="link-btn" onClick={() => { setOpen(open === row.key ? null : row.key); pickRow(row); }} title={`${row.from === 'both' ? 'A track both designs have' : row.from === 'A' ? 'The current design’s test' : 'The snapshot’s test'} — click for its segments; it is shown and played in the 3D views (the snapshot as the ghost)`}>{row.name}</button> <span className="muted small-text">{row.from === 'both' ? 'both' : row.from === 'A' ? 'current' : 'snapshot'}</span></td>
                     <td className="num">{score(ra)}</td>
                     <td className="num">{score(rb)}</td>
                     <td className="num delta">{dt(ra?.time, rb?.time)}</td>
                     <td className="num">{score(saved)}</td>
                   </tr>
-                  {open === row.key && ra && rb && (
+                  {(open === row.key || (open === null && picked === row.key)) && ra && rb && (
                     <tr key={`${row.key}-segs`} className="segs"><td /><td colSpan={5}>
                       <table className="compare-table inner">
                         <thead><tr><th>Segment</th><th>Current</th><th>Snapshot</th></tr></thead>
@@ -258,7 +304,7 @@ function TestScores({ snap }: { snap: Snapshot }) {
                           {(row.a ?? row.b)!.segments.map((sg, i) => {
                             const x = ra.segments[i], y = rb.segments[i];
                             const cellOf = (s?: TestRun['segments'][number]) => (s ? <span className={`sev-text-${s.severity}`} title={s.findings.filter((f) => f.severity !== 'pass').map((f) => f.text).join('\n')}>{SEV_ICON[s.severity]}{typeof s.time === 'number' ? ` ${s.time.toFixed(2)} s` : ''} · {Math.round(s.maxUtilization * 100)} %</span> : '—');
-                            return <tr key={sg.id} className={x && y && x.severity !== y.severity ? 'differs' : ''}><td className="small-text">{sg.name}</td><td className="num">{cellOf(x)}</td><td className="num">{cellOf(y)}</td></tr>;
+                            return <tr key={sg.id} className={`${x && y && x.severity !== y.severity ? 'differs' : ''}${picked === row.key && playSeg === i ? ' playing' : ''}`}><td className="small-text">{sg.name}</td><td className="num">{cellOf(x)}</td><td className="num">{cellOf(y)}</td></tr>;
                           })}
                         </tbody>
                       </table>

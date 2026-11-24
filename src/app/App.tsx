@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode } from 'react';
 import { showView, slotRef, useViewFade } from './viewport/viewFade';
 import { useModel } from './useModel';
 import { useApp, pickDesign } from './store';
@@ -45,8 +45,15 @@ const VIEW_KEYS: ViewKey[] = ['corner', 'vehicle', 'testsStatic', 'testsDynamic'
  * start). A view shown fades in over the last one with its camera's sweep (viewFade.ts); the last one is drawn
  * underneath until then.
  */
-function ViewStack({ corner, vehicle, active }: { corner: ReturnType<typeof useModel>; vehicle: ReturnType<typeof useVehicle>; active: ViewKey }) {
-  const test = useActiveTest();
+function ViewStack({ corner, vehicle, active, ghost, course }: {
+  corner: ReturnType<typeof useModel>; vehicle: ReturnType<typeof useVehicle>; active: ViewKey;
+  /** Compare: the snapshot's car, see-through over the current one (Vehicle and Tests static views). */
+  ghost?: VehicleModel | null;
+  /** Compare: the course to show (the picked test) and the snapshot's run on it, as a ghost car. */
+  course?: { test: TestDesign | null; ghosts: { frames: PlaybackFrame[]; color: string; label: string; wheelbase?: number }[] };
+}) {
+  const activeTest = useActiveTest();
+  const test = course ? course.test : activeTest;
   const [built, setBuilt] = useState<Record<ViewKey, boolean>>(() => ({ corner: false, vehicle: false, testsStatic: false, testsDynamic: false, [active]: true }));
   useEffect(() => { setBuilt((b) => (b[active] ? b : { ...b, [active]: true })); }, [active]);
   // Before the first frame is drawn: the view shown starts hidden over the last one (which stays drawn).
@@ -61,9 +68,9 @@ function ViewStack({ corner, vehicle, active }: { corner: ReturnType<typeof useM
   return (
     <div className="viewport-stack">
       {built.corner && <Keep viewKey="corner" state={st('corner')}><Viewport model={corner} active={active === 'corner'} /></Keep>}
-      {built.vehicle && <Keep viewKey="vehicle" state={st('vehicle')}><VehicleViewport model={vehicle} active={active === 'vehicle'} /></Keep>}
-      {built.testsStatic && <Keep viewKey="testsStatic" state={st('testsStatic')}><VehicleViewport model={vehicle} memoryKey="testsStatic" active={active === 'testsStatic'} /></Keep>}
-      {built.testsDynamic && <Keep viewKey="testsDynamic" state={st('testsDynamic')}><CourseViewport model={vehicle} test={test} active={active === 'testsDynamic'} /></Keep>}
+      {built.vehicle && <Keep viewKey="vehicle" state={st('vehicle')}><VehicleViewport model={vehicle} active={active === 'vehicle'} ghost={ghost} /></Keep>}
+      {built.testsStatic && <Keep viewKey="testsStatic" state={st('testsStatic')}><VehicleViewport model={vehicle} memoryKey="testsStatic" active={active === 'testsStatic'} ghost={ghost} /></Keep>}
+      {built.testsDynamic && <Keep viewKey="testsDynamic" state={st('testsDynamic')}><CourseViewport model={vehicle} test={test} ghosts={course?.ghosts} active={active === 'testsDynamic'} /></Keep>}
       {(active === 'testsStatic' || active === 'testsDynamic') && <TestsViewSwitch />}
     </div>
   );
@@ -83,7 +90,12 @@ import { useVehicle } from './useVehicle';
 import { VehicleViewport } from './viewport/VehicleView';
 import { switchWorkspace } from './viewport/SafeHtml';
 import { VehicleSidebar, VehicleResults, VehicleMotionBar } from './panels/VehiclePanels';
-import { CompareSidebar, CompareResults } from './panels/ComparePanels';
+import { CompareSidebar, CompareResults, CompareSource, useCompareView, pickedRow, ghostFrames, type SnapshotModels } from './panels/ComparePanels';
+import { useCompare } from './compare';
+import { PlaybackBar } from './panels/Playback';
+import type { TestDesign } from './tests';
+import type { PlaybackFrame } from '../core/tests/run';
+import type { VehicleModel } from './useVehicle';
 
 export function App() {
   const model = useModel();
@@ -96,8 +108,20 @@ export function App() {
   if (vehicle) lastVehicle.current = vehicle;
   const vehicleShown = vehicle ?? lastVehicle.current;
   const testMode = useTestView((s) => s.mode);
-  // Compare shows the current car in the Vehicle view (R9).
-  const activeView: ViewKey = workspace === 'tests' ? (testMode === 'static' ? 'testsStatic' : 'testsDynamic') : workspace === 'compare' ? 'vehicle' : workspace;
+  // Compare (R9): the cars in the Vehicle view (comparing vehicles), or on the picked test (comparing tests).
+  const compareMode = useCompareView((s) => s.mode);
+  const comparePicked = useCompareView((s) => s.picked);
+  const compareRuns = useCompare((s) => s.runs);
+  const [snapModels, setSnapModels] = useState<SnapshotModels | null>(null);
+  const onSnapModels = useCallback((b: SnapshotModels | null) => setSnapModels(b), []);
+  const compareTests = workspace === 'compare' && compareMode === 'tests';
+  const activeView: ViewKey = workspace === 'tests' || compareTests ? (testMode === 'static' ? 'testsStatic' : 'testsDynamic') : workspace === 'compare' ? 'vehicle' : workspace;
+  const course = useMemo(() => {
+    if (!compareTests) return undefined;
+    const row = pickedRow();
+    const wheelbase = snapModels?.vehicle?.wheelbase;
+    return { test: row ? (row.a ?? row.b)! : null, ghosts: row ? [{ frames: ghostFrames(row), color: '#ffb703', label: 'Snapshot', ...(wheelbase ? { wheelbase } : {}) }] : [] };
+  }, [compareTests, comparePicked, compareRuns, snapModels?.vehicle?.wheelbase]); // eslint-disable-line react-hooks/exhaustive-deps
   const dirty = useDirty();
 
   // The startup layout counts as "saved" (nothing to lose yet).
@@ -197,11 +221,12 @@ export function App() {
           <aside className="left"><div className="tab-body"><CompareSidebar /></div></aside>
           <Splitter area="lsplit" width={leftW} setWidth={setLeftW} sign={1} />
           <main className="center">
-            <ViewStack corner={model} vehicle={vehicleShown} active={activeView} />
-            <VehicleMotionBar />
+            <CompareSource onModels={onSnapModels} />
+            <ViewStack corner={model} vehicle={vehicleShown} active={activeView} ghost={workspace === 'compare' ? snapModels?.vehicle : null} course={course} />
+            {compareTests ? <PlaybackBar test={course?.test ?? null} /> : <VehicleMotionBar />}
           </main>
           <Splitter area="rsplit" width={rightW} setWidth={setRightW} sign={-1} />
-          <aside className="right"><CompareResults corner={model} vehicle={vehicle} /></aside>
+          <aside className="right"><CompareResults corner={model} vehicle={vehicle} b={snapModels} /></aside>
         </>
       ) : workspace === 'tests' ? (
         <>

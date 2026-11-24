@@ -10,7 +10,7 @@ export type Severity = 'pass' | 'warn' | 'fail';
 
 export type CheckId =
   | 'nearLimit' | 'understeer' | 'oversteer' | 'wheelspin' | 'absActive' | 'lockup' | 'speedNotReached'
-  | 'bumpStop' | 'bottoming' | 'wheelLift' | 'rollover' | 'noSolution' | 'beyondGrip' | 'steerLimit' | 'pathError' | 'spin' | 'brakeLimit' | 'brakeFade' | 'longPedal' | 'mcStroke' | 'kickback' | 'trailerSway' | 'hitchLoad' | 'lightTongue';
+  | 'bumpStop' | 'bottoming' | 'wheelLift' | 'rollover' | 'noSolution' | 'beyondGrip' | 'steerLimit' | 'pathError' | 'spin' | 'brakeLimit' | 'brakeFade' | 'longPedal' | 'mcStroke' | 'kickback' | 'shimmy' | 'trailerSway' | 'hitchLoad' | 'lightTongue';
 
 export interface CheckSetting {
   severity: Severity;
@@ -49,6 +49,7 @@ export const CHECK_META: Record<CheckId, CheckMeta> = {
   trailerSway: { label: 'Trailer sway', hint: 'Towing, driving over time with the driver steering: the trailer swings side to side about the line it would follow without tire slip by more than this (or jackknifes). More tongue weight, a lighter or shorter trailer (less yaw inertia), a longer hitch-to-axle distance or a lower speed help.', threshold: { label: 'allowed', unit: '°' } },
   longPedal: { label: 'Long pedal', hint: 'Detailed brake hydraulics: in this stop the pedal travels further than the most you set (pad clearance, the circuit swelling under pressure, the master-cylinder bore). A larger master cylinder, less piston area, stiffer hoses or less pedal ratio shorten it (and raise the pedal force).' },
   kickback: { label: 'Kickback', hint: 'Over time with the steering modeled: a jolt at the steering wheel above this (N·m above its 0.3 s running mean) from the front tires\u2019 forces: a bump\u2019s push through the kingpin offset at the wheel center, braking through the scrub radius, load changes through the axis\u2019 tilt, side force through the trail. A smaller scrub radius / kingpin offset or a slower steering ratio reduces it.', threshold: { label: 'allowed jolt', unit: 'N·m' } },
+  shimmy: { label: 'Shimmy / death wobble', hint: 'With the shimmy check on (Vehicle → Inputs → Shimmy): the front wheels, knocked by a one-sided bump at the test’s fastest speeds, keep oscillating about their steering axes instead of settling, with worn parts (free play, softer steering, weaker damper, wheel imbalance) or even new ones. More trail, a stiffer steering system, a steering damper, less free play help.' },
   mcStroke: { label: 'Master cylinder runs out', hint: 'Detailed brake hydraulics: the master cylinder would need more than its stroke to make this stop (the pedal hits the floor). A larger bore or a longer stroke, less piston area or stiffer hoses help.' },
   brakeFade: { label: 'Brake fade', hint: 'With brake fade modeled: the rotors are hot enough that the pads have lost more than this share of their grip. If the faded brakes can no longer make the braking asked, it counts as Brakes too weak. Heavier rotors, more cooling, or pads that fade hotter help.', threshold: { label: 'allowed pad grip loss', unit: '%' } },
   pathError: { label: 'Off the line', hint: 'Driving over time with the driver steering: the car is further than this from the path (runs wide or cuts in).', threshold: { label: 'allowed', unit: 'm' } },
@@ -79,6 +80,7 @@ const base: CheckProfile = {
   longPedal: { severity: 'warn' },
   mcStroke: { severity: 'fail' },
   kickback: { severity: 'warn', threshold: 5 },
+  shimmy: { severity: 'fail' },
   trailerSway: { severity: 'fail', threshold: 5 },
   hitchLoad: { severity: 'fail' },
   lightTongue: { severity: 'warn', threshold: 10 },

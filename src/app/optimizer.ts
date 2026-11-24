@@ -23,6 +23,7 @@ import type { TireForceModel } from '../core/tire/model';
 import { CORNER_IDS, tirePressure, type AxleShared, type CornerId, type DamperSpec } from '../core/vehicle/vehicle';
 import { vec3 } from '../core/math/vec3';
 import type { EffortSpec } from '../core/suspension/steeringEffort';
+import { shimmyKicks, type ShimmySpec } from '../core/optimize/shimmyOf';
 import { inputPerRev } from '../core/tests/steer';
 import { ratioSpecOf, layoutOf,
   POINT_KEYS, rootOf, toGeometry, toProfile, toForceModel, mergedCorners, vehicleStaticLoads, defaultOptimizerSetup, GRIP_KEYS, MF_KEYS,
@@ -262,6 +263,17 @@ function effortByDesign(s: AppState): Partial<Record<CornerId, EffortSpec>> {
   return out;
 }
 
+/** The shimmy inputs (angles to rad, shares to fractions; the imbalance at the front rim, kg·m). */
+export function shimmySpecOf(s: AppState): ShimmySpec {
+  const m = s.shimmy;
+  const rim = mergedCorners(s)[rootOf('FL', s.links)].geom.scalars.rimDiameter.value / 2000;
+  return {
+    stiffness: Math.max(1, m.shimStiffness.value), damper: Math.max(0, m.shimDamper.value), steeringWheelInertia: Math.max(1e-4, m.swInertia.value),
+    handsOn: m.handsOn, maxSpeed: Math.max(5, m.shimMaxSpeed.value), imbalance: (Math.max(0, m.imbalance.value) / 1000) * rim, check: m.check,
+    wear: { freePlay: (Math.max(0, m.freePlay.value) * Math.PI) / 180, stiffness: Math.max(0.01, m.wornStiffness.value / 100), damper: Math.max(0, m.wornDamper.value / 100) },
+  };
+}
+
 /** The corner designs in use (root corners) and which corners share each. */
 export function designRoots(s: Pick<AppState, 'links'>): { root: CornerId; corners: CornerId[] }[] {
   const roots = [...new Set(CORNER_IDS.map((id) => rootOf(id, s.links)))];
@@ -335,6 +347,7 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
     ride: { rollInertia: Math.max(0.1, v.rollInertia.value), pitchInertia: Math.max(0.1, v.pitchInertia.value), yawInertia: Math.max(0.1, v.yawInertia.value), tireDamping: Math.max(0, v.tireDamping.value), relaxation: Math.max(0, v.relaxation.value) },
     mass: v.mass.value, cg: { x: v.cgX.value, height: v.cgY.value, z: v.cgZ.value }, wheelbase: v.wheelbase.value,
     rollingResistance: Math.max(0, v.rollingResistance.value), pneumaticTrail: s.steer.pneumaticTrail.value,
+    shimmy: shimmySpecOf(s),
     brakeBias: brk?.useBias ?? v.brakeBias.value / 100, driveSplit: v.driveSplit.value / 100, autoPreload: s.autoPreload,
     ...(brk ? { brakeLimit: brk.limit } : {}),
     ...(brakes?.thermal ? { brakeThermal: brakes.thermal } : {}),
@@ -403,10 +416,40 @@ function run<P, R>(kind: 'corner' | 'vehicle', problem: P, onProgress: (p: Progr
 export const runOptimizer = (problem: CornerProblem, onProgress: (p: ProgressInfo) => void): RunHandle<CornerReport> =>
   run('corner', problem, onProgress, (x) => reportCorner(problem, x ?? problem.variables.map((v) => variableValue(problem.geometry, v))));
 
-export const runVehicleOptimizer = (problem: VehicleProblem, onProgress: (p: ProgressInfo) => void): RunHandle<VehicleReport> =>
+const runVehicleOnce = (problem: VehicleProblem, onProgress: (p: ProgressInfo) => void): RunHandle<VehicleReport> =>
   POOL_SIZE > 1 && problem.variables.length > 1
     ? runVehicleParallel(problem, onProgress)
     : run('vehicle', problem, onProgress, (x) => reportVehicle(problem, x ?? problem.variables.map((v) => variableValue(problem.designs[v.root]!.geometry, v))));
+
+/**
+ * The vehicle optimizer. With the Shimmy margin goal, a final check before the result is offered: the worn
+ * kick test (real free play, imbalance) at the fastest speeds; if the wheels still wobble the margin asked
+ * for goes up by 0.03 and the optimizer continues from there (at most twice).
+ */
+export function runVehicleOptimizer(problem: VehicleProblem, onProgress: (p: ProgressInfo) => void): RunHandle<VehicleReport> {
+  if (!problem.shimmy || !problem.goals.some((g) => g.kind === 'shimmy')) return runVehicleOnce(problem, onProgress);
+  let cur = runVehicleOnce(problem, onProgress);
+  let stopped = false;
+  const wobbles = (geoms: VehicleReport['geometries']) => [1, 0.8, 0.6].some((k) => shimmyKicks(problem, problem.shimmy!.maxSpeed * k, geoms as never)?.worn.shimmies);
+  const done = (async () => {
+    let q = problem;
+    let out = await cur.done;
+    for (let k = 0; k < 2 && !out.stopped && !stopped && wobbles(out.result.geometries); k++) {
+      const geoms = out.result.geometries as Partial<Record<CornerId, import('../core/suspension/doubleWishbone').DoubleWishboneGeometry>>;
+      q = {
+        ...q, goals: q.goals.map((g) => (g.kind === 'shimmy' ? { ...g, target: g.target + 0.03 } : g)),
+        designs: Object.fromEntries(Object.entries(q.designs).map(([r, d]) => [r, { ...d!, geometry: geoms[r as CornerId] ?? d!.geometry }])),
+      };
+      cur = runVehicleOnce(q, onProgress);
+      const next = await cur.done;
+      // Report against the original start (the moves add up).
+      const rep = reportVehicle(problem, next.result.variables.map((v) => v.after));
+      out = { result: { ...next.result, ...rep, shimmyRecheck: k + 1 } as RunResult<VehicleReport>, stopped: next.stopped };
+    }
+    return out;
+  })();
+  return { done, stop: () => { stopped = true; cur.stop(); } };
+}
 
 /**
  * The vehicle optimizer over a pool of workers: the search runs here (light), every point it needs is

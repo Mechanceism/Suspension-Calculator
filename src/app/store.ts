@@ -665,6 +665,8 @@ export interface AppState extends DesignState {
   setBrakes(patch: Partial<BrakeSettings>): void;
   setFadeField(key: FadeKey, text: string): void;
   setBrakeMoreField(key: BrakeMoreKey, text: string): void;
+  setShimmyField(key: ShimmyKey, text: string): void;
+  setShimmy(patch: Partial<ShimmySettings>): void;
   setTowField(key: TowKey, text: string): void;
   setTow(patch: Partial<Pick<TowSettings, 'on'>>): void;
   /** Grip scale of a loaded file (λμ): side (LMUY) or braking / drive (LMUX). */
@@ -993,6 +995,30 @@ export const defaultBrakes = (): BrakeSettings => ({
   on: false, fade: false, dualMc: false, useBias: false, drumF: false, drumR: false, detail: false, allowDiscF: false, allowDiscR: false,
 });
 
+/** Shimmy / death wobble inputs (round 3, R8; docs/MATH.md § Shimmy). */
+export const SHIMMY_KEYS = ['shimStiffness', 'shimDamper', 'swInertia', 'freePlay', 'wornStiffness', 'wornDamper', 'imbalance', 'shimMaxSpeed'] as const;
+export type ShimmyKey = (typeof SHIMMY_KEYS)[number];
+export const SHIMMY_META: Record<ShimmyKey, { label: string; quantity: Quantity; unit: string; initial: number; hint?: string }> = {
+  shimStiffness: { label: 'Steering-system stiffness (at the wheels)', quantity: 'ratio', unit: 'N·m/rad', initial: 30000, hint: 'Torque per radian between the front wheels and the steering wheel (column, rack or box, tie rods, joints), both wheels together. Cars ≈ 20 000–60 000; a worn or long, soft linkage less' },
+  shimDamper: { label: 'Steering damper (at the wheels)', quantity: 'ratio', unit: 'N·m·s/rad', initial: 20, hint: 'A steering damper plus the system\u2019s own friction, as damping of the wheels\u2019 steer. No damper ≈ 10–30; a truck steering damper ≈ 100–300' },
+  swInertia: { label: 'Steering-wheel inertia', quantity: 'ratio', unit: 'kg·m²', initial: 0.04, hint: 'At the steering wheel (≈ 0.03–0.06 for a car\u2019s wheel)' },
+  freePlay: { label: 'Free play when worn (at the wheels)', quantity: 'angle', unit: '°', initial: 1, hint: 'Lash in the steering (joints, rack / box) of worn parts, as the wheels\u2019 steer angle before the steering pushes back' },
+  wornStiffness: { label: 'Worn: stiffness left', quantity: 'ratio', unit: '%', initial: 70, hint: 'Softer bushings and joints of worn parts' },
+  wornDamper: { label: 'Worn: damping left', quantity: 'ratio', unit: '%', initial: 50, hint: 'A tired steering damper' },
+  imbalance: { label: 'Wheel imbalance (at the rim, worn)', quantity: 'ratio', unit: 'g', initial: 40, hint: 'Out-of-balance mass at the rim: it shakes the wheels at their spin frequency in the kick test' },
+  shimMaxSpeed: { label: 'Fastest speed to check', quantity: 'speed', unit: 'm/s', initial: 40 },
+};
+export interface ShimmySettings extends Record<ShimmyKey, Field> {
+  /** Check shimmy in the tests (kick test). */
+  check: boolean;
+  /** The driver's hands lightly on the wheel (else hands off). */
+  handsOn: boolean;
+}
+export const defaultShimmy = (): ShimmySettings => ({
+  ...(Object.fromEntries(SHIMMY_KEYS.map((k) => [k, field(SHIMMY_META[k].initial, SHIMMY_META[k].quantity)])) as Record<ShimmyKey, Field>),
+  check: true, handsOn: true,
+});
+
 /** Towing inputs (docs/MATH.md § Towing). */
 export const TOW_KEYS = ['trailerMass', 'tongueShare', 'hitchHeight', 'hitchBehindRear', 'hitchToAxle', 'trailerCgHeight', 'trailerBrakes', 'trailerYawRadius', 'tongueLimit'] as const;
 export type TowKey = (typeof TOW_KEYS)[number];
@@ -1202,6 +1228,8 @@ export interface DesignState {
   aero: AeroSettings;
   /** Brake hydraulics (off = the brakes are always strong enough). */
   brakes: BrakeSettings;
+  /** Shimmy / death wobble inputs. */
+  shimmy: ShimmySettings;
   /** Towing a trailer (off = no trailer). */
   tow: TowSettings;
   /** Setup wizard: which steps hold the user's own values and which are estimates (results say so). */
@@ -1261,7 +1289,7 @@ export const pickDesign = (s: DesignState): DesignState => ({
   droop: s.droop, bump: s.bump, driver: s.driver,
   corners: s.corners, links: s.links, settings: s.settings, activeCorner: s.activeCorner,
   vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode, shared: s.shared, locks: s.locks, wizardLocks: s.wizardLocks,
-  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, tireGrip: s.tireGrip, tireFile: s.tireFile, tireFileRear: s.tireFileRear, setupStatus: s.setupStatus, aero: s.aero, brakes: s.brakes, tow: s.tow, dimensions: s.dimensions, tests: s.tests,
+  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, tireGrip: s.tireGrip, tireFile: s.tireFile, tireFileRear: s.tireFileRear, setupStatus: s.setupStatus, aero: s.aero, brakes: s.brakes, shimmy: s.shimmy, tow: s.tow, dimensions: s.dimensions, tests: s.tests,
 });
 
 /** The default layout (File → New). */
@@ -1348,6 +1376,7 @@ export function defaultDesign(presetId = 'C'): DesignState {
     setupStatus: {},
     aero: defaultAero(),
     brakes: defaultBrakes(),
+    shimmy: defaultShimmy(),
     tow: defaultTow(),
     dimensions: [],
     tests: [],
@@ -1554,6 +1583,11 @@ export const useApp = create<AppState>((set, get) => ({
     const b = get().brakes;
     set({ brakes: { ...b, [key]: parseField(text, FADE_META[key].quantity, b[key]) } });
   },
+  setShimmyField: (key, text) => {
+    const m = get().shimmy;
+    set({ shimmy: { ...m, [key]: parseField(text, SHIMMY_META[key].quantity, m[key]) } });
+  },
+  setShimmy: (patch) => set({ shimmy: { ...get().shimmy, ...patch } }),
   setBrakeMoreField: (key, text) => {
     const b = get().brakes;
     set({ brakes: { ...b, [key]: parseField(text, BRAKE_MORE_META[key].quantity, b[key]) } });

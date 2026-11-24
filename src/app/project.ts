@@ -53,14 +53,14 @@ import {
   defaultDesign, mergedCorners, layoutOf, rootOf, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META, SPRING_KEYS, SPRING_META,
   DAMPER_KEYS, DAMPER_META, STEER_KEYS, STEER_META, MECH_STEER_KEYS, TIRE_KEYS, TIRE_META, VEHICLE_KEYS, VEHICLE_META,
   DEFAULT_LINKS, DEFAULT_SETTINGS, SHARED_META, defaultShared, defaultOptimizerSetup, defaultVehicleOptimizerSetup, defaultGrip, GRIP_KEYS, GRIP_META,
-  defaultTireGrip, MF_KEYS, MF_META, RIDE_KEYS, DAMPER_TWO_STAGE_KEYS, SETUP_STEPS, AERO_KEYS, AERO_META, defaultAero, BRAKE_KEYS, BRAKE_META, FADE_KEYS, FADE_META, BRAKE_MORE_KEYS, BRAKE_MORE_META, defaultBrakes, TOW_KEYS, TOW_META, defaultTow,
+  defaultTireGrip, MF_KEYS, MF_META, RIDE_KEYS, DAMPER_TWO_STAGE_KEYS, SETUP_STEPS, AERO_KEYS, AERO_META, defaultAero, BRAKE_KEYS, BRAKE_META, FADE_KEYS, FADE_META, BRAKE_MORE_KEYS, BRAKE_MORE_META, SHIMMY_KEYS, SHIMMY_META, defaultShimmy, defaultBrakes, TOW_KEYS, TOW_META, defaultTow,
   type VehicleOptimizerSetup, type HeldDimension, newDimId,
   type OptimizerSetup,
   type DesignState, type CornerDesign, type Field, type CornerLinks, type CornerSettings, type SharedDesign, type Axle, centerLinkDefaults, type DamperCurveText,
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 40;
+export const FORMAT_VERSION = 41;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -139,6 +139,8 @@ export interface ProjectFile {
     more?: { drumF: boolean; drumR: boolean; detail: boolean; allowDiscF: boolean; allowDiscR: boolean; fields: Record<string, FieldJson> };
   };
   tow?: { on: boolean; fields: Record<string, FieldJson> };
+  /** Format 41: shimmy inputs. */
+  shimmy?: { check: boolean; handsOn: boolean; fields: Record<string, FieldJson> };
   /** Setup wizard status per step (format 14). */
   setupStatus?: Record<string, 'entered' | 'estimated'>;
   /** Rear tires (format 13): null = same as the front, 'simple', or their own .tir model. */
@@ -236,6 +238,7 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
     brakes: { on: d.brakes.on, dualMc: d.brakes.dualMc, useBias: d.brakes.useBias, fields: mapFields(BRAKE_KEYS, d.brakes), fade: { on: d.brakes.fade, fields: mapFields(FADE_KEYS, d.brakes) },
       more: { drumF: d.brakes.drumF, drumR: d.brakes.drumR, detail: d.brakes.detail, allowDiscF: d.brakes.allowDiscF, allowDiscR: d.brakes.allowDiscR, fields: mapFields(BRAKE_MORE_KEYS, d.brakes) } },
     tow: { on: d.tow.on, fields: mapFields(TOW_KEYS, d.tow) },
+    shimmy: { check: d.shimmy.check, handsOn: d.shimmy.handsOn, fields: mapFields(SHIMMY_KEYS, d.shimmy) },
     ...(include.tests ? { tests: JSON.parse(JSON.stringify(d.tests)) as unknown[] } : {}),
     dimensions: d.dimensions.map((x) => ({
       root: x.root, a: cornerParam(x.root, POINT_NAMES[x.a]), b: cornerParam(x.root, POINT_NAMES[x.b]),
@@ -385,6 +388,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   // 38 → 39: disc brakes, the simple hydraulics (drums, wheel room, detailed hydraulics and the ladder take defaults).
   38: (f) => ({ ...f, formatVersion: 39 }),
   // 39 → 40: no rolling resistance (results stay as they were); segments don't coast.
+  // 40 → 41: shimmy inputs take their defaults (on read).
+  40: (f) => ({ ...f, formatVersion: 41 }),
   39: (f) => ({ ...f, formatVersion: 40, ...(isObj(f.vehicle) && isObj(f.vehicle.fields) ? { vehicle: { ...f.vehicle, fields: { ...f.vehicle.fields, rollingResistance: { text: '0', value: 0 } } } } : {}) }),
   // 34 → 35: aero side force, roll sensitivity and balance shift off.
   34: (f) => ({ ...f, formatVersion: 35, ...(isObj(f.aero) && isObj(f.aero.fields) ? { aero: { ...f.aero, fields: { ...f.aero.fields, CsA: { text: '0', value: 0 }, sideCp: { text: '900', value: 900 }, rollSensF: { text: '0', value: 0 }, rollSensR: { text: '0', value: 0 }, yawBalance: { text: '0', value: 0 } } } } : {}) }),
@@ -902,6 +907,11 @@ export function importProject(data: unknown): ImportResult {
         ...fields, ...fade, ...more, on: b.on === true, fade: fd.on === true, dualMc: b.dualMc === true, useBias: b.useBias === true,
         drumF: mo.drumF === true, drumR: mo.drumR === true, detail: mo.detail === true, allowDiscF: mo.allowDiscF === true, allowDiscR: mo.allowDiscR === true,
       };
+    })(),
+    // Shimmy came with format 41: older files get the defaults, quietly.
+    shimmy: (() => {
+      const m = isObj(f.shimmy) ? f.shimmy : {};
+      return { ...readRecord(m.fields, SHIMMY_KEYS, (k) => SHIMMY_META[k].quantity, defaultShimmy(), 'shimmy', isObj(f.shimmy) ? warnings : []), check: m.check !== false, handsOn: m.handsOn !== false };
     })(),
     // Towing came with format 22: older files have no trailer, quietly.
     tow: (() => {

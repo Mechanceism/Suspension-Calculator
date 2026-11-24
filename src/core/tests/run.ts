@@ -14,6 +14,7 @@ import { rideOn, type RideMeasures } from './ride';
 import { classifyState, fadeFindings, pedalFindings, worstSeverity, PROFILES, type CheckProfile, type Finding, type Severity } from './checks';
 import { brakeStep, padFactors, type AxleTemps } from '../vehicle/brakeThermal';
 import { pedalTravel } from '../vehicle/brakes';
+import { shimmyKicks } from '../optimize/shimmyOf';
 
 export interface StateResult {
   state: RoadState;
@@ -80,6 +81,8 @@ export interface TestRun {
    * most master-cylinder stroke used.
    */
   brakeUse?: { front: number; rear: number; pedal?: number; strokeUse?: number };
+  /** Shimmy check: the fastest speed tried where the wheels kept wobbling (and with which parts). */
+  shimmy?: { speed: number; worn: boolean; fresh: boolean };
 }
 
 /** Segment physics plus the checks that decide its pass / fail. */
@@ -273,8 +276,32 @@ export function runTest(
       sr.passed = sev !== 'fail';
     });
   }
+  // Shimmy: the wheels kicked at the test's fastest speeds (new and worn parts); reported on the fastest segment.
+  let shimmy: TestRun['shimmy'];
+  if (p.shimmy?.check && segments.length) {
+    const fastest = segments.reduce((bi, sg, i) => (Math.max(sg.v0, sg.v1) > Math.max(segments[bi]!.v0, segments[bi]!.v1) ? i : bi), 0);
+    const top = Math.max(segments[fastest]!.v0, segments[fastest]!.v1);
+    for (const k of [1, 0.8, 0.6]) {
+      const u = top * k;
+      if (u < 3) continue;
+      const kk = shimmyKicks(p, u, geometries);
+      if (!kk) break;
+      if (kk.fresh.shimmies || kk.worn.shimmies) {
+        shimmy = { speed: u, worn: kk.worn.shimmies, fresh: kk.fresh.shimmies };
+        const checks = segments[fastest]!.checks ?? PROFILES.default.checks;
+        const sev = (checks.shimmy ?? PROFILES.default.checks.shimmy)?.severity ?? 'fail';
+        if (sev !== 'pass') {
+          const sr = segs[fastest]!;
+          sr.findings = dedupe([...sr.findings, { check: 'shimmy', severity: sev, text: `Shimmy: knocked at ${(u * 3.6).toFixed(0)} km/h the front wheels keep wobbling ${kk.fresh.shimmies ? 'even with new parts' : 'with worn parts (free play, softer steering, weaker damper)'}` }]);
+          sr.severity = worstSeverity(sr.findings);
+          sr.passed = sr.severity !== 'fail';
+        }
+        break;
+      }
+    }
+  }
   const severity = worstSeverity(segs.flatMap((s) => s.findings));
-  return { severity, passed: severity !== 'fail', states, segments: segs, ...(ride ? { ride } : {}), ...(brakeUse ? { brakeUse } : {}) };
+  return { severity, passed: severity !== 'fail', states, segments: segs, ...(ride ? { ride } : {}), ...(brakeUse ? { brakeUse } : {}), ...(shimmy ? { shimmy } : {}) };
 }
 
 /**

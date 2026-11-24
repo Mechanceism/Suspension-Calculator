@@ -1,9 +1,11 @@
 import { steeringWheelAngle, inputForWheelAngle } from '../../core/tests/steer';
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { Num, UnitLabel } from './UnitText';
 import { openWizard, EstimatedNote } from './SetupWizard';
 import { AeroPanel } from './AeroPanel';
-import { brakesOf } from '../optimizer';
+import { brakesOf, buildVehicleProblem } from '../optimizer';
+import { shimmyReport, shimmyKicks } from '../../core/optimize/shimmyOf';
+import type { ShimmyScan } from '../../core/vehicle/shimmy';
 import { maxRotor, fitsWheel, pedalTravel, brakeFixes, pedalFixes } from '../../core/vehicle/brakes';
 import { hardestUse } from '../brakeLadder';
 import { useRun } from './TestsPanels';
@@ -17,7 +19,7 @@ import { isOneAxle, SUSPENSION_LABELS } from '../../core/suspension/doubleWishbo
 import { angleInput, ratioSpecOf,
   useApp, VEHICLE_KEYS, VEHICLE_META, CORNER_NAMES, SHARED_META, rootOf, resolvedCorner, canSteer,
   type CornerLinks, type DiffType, type Axle, type SharedDesign,
-  BRAKE_KEYS, BRAKE_META, FADE_KEYS, FADE_META, BRAKE_MORE_META, type BrakeMoreKey, TOW_KEYS, TOW_META,
+  BRAKE_KEYS, BRAKE_META, FADE_KEYS, FADE_META, BRAKE_MORE_META, type BrakeMoreKey, SHIMMY_KEYS, SHIMMY_META, TOW_KEYS, TOW_META,
 } from '../store';
 import type { BrakeMount } from '../../core/vehicle/vehicle';
 import { ValueInput } from './ValueInput';
@@ -185,6 +187,9 @@ export function VehicleInputs({ model }: { model: VehicleModel | null }) {
       </Section>
       <Section title="Brake system" open={false} extra={<span className="muted small-text">{useApp.getState().brakes.on ? 'hydraulics' : 'off'}</span>}>
         <BrakePanel />
+      </Section>
+      <Section title="Shimmy / death wobble" open={false}>
+        <ShimmyPanel />
       </Section>
       <Section title="Static corner weights (from CG)">
         {loads && (
@@ -585,6 +590,43 @@ function BrakePanel() {
           {b.fade && <FieldRows rows={FADE_KEYS.map((k) => ({ label: FADE_META[k].label, field: b[k], unit: FADE_META[k].unit, hint: FADE_META[k].hint, onCommit: (t: string) => setFade(k, t) }))} />}
           {b.fade && (b.drumF || b.drumR) && <FieldRows rows={moreKeys(['drumFadeK'])} />}
         </>
+      )}
+    </>
+  );
+}
+
+/** Shimmy: the inputs and, live, whether the front wheels' steer oscillation dies out (new / worn parts). */
+function ShimmyPanel() {
+  const m = useApp((s) => s.shimmy);
+  const setF = useApp((s) => s.setShimmyField);
+  const setM = useApp((s) => s.setShimmy);
+  const disp = useDisplay();
+  const geom = useApp((s) => s.geom), corners = useApp((s) => s.corners), steer = useApp((s) => s.steer), vehicle = useApp((s) => s.vehicle), settings = useApp((s) => s.settings);
+  const rep = useMemo(() => {
+    try {
+      const { problem } = buildVehicleProblem(useApp.getState());
+      const r = shimmyReport(problem, undefined, 40);
+      const kick = r ? shimmyKicks(problem, problem.shimmy!.maxSpeed) : null;
+      return r ? { r, kick } : null;
+    } catch { return null; }
+  }, [m, geom, corners, steer, vehicle, settings]);
+  const kmh = (u: number) => disp.format(u, 'm/s', 0);
+  const line = (sc: ShimmyScan) => sc.onset !== null
+    ? <span className="bad-text">shimmies from {kmh(sc.onset)} (least damping {fmt(sc.minZeta, 3)} at {kmh(sc.worstSpeed)})</span>
+    : <span className={sc.minZeta < 0.05 ? 'warn-text' : 'ok-text'}>stable to {kmh(m.shimMaxSpeed.value)} (least damping {fmt(sc.minZeta, 3)} at {kmh(sc.worstSpeed)})</span>;
+  return (
+    <>
+      <p className="hint">The front wheels' oscillation about their steering axes (4–25 Hz): trail and tire relaxation, the steering system's stiffness and damping, the steering wheel, and on a steered solid axle its tramp with the wheels' gyroscopic coupling (death wobble). Checked with new parts and worn ones (free play, softer, a tired damper). The car's path is held straight in this model, so the slow hands-off steering response isn't judged.</p>
+      <FieldRows rows={SHIMMY_KEYS.map((k) => ({ label: SHIMMY_META[k].label, field: m[k], unit: SHIMMY_META[k].unit, hint: SHIMMY_META[k].hint, onCommit: (t: string) => setF(k, t) }))} />
+      <label className="check-row" title="Hands lightly on the wheel (else hands off, the worst case)"><input type="checkbox" checked={m.handsOn} onChange={(e) => setM({ handsOn: e.target.checked })} /> Driver's hands lightly on the wheel</label>
+      <label className="check-row" title="Each test kicks the front wheels at its fastest speeds (one-sided bump) with new and worn parts: Shimmy fails when they keep wobbling"><input type="checkbox" checked={m.check} onChange={(e) => setM({ check: e.target.checked })} /> Check shimmy in the tests</label>
+      {!rep ? <p className="muted small-text">The front corners don't steer (or the design can't be solved): no shimmy model.</p> : (
+        <div className="small-text">
+          <p>New parts: {line(rep.r.fresh)}</p>
+          <p>Worn parts: {line(rep.r.worn)}</p>
+          {rep.kick && <p className={rep.kick.worn.shimmies || rep.kick.fresh.shimmies ? 'bad-text' : 'muted'}>Kicked at {kmh(m.shimMaxSpeed.value)} (free play and wheel imbalance as set): {rep.kick.fresh.shimmies ? 'wobbles even with new parts' : rep.kick.worn.shimmies ? `wobbles with worn parts (${fmt(rep.kick.worn.late, 2)}° a second later)` : 'settles'}.</p>}
+          <p className="muted">Trail {fmt(rep.r.params.trail * 1000, 0)} mm + pneumatic {fmt(rep.r.params.pneumaticTrail * 1000, 0)} mm{steer.pneumaticTrail.value > 0 ? '' : ' (estimated)'}, relaxation length {fmt(rep.r.params.relaxation * 1000, 0)} mm{vehicle.relaxation.value > 0 ? '' : ' (estimated)'}{rep.r.params.axle ? ', solid axle: tramp included' : ''}. Goal: Vehicle → Optimize → Shimmy margin.</p>
+        </div>
       )}
     </>
   );

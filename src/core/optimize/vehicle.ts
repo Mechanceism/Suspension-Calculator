@@ -35,6 +35,7 @@ import type { RoadState } from '../tests/segments';
 import { checkResiduals } from '../tests/checks';
 import type { EffortSpec } from '../suspension/steeringEffort';
 import type { BrakeSystem, BrakeDetail } from '../vehicle/brakes';
+import { shimmyReport, type ShimmySpec } from './shimmyOf';
 import {
   withVariables, variableValue, sampleCorner, cornerGoalResiduals, goalValue, holdValue, holdTarget, getPoint,
   type Variable, type Hold, type ProgressInfo,
@@ -44,12 +45,14 @@ const G = 9.80665;
 
 export type VehicleGoalKind =
   | 'grip' | 'lateralLimit' | 'contactArea' | 'inclination' | 'roll' | 'lltd' | 'rollStiffness' | 'pitch' | 'antiDive' | 'antiSquat' | 'bumpSteer' | 'testPass' | 'testReserve'
-  | 'steeringEffort' | 'parkingEffort' | 'scrubLimit';
+  | 'steeringEffort' | 'parkingEffort' | 'scrubLimit' | 'shimmy';
 
 export interface VehicleGoalMeta {
   short: string; label: string; unit: string; target: number; tolerance: number; hint: string; maximize?: boolean;
   /** A limit (the target is a maximum): only a value above it counts. */
   limit?: boolean;
+  /** A floor (the target is a minimum): only a value below it counts. */
+  atLeast?: boolean;
   /** Load case the goal is evaluated in ('limit': its own steady cornering cases up to the grip limit). */
   uses: 'all' | 'lateral' | 'braking' | 'accel' | 'geometry' | 'limit';
 }
@@ -70,6 +73,7 @@ export const VEHICLE_GOAL_META: Record<VehicleGoalKind, VehicleGoalMeta> = {
   steeringEffort: { short: 'Effort at speed', label: 'Steering effort at speed (steered designs)', unit: 'N·m', target: 8, tolerance: 0.2, limit: true, uses: 'geometry', hint: 'Steering-wheel torque to hold both front wheels at the lateral g set in the Steering panel (Effort check at), from the side force on the mechanical + pneumatic trail, through the steering ratio. Only above the limit counts. Reported: the heaviest steered design.' },
   parkingEffort: { short: 'Parking effort', label: 'Steering effort when parking (steered designs)', unit: 'N·m', target: 20, tolerance: 0.5, limit: true, uses: 'geometry', hint: 'Steering-wheel torque to turn both front wheels at standstill (patch twisted about the steering axis’s ground point). Grows with the scrub radius. Only above the limit counts.' },
   scrubLimit: { short: 'Scrub limit', label: 'Scrub radius limit (steered designs)', unit: 'mm', target: 50, tolerance: 1, limit: true, uses: 'geometry', hint: 'Keeps each steered design’s scrub radius (+ or −) under this size: a large one lets braking and bump forces kick the steering. Only above the limit counts.' },
+  shimmy: { short: 'Shimmy margin', label: 'Shimmy margin with worn parts (least damping ratio)', unit: '', target: 0.05, tolerance: 0.005, atLeast: true, uses: 'geometry', hint: 'The least damping of the front wheels’ oscillation about their steering axes (4–25 Hz) at any speed up to the shimmy check’s fastest, with worn parts (free play, softer steering, a weaker damper). Below 0 the wheels shimmy (death wobble on a solid axle). Only a value below the target counts. Inputs: Vehicle → Inputs → Shimmy.' },
   bumpSteer: { short: 'Bump steer', label: 'Bump steer (every design)', unit: '°', target: 0, tolerance: 0.01, uses: 'geometry', hint: 'Keeps every corner design free of bump steer over the travel range while the rest is optimized. Reported: worst deviation, °.' },
 };
 export const VEHICLE_GOAL_KINDS = Object.keys(VEHICLE_GOAL_META) as VehicleGoalKind[];
@@ -157,8 +161,10 @@ export interface VehicleProblem {
   brakeThermal?: BrakeThermal;
   /** Rolling resistance coefficient (force ÷ load, ≈ 0.012); 0 / omitted = none. */
   rollingResistance?: number;
-  /** Pneumatic trail of the front tires, mm (steering kickback over time). */
+  /** Pneumatic trail of the front tires, mm (steering kickback over time; 0 = estimated where needed). */
   pneumaticTrail?: number;
+  /** Shimmy inputs (steering stiffness, damper, wear…); omitted = no shimmy model. */
+  shimmy?: ShimmySpec;
   /** Detailed brake hydraulics (with brakeLimit): the system and its fluid volumes, for pedal travel in tests. */
   brakeDetail?: { system: BrakeSystem; detail: BrakeDetail };
   /** Towing a trailer (static). */
@@ -542,6 +548,7 @@ export function vehicleGoalValue(kind: VehicleGoalKind, p: VehicleProblem, e: Ve
     case 'rollStiffness': return lat ? rollStiffnessShareOf(lat, e.chars) : null;
     case 'pitch': return brk ? deg(brk.result.pose.pitch) : null;
     case 'antiDive': case 'antiSquat': return antiOf(p, e, kind);
+    case 'shimmy': return shimmyReport(p, e.geometries, 15)?.worn.minZeta ?? null;
     case 'steeringEffort': case 'parkingEffort': case 'scrubLimit': {
       const v = steeredValues(kind, p, e);
       if (!v.length) return null;
@@ -587,6 +594,11 @@ function vehicleResiduals(goal: VehicleGoal, p: VehicleProblem, e: VehicleEval, 
   if (meta.limit && (goal.kind === 'steeringEffort' || goal.kind === 'parkingEffort' || goal.kind === 'scrubLimit')) {
     // Every steered design under the limit; only the excess counts.
     return steeredValues(goal.kind, p, e).map((v) => (v === null || !Number.isFinite(v) ? BAD : Math.max(0, v - goal.target) / meta.tolerance));
+  }
+  if (meta.atLeast) {
+    const v = vehicleGoalValue(goal.kind, p, e);
+    if (v === null) return [];
+    return [Number.isFinite(v) ? Math.max(0, goal.target - v) / meta.tolerance : BAD];
   }
   if (goal.kind === 'bumpSteer') {
     const r: number[] = [];

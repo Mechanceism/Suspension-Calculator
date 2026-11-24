@@ -11,7 +11,7 @@ import { segmentStates, segmentLatG, roadEffective, topSpeed, G, type RoadState,
 import { planDuration, planSpeeds, SHAPE_LABEL, type PlanCar, type PlanShape, type SegmentPlan } from './plan';
 import { wheelHeights } from './road';
 import { steerForTurn, type SteerNeed } from './steer';
-import { rideOn, type RideMeasures } from './ride';
+import { rideOn, joinRide, type RideMeasures } from './ride';
 import { classifyState, fadeFindings, pedalFindings, worstSeverity, PROFILES, type CheckProfile, type Finding, type Severity } from './checks';
 import { brakeStep, padFactors, type AxleTemps } from '../vehicle/brakeThermal';
 import { pedalTravel } from '../vehicle/brakes';
@@ -330,37 +330,75 @@ export function runTest(
         return base.map((sg, i) => ({ ...sg, plan: pl.plans[i]! }));
       };
       const fails = (fs: Finding[]) => fs.some((f) => f.severity === 'fail' && PLAN_HELPS.has(f.check));
-      segments = build();
-      for (let iter = 0; iter <= (opts.plan.ladder === false ? 0 : PLAN_SHAPES.length + 8); iter++) {
-        if (opts.ride) planRide = rideOn(p, asm, segments, rideOpts);
-        let changed = false;
-        segments.forEach((sg, i) => {
-          const bad = fails(steadyOf(i, sg).flatMap((r) => r.findings)) || (planRide ? fails(planRide.findings[i] ?? []) : false);
-          if (!bad) return;
-          const t = tries[i]!;
-          // The other ways first (at the test's own grip target only), skipping any that plans the same speeds
-          // here (e.g. coasting in when the segment is held at its set speed anyway).
-          if (!t.lowered) {
-            const now = planKey(i, sg);
-            while (t.shape < PLAN_SHAPES.length - 1) {
-              t.shape++;
-              if (planKey(i, build()[i]!) !== now) { changed = true; return; }
-            }
+      const steadyBad = (i: number) => fails(steadyOf(i, segments[i]!).flatMap((r) => r.findings));
+      /** Segment i up the ladder one rung; false at its end. */
+      const climb = (i: number): boolean => {
+        const sg = segments[i]!, t = tries[i]!;
+        // The other ways first (at the test's own grip target only), skipping any that plans the same speeds
+        // here (e.g. coasting in when the segment is held at its set speed anyway).
+        if (!t.lowered) {
+          const now = planKey(i, sg);
+          while (t.shape < PLAN_SHAPES.length - 1) {
+            t.shape++;
+            if (planKey(i, build()[i]!) !== now) return true;
           }
-          // Every way failed: a lower grip target, slow enough to take about 15 % off its lowest speed.
-          if (t.target <= 0.2 + 1e-9) return;
-          const v = sg.plan?.v ?? [sg.v0, sg.v1];
-          const vLow = Math.min(...v.filter((x) => x > 0.5));
-          const k = Math.abs(sg.path === 'straight' ? 0 : 1 / Math.max(sg.radius, 0.1));
-          const mu = Math.min(car.muFront, car.muRear);
-          const forSpeed = k > 0 && Number.isFinite(vLow) ? ((0.85 * vLow) ** 2 * k) / (G * mu) : t.target * 0.8;
-          t.shape = -1; // the plan's own way, at the lower target
-          t.lowered = true;
-          t.target = Math.max(0.2, Math.min(t.target * 0.85, forSpeed));
-          changed = true;
-        });
-        if (!changed || opts.plan.ladder === false) break;
-        segments = build();
+        }
+        // Every way failed: a lower grip target, slow enough to take about 15 % off its lowest speed.
+        if (t.target <= 0.2 + 1e-9) return false;
+        const v = sg.plan?.v ?? [sg.v0, sg.v1];
+        const vLow = Math.min(...v.filter((x) => x > 0.5));
+        const k = Math.abs(sg.path === 'straight' ? 0 : 1 / Math.max(sg.radius, 0.1));
+        const mu = Math.min(car.muFront, car.muRear);
+        const forSpeed = k > 0 && Number.isFinite(vLow) ? ((0.85 * vLow) ** 2 * k) / (G * mu) : t.target * 0.8;
+        t.shape = -1; // the plan's own way, at the lower target
+        t.lowered = true;
+        t.target = Math.max(0.2, Math.min(t.target * 0.85, forSpeed));
+        return true;
+      };
+      segments = build();
+      const ladder = opts.plan.ladder !== false;
+      if (!opts.ride) {
+        // Steady states only: every failing segment up a rung at once, then plan again.
+        for (let iter = 0; ladder && iter <= PLAN_SHAPES.length + 12; iter++) {
+          let changed = false;
+          segments.forEach((_, i) => { if (steadyBad(i) && climb(i)) changed = true; });
+          if (!changed) break;
+          segments = build();
+        }
+      } else {
+        // Over time, in order along the test: the first segment that fails (and can still climb) goes up a
+        // rung, and the ride is driven again only from the first segment whose speeds that changed (braking
+        // earlier can reach back into the segments before) up to it — the car's state saved at each
+        // segment's start, so what comes before is not driven again — then on from there.
+        const n = segments.length;
+        // Driving on stops at the first segment that fails and can still climb (no use driving past it).
+        const canClimb = (k: number) => tries[k]!.target > 0.2 + 1e-9;
+        const stopWhen = ladder ? (k: number, fs: Finding[]) => (fails(fs) || steadyBad(k)) && canClimb(k) : undefined;
+        let run = rideOn(p, asm, segments, { ...rideOpts, ...(stopWhen ? { stopWhen } : {}) });
+        const frameDt = run.frameDt;
+        let valid = (run.last ?? n - 1) + 1; // segments whose ride results are up to date: [0, valid)
+        for (let guard = 0; ladder && guard < 40 * n; guard++) {
+          let i = -1;
+          for (let k = 0; k < valid; k++) if ((steadyBad(k) || fails(run.findings[k] ?? [])) && climb(k)) { i = k; break; }
+          if (i < 0) {
+            if (valid >= n) break;
+            const cp = run.checkpoints?.[valid];
+            run = cp ? joinRide(run, rideOn(p, asm, segments, { ...rideOpts, resume: cp, frameDt, stopWhen }), valid) : rideOn(p, asm, segments, { ...rideOpts, frameDt, stopWhen });
+            valid = (run.last ?? n - 1) + 1;
+            continue;
+          }
+          const before = segments;
+          segments = build();
+          let from = segments.findIndex((sg, k) => planKey(k, sg) !== planKey(k, before[k]!));
+          if (from < 0) continue; // the same speeds (the ladder moves on next time)
+          from = Math.min(from, i);
+          const cp = from > 0 ? run.checkpoints?.[from] : undefined;
+          const part = rideOn(p, asm, segments, { ...rideOpts, frameDt, stopAfter: i, ...(cp ? { resume: cp } : {}) });
+          run = cp ? joinRide(run, part, from) : part;
+          valid = i + 1;
+        }
+        if (valid < n) run = rideOn(p, asm, segments, { ...rideOpts, frameDt }); // the ladder's guard ran out mid-way
+        planRide = run;
       }
     }
   }

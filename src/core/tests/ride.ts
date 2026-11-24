@@ -76,6 +76,26 @@ export interface RideOptions {
    */
   driverSpeed?: boolean;
   driver?: DriverSpec;
+  /**
+   * Resume from the car's state saved at the start of a segment (`RideRun.checkpoints`), the segments before
+   * it the same as when it was saved: only that segment on is driven (frames and findings from it on).
+   */
+  resume?: RideCheckpoint;
+  /** Stop after this segment (index): a ladder judging one segment needn't drive the rest. */
+  stopAfter?: number;
+  /** Stop after the first segment this says yes to (given its findings over time): a ladder fixing segments in order. */
+  stopWhen?: (segment: number, findings: Finding[]) => boolean;
+  /** Time between recorded frames, s (default from the test's length); a resumed run keeps its checkpoint's. */
+  frameDt?: number;
+}
+
+/** The car's whole state at the start of a segment (opaque), to resume a ride from there. */
+export interface RideCheckpoint {
+  segment: number;
+  /** Frames recorded before it (over the whole run). */
+  frameCount: number;
+  frameDt: number;
+  state: unknown;
 }
 
 export interface RideRun {
@@ -85,6 +105,32 @@ export interface RideRun {
   /** Smooth measures of how well the car rode (for tuning springs and dampers). */
   metrics: RideMeasures;
   error?: string;
+  /** The state at the start of each segment driven, and after the last one (index = segment). */
+  checkpoints?: (RideCheckpoint | undefined)[];
+  frameDt?: number;
+  /** The last segment driven (index). */
+  last?: number;
+}
+
+/**
+ * A resumed run (from segment `from`) joined to the run it resumed: what came before `from` from the old one,
+ * the rest from the new one (its metrics: they carry on from the checkpoint). Segments past where the new
+ * one stopped have no findings or checkpoints yet.
+ */
+export function joinRide(prev: RideRun, next: RideRun, from: number): RideRun {
+  if (from <= 0) return next;
+  const n = Math.max(prev.findings.length, next.findings.length);
+  const cut = next.checkpoints?.[from]?.frameCount ?? prev.checkpoints?.[from]?.frameCount ?? prev.frames.length;
+  const cps = Array.from({ length: n + 1 }, (_, i) => (i < from ? prev.checkpoints?.[i] : next.checkpoints?.[i]));
+  return {
+    frames: [...prev.frames.slice(0, cut), ...next.frames],
+    findings: Array.from({ length: n }, (_, i) => (i < from ? prev.findings[i] ?? [] : next.findings[i] ?? [])),
+    metrics: next.metrics,
+    ...(next.error ?? prev.error ? { error: next.error ?? prev.error } : {}),
+    checkpoints: cps,
+    ...(next.frameDt ?? prev.frameDt ? { frameDt: next.frameDt ?? prev.frameDt } : {}),
+    ...(next.last !== undefined ? { last: next.last } : {}),
+  };
 }
 
 export interface RideMeasures {
@@ -193,7 +239,11 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
   const durations = segments.map((sg) => { if (sg.plan && sg.plan.s.length > 1) return planDuration(sg.plan); const v = (sg.v0 + sg.v1) / 2; return v > 0 ? sg.distance / v : 0; });
   const total = durations.reduce((a, b) => a + b, 0);
   const maxFrames = o.maxFrames ?? 1500;
-  const frameDt = Math.max(1 / (o.hz ?? 25), total / maxFrames);
+  const resume = o.resume && o.resume.segment > 0 && o.resume.segment < segments.length ? o.resume : undefined;
+  const frameDt = resume?.frameDt ?? o.frameDt ?? Math.max(1 / (o.hz ?? 25), total / maxFrames);
+  const from = resume?.segment ?? 0;
+  let stop = Math.min(segments.length - 1, o.stopAfter ?? segments.length - 1);
+  const checkpoints: (RideCheckpoint | undefined)[] = [];
   const findings: Finding[][] = segments.map(() => []);
   const frames: PlaybackFrame[] = [];
   const checkDt = o.checkEvery ?? 0.01;
@@ -201,7 +251,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
   const handling = !!o.handling;
   // Driven by a driver, a moment at full lock (catching a slide) isn't a failure; running off the line is.
   const INSTANT = new Set(['wheelLift', 'bumpStop', 'bottoming', 'rollover', 'noSolution', ...(handling ? ['pathError', 'spin', 'trailerSway'] : ['steerLimit'])]);
-  if (!(total > 0)) return { frames, findings, metrics: { ...NO_METRICS } };
+  if (!(total > 0)) return { frames, findings, metrics: { ...NO_METRICS }, frameDt };
   // The path's curvature at a distance along the whole test (1/m, + = left); past the end, the last segment's.
   const starts: number[] = [];
   segments.reduce((a, sg) => { starts.push(a); return a + sg.distance; }, 0);
@@ -374,8 +424,8 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     const d0 = Math.atan(car.L * kap0) + (K0 * (u0 * u0 * kap0 - grav0)) / G;
     const rk = rackFor(car.table, d0);
     H = { v: 0, r: u0 * kap0, eY: 0, ePsi: 0, delta: effAt(car.table, rk.rack, d0), rack: rk.rack, cmd: rk.needed, atLock: rk.atLock, K: K0, want: d0 };
-    // Settle on the first segment's curve (held at t = 0) before the clock starts.
-    for (let n = 0; n < 750; n++) advance(u0, 0, grav0, dt, () => kap0);
+    // Settle on the first segment's curve (held at t = 0) before the clock starts (resumed: restored below).
+    if (!resume) for (let n = 0; n < 750; n++) advance(u0, 0, grav0, dt, () => kap0);
   }
 
   /** Accelerations, corner results and body forces at state (x, v). */
@@ -460,7 +510,34 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
   let uDrv = segments[0]?.v0 ?? 0, sCarry = 0;
   const muEst = steady.grip ? CORNER_IDS.reduce((a, id) => a + steady.grip!.corners[id].capacity, 0) / (p.mass * G * Math.max(in0.gravityScale ?? 1, 0.1)) : 1;
   const canDrive = corners.some((c) => c.drive !== 'none'), canBrake = corners.some((c) => c.brake !== 'none');
+  // Save / restore everything that carries from one segment to the next.
+  const save = (segment: number): RideCheckpoint => ({
+    segment, frameCount: (resume?.frameCount ?? 0) + frames.length, frameDt,
+    state: structuredClone({
+      x, v, loads, caps, groundPrev, loadMean, status, tires, bumpPush, bumpWork, dissipated, push, kickMean, maxKick, H, TS, rtdot, yawNow,
+      maxPathError, maxSideslip, maxSway, t0, nextFrame, x2d, y2d, heading, uDrv, sCarry, liftTime, bumpStopTime, loadVarSum, accSum, metricCount, lastMetricT,
+    }),
+  });
+  if (resume) {
+    const st = structuredClone(resume.state) as {
+      x: number[]; v: number[]; loads: typeof loads; caps: typeof caps; groundPrev: typeof groundPrev; loadMean: typeof loadMean; status: typeof status;
+      tires: typeof tires; bumpPush: number; bumpWork: number; dissipated: number; push: typeof push; kickMean: number; maxKick: number; H: HandlingState | null;
+      TS: SwayState | null; rtdot: number; yawNow: number | undefined; maxPathError: number; maxSideslip: number; maxSway: number; t0: number; nextFrame: number;
+      x2d: number; y2d: number; heading: number; uDrv: number; sCarry: number; liftTime: number; bumpStopTime: number; loadVarSum: number; accSum: number;
+      metricCount: number; lastMetricT: number;
+    };
+    x.splice(0, x.length, ...st.x); v.splice(0, v.length, ...st.v);
+    loads = st.loads; caps = st.caps; groundPrev = st.groundPrev; tires = st.tires;
+    Object.assign(loadMean, st.loadMean); Object.assign(status, st.status); Object.assign(push, st.push);
+    bumpPush = st.bumpPush; bumpWork = st.bumpWork; dissipated = st.dissipated; kickMean = st.kickMean; maxKick = st.maxKick;
+    H = st.H; if (TS && st.TS) Object.assign(TS, st.TS); rtdot = st.rtdot; yawNow = st.yawNow;
+    maxPathError = st.maxPathError; maxSideslip = st.maxSideslip; maxSway = st.maxSway;
+    t0 = st.t0; nextFrame = st.nextFrame; x2d = st.x2d; y2d = st.y2d; heading = st.heading; uDrv = st.uDrv; sCarry = st.sCarry;
+    liftTime = st.liftTime; bumpStopTime = st.bumpStopTime; loadVarSum = st.loadVarSum; accSum = st.accSum; metricCount = st.metricCount; lastMetricT = st.lastMetricT;
+  }
   segments.forEach((sg, i) => {
+    if (i < from || i > stop) return;
+    checkpoints[i] = save(i);
     const T = durations[i]!;
     if (!(T > 0)) return;
     const checks = sg.checks ?? PROFILES.default.checks;
@@ -690,7 +767,9 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       if (sev !== 'pass') findings[i]!.push({ check: 'speedNotReached', severity: sev, text: `The driver ${why}: ${low}${(uDrv * 3.6).toFixed(0)} km/h at the end instead of ${(vEnd * 3.6).toFixed(0)} km/h${sg.plan ? ' (planned)' : ''}`, t: t0 + tEnd });
     }
     t0 += drv ? tEnd : T;
+    if (i < stop && o.stopWhen?.(i, findings[i]!)) stop = i;
   });
+  checkpoints[stop + 1] = save(stop + 1);
   const nAcc = Math.max(1, metricCount);
   const metrics: RideMeasures = {
     liftTime, bumpStopTime, duration: total,
@@ -700,7 +779,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     ...(TS ? { maxSway } : {}),
     bumpWork, dissipated, ...(kickers.length ? { maxKickback: maxKick } : {}),
   };
-  return { frames, findings, metrics };
+  return { frames, findings, metrics, checkpoints, frameDt, last: stop };
 
   /** The driver's steering as a steering need (for the Steering lock check and the display). */
   function handlingSteer(hs: HandlingState, straight: boolean, kappa: number): SteerNeed | null {

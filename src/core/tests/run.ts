@@ -305,8 +305,15 @@ export function runTest(
   const gripTarget = Math.min(1, Math.max(0.3, opts.plan?.gripTarget ?? 0.95));
   const rideOpts = { handling: !!opts.handling, driverSpeed: !!opts.handling && !!opts.driverSpeed };
   let planRide: ReturnType<typeof rideOn> | null = null;
-  /** Per segment: the way it is taken (rung of PLAN_SHAPES) and its grip target. */
-  let tries: { shape: number; target: number; lowered?: boolean }[] = [];
+  /**
+   * Per segment: the way it is taken (rung of PLAN_SHAPES) and its grip target; once lowered, the lowest
+   * target known to fail (`failAt`), and while trying halfway back up, the one known to pass (`passAt`).
+   */
+  let tries: {
+    shape: number; target: number; lowered?: boolean; failAt?: number; passAt?: number; ups?: number;
+    /** Lowering: what it fails for (the checks), since which target, how many lowerings in a row it stayed the same; done: slowing doesn't cure it. */
+    why?: string; whySince?: number; same?: number; done?: boolean; lowerings?: number; lowest?: number;
+  }[] = [];
   const tryOf = (i: number): { shape: PlanShape; target: number } => {
     const t = tries[i];
     return t ? { shape: t.shape < 0 ? 'plan' : PLAN_SHAPES[t.shape]!, target: t.target } : { shape: 'plan', target: gripTarget };
@@ -331,9 +338,12 @@ export function runTest(
       };
       const fails = (fs: Finding[]) => fs.some((f) => f.severity === 'fail' && PLAN_HELPS.has(f.check));
       const steadyBad = (i: number) => fails(steadyOf(i, segments[i]!).flatMap((r) => r.findings));
-      /** Segment i up the ladder one rung; false at its end. */
-      const climb = (i: number): boolean => {
+      /** Segment i up the ladder one rung (`fs`: what it fails for now); false at its end. */
+      const climb = (i: number, fs: Finding[] = []): boolean => {
         const sg = segments[i]!, t = tries[i]!;
+        if (t.done) return false;
+        // Halfway back up failed: back to the target that passed (that one is the answer, unless it's worth another try).
+        if (t.passAt !== undefined) { t.failAt = t.target; t.target = t.passAt; t.passAt = undefined; return true; }
         // The other ways first (at the test's own grip target only), skipping any that plans the same speeds
         // here (e.g. coasting in when the segment is held at its set speed anyway).
         if (!t.lowered) {
@@ -343,8 +353,18 @@ export function runTest(
             if (planKey(i, build()[i]!) !== now) return true;
           }
         }
-        // Every way failed: a lower grip target, slow enough to take about 15 % off its lowest speed.
-        if (t.target <= 0.2 + 1e-9) return false;
+        // Every way failed: a lower grip target, slow enough to take about 15 % off its lowest speed — unless
+        // slowing doesn't cure it: failing for the same checks after two lowerings in a row, it goes back to the
+        // target where that began (no slower than does any good) and is reported failing there.
+        const why = [...new Set([...fs, ...steadyOf(i, sg).flatMap((r) => r.findings)].filter((f) => f.severity === 'fail' && PLAN_HELPS.has(f.check)).map((f) => f.check))].sort().join(',');
+        if (why !== t.why) { t.why = why; t.whySince = t.target; t.same = 0; } else t.same = (t.same ?? 0) + 1;
+        if ((t.same ?? 0) >= 2 || (t.lowerings ?? 0) >= 4 || t.target <= 0.2 + 1e-9) {
+          t.done = true;
+          t.lowest = t.target;
+          if (t.whySince === undefined || Math.abs(t.whySince - t.target) < 1e-9) return false;
+          t.target = t.whySince; t.shape = -1; t.lowered = t.target < gripTarget - 1e-9;
+          return true;
+        }
         const v = sg.plan?.v ?? [sg.v0, sg.v1];
         const vLow = Math.min(...v.filter((x) => x > 0.5));
         const k = Math.abs(sg.path === 'straight' ? 0 : 1 / Math.max(sg.radius, 0.1));
@@ -352,9 +372,17 @@ export function runTest(
         const forSpeed = k > 0 && Number.isFinite(vLow) ? ((0.85 * vLow) ** 2 * k) / (G * mu) : t.target * 0.8;
         t.shape = -1; // the plan's own way, at the lower target
         t.lowered = true;
+        t.failAt = t.target;
+        t.lowerings = (t.lowerings ?? 0) + 1;
         t.target = Math.max(0.2, Math.min(t.target * 0.85, forSpeed));
         return true;
       };
+      /**
+       * A lowered segment that passes: try halfway back up toward the lowest target known to fail, while the gap
+       * is over 4 points (at most twice: each try drives the segment again) — nearer the highest that passes than the first that did.
+       */
+      const canRaise = (i: number) => { const t = tries[i]!; return !!t.lowered && t.passAt === undefined && t.failAt !== undefined && t.failAt - t.target > 0.04 && (t.ups ?? 0) < 2; };
+      const raise = (i: number) => { const t = tries[i]!; t.passAt = t.target; t.target = (t.target + t.failAt!) / 2; t.ups = (t.ups ?? 0) + 1; };
       segments = build();
       const ladder = opts.plan.ladder !== false;
       if (!opts.ride) {
@@ -372,14 +400,17 @@ export function runTest(
         // segment's start, so what comes before is not driven again — then on from there.
         const n = segments.length;
         // Driving on stops at the first segment that fails and can still climb (no use driving past it).
-        const canClimb = (k: number) => tries[k]!.target > 0.2 + 1e-9;
-        const stopWhen = ladder ? (k: number, fs: Finding[]) => (fails(fs) || steadyBad(k)) && canClimb(k) : undefined;
+        const canClimb = (k: number) => !tries[k]!.done && (tries[k]!.passAt !== undefined || tries[k]!.target > 0.2 + 1e-9);
+        const stopWhen = ladder ? (k: number, fs: Finding[]) => ((fails(fs) || steadyBad(k)) ? canClimb(k) : canRaise(k)) : undefined;
         let run = rideOn(p, asm, segments, { ...rideOpts, ...(stopWhen ? { stopWhen } : {}) });
         const frameDt = run.frameDt;
         let valid = (run.last ?? n - 1) + 1; // segments whose ride results are up to date: [0, valid)
         for (let guard = 0; ladder && guard < 40 * n; guard++) {
           let i = -1;
-          for (let k = 0; k < valid; k++) if ((steadyBad(k) || fails(run.findings[k] ?? [])) && climb(k)) { i = k; break; }
+          for (let k = 0; k < valid; k++) {
+            if (steadyBad(k) || fails(run.findings[k] ?? [])) { if (climb(k, run.findings[k])) { i = k; break; } }
+            else if (canRaise(k)) { raise(k); i = k; break; }
+          }
           if (i < 0) {
             if (valid >= n) break;
             const cp = run.checkpoints?.[valid];
@@ -500,11 +531,18 @@ export function runTest(
       sr.plan = sg.plan; sr.approach = t.shape; sr.gripTarget = t.target;
       sr.time = planDuration(sg.plan!);
       time! += sr.time;
+      // (The grip target is shown as the driver's push: how much of the tires' grip the driver plans to use.)
+      const lowest = tries[i]?.lowest;
+      const tried = lowest !== undefined && lowest < t.target - 1e-9 ? `; slowing down more didn't help (tried down to ${pct(lowest)})` : '';
+      const checks = sg.checks ?? PROFILES.default.checks;
+      const sev = (checks.gripTarget ?? PROFILES.default.checks.gripTarget)?.severity ?? 'warn';
+      let text = '';
       if (t.target < gripTarget - 1e-9) {
-        const checks = sg.checks ?? PROFILES.default.checks;
-        const sev = (checks.gripTarget ?? PROFILES.default.checks.gripTarget)?.severity ?? 'warn';
         const still = !sr.passed ? `; even at ${pct(t.target)} it still fails there` : '';
-        if (sev !== 'pass') sr.findings = dedupe([...sr.findings, { check: 'gripTarget', severity: sev, text: `Had to lower the grip target to ${pct(t.target)} (from ${pct(gripTarget)}): at ${pct(gripTarget)} every way of taking it (${(['plan', 'brakeIn', 'coastIn', 'hold', 'accelIn'] as PlanShape[]).map((x) => SHAPE_LABEL[x]).join(', ')}) failed over time${still}` }]);
+        text = `Had to lower the driver's push to ${pct(t.target)} of the grip (from ${pct(gripTarget)}): at ${pct(gripTarget)} every way of taking it (${(['plan', 'brakeIn', 'coastIn', 'hold', 'accelIn'] as PlanShape[]).map((x) => SHAPE_LABEL[x]).join(', ')}) failed over time${still}${tried}`;
+      } else if (tried && !sr.passed) text = `Slowing down doesn't cure it: it fails with the driver pushing to ${pct(t.target)} of the grip${tried}`;
+      if (text && sev !== 'pass') {
+        sr.findings = dedupe([...sr.findings, { check: 'gripTarget', severity: sev, text }]);
         sr.severity = worstSeverity(sr.findings);
         sr.passed = sr.severity !== 'fail';
       }

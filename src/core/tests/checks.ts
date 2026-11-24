@@ -55,7 +55,7 @@ export const CHECK_META: Record<CheckId, CheckMeta> = {
   pathError: { label: 'Off the line', hint: 'Driving over time with the driver steering: the car is further than this from the path (runs wide or cuts in).', threshold: { label: 'allowed', unit: 'm' } },
   spin: { label: 'Spin / slide', hint: 'Driving over time with the driver steering: the car\'s sideslip angle (how far it points away from where it travels) is beyond this.', threshold: { label: 'allowed', unit: '°' } },
   steerLimit: { label: 'Steering lock', hint: 'The turn is tighter than the steering allows: its road-wheel angle (atan(wheelbase ÷ radius), plus the front − rear tire slip angle at speed) needs more rack travel than the rack limit, or no wheel steers.' },
-  gripTarget: { label: 'Grip target lowered', hint: 'Speeds as maximums: every way of taking the segment at the test’s grip target (brake before, brake in, coast in, hold the speed, speed up in) failed over time, so the driver planned it at a lower share of the tires’ grip. The finding says to what.' },
+  gripTarget: { label: 'Driver push lowered', hint: 'Speeds as maximums: every way of taking the segment with the driver pushing to the test’s share of the tires’ grip (brake before, brake in, coast in, hold the speed, speed up in) failed over time, so the driver pushes less there (slower, a reserve for what the plan doesn’t see). The finding says to what; it also says when slowing down didn’t cure it.' },
   beyondGrip: { label: 'Beyond the tires', hint: 'The state asks for more total force than all four tires can give: no suspension can pass it. Lower the speed, enlarge the radius, or improve the tires.', fixed: true },
 };
 export const CHECK_IDS = Object.keys(CHECK_META) as CheckId[];

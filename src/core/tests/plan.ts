@@ -135,7 +135,8 @@ const kappaOf = (sg: SegmentSpec) => (sg.path === 'straight' || (sg.latG !== nul
  */
 export function planSpeeds(segments: SegmentSpec[], car: PlanCar, target: number[], shape: PlanShape[] = []): { plans: SegmentPlan[]; time: number } {
   // The grid: each segment from 0 to its distance in ≈ 1 m steps (shared boundary points).
-  type P = { seg: number; s: number; cap: number; kappa: number; grade: number; bank: number; coast: boolean };
+  /** capT: the grip target of the segment whose limit `cap` is (at a boundary, the stricter side's). */
+  type P = { seg: number; s: number; cap: number; capT: number; kappa: number; grade: number; bank: number; coast: boolean };
   const pts: P[] = [];
   const crr = car.rollingResistance ?? 0;
   segments.forEach((sg, i) => {
@@ -146,11 +147,11 @@ export function planSpeeds(segments: SegmentSpec[], car: PlanCar, target: number
     for (let k = 0; k <= n; k++) {
       const s = (sg.distance * k) / n;
       const vSet = Math.sqrt(Math.max(0, sg.v0 * sg.v0 + ((sg.v1 * sg.v1 - sg.v0 * sg.v0) * k) / n));
-      const p: P = { seg: i, s, cap: Math.min(vSet, vLat), kappa: kappaOf(sg), grade: sg.grade, bank: sg.bank, coast: !!sg.coast };
+      const p: P = { seg: i, s, cap: Math.min(vSet, vLat), capT: target[i] ?? 0.95, kappa: kappaOf(sg), grade: sg.grade, bank: sg.bank, coast: !!sg.coast };
       if (k === 0 && pts.length) {
         // The boundary: the lower of both sides' limits.
         const prev = pts[pts.length - 1]!;
-        prev.cap = Math.min(prev.cap, p.cap);
+        if (p.cap < prev.cap) { prev.cap = p.cap; prev.capT = p.capT; }
         if (Math.abs(p.kappa) > Math.abs(prev.kappa)) prev.kappa = p.kappa;
         continue;
       }
@@ -171,23 +172,32 @@ export function planSpeeds(segments: SegmentSpec[], car: PlanCar, target: number
     const ay = (v * v * Math.abs(p.kappa)) / G;
     return G * (combinedLimit(car, tOf(p), ay, 'drive') - resist);
   };
-  const decel = (p: P, v: number) => {
+  const decel = (p: P, v: number, t = tOf(p)) => {
     const sh = shape[p.seg] ?? 'plan';
     const resist = Math.sin(p.grade) + crr;
     if (p.coast || (sh === 'coastIn' && firstHalf(p))) return Math.max(0, G * resist); // no brakes
     const ay = (v * v * Math.abs(p.kappa)) / G;
-    return Math.max(0, G * (combinedLimit(car, tOf(p), ay, 'brake') + resist));
+    return Math.max(0, G * (combinedLimit(car, t, ay, 'brake') + resist));
   };
   const pass = (cap: number[]) => {
+    const caps0 = cap;
     const v = cap.slice();
     v[0] = Math.min(v[0]!, segments[0]!.v0);
     for (let i = 0; i + 1 < N; i++) {
       const ds = sAbs[i + 1]! - sAbs[i]!;
       v[i + 1] = Math.min(v[i + 1]!, Math.sqrt(Math.max(0, v[i]! * v[i]! + 2 * accel(pts[i]!, v[i]!) * ds)));
     }
+    // Braking for what comes later is done at the grip target of the segment that needs it (`carry`: where
+    // the braking began), when that is lower: a segment taken at a lowered target keeps its margin while the
+    // car slows for it, so a turn before it isn't braked at the turn's own (higher) target — the car enters
+    // that turn slower and does the slowing on the straight before.
+    let carry = tOf(pts[N - 1]!);
     for (let i = N - 1; i > 0; i--) {
       const ds = sAbs[i]! - sAbs[i - 1]!;
-      v[i - 1] = Math.min(v[i - 1]!, Math.sqrt(v[i]! * v[i]! + 2 * decel(pts[i - 1]!, v[i]!) * ds));
+      const p = pts[i - 1]!, own = tOf(p);
+      const braked = Math.sqrt(v[i]! * v[i]! + 2 * decel(p, v[i]!, Math.min(own, carry)) * ds);
+      if (braked < v[i - 1]!) v[i - 1] = braked; // slowing for later on: keep its target
+      else carry = v[i - 1]! >= caps0[i - 1]! - 1e-9 ? Math.min(own, p.capT) : own; // held at a limit: that limit's target
     }
     return v;
   };

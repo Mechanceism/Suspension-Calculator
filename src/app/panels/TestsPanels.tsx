@@ -563,7 +563,7 @@ export function TestsSidebar() {
                   </label>
                 </td>
               </tr>
-              <tr title="Maximums: the set speeds are the most the driver may go; the driver plans the speed to the grip target (braking earlier before turns, accelerating out), tries other ways of taking a failing segment (brake in, coast in, hold the speed, speed up in) and then lower grip targets (with a finding saying so); the test is scored on time. Hold exactly: the set speeds are driven as they are (to check a car can do a given speed).">
+              <tr title="Maximums: the set speeds are the most the driver may go; the driver plans the speed to its push — how much of the tires' grip it uses — (braking earlier before turns, accelerating out), tries other ways of taking a failing segment (brake in, coast in, hold the speed, speed up in) and then pushes less there (with a finding saying so); the test is scored on time. Hold exactly: the set speeds are driven as they are (to check a car can do a given speed).">
                 <td>Speeds</td>
                 <td>
                   <button className={`chip${test.speedMode === 'max' ? ' on' : ''}`} onClick={() => updateTest(test.id, (t) => ({ ...t, speedMode: 'max', gripTarget: t.gripTarget ?? 0.95 }))}>Maximums</button>
@@ -572,10 +572,10 @@ export function TestsSidebar() {
               </tr>
               {test.speedMode === 'max' ? (
                 <tr title="The share of the tires' grip the driver plans to (in turns, braking and accelerating). Lower is steadier; 100 % is at the limit, where transients often tip it over.">
-                  <td>Grip target</td>
+                  <td title="How much of the tires' grip the driver plans to use (not the grip itself): lower leaves a reserve for what the plan doesn't see — the weight shifting, the car taking time to turn in, corrections, bumps">Driver push</td>
                   <td>
                     <input className="value-input small" type="number" min={30} max={100} step={1} value={Math.round((test.gripTarget ?? 0.95) * 100)}
-                      onChange={(e) => { const v = Number(e.target.value); if (Number.isFinite(v) && v >= 30 && v <= 100) updateTest(test.id, (t) => ({ ...t, gripTarget: v / 100 })); }} /> %
+                      onChange={(e) => { const v = Number(e.target.value); if (Number.isFinite(v) && v >= 30 && v <= 100) updateTest(test.id, (t) => ({ ...t, gripTarget: v / 100 })); }} /> % of the grip
                   </td>
                 </tr>
               ) : (
@@ -709,7 +709,7 @@ export function TestResults() {
       {stale && <p className="hint warn-text">The design changed since this run: run again.</p>}
       {r.time !== undefined && r.time > 0 && (
         <p className="small-text" title="Speeds as maximums: the planned time over the whole test and its average speed (faster is better, within the pass rules)">
-          Time <b>{fmt(r.time, 1)} s</b> · average <b>{disp.format((r.distance ?? 0) / r.time, 'm/s', 0)}</b> over {disp.format(r.distance ?? 0, 'm', 0)} · planned to {fmt((test.gripTarget ?? 0.95) * 100, 0)} % grip
+          Time <b>{fmt(r.time, 1)} s</b> · average <b>{disp.format((r.distance ?? 0) / r.time, 'm/s', 0)}</b> over {disp.format(r.distance ?? 0, 'm', 0)} · driver pushing to {fmt((test.gripTarget ?? 0.95) * 100, 0)} % of the grip
         </p>
       )}
       <table className="corner-table test-table">
@@ -743,7 +743,7 @@ export function TestResults() {
             <b>{s.index + 1}. {def?.name}</b>
             <Findings list={s.findings} />
             {s.approach && (s.approach !== 'plan' || (s.gripTarget ?? 1) < (test.gripTarget ?? 0.95) - 1e-9) && (
-              <div className="small-text">Taken: {SHAPE_LABEL[s.approach]} at {fmt((s.gripTarget ?? 0.95) * 100, 0)} % grip.</div>
+              <div className="small-text">Taken: {SHAPE_LABEL[s.approach]} with the driver pushing to {fmt((s.gripTarget ?? 0.95) * 100, 0)} % of the grip.</div>
             )}
             {s.impossible && <div className="small-text warn-text">No suspension change can make this pass: the tires can't give that much force. Lower the speed, enlarge the radius, or improve the tires.</div>}
             {s.findings.some((f) => f.check === 'steerLimit' && f.severity === 'fail') && <div className="small-text warn-text">Slowing down doesn't help: enlarge the radius, or allow more rack travel / a longer-reach steering arm (Corner view → Steering rack).</div>}

@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { compareTests } from '../src/app/compare';
+import { compareTests, designDifferences } from '../src/app/compare';
 import { withDesign } from '../src/app/designOverride';
 import { buildVehicleProblem } from '../src/app/optimizer';
 import { useApp, defaultDesign } from '../src/app/store';
 import { TEST_PRESETS } from '../src/app/tests';
+import { serializeProject, importProject } from '../src/app/project';
 
 // R9 compare: both models on both sets of tests; a track both have runs once per model.
 describe('compare', () => {
@@ -20,6 +21,20 @@ describe('compare', () => {
     const changed = { ...b1, segments: b1.segments.map((sg, i) => (i === 0 ? { ...sg, distance: { ...sg.distance, value: 99 } } : sg)) };
     expect(compareTests([a1], [changed]).map((r) => r.from)).toEqual(['A', 'B']);
     expect(compareTests([{ ...a1, enabled: false }], [b1]).map((r) => r.from)).toEqual(['B']);
+  });
+
+  it('a snapshot’s own tests, read back from its file, are the same tracks', () => {
+    const d = { ...defaultDesign(), tests: [preset('Balanced', 'a1'), preset('Autocross (simple)', 'a2')] };
+    const back = importProject(JSON.parse(JSON.stringify(serializeProject(d, 'x')))).design;
+    expect(compareTests(d.tests, back.tests).map((r) => r.from)).toEqual(['both', 'both']);
+  });
+
+  it('lists the model values that differ (not the tests, file bookkeeping or optimizer setup)', () => {
+    const d = defaultDesign();
+    const e = { ...d, vehicle: { ...d.vehicle, mass: { text: '380', value: 380 } }, tests: [preset('Balanced', 'z')], fileName: 'other' } as typeof d;
+    const diffs = designDifferences(d, e);
+    expect(diffs).toEqual([{ path: 'vehicle › mass', a: d.vehicle.mass.text, b: '380' }]);
+    expect(designDifferences(d, d)).toEqual([]);
   });
 
   it('model B is the snapshot’s design with the app as it is otherwise', () => {

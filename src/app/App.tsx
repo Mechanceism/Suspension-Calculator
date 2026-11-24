@@ -83,6 +83,7 @@ import { useVehicle } from './useVehicle';
 import { VehicleViewport } from './viewport/VehicleView';
 import { switchWorkspace } from './viewport/SafeHtml';
 import { VehicleSidebar, VehicleResults, VehicleMotionBar } from './panels/VehiclePanels';
+import { CompareSidebar, CompareResults } from './panels/ComparePanels';
 
 export function App() {
   const model = useModel();
@@ -95,7 +96,8 @@ export function App() {
   if (vehicle) lastVehicle.current = vehicle;
   const vehicleShown = vehicle ?? lastVehicle.current;
   const testMode = useTestView((s) => s.mode);
-  const activeView: ViewKey = workspace === 'tests' ? (testMode === 'static' ? 'testsStatic' : 'testsDynamic') : workspace;
+  // Compare shows the current car in the Vehicle view (R9).
+  const activeView: ViewKey = workspace === 'tests' ? (testMode === 'static' ? 'testsStatic' : 'testsDynamic') : workspace === 'compare' ? 'vehicle' : workspace;
   const dirty = useDirty();
 
   // The startup layout counts as "saved" (nothing to lose yet).
@@ -165,9 +167,10 @@ export function App() {
           <button role="tab" aria-selected={workspace === 'corner'} className={workspace === 'corner' ? 'on' : ''} onClick={() => setWorkspace('corner')}>Corner</button>
           <button role="tab" aria-selected={workspace === 'vehicle'} className={workspace === 'vehicle' ? 'on' : ''} onClick={() => setWorkspace('vehicle')}>Vehicle</button>
           <button role="tab" aria-selected={workspace === 'tests'} className={workspace === 'tests' ? 'on' : ''} onClick={() => setWorkspace('tests')} title="Chains of driving segments run on the whole car">Tests</button>
+          <button role="tab" aria-selected={workspace === 'compare'} className={workspace === 'compare' ? 'on' : ''} onClick={() => setWorkspace('compare')} title="The current design against a snapshot (another design: File → Take snapshot / Import snapshot)">Compare</button>
         </nav>
         <BusyIndicator />
-        <span className="muted topbar-note">{workspace === 'corner' ? 'Chassis fixed · one corner' : workspace === 'vehicle' ? 'Whole car · quasi-static' : 'Tests · steady states + ride over time'}</span>
+        <span className="muted topbar-note">{workspace === 'corner' ? 'Chassis fixed · one corner' : workspace === 'vehicle' ? 'Whole car · quasi-static' : workspace === 'compare' ? 'Compare · current vs a snapshot' : 'Tests · steady states + ride over time'}</span>
         <button className="menu-btn help-btn" onClick={() => setHelp(true)} title="Keyboard & mouse help (?)">?</button>
       </header>
       {help && <HelpOverlay onClose={() => setHelp(false)} />}
@@ -188,6 +191,17 @@ export function App() {
             <Readout model={model} />
             <Plots model={model} />
           </aside>
+        </>
+      ) : workspace === 'compare' ? (
+        <>
+          <aside className="left"><div className="tab-body"><CompareSidebar /></div></aside>
+          <Splitter area="lsplit" width={leftW} setWidth={setLeftW} sign={1} />
+          <main className="center">
+            <ViewStack corner={model} vehicle={vehicleShown} active={activeView} />
+            <VehicleMotionBar />
+          </main>
+          <Splitter area="rsplit" width={rightW} setWidth={setRightW} sign={-1} />
+          <aside className="right"><CompareResults corner={model} vehicle={vehicle} /></aside>
         </>
       ) : workspace === 'tests' ? (
         <>

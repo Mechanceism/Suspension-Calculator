@@ -10,6 +10,7 @@ import { buildVehicleProblem, runTestJob } from './optimizer';
 import { planOption, segmentSpec, type TestDesign } from './tests';
 import { POOL_SIZE, runLimited } from './workerPool';
 import { withDesign } from './designOverride';
+import { serializeProject } from './project';
 import type { TestRun } from '../core/tests/run';
 import type { Snapshot } from './snapshots';
 
@@ -20,8 +21,14 @@ export interface CompareTest { key: string; name: string; from: Side | 'both'; a
 /** What makes two tests the same track (not their id, name, rank or whether they are ticked). */
 const trackOf = (t: TestDesign) => {
   const { id: _i, name: _n, rank: _r, enabled: _e, segments, ...rest } = t;
-  return JSON.stringify({ ...rest, segments: segments.map(({ id: _s, ...sg }) => sg) });
+  return canonical({ ...rest, segments: segments.map(({ id: _s, ...sg }) => sg) });
 };
+/** JSON with the keys sorted (a test read back from a file may list them in another order); undefined left out. */
+function canonical(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonical).join(',')}]`;
+  if (v && typeof v === 'object') return `{${Object.keys(v).filter((k) => (v as Record<string, unknown>)[k] !== undefined).sort().map((k) => `${JSON.stringify(k)}:${canonical((v as Record<string, unknown>)[k])}`).join(',')}}`;
+  return JSON.stringify(v) ?? 'null';
+}
 
 /** The tests to compare on: the enabled tests of each design, one row for a track both have. */
 export function compareTests(testsA: TestDesign[], testsB: TestDesign[]): CompareTest[] {
@@ -33,6 +40,35 @@ export function compareTests(testsA: TestDesign[], testsB: TestDesign[]): Compar
     else rows.push({ key: `B:${b.id}`, name: b.name, from: 'B', b });
   }
   return rows;
+}
+
+/** A design value that differs: where it is (readable path) and its text in each design. */
+export interface DesignDiff { path: string; a: string; b: string }
+/** Not the car: file bookkeeping, the optimizer setups, locks, the wizard, held dimensions, the sweep settings. */
+const NOT_THE_CAR = new Set(['format', 'formatVersion', 'appVersion', 'name', 'savedAt', 'units', 'activeCorner', 'optimizer', 'vehicleOptimizer', 'locks', 'wizardLocks', 'setupStatus', 'dimensions', 'motion', 'presetId', 'tests', 'results']);
+/** Containers left out of the paths (they only group values). */
+const SILENT = new Set(['fields']);
+
+/** The model's values that differ between two designs (their files' model parts compared value by value). */
+export function designDifferences(a: DesignState, b: DesignState): DesignDiff[] {
+  const fa = serializeProject(a, '', { tests: false }) as unknown as Record<string, unknown>;
+  const fb = serializeProject(b, '', { tests: false }) as unknown as Record<string, unknown>;
+  const out: DesignDiff[] = [];
+  const isField = (v: unknown): v is { text?: string; value?: number } => typeof v === 'object' && v !== null && !Array.isArray(v) && 'value' in v && ('text' in v || Object.keys(v).length <= 2);
+  const show = (v: unknown): string => (v === undefined ? '—' : isField(v) ? (v.text?.trim() ? v.text : String(v.value)) : typeof v === 'object' && v !== null ? JSON.stringify(v).slice(0, 60) : String(v));
+  const same = (x: unknown, y: unknown) => (isField(x) && isField(y) ? x.value === y.value : JSON.stringify(x) === JSON.stringify(y));
+  const walk = (x: unknown, y: unknown, path: string[]) => {
+    if (same(x, y)) return;
+    const objs = typeof x === 'object' && x !== null && typeof y === 'object' && y !== null && !isField(x) && !isField(y) && Array.isArray(x) === Array.isArray(y);
+    if (objs) {
+      const keys = [...new Set([...Object.keys(x as object), ...Object.keys(y as object)])];
+      for (const k of keys) walk((x as Record<string, unknown>)[k], (y as Record<string, unknown>)[k], SILENT.has(k) ? path : [...path, k]);
+      return;
+    }
+    out.push({ path: path.join(' › '), a: show(x), b: show(y) });
+  };
+  for (const k of [...new Set([...Object.keys(fa), ...Object.keys(fb)])]) if (!NOT_THE_CAR.has(k)) walk(fa[k], fb[k], [k]);
+  return out;
 }
 
 interface CompareState {

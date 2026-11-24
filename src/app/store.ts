@@ -870,7 +870,7 @@ export const VEHICLE_META: Record<VehicleKey, { label: string; quantity: Quantit
   rollingResistance: { label: 'Rolling resistance (coefficient)', quantity: 'ratio', unit: '', hint: 'The tires\u2019 own drag ÷ their load while rolling (≈ 0.008–0.015 for road tires, 0.02–0.03 off-road; 0 = none). The powered wheels push against it like the air; with the driver working the pedals a coasting car slows by it.' },
 };
 
-export type Workspace = 'corner' | 'vehicle' | 'tests';
+export type Workspace = 'corner' | 'vehicle' | 'tests' | 'compare';
 
 /** Forces that can be drawn in the Vehicle view. */
 export const FORCE_KEYS = ['tireVertical', 'tireLateral', 'tireLongitudinal', 'springs', 'shared', 'weights', 'inertia'] as const;

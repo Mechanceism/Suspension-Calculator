@@ -1,3 +1,4 @@
+import { vehicleResultRows } from '../resultRows';
 import { steeringWheelAngle, inputForWheelAngle } from '../../core/tests/steer';
 import { useEffect, useMemo, useRef } from 'react';
 import { Num, UnitLabel } from './UnitText';
@@ -289,7 +290,8 @@ export function VehicleResults({ model }: { model: VehicleModel | null }) {
   const r = model?.result;
   if (!model || !r) return <section className="panel"><h2>Vehicle results</h2><p className="muted">{model?.error ?? 'Solving…'}</p></section>;
   const corners = CORNER_IDS.map((id) => ({ id, c: r.corners[id], v: model.corners[id], s: model.staticLoads[id] }));
-  const t = model.transfer;
+  // The rows (shared with the Compare tab).
+  const shared = vehicleResultRows(model);
   return (
     <section className="panel">
       <h2>
@@ -298,65 +300,14 @@ export function VehicleResults({ model }: { model: VehicleModel | null }) {
       </h2>
       <EstimatedNote />
       {r.grip && <GripSection grip={r.grip} />}
-      {r.aero && (
-        <Section title="Aero">
-          <FieldRows rows={[
-            { label: 'Drag', value: fmt(r.aero.drag, 0), unit: 'N', hint: 'On the body, rearward; the driven tires push against it' },
-            { label: 'Downforce, front axle', value: fmt(-r.aero.liftF, 0), unit: 'N', hint: '− = lift' },
-            { label: 'Downforce, rear axle', value: fmt(-r.aero.liftR, 0), unit: 'N' },
-            { label: 'Aero balance (front share)', value: Math.abs(r.aero.liftF + r.aero.liftR) > 1e-6 ? fmt((r.aero.liftF / (r.aero.liftF + r.aero.liftR)) * 100, 1) : '—', unit: '%', hint: 'Moves with ride height (maps), roll (roll sensitivity) and, over time, sideslip' },
-            { label: 'Center of pressure, behind the front axle', value: Math.abs(r.aero.liftF + r.aero.liftR) > 1e-6 ? fmt((r.aero.liftR / (r.aero.liftF + r.aero.liftR)) * model.wheelbase, 0) : '—', unit: 'mm', hint: 'Where the downforce acts along the car' },
-          ]} />
-        </Section>
-      )}
-      <Section title="Body">
-        <FieldRows rows={[
-          { label: 'Roll', value: fmt(deg(r.pose.roll), 3), unit: '°', hint: '+ = top leans toward −X (right)' },
-          { label: 'Pitch', value: fmt(deg(r.pose.pitch), 3), unit: '°', hint: '+ = nose down' },
-          { label: 'Heave', value: fmt(r.pose.heave, 2), unit: 'mm', hint: 'chassis rise from design' },
-          { label: 'Ride height, front axle', value: fmt(model.rideHeight.front, 1), unit: 'mm', hint: 'frame bottom to ground' },
-          { label: 'Ride height, rear axle', value: fmt(model.rideHeight.rear, 1), unit: 'mm' },
-          { label: 'Roll center height, front', value: fmt(model.rollCenters.front?.h, 1), unit: 'mm', hint: 'from the actual left/right corners' },
-          { label: 'Roll center height, rear', value: fmt(model.rollCenters.rear?.h, 1), unit: 'mm' },
-          { label: 'Roll center lateral, front', value: fmt(model.rollCenters.front?.x, 1), unit: 'mm', hint: '+ = left of centerline' },
-          { label: 'Rollover threshold (rigid)', value: fmt(model.rolloverG, 2), unit: 'g', hint: 'half track ÷ CG height' },
-          ...model.ackermannLines.map((a) => ({
-            label: `Ackermann lines cross, ${a.axle}`, unit: 'mm',
-            value: a.lines.length < 2 ? 'one steered wheel' : !a.cross ? 'parallel' : fmt(a.axle === 'front' ? a.cross.z - a.target.z : a.target.z - a.cross.z, 0),
-            hint: `Top view: lines from each steered wheel's steering axis through its steering arm's outer joint (View → Ackermann lines). Distance of their crossing past (+) or short of (−) the ${a.target.label.toLowerCase()}, where classic 100 % Ackermann puts it. Parallel = parallel steer. Drag the crossing or a line's handle in the Vehicle view to move the outer tie-rod joints. A rule for near straight ahead: Ackermann % in the Corner view shows what the linkage really does.`,
-          })),
-        ]} />
-      </Section>
-      <Section title="Lateral load transfer">
-        <FieldRows rows={[
-          { label: 'Front total', value: fmt(t.front.total, 0), unit: 'N', hint: '+ = outside tire gains load' },
-          { label: 'Front, through links (roll center)', value: fmt(t.front.geometric, 0), unit: 'N' },
-          { label: 'Front, through springs (body roll)', value: fmt(t.front.elastic, 0), unit: 'N' },
-          { label: 'Rear total', value: fmt(t.rear.total, 0), unit: 'N' },
-          { label: 'Rear, through links (roll center)', value: fmt(t.rear.geometric, 0), unit: 'N' },
-          { label: 'Rear, through springs (body roll)', value: fmt(t.rear.elastic, 0), unit: 'N' },
-          { label: 'Front share (LLTD)', value: Math.abs(t.front.total + t.rear.total) < 1 ? '—' : fmt(100 * t.lltdFront, 1), unit: '%', hint: 'Front axle share of the total lateral load transfer' },
-          { label: 'Roll stiffness, front', value: fmt(model.rollStiffness.front, 0), unit: 'N·m/°', hint: 'Load moved through the springs (springs, anti-roll bar, heave spring) × track ÷ body roll, at this cornering. — without cornering' },
-          { label: 'Roll stiffness, rear', value: fmt(model.rollStiffness.rear, 0), unit: 'N·m/°' },
-          { label: 'Roll stiffness, front share', value: fmt(100 * model.rollStiffness.front / (model.rollStiffness.front + model.rollStiffness.rear), 1), unit: '%' },
-          { label: 'Roll gradient', value: fmt(model.rollGradient, 2), unit: '°/g', hint: 'Body roll per g of cornering (this state)' },
-        ]} />
-      </Section>
-      <Section title="Braking & acceleration">
-        <FieldRows rows={[
-          { label: 'Load moved onto the front axle', value: fmt(model.frontLoadGain, 0), unit: 'N', hint: 'Front axle load minus its static load (negative = moved to the rear)' },
-          ...(r.hitch ? [
-            { label: 'Hitch: tongue load (down on the car)', value: fmt(-r.hitch.force.y, 0), unit: 'N', hint: 'Static tongue weight plus the load shift from braking / accelerating' },
-            { label: 'Hitch: trailer push (+) / pull (−)', value: fmt(r.hitch.force.z, 0), unit: 'N', hint: 'Along the car: + pushes it forward (braking without trailer brakes)' },
-            { label: 'Hitch: side force on the car', value: fmt(r.hitch.force.x, 0), unit: 'N', hint: '+ = toward the left; cornering, the trailer pulls the hitch outward' },
-          ] : []),
-          ...(r.brakePedal ? [{ label: 'Pedal force this braking needs', value: `${fmt(r.brakePedal.needed, 0)} of ${fmt(r.brakePedal.max, 0)}`, unit: 'N', hint: 'Brake hydraulics: more than the most = the brakes are too weak for this braking' }] : []),
-          { label: 'Anti-dive, braking (front)', value: fmt(model.antiDive, 1), unit: '%', hint: 'tan θ · (wheelbase / CG height) · front brake share; θ from the side-view IC (contact patch for outboard brakes, wheel center for inboard)' },
-          { label: 'Anti-lift, braking (rear)', value: fmt(model.antiLift, 1), unit: '%' },
-          { label: 'Anti-squat, accelerating (rear)', value: fmt(model.antiSquat, 1), unit: '%', hint: 'Powered rear corners: θ from the wheel center (chassis diff) or contact patch (hub motor), × rear drive share' },
-          { label: 'Anti-lift, accelerating (front)', value: fmt(model.antiLiftAccel, 1), unit: '%', hint: 'Powered front corners' },
-        ]} />
-      </Section>
+      {(['Aero', 'Body', 'Lateral load transfer', 'Braking & acceleration'] as const).map((g) => {
+        const rows = shared.filter((x) => x.group === g);
+        return rows.length ? (
+          <Section key={g} title={g}>
+            <FieldRows rows={rows.map((x) => ({ label: x.label, unit: x.unit, hint: x.hint, value: x.text ?? (x.of !== undefined ? `${fmt(x.value, x.digits)} of ${fmt(x.of, x.digits)}` : fmt(x.value, x.digits)) }))} />
+          </Section>
+        ) : null;
+      })}
       <Section title="Corners">
         <table className="corner-table">
           <thead><tr><th /><th>Load <UnitLabel unit="N" /></th><th>Δ static</th><th title="Longitudinal tire force: − braking, + drive">Long. <UnitLabel unit="N" /></th><th>Travel <UnitLabel unit="mm" /></th><th>Incl. °</th><th>Toe °</th></tr></thead>

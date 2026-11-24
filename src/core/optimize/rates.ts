@@ -10,6 +10,7 @@ import type { VehicleProblem } from './vehicle';
 import { runTest, type TestRun, type TestSegmentSpec } from '../tests/run';
 import { testScore } from '../tests/score';
 import { BayesOpt } from './search';
+import { runStepsSync, type Steps } from './leastSquares';
 
 export type RateKind = 'spring' | 'bump' | 'rebound' | 'bumpHigh' | 'reboundHigh' | 'arb';
 
@@ -84,22 +85,38 @@ export function tuneRates(
   onProgress?: (i: RateProgress) => boolean | void,
 ): RateResult {
   const mode = opts.mode ?? 'pass';
+  return runStepsSync(rateSteps(vars, opts, onProgress), (x) => [scoreTests(withRates(p, vars, x), tests, mode).score]);
+}
+
+/**
+ * The rate search as batches of rate sets to score (each answered with [score]): `batch` sets at a time
+ * (Bayesian "constant liar" batches, for workers in parallel); batch 1 = one after another.
+ */
+export function* rateSteps(
+  vars: RateVar[], opts: { budget: number; seed?: number; batch?: number },
+  onProgress?: (i: RateProgress) => boolean | void,
+): Steps<RateResult> {
   const budget = Math.max(2, Math.round(opts.budget));
+  const q = Math.max(1, Math.round(opts.batch ?? 1));
   const bo = new BayesOpt(vars.length, { seed: opts.seed ?? 17 });
   const x0 = vars.map((v) => v.value);
-  const before = scoreTests(withRates(p, vars, x0), tests, mode).score;
+  const before = ((yield [x0])[0] ?? [NaN])[0]!;
   bo.observe(vars.map((v, i) => toUnit(v, x0[i]!)), before);
   const history = [before];
   let best = { x: x0, y: before };
   let stopped = false;
-  for (let k = 1; k < budget; k++) {
-    const u = bo.suggest();
-    const x = vars.map((v, i) => toRate(v, u[i]!));
-    const y = scoreTests(withRates(p, vars, x), tests, mode).score;
-    bo.observe(u, y);
-    history.push(y);
-    if (y < best.y) best = { x, y };
-    if (onProgress?.({ evaluation: k + 1, budget, current: y, best: best.y, bestX: best.x }) === false) { stopped = true; break; }
+  for (let k = 1; k < budget && !stopped;) {
+    const us = q === 1 ? [bo.suggest()] : bo.suggestBatch(Math.min(q, budget - k));
+    const xs = us.map((u) => vars.map((v, i) => toRate(v, u[i]!)));
+    const ys = yield xs;
+    for (let j = 0; j < xs.length; j++) {
+      const y = ys[j]?.[0] ?? NaN;
+      bo.observe(us[j]!, y);
+      history.push(y);
+      if (y < best.y) best = { x: xs[j]!, y };
+      k++;
+      if (onProgress?.({ evaluation: k, budget, current: y, best: best.y, bestX: best.x }) === false) { stopped = true; break; }
+    }
   }
   return { x: best.x, before, after: best.y, evaluations: history.length, history, stopped };
 }

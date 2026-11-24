@@ -30,7 +30,7 @@ export function BusyIndicator() {
       : `${loop.mode === 'improve' ? 'Improving' : 'Optimizing'} ${loop.scope === 'all' ? 'all enabled tests' : 'the test'} · round ${loop.round}${loop.widen > 1 ? ` · ranges ×${loop.widen}` : ''}`;
     stop = () => loop.cancel?.();
   } else if (run.batch) {
-    label = `Running test ${run.batch.index + 1} of ${run.batch.total}: ${nameOf(run.testId)}`;
+    label = `Running ${run.batch.total} tests · ${run.batch.index} done`;
     stop = stopRuns;
   } else if (run.running) {
     label = `Running ${nameOf(run.testId)}`;

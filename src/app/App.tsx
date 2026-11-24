@@ -1,11 +1,17 @@
-import { useEffect, useState, type PointerEvent as RPointerEvent } from 'react';
+import { memo, useEffect, useState, type PointerEvent as RPointerEvent } from 'react';
 import { useModel } from './useModel';
 import { useApp, pickDesign } from './store';
 import { modelSnapshot, testsSnapshot } from './project';
 import { FileMenu, Notice } from './panels/FileMenu';
 import { ViewMenu } from './panels/ViewMenu';
 import { UnitsMenu } from './panels/UnitsMenu';
-import { TestsSidebar, TestResults, TestViewBar } from './panels/TestsPanels';
+import { TestsSidebar as TestsSidebarRaw, TestResults as TestResultsRaw, TestViewBar as TestViewBarRaw } from './panels/TestsPanels';
+
+// The Tests panels read the store themselves: memoized so the vehicle model changing (every playback
+// frame) doesn't re-render them.
+const TestsSidebar = memo(TestsSidebarRaw);
+const TestResults = memo(TestResultsRaw);
+const TestViewBar = memo(TestViewBarRaw);
 import { HelpOverlay } from './panels/HelpOverlay';
 import { BusyIndicator } from './panels/BusyIndicator';
 import { SetupWizard } from './panels/SetupWizard';

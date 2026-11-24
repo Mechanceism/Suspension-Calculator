@@ -29,8 +29,8 @@ import {
   CORNER_IDS, isFront, isLeft, placement, poseFns, solveVehicle, staticCornerLoads, designGroundY,
   type AxleShared, type BrakeMount, type CornerId, type DriveMount, type VehicleCorner, type VehicleResult, type ChassisPose, type DiffType, type VehicleInput, type DamperSpec,
 } from '../vehicle/vehicle';
-import { type LsqResult } from './leastSquares';
-import { multiStartLeastSquares, latinHypercube, rng, sensitivity, type Sensitivity } from './search';
+import { runStepsSync, type LsqResult } from './leastSquares';
+import { multiStartSteps, latinHypercube, rng, sensitivity, type Sensitivity } from './search';
 import type { RoadState } from '../tests/segments';
 import { checkResiduals } from '../tests/checks';
 import type { EffortSpec } from '../suspension/steeringEffort';
@@ -624,7 +624,7 @@ export function reportVehicle(p: VehicleProblem, x: number[]): VehicleReport {
 }
 
 /** The vehicle optimizer's objective: residuals of the goals, holds, keep-close and packaging at x. */
-function vehicleObjective(p: VehicleProblem) {
+export function vehicleObjective(p: VehicleProblem) {
   const goals = p.goals.filter((g) => g.weight > 0);
   const x0 = p.variables.map((v) => variableValue(p.designs[v.root]!.geometry, v));
   const lo = p.variables.map((v) => Math.min(v.lo, v.hi));
@@ -653,12 +653,30 @@ function vehicleObjective(p: VehicleProblem) {
 }
 
 export function optimizeVehicle(p: VehicleProblem, onIteration?: (info: ProgressInfo) => boolean | void): VehicleOptimizeResult {
-  const { x0, lo, hi, residuals } = vehicleObjective(p);
-  const lsq = multiStartLeastSquares(residuals, x0, lo, hi, {
-    maxIterations: p.maxIterations ?? 40, step: 0.02, relTol: 1e-6,
+  const { residuals } = vehicleObjective(p);
+  const lsq = runStepsSync(vehicleSteps(p, onIteration), residuals);
+  return { lsq, ...reportVehicle(p, lsq.x) };
+}
+
+/** The free variables' start and range (without evaluating anything). */
+export function vehicleBounds(p: VehicleProblem): { x0: number[]; lo: number[]; hi: number[] } {
+  return {
+    x0: p.variables.map((v) => variableValue(p.designs[v.root]!.geometry, v)),
+    lo: p.variables.map((v) => Math.min(v.lo, v.hi)),
+    hi: p.variables.map((v) => Math.max(v.lo, v.hi)),
+  };
+}
+
+/**
+ * The vehicle optimizer's search as batches of points to evaluate (`vehicleObjective(p).residuals` at each),
+ * so they can be spread over workers; `parallel` damping trials per batch (leastSquares.ts).
+ */
+export function vehicleSteps(p: VehicleProblem, onIteration?: (info: ProgressInfo) => boolean | void, parallel = 1) {
+  const { x0, lo, hi } = vehicleBounds(p);
+  return multiStartSteps(x0, lo, hi, {
+    maxIterations: p.maxIterations ?? 40, step: 0.02, relTol: 1e-6, parallel,
     onIteration: onIteration ? (i) => onIteration({ iteration: i.iteration, cost: i.cost, cost0: i.cost0, evaluations: i.evaluations, x: i.x }) : undefined,
   }, { starts: p.starts ?? 1 });
-  return { lsq, ...reportVehicle(p, lsq.x) };
 }
 
 export interface VehicleSensitivity {
@@ -673,19 +691,40 @@ export interface VehicleSensitivity {
  * strongest pairwise interactions of the total miss and of each goal's value (search.ts § sensitivity).
  */
 export function vehicleSensitivity(p: VehicleProblem, samples: number, onSample?: (k: number, n: number) => boolean | void): VehicleSensitivity | null {
-  const { goals, lo, hi, residuals, guesses } = vehicleObjective(p);
-  const n = Math.max(8, Math.round(samples));
-  const us = latinHypercube(n, lo.length, rng(23));
-  const costs: number[] = [];
-  const values: number[][] = goals.map(() => []);
-  for (let k = 0; k < us.length; k++) {
-    const x = us[k]!.map((u, i) => lo[i]! + u * (hi[i]! - lo[i]!));
-    const r = residuals(x);
-    costs.push(r ? 0.5 * r.reduce((a, v) => a + v * v, 0) : NaN);
-    const e = r ? evaluateVehicle(p, geometriesFor(p, x), guesses) : null;
-    goals.forEach((g, j) => values[j]!.push(e ? vehicleGoalValue(g.kind, p, e) ?? NaN : NaN));
-    if (onSample?.(k + 1, us.length) === false) return null;
+  const obj = vehicleObjective(p);
+  const { us, xs } = sensitivityPlan(p, samples);
+  const out: SensitivitySample[] = [];
+  for (let k = 0; k < xs.length; k++) {
+    out.push(sensitivitySample(p, obj, xs[k]!));
+    if (onSample?.(k + 1, xs.length) === false) return null;
   }
+  return sensitivityResult(p, us, out);
+}
+
+/** The DOE points of the sensitivity report (unit samples and the points in the free ranges). */
+export function sensitivityPlan(p: VehicleProblem, samples: number): { us: number[][]; xs: number[][] } {
+  const { lo, hi } = vehicleBounds(p);
+  const us = latinHypercube(Math.max(8, Math.round(samples)), lo.length, rng(23));
+  return { us, xs: us.map((u) => u.map((v, i) => lo[i]! + v * (hi[i]! - lo[i]!))) };
+}
+
+export interface SensitivitySample { cost: number; values: number[] }
+
+/** One DOE point: the optimizer's total miss and each goal's value (NaN where it can't be evaluated). */
+export function sensitivitySample(p: VehicleProblem, obj: ReturnType<typeof vehicleObjective>, x: number[]): SensitivitySample {
+  const r = obj.residuals(x);
+  const e = r ? evaluateVehicle(p, geometriesFor(p, x), obj.guesses) : null;
+  return {
+    cost: r ? 0.5 * r.reduce((a, v) => a + v * v, 0) : NaN,
+    values: obj.goals.map((g) => (e ? vehicleGoalValue(g.kind, p, e) ?? NaN : NaN)),
+  };
+}
+
+/** The sensitivity report from the DOE points' samples. */
+export function sensitivityResult(p: VehicleProblem, us: number[][], out: SensitivitySample[]): VehicleSensitivity | null {
+  const goals = p.goals.filter((g) => g.weight > 0);
+  const costs = out.map((o) => o.cost);
+  const values = goals.map((_, j) => out.map((o) => o.values[j] ?? NaN));
   const cost = sensitivity(us, costs);
   if (!cost) return null;
   return {

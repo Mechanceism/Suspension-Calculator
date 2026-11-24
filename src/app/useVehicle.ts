@@ -144,7 +144,19 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
     }
   }, [enabled, s.geom, s.spring, s.damper, s.bumpStop, s.tireModel, s.tire, s.volumeChange, s.tireSizeText, s.corners, s.links, s.activeCorner]);
 
+  // Playback: each frame's pose object is stable, so a frame shown once is shown again from here (until
+  // anything else about the car changes).
+  const frameCache = useMemo(() => new WeakMap<object, VehicleModel | null>(),
+    [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, gripFields, tireFile, tireFileRear, aeroSettings, brakeSettings, towSettings, speed]);
   const result = useMemo<VehicleModel | null>(() => {
+    if (rideView && frameCache.has(rideView)) return frameCache.get(rideView)!;
+    const out = computeModel();
+    if (rideView && out && !out.error) frameCache.set(rideView, out);
+    return out;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, rack, lateralG, brakingG, accelG, road.gravityScale, wheelBumps, gripFields, rideView, tireFile, tireFileRear, aeroSettings, brakeSettings, towSettings, speed, frameCache]);
+
+  function computeModel(): VehicleModel | null {
     if (!enabled || !setup) return null;
     const v = s.vehicle;
     const wheelbase = v.wheelbase.value;
@@ -353,7 +365,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
     } catch (e) {
       return { ...empty, error: e instanceof Error ? e.message : String(e) };
     }
-  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, rack, lateralG, brakingG, accelG, road.gravityScale, wheelBumps, gripFields, rideView, tireFile, tireFileRear, aeroSettings, brakeSettings, towSettings, speed]);
+  }
 
   return result;
 }

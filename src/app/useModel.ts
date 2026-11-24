@@ -128,7 +128,9 @@ const G = 9.80665;
 export function useModel(): Model {
   const geom = useApp((s) => s.geom);
   const sliderTravel = useApp((s) => s.travel);
-  const rawRack = useApp((s) => s.rack);
+  // The corner model is shown only in the Corner workspace: elsewhere (the Vehicle view's steering, test
+  // playback moving the rack every frame) it doesn't follow the rack, so it isn't re-solved for nothing.
+  const rawRack = useApp((s) => (s.workspace === 'corner' ? s.rack : 0));
   // Corners that don't steer keep the rack (toe link) fixed.
   const steered = useApp((s) => s.settings[s.activeCorner].steered);
   const rack = steered ? rawRack : 0;

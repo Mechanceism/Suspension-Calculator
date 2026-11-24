@@ -11,8 +11,8 @@ import {
   type CornerProblem, type CornerReport, type HardpointId, type ProgressInfo, type Variable, type Hold,
 } from '../core/optimize/corner';
 import {
-  VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, reportVehicle,
-  type VehicleProblem, type VehicleReport, type VehicleVariable, type VehicleHold,
+  VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, reportVehicle, vehicleSteps, vehicleBounds, sensitivityPlan, sensitivityResult,
+  type SensitivitySample, type VehicleProblem, type VehicleReport, type VehicleVariable, type VehicleHold,
 } from '../core/optimize/vehicle';
 import type { GripModel } from '../core/tire/grip';
 import type { MFCoeffs, TireGrip } from '../core/tire/magicFormula';
@@ -35,7 +35,9 @@ import { toSpec } from './heldDimensions';
 import type { SegmentSpec } from '../core/tests/segments';
 import type { TestRun, TestRunOptions, PlaybackFrame } from '../core/tests/run';
 import type { VehicleSensitivity } from '../core/optimize/vehicle';
-import type { RateVar, RateTest, RateProgress, RateResult } from '../core/optimize/rates';
+import { rateSteps, type RateVar, type RateTest, type RateProgress, type RateResult } from '../core/optimize/rates';
+import { runSteps } from '../core/optimize/leastSquares';
+import { POOL_SIZE, createPool } from './workerPool';
 import { statesForTests } from './tests';
 
 const AXES = ['x', 'y', 'z'] as const;
@@ -376,7 +378,40 @@ export const runOptimizer = (problem: CornerProblem, onProgress: (p: ProgressInf
   run('corner', problem, onProgress, (x) => reportCorner(problem, x ?? problem.variables.map((v) => variableValue(problem.geometry, v))));
 
 export const runVehicleOptimizer = (problem: VehicleProblem, onProgress: (p: ProgressInfo) => void): RunHandle<VehicleReport> =>
-  run('vehicle', problem, onProgress, (x) => reportVehicle(problem, x ?? problem.variables.map((v) => variableValue(problem.designs[v.root]!.geometry, v))));
+  POOL_SIZE > 1 && problem.variables.length > 1
+    ? runVehicleParallel(problem, onProgress)
+    : run('vehicle', problem, onProgress, (x) => reportVehicle(problem, x ?? problem.variables.map((v) => variableValue(problem.designs[v.root]!.geometry, v))));
+
+/**
+ * The vehicle optimizer over a pool of workers: the search runs here (light), every point it needs is
+ * evaluated in a worker (the Jacobian's columns at once, `pool.size` damping trials at once).
+ */
+function runVehicleParallel(problem: VehicleProblem, onProgress: (p: ProgressInfo) => void): RunHandle<VehicleReport> {
+  const pool = createPool({ type: 'vehicle', problem });
+  let last: ProgressInfo | null = null;
+  let stopped = false;
+  let finish: (v: Awaited<RunHandle<VehicleReport>['done']>) => void = () => {};
+  let fail: (e: unknown) => void = () => {};
+  const done = new Promise<Awaited<RunHandle<VehicleReport>['done']>>((res, rej) => { finish = res; fail = rej; });
+  const steps = vehicleSteps(problem, (info) => { last = info; onProgress(info); return !stopped; }, pool.size);
+  runSteps(steps, (xs) => pool.map<number[] | null>(xs.map((x) => ({ kind: 'residuals', x }))))
+    .then(async (lsq) => {
+      const report = await pool.run<VehicleReport>({ kind: 'report', x: lsq.x });
+      pool.terminate();
+      finish({ result: { ...report, lsq, status: lsq.status, iterations: lsq.iterations, cost0: lsq.cost0, cost: lsq.cost } as RunResult<VehicleReport>, stopped: false });
+    })
+    .catch((e: unknown) => { pool.terminate(); if (!stopped) fail(e); });
+  return {
+    done,
+    stop: () => {
+      if (stopped) return;
+      stopped = true;
+      pool.terminate();
+      const report = reportVehicle(problem, last?.x ?? vehicleBounds(problem).x0);
+      finish({ result: { ...report, status: 'stopped', iterations: last?.iteration ?? 0, cost0: last?.cost0 ?? NaN, cost: last?.cost ?? NaN }, stopped: true });
+    },
+  };
+}
 
 /** Run a test in the worker. */
 export function runTestJob(problem: VehicleProblem, segments: SegmentSpec[], opts: TestRunOptions): { done: Promise<TestRun>; cancel(): void } {
@@ -426,12 +461,28 @@ function progressJob<R, P>(msg: unknown, onProgress: (p: P) => void): { done: Pr
 }
 
 /** What matters most (DOE sensitivity) for a vehicle problem, in the worker. */
-export const runSensitivityJob = (problem: VehicleProblem, samples: number, onProgress: (p: { sample: number; of: number }) => void) =>
-  progressJob<VehicleSensitivity | null, { sample: number; of: number }>({ kind: 'sensitivity', problem, samples }, onProgress);
+export function runSensitivityJob(problem: VehicleProblem, samples: number, onProgress: (p: { sample: number; of: number }) => void): { done: Promise<VehicleSensitivity | null>; stop(): void } {
+  if (POOL_SIZE < 2) return progressJob<VehicleSensitivity | null, { sample: number; of: number }>({ kind: 'sensitivity', problem, samples }, onProgress);
+  // Every DOE sample in its own task, over the pool.
+  const pool = createPool({ type: 'vehicle', problem });
+  const { us, xs } = sensitivityPlan(problem, samples);
+  let n = 0;
+  const done = Promise.all(xs.map((x) => pool.run<SensitivitySample>({ kind: 'sensitivity', x }).then((r) => { onProgress({ sample: ++n, of: xs.length }); return r; })))
+    .then((out) => sensitivityResult(problem, us, out))
+    .finally(() => pool.terminate());
+  return { done, stop: () => pool.terminate() };
+}
 
 /** Tune springs / dampers / bars on the ride (Bayesian optimization), in the worker. */
-export const runRatesJob = (problem: VehicleProblem, tests: RateTest[], vars: RateVar[], budget: number, mode: 'pass' | 'improve', onProgress: (p: RateProgress) => void) =>
-  progressJob<RateResult, RateProgress>({ kind: 'rates', problem, tests, vars, budget, mode }, onProgress);
+export function runRatesJob(problem: VehicleProblem, tests: RateTest[], vars: RateVar[], budget: number, mode: 'pass' | 'improve', onProgress: (p: RateProgress) => void): { done: Promise<RateResult>; stop(): void } {
+  if (POOL_SIZE < 2) return progressJob<RateResult, RateProgress>({ kind: 'rates', problem, tests, vars, budget, mode }, onProgress);
+  // Bayesian batches of rate sets ("constant liar"), one set per worker at a time.
+  const pool = createPool({ type: 'rates', problem, tests, vars, mode });
+  let stopped = false;
+  const steps = rateSteps(vars, { budget, batch: pool.size }, (i) => { onProgress(i); return !stopped; });
+  const done = runSteps(steps, (xs) => pool.map<number[]>(xs.map((x) => ({ kind: 'score', x })))).finally(() => pool.terminate());
+  return { done, stop: () => { stopped = true; pool.terminate(); } };
+}
 
 /** Fit a tire model to measured data, in the worker. */
 export const runTireFitJob = (samples: TireSample[], name: string, onProgress: (p: { stage: string; iteration: number }) => void, unloadedRadius?: number) =>

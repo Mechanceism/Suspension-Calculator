@@ -37,17 +37,23 @@ const frameAt = (frames: PlaybackFrame[], t: number) => {
   return frames[lo];
 };
 
-/** Pose the 3D car for a frame (sets the Vehicle view's sliders and road). */
+/** Each frame's pose object, kept so the 3D view can reuse what it built for that frame. */
+const rideViews = new WeakMap<PlaybackFrame, { pose: NonNullable<PlaybackFrame['ride']>['pose']; travel: NonNullable<PlaybackFrame['ride']>['travel'] }>();
+
+/** Pose the 3D car for a frame (sets the Vehicle view's sliders and road), in one store update. */
 function applyFrame(f: PlaybackFrame) {
-  const s = useApp.getState();
-  s.set('lateralG', Number(f.ay.toFixed(3)));
-  s.set('longitudinalG', Number(f.ax.toFixed(3)));
-  s.set('roadGrade', Number((Math.tan(f.grade) * 100).toFixed(2)));
-  s.set('roadBank', Number(((f.bank * 180) / Math.PI).toFixed(2)));
-  s.set('wheelBumps', { FL: 0, FR: 0, RL: 0, RR: 0, ...f.groundOffset });
-  s.set('rack', Number((f.rack ?? 0).toFixed(2)));
-  s.set('testView', null);
-  s.set('rideView', f.ride ? { pose: f.ride.pose, travel: f.ride.travel } : null);
+  let rv = f.ride ? rideViews.get(f) : undefined;
+  if (f.ride && !rv) { rv = { pose: f.ride.pose, travel: f.ride.travel }; rideViews.set(f, rv); }
+  useApp.setState({
+    lateralG: Number(f.ay.toFixed(3)),
+    longitudinalG: Number(f.ax.toFixed(3)),
+    roadGrade: Number((Math.tan(f.grade) * 100).toFixed(2)),
+    roadBank: Number(((f.bank * 180) / Math.PI).toFixed(2)),
+    wheelBumps: { FL: 0, FR: 0, RL: 0, RR: 0, ...f.groundOffset },
+    rack: Number((f.rack ?? 0).toFixed(2)),
+    testView: null,
+    rideView: rv ?? null,
+  });
 }
 
 async function computeFrames(test: TestDesign) {
@@ -80,19 +86,26 @@ function TrackMap({ frames, current }: { frames: PlaybackFrame[]; current: Playb
     const span = Math.max(maxX - minX, maxY - minY, 1);
     return { minX, minY, span, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2 };
   }, [frames]);
-  if (!frames.length) return null;
   const W = 150, H = 110, pad = 8;
   const k = Math.min((W - 2 * pad) / box.span, (H - 2 * pad) / box.span);
   const px = (x: number) => W / 2 + (x - box.cx) * k;
   const py = (y: number) => H / 2 - (y - box.cy) * k;
-  return (
-    <svg className="track-map" viewBox={`0 0 ${W} ${H}`} aria-label="Track map: the line driven, colored by result (grey: the path)">
+  // The path and the colored line driven don't change while playing: built once per run, not per tick.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const track = useMemo(() => (frames.length ? (
+    <>
       {frames[0]!.handling && (
         <polyline points={frames.map((f) => `${px(f.handling!.path.x).toFixed(1)},${py(f.handling!.path.y).toFixed(1)}`).join(' ')} fill="none" stroke="#8a93a3" strokeWidth={1} strokeDasharray="3 2" />
       )}
       {frames.slice(1).map((f, i) => (
         <line key={i} x1={px(frames[i]!.pos.x)} y1={py(frames[i]!.pos.y)} x2={px(f.pos.x)} y2={py(f.pos.y)} stroke={SEV_COLOR[f.severity]} strokeWidth={3} strokeLinecap="round" />
       ))}
+    </>
+  ) : null), [frames, box]);
+  if (!frames.length) return null;
+  return (
+    <svg className="track-map" viewBox={`0 0 ${W} ${H}`} aria-label="Track map: the line driven, colored by result (grey: the path)">
+      {track}
       {current && (
         <g transform={`translate(${px(current.pos.x)},${py(current.pos.y)}) rotate(${(-current.heading * 180) / Math.PI})`}>
           <polygon points="7,0 -5,-4 -5,4" fill="#ffffff" stroke="#16191e" strokeWidth={1} />

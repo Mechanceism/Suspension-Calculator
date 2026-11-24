@@ -17,6 +17,7 @@ import { CHECK_IDS, CHECK_META, PROFILES, cloneProfile, type CheckProfile, type 
 import { useApp, type Field } from '../store';
 import { SEGMENT_PRESETS, TEST_PRESETS, newSegment, newTestId, segmentSpec, isOff, OFF, type TestDesign, type TestSegment } from '../tests';
 import { buildVehicleProblem, runTestJob } from '../optimizer';
+import { POOL_SIZE, runLimited } from '../workerPool';
 import { useProfiles } from '../settings';
 import { switchWorkspace } from '../viewport/SafeHtml';
 import { ValueInput } from './ValueInput';
@@ -50,10 +51,12 @@ interface RunStore {
   results: Record<string, RunEntry>;
   error: string | null;
   cancel: (() => void) | null;
-  /** Run all: which test of how many. */
+  /** Several tests at once (Run all, the optimize loop): how many are done of how many. */
   batch: { index: number; total: number } | null;
+  /** Tests running now (several at once, one per worker). */
+  runningIds: string[];
 }
-export const useRun = create<RunStore>(() => ({ running: false, testId: null, results: {}, error: null, cancel: null, batch: null }));
+export const useRun = create<RunStore>(() => ({ running: false, testId: null, results: {}, error: null, cancel: null, batch: null, runningIds: [] }));
 
 /** What a result depends on: when any of these change, the result is stale. */
 type DesignRef = { geom: unknown; corners: unknown; settings: unknown; steer: unknown; vehicle: unknown };
@@ -99,32 +102,62 @@ export function startTestRun(test: TestDesign) {
   const { problem } = buildVehicleProblem(s);
   const job = runTestJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), { onFail: test.onFail, speedLimits: true, ride: test.ride !== false, handling: test.ride !== false && test.handling !== false, driverSpeed: !!test.driverSpeed });
   const from = designRef(s);
-  useRun.setState({ running: true, testId: test.id, error: null, cancel: job.cancel });
+  useRun.setState({ running: true, testId: test.id, runningIds: [test.id], error: null, cancel: job.cancel });
   return job.done
     .then((result) => {
-      useRun.setState((r) => ({ running: false, cancel: null, results: { ...r.results, [test.id]: { result, from, test } } }));
+      useRun.setState((r) => ({ running: false, cancel: null, runningIds: [], results: { ...r.results, [test.id]: { result, from, test } } }));
       useApp.getState().set('testView', null);
       return result;
     })
-    .catch((e: unknown) => { useRun.setState({ running: false, error: e instanceof Error ? e.message : String(e), cancel: null }); return null; });
+    .catch((e: unknown) => { useRun.setState({ running: false, runningIds: [], error: e instanceof Error ? e.message : String(e), cancel: null }); return null; });
 }
 
-let batchStopped = false;
-/** Run every enabled test, in list order. */
+/**
+ * Run several tests at once, each in its own worker (up to one per spare core); the results land in the
+ * Tests panel as they finish. Answers in the tests' order (null = failed or stopped).
+ */
+export async function runTestsTogether(tests: TestDesign[]): Promise<(TestRun | null)[]> {
+  if (tests.length === 1) return [await startTestRun(tests[0]!)];
+  useRun.getState().cancel?.();
+  const s = useApp.getState();
+  const { problem } = buildVehicleProblem(s);
+  const from = designRef(s);
+  const stops = new Set<() => void>();
+  let stopped = false, done = 0;
+  useRun.setState({ running: true, testId: tests[0]?.id ?? null, runningIds: [], error: null, batch: { index: 0, total: tests.length }, cancel: () => { stopped = true; for (const f of [...stops]) f(); } });
+  const out = await runLimited(tests, POOL_SIZE, async (test) => {
+    const job = runTestJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), { onFail: test.onFail, speedLimits: true, ride: test.ride !== false, handling: test.ride !== false && test.handling !== false, driverSpeed: !!test.driverSpeed });
+    useRun.setState((r) => ({ runningIds: [...r.runningIds, test.id] }));
+    // Stopping ends the wait too (a terminated worker never answers).
+    let stop = () => {};
+    const cancelled = new Promise<null>((res) => { stop = () => { job.cancel(); res(null); }; });
+    stops.add(stop);
+    try {
+      const result = await Promise.race([job.done, cancelled]);
+      if (result) useRun.setState((r) => ({ results: { ...r.results, [test.id]: { result, from, test } } }));
+      return result;
+    } catch (e) {
+      useRun.setState({ error: e instanceof Error ? e.message : String(e) });
+      return null;
+    } finally {
+      stops.delete(stop);
+      done++;
+      useRun.setState((r) => ({ runningIds: r.runningIds.filter((id) => id !== test.id), batch: r.batch ? { ...r.batch, index: done } : null }));
+    }
+  }, () => stopped);
+  useRun.setState({ running: false, cancel: null, batch: null, runningIds: [] });
+  useApp.getState().set('testView', null);
+  return out.map((r) => r ?? null);
+}
+
+/** Run every enabled test (several at once). */
 export async function runAllTests() {
-  const tests = useApp.getState().tests.filter((t) => t.enabled !== false);
-  batchStopped = false;
-  for (let i = 0; i < tests.length && !batchStopped; i++) {
-    useRun.setState({ batch: { index: i, total: tests.length } });
-    await startTestRun(tests[i]!);
-  }
-  useRun.setState({ batch: null });
+  await runTestsTogether(useApp.getState().tests.filter((t) => t.enabled !== false));
 }
 /** Stop the running test (and Run all). */
 export function stopRuns() {
-  batchStopped = true;
   useRun.getState().cancel?.();
-  useRun.setState({ running: false, cancel: null, batch: null, error: null });
+  useRun.setState({ running: false, cancel: null, batch: null, error: null, runningIds: [] });
 }
 
 const SEV_LABEL: Record<Severity, string> = { pass: 'Pass', warn: 'Warning', fail: 'Fail' };
@@ -369,7 +402,7 @@ function RankSelect({ rank, n, onChange, kind = 'segment' }: { rank: number; n: 
 /** Pass / warning / fail icon of a test's last run (faded when the design changed since). */
 function TestStatus({ test }: { test: TestDesign }) {
   const entry = useRun((s) => s.results[test.id]);
-  const running = useRun((s) => s.running && s.testId === test.id);
+  const running = useRun((s) => s.running && (s.runningIds.includes(test.id) || (!s.batch && s.testId === test.id)));
   const stale = useStale(entry?.from);
   if (running) return <span className="spinner" title="Running…" />;
   if (!entry) return <span className="test-status muted" title="Not run yet">·</span>;
@@ -472,7 +505,7 @@ export function TestsSidebar() {
           ? <button className="chip" disabled={!enabledCount || loopRunning} onClick={() => void runAllTests()} title="Run every ticked test, in list order">▶▶ Run all ({enabledCount})</button>
           : <button className="chip" onClick={stopRuns}>■ Stop</button>}
       </div>
-      {run.batch && <p className="muted small-text run-line"><span className="spinner" /> Running test {run.batch.index + 1} of {run.batch.total}: {tests.find((t) => t.id === run.testId)?.name ?? ''}…</p>}
+      {run.batch && <p className="muted small-text run-line"><span className="spinner" /> Running {run.batch.total} tests, {Math.min(POOL_SIZE, run.batch.total)} at a time · {run.batch.index} done…</p>}
       <details className="presets" open={!tests.length}>
         <summary>Presets</summary>
         {presets.map((p) => <button key={p.label} className="wide-btn" onClick={() => addTest(p.make)}>{p.label}</button>)}
@@ -597,7 +630,7 @@ export function TestResults() {
       <section className="panel">
         <h2>Test results</h2>
         <AllTests />
-        <p className="muted">{run.running && run.testId === test.id ? <><span className="spinner" /> Running…</> : 'Run the test (or Run all) to see whether it passes in every segment.'}</p>
+        <p className="muted">{run.running && (run.runningIds.includes(test.id) || run.testId === test.id) ? <><span className="spinner" /> Running…</> : 'Run the test (or Run all) to see whether it passes in every segment.'}</p>
         <OptimizeSection test={test} onOpenOptimizer={() => openOptimizer(test)} />
       </section>
     );
@@ -629,7 +662,7 @@ export function TestResults() {
   return (
     <section className="panel">
       <h2>
-        Test results{run.running && run.testId === test.id && <span className="spinner" title="Running…" />}
+        Test results{run.running && (run.runningIds.includes(test.id) || run.testId === test.id) && <span className="spinner" title="Running…" />}
         <span className={`status ${r.severity === 'fail' ? 'status-not-converged' : r.severity === 'warn' ? 'status-singular' : 'status-converged'}`}>{status}</span>
       </h2>
       <AllTests />

@@ -25,7 +25,8 @@ import type { RateVar, RateTest, RateProgress } from '../core/optimize/rates';
 import { lockKeys } from './locks';
 import { rankWeight, segmentSpec, type TestDesign } from './tests';
 import { pointAxisLocked } from './locks';
-import { startTestRun, useRun } from './panels/TestsPanels';
+import { startTestRun, runTestsTogether, useRun } from './panels/TestsPanels';
+import { POOL_SIZE, runLimited } from './workerPool';
 
 export type Scope = 'test' | 'all';
 
@@ -216,7 +217,7 @@ export async function tuneSpringsDampers(scope: Scope, active: TestDesign | null
       log(`Springs & dampers: no better rates found (score ${before.toFixed(2)}); kept yours.`);
     }
     if (!inLoop) {
-      for (const t of tests) { const fresh = useApp.getState().tests.find((q) => q.id === t.id); if (fresh) await startTestRun(fresh); }
+      await runTestsTogether(tests.map((t) => useApp.getState().tests.find((q) => q.id === t.id)).filter((t): t is TestDesign => !!t));
       useLoop.setState({ outcome: stopped ? 'stopped' : improved ? 'improved' : 'stuck', explanation: improved ? [] : ['Your current springs and dampers already scored best among the rates tried. Widen the search range or try more tests.'] });
     }
     return { improved, before, after };
@@ -299,15 +300,17 @@ function growRanges(moves: { key: string; value: number }[]) {
 
 interface SetRun { runs: { test: TestDesign; run: TestRun }[]; passed: boolean; score: number }
 
-/** Run each test in turn (the results show in the Tests panel); priority-weighted score. */
+/** Run the tests (several at once; the results show in the Tests panel); priority-weighted score. */
 async function runSet(tests: TestDesign[], mode: 'pass' | 'improve' | 'explore', isStopped: () => boolean): Promise<SetRun | null> {
+  if (isStopped()) return null;
+  const fresh = tests.map((t) => useApp.getState().tests.find((x) => x.id === t.id) ?? t);
+  const results = await runTestsTogether(fresh);
+  if (isStopped()) return null;
   const runs: SetRun['runs'] = [];
-  for (const t of tests) {
-    if (isStopped()) return null;
-    const fresh = useApp.getState().tests.find((x) => x.id === t.id) ?? t;
-    const run = await startTestRun(fresh);
-    if (!run) throw new Error(useRun.getState().error ?? `Test “${t.name}” could not run`);
-    runs.push({ test: fresh, run });
+  for (let i = 0; i < fresh.length; i++) {
+    const run = results[i];
+    if (!run) throw new Error(useRun.getState().error ?? `Test “${fresh[i]!.name}” could not run`);
+    runs.push({ test: fresh[i]!, run });
   }
   const w = (t: TestDesign) => (tests.length > 1 ? rankWeight(t.rank, tests.length) : 1);
   const tw = runs.reduce((a, r) => a + w(r.test), 0) || 1;
@@ -463,16 +466,21 @@ export async function exploreRanges(scope: Scope, active: TestDesign | null): Pr
     const before = await runSet(tests, 'pass', () => stopped);
     if (!before) { useLoop.setState({ outcome: 'stopped' }); return; }
     const candidate = { ...p, designs: Object.fromEntries(Object.entries(p.designs).map(([r, d]) => [r, { ...d!, geometry: (result.geometries as Partial<Record<CornerId, DoubleWishboneGeometry>>)[r as CornerId] ?? d!.geometry }])) };
-    const after: TestRun[] = [];
-    for (const t of tests) {
+    // The candidate on every test, several at once.
+    const jobs = new Set<() => void>();
+    currentCancel = () => { for (const c of jobs) c(); };
+    const after = await runLimited(tests, POOL_SIZE, async (t) => {
       const job = runTestJob(candidate, t.segments.map((sg) => segmentSpec(sg, t)), { onFail: t.onFail, speedLimits: false });
-      currentCancel = job.cancel;
-      after.push(await job.done);
-      if (stopped) { useLoop.setState({ outcome: 'stopped' }); return; }
-    }
+      let stop = () => {};
+      const cancelled = new Promise<null>((res) => { stop = () => { job.cancel(); res(null); }; });
+      jobs.add(stop);
+      try { return await Promise.race([job.done, cancelled]); } finally { jobs.delete(stop); }
+    }, () => stopped);
+    if (stopped || after.some((r) => !r)) { useLoop.setState({ outcome: 'stopped' }); return; }
+    const runsAfter = after as TestRun[];
     const w = (t: TestDesign) => (tests.length > 1 ? rankWeight(t.rank, tests.length) : 1);
     const tw = tests.reduce((a, t) => a + w(t), 0) || 1;
-    const afterScore = tests.reduce((a, t, i) => a + w(t) * testScore(after[i]!, 'pass'), 0) / tw;
+    const afterScore = tests.reduce((a, t, i) => a + w(t) * testScore(runsAfter[i]!, 'pass'), 0) / tw;
     const moves = result.variables.map((v, i) => {
       const orig = p.variables[i]!;
       return {
@@ -480,10 +488,10 @@ export async function exploreRanges(scope: Scope, active: TestDesign | null): Pr
         before: v.before, after: v.after, outside: v.after < Math.min(orig.lo, orig.hi) - 1e-6 || v.after > Math.max(orig.lo, orig.hi) + 1e-6,
       };
     }).filter((m) => Math.abs(m.after - m.before) > 0.05);
-    const passed = after.every((r) => r.passed);
+    const passed = runsAfter.every((r) => r.passed);
     const exploration: Exploration = {
       before: before.score, after: afterScore, moves, testIds: tests.map((t) => t.id),
-      candidate: { passed, severity: after.some((r) => r.severity === 'fail') ? 'fail' : after.some((r) => r.severity === 'warn') ? 'warn' : 'pass' },
+      candidate: { passed, severity: runsAfter.some((r) => r.severity === 'fail') ? 'fail' : runsAfter.some((r) => r.severity === 'warn') ? 'warn' : 'pass' },
       updates: result.variables.map((v) => ({ root: v.root!, key: pointKeyOf(v.point), axis: v.axis, value: v.after })),
     };
     useLoop.setState({ exploration, outcome: null });

@@ -1,4 +1,4 @@
-import { memo, useEffect, useState, type PointerEvent as RPointerEvent } from 'react';
+import { memo, useEffect, useState, type PointerEvent as RPointerEvent, type ReactNode } from 'react';
 import { useModel } from './useModel';
 import { useApp, pickDesign } from './store';
 import { modelSnapshot, testsSnapshot } from './project';
@@ -15,16 +15,45 @@ const TestResults = memo(TestResultsRaw);
 const TestViewBar = memo(TestViewBarRaw);
 
 /** Tests: the Static view (the car in place) or the Dynamic one (driving the course); one or the other. */
-function TestsViewport({ model }: { model: ReturnType<typeof useVehicle> }) {
+function TestsViewSwitch() {
   const mode = useTestView((s) => s.mode);
-  const test = useActiveTest();
   return (
-    <div className="tests-viewport">
-      <div className="view-mode-switch" role="tablist" aria-label="Test view">
-        <button role="tab" aria-selected={mode === 'static'} className={`chip${mode === 'static' ? ' on' : ''}`} onClick={() => setTestView({ mode: 'static' })} title="The car in place, posed for the selected segment or the playback moment">Static</button>
-        <button role="tab" aria-selected={mode === 'dynamic'} className={`chip${mode === 'dynamic' ? ' on' : ''}`} onClick={() => setTestView({ mode: 'dynamic' })} title="The course in 3D with the car driving it (Play)">Dynamic</button>
-      </div>
-      {mode === 'static' ? <VehicleViewport model={model} memoryKey="testsStatic" /> : <CourseViewport model={model} test={test} />}
+    <div className="view-mode-switch" role="tablist" aria-label="Test view">
+      <button role="tab" aria-selected={mode === 'static'} className={`chip${mode === 'static' ? ' on' : ''}`} onClick={() => setTestView({ mode: 'static' })} title="The car in place, posed for the selected segment or the playback moment">Static</button>
+      <button role="tab" aria-selected={mode === 'dynamic'} className={`chip${mode === 'dynamic' ? ' on' : ''}`} onClick={() => setTestView({ mode: 'dynamic' })} title="The course in 3D with the car driving it (Play)">Dynamic</button>
+    </div>
+  );
+}
+
+/**
+ * A 3D view kept alive while another one is shown: built once, then only hidden (it neither draws nor
+ * re-renders from its props while hidden). Rebuilding a view on every tab change left the screen blank
+ * while its 3D context and shaders started up, which flashed and hid the camera's sweep.
+ */
+const Keep = memo(function Keep({ active, children }: { active: boolean; children: ReactNode }) {
+  return <div className={`view-slot${active ? '' : ' hidden'}`} aria-hidden={!active}>{children}</div>;
+}, (a, b) => !a.active && !b.active);
+
+type ViewKey = 'corner' | 'vehicle' | 'testsStatic' | 'testsDynamic';
+const VIEW_KEYS: ViewKey[] = ['corner', 'vehicle', 'testsStatic', 'testsDynamic'];
+
+/** All the 3D views in one place: the active one shown, the others kept (built on first use, or soon after start). */
+function ViewStack({ corner, vehicle, active }: { corner: ReturnType<typeof useModel>; vehicle: ReturnType<typeof useVehicle>; active: ViewKey }) {
+  const test = useActiveTest();
+  const [built, setBuilt] = useState<Record<ViewKey, boolean>>(() => ({ corner: false, vehicle: false, testsStatic: false, testsDynamic: false, [active]: true }));
+  useEffect(() => { setBuilt((b) => (b[active] ? b : { ...b, [active]: true })); }, [active]);
+  // Build the others a little after start, one at a time, so the first visit to each doesn't flash either.
+  useEffect(() => {
+    const timers = VIEW_KEYS.map((k, i) => window.setTimeout(() => setBuilt((b) => (b[k] ? b : { ...b, [k]: true })), 2500 + i * 700));
+    return () => timers.forEach((t) => window.clearTimeout(t));
+  }, []);
+  return (
+    <div className="viewport-stack">
+      {built.corner && <Keep active={active === 'corner'}><Viewport model={corner} active={active === 'corner'} /></Keep>}
+      {built.vehicle && <Keep active={active === 'vehicle'}><VehicleViewport model={vehicle} active={active === 'vehicle'} /></Keep>}
+      {built.testsStatic && <Keep active={active === 'testsStatic'}><VehicleViewport model={vehicle} memoryKey="testsStatic" active={active === 'testsStatic'} /></Keep>}
+      {built.testsDynamic && <Keep active={active === 'testsDynamic'}><CourseViewport model={vehicle} test={test} active={active === 'testsDynamic'} /></Keep>}
+      {(active === 'testsStatic' || active === 'testsDynamic') && <TestsViewSwitch />}
     </div>
   );
 }
@@ -49,6 +78,8 @@ export function App() {
   const workspace = useApp((s) => s.workspace);
   const setWorkspace = switchWorkspace;
   const vehicle = useVehicle(workspace !== 'corner');
+  const testMode = useTestView((s) => s.mode);
+  const activeView: ViewKey = workspace === 'tests' ? (testMode === 'static' ? 'testsStatic' : 'testsDynamic') : workspace;
   const dirty = useDirty();
 
   // The startup layout counts as "saved" (nothing to lose yet).
@@ -133,7 +164,7 @@ export function App() {
           </aside>
           <Splitter area="lsplit" width={leftW} setWidth={setLeftW} sign={1} />
           <main className="center">
-            <Viewport model={model} />
+            <ViewStack corner={model} vehicle={vehicle} active={activeView} />
             <MotionBar model={model} />
           </main>
           <Splitter area="rsplit" width={rightW} setWidth={setRightW} sign={-1} />
@@ -147,7 +178,7 @@ export function App() {
           <aside className="left"><div className="tab-body"><TestsSidebar /></div></aside>
           <Splitter area="lsplit" width={leftW} setWidth={setLeftW} sign={1} />
           <main className="center">
-            <TestsViewport model={vehicle} />
+            <ViewStack corner={model} vehicle={vehicle} active={activeView} />
             <TestViewBar />
           </main>
           <Splitter area="rsplit" width={rightW} setWidth={setRightW} sign={-1} />
@@ -158,7 +189,7 @@ export function App() {
           <aside className="left"><VehicleSidebar model={vehicle} /></aside>
           <Splitter area="lsplit" width={leftW} setWidth={setLeftW} sign={1} />
           <main className="center">
-            <VehicleViewport model={vehicle} />
+            <ViewStack corner={model} vehicle={vehicle} active={activeView} />
             <VehicleMotionBar />
           </main>
           <Splitter area="rsplit" width={rightW} setWidth={setRightW} sign={-1} />

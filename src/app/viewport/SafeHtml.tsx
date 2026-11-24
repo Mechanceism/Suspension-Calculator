@@ -19,18 +19,10 @@ export function SafeHtml(props: ComponentProps<typeof Html>) {
 }
 
 /**
- * Switch workspace after the 3D labels have unmounted: hide them, wait until none is left in the page (the
- * 3D view renders in its own root, so on a slow machine that takes more than a frame or two), then switch.
+ * Switch workspace. The 3D views stay mounted (App's ViewStack only hides them), so their labels don't
+ * unmount and nothing has to wait for them any more (it used to hide the labels for a few frames first).
  */
 export function switchWorkspace(w: Workspace): void {
   const s = useApp.getState();
-  if (s.workspace === w) return;
-  s.set('suspendHtml', true);
-  let frames = 0;
-  const go = () => {
-    if (document.querySelector('.safe-html') && frames++ < 60) { requestAnimationFrame(go); return; }
-    useApp.getState().set('workspace', w);
-    requestAnimationFrame(() => requestAnimationFrame(() => useApp.getState().set('suspendHtml', false)));
-  };
-  requestAnimationFrame(go);
+  if (s.workspace !== w) s.set('workspace', w);
 }

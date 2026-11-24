@@ -196,8 +196,8 @@ const SWEEP = 0.9; // s
  * remembers where it was left; on opening, the camera starts where the last view's was around the car
  * (cameraMemory.ts) and sweeps from there. The car and the camera read the same pose each frame.
  */
-function CourseCamera({ mode, follow, followPose, carPose, groundY, size, resetKey, center, span }: {
-  mode: CourseCamera; follow: CourseFollow; followPose: () => Pose | null; carPose: () => Pose | null; groundY: number;
+function CourseCamera({ active, mode, follow, followPose, carPose, groundY, size, resetKey, center, span }: {
+  active: boolean; mode: CourseCamera; follow: CourseFollow; followPose: () => Pose | null; carPose: () => Pose | null; groundY: number;
   size: number; resetKey: number; center: THREE.Vector3; span: number;
 }) {
   const cam = useThree((st) => st.camera);
@@ -214,20 +214,22 @@ function CourseCamera({ mode, follow, followPose, carPose, groundY, size, resetK
       ? { pos: new THREE.Vector3(0, size * 2.4, -size * 0.02), target: new THREE.Vector3() }
       : { pos: center.clone().add(new THREE.Vector3(span * 0.45, span * 0.85, -span * 0.7)), target: center.clone() });
   // A sweep under way: from a view (in the followed frame when this camera follows) to this camera's own.
-  const anim = useRef<{ from: View; dest: View; t0: number } | null>(null);
+  // Its progress goes by frame time capped at 50 ms a frame, so a stalled frame slows it rather than jumping.
+  const anim = useRef<{ from: View; dest: View; u: number } | null>(null);
   const opened = useRef(false);
   const sweepTo = (dest: View) => {
     const c = controls.current;
     const p = followPose();
     if (!c || (follows && !p)) return;
     const from = { pos: cam.position.clone(), target: c.target.clone() };
-    anim.current = { from: follows ? { pos: toLocal(p!, from.pos), target: toLocal(p!, from.target) } : from, dest, t0: performance.now() };
+    anim.current = { from: follows ? { pos: toLocal(p!, from.pos), target: toLocal(p!, from.target) } : from, dest, u: 0 };
     c.enabled = false;
   };
   // Opening: start from the last view's camera around the car, then sweep to this camera's own.
   // Changing camera or what it follows: sweep to where that camera was left (or its default).
   useEffect(() => {
     const c = controls.current, car = carPose();
+    if (!active) { opened.current = false; anim.current = null; return; }
     if (!c) return;
     if (!opened.current) {
       opened.current = true;
@@ -241,7 +243,7 @@ function CourseCamera({ mode, follow, followPose, carPose, groundY, size, resetK
     }
     prev.current = followPose();
     sweepTo(recallView(key) ?? home());
-  }, [mode, follow]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [mode, follow, active]); // eslint-disable-line react-hooks/exhaustive-deps
   // The button clicked again: back to the default.
   const firstReset = useRef(resetKey);
   useEffect(() => { if (resetKey !== firstReset.current) sweepTo(home()); }, [resetKey]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -253,7 +255,7 @@ function CourseCamera({ mode, follow, followPose, carPose, groundY, size, resetK
   });
   const sa = useMemo(() => new THREE.Spherical(), []), sb = useMemo(() => new THREE.Spherical(), []);
   const inv = useMemo(() => new THREE.Matrix4(), []);
-  useFrame(() => {
+  useFrame((_, delta) => {
     const c = controls.current;
     if (!c) return;
     const p = followPose();
@@ -263,7 +265,8 @@ function CourseCamera({ mode, follow, followPose, carPose, groundY, size, resetK
       // Sweep: the target slides across, the camera orbits round it (angles and distance eased).
       const w = (v: View): View => (follows ? { pos: toWorld(p!, v.pos), target: toWorld(p!, v.target) } : v);
       const f = w(a.from), d = w(a.dest);
-      const u = ease((performance.now() - a.t0) / (SWEEP * 1000));
+      a.u = Math.min(1, a.u + Math.min(delta, 0.05) / SWEEP);
+      const u = ease(a.u);
       const target = f.target.clone().lerp(d.target, u);
       sa.setFromVector3(f.pos.clone().sub(f.target));
       sb.setFromVector3(d.pos.clone().sub(d.target));
@@ -285,7 +288,7 @@ function CourseCamera({ mode, follow, followPose, carPose, groundY, size, resetK
     prev.current = p ? { ...p, pos: p.pos.clone() } : null;
     // Remember this camera (in its own frame) and the camera around the car (for the next view opened).
     const car = carPose();
-    if (car && !anim.current) {
+    if (car && !anim.current && opened.current) {
       inv.copy(carMatrix(car, groundY)).invert();
       rememberView(key, { pos: cam.position, target: c.target }, (v) => v.applyMatrix4(inv),
         follows ? { pos: toLocal(p!, cam.position), target: toLocal(p!, c.target) } : undefined);
@@ -295,8 +298,8 @@ function CourseCamera({ mode, follow, followPose, carPose, groundY, size, resetK
     zoomToCursor={!follows} maxDistance={follows ? size * 30 : span * 6} minDistance={follows ? size * 0.3 : 500} />;
 }
 
-export function CourseViewport({ model, test, ghosts = [] }: {
-  model: VehicleModel | null; test: TestDesign | null; ghosts?: { frames: PlaybackFrame[]; color: string; label: string }[];
+export function CourseViewport({ model, test, ghosts = [], active = true }: {
+  model: VehicleModel | null; test: TestDesign | null; ghosts?: { frames: PlaybackFrame[]; color: string; label: string }[]; active?: boolean;
 }) {
   const tv = useTestView();
   // Only the frames (not the playback time: that is read each frame, so the view doesn't re-render per tick).
@@ -361,7 +364,7 @@ export function CourseViewport({ model, test, ghosts = [] }: {
   return (
     <div className="viewport">
       {/* A logarithmic depth buffer: the road, the ground and the car stay apart from 10 mm to kilometres away. */}
-      <Canvas dpr={[1, 2]} style={{ position: 'absolute', inset: 0 }} gl={{ logarithmicDepthBuffer: true }}>
+      <Canvas dpr={[1, 2]} style={{ position: 'absolute', inset: 0 }} gl={{ logarithmicDepthBuffer: true }} frameloop={active ? 'always' : 'never'}>
         <color attach="background" args={[bg]} />
         <PerspectiveCamera makeDefault position={[0, size, -size * 2]} fov={45} near={10} far={2e6} />
         <ambientLight intensity={0.7} />
@@ -373,7 +376,7 @@ export function CourseViewport({ model, test, ghosts = [] }: {
         {ghosts.map((g) => <GhostCar key={g.label} frames={g.frames} color={g.color} wheelbase={model?.wheelbase ?? 1550} track={dims.track} points={points} segStart={segStart} />)}
         {/* The ground just below the course's lowest point (it can't cut through the road), potholes included. */}
         {groundOn && <CourseGround center={extent.center} low={extent.low} span={extent.span} bg={bg} />}
-        <CourseCamera mode={tv.camera} follow={tv.follow} followPose={followPose} carPose={poseNow} groundY={model?.groundY ?? 0} size={size} resetKey={resetKey} center={extent.center} span={extent.span} />
+        <CourseCamera active={active} mode={tv.camera} follow={tv.follow} followPose={followPose} carPose={poseNow} groundY={model?.groundY ?? 0} size={size} resetKey={resetKey} center={extent.center} span={extent.span} />
       </Canvas>
       <div className="course-camera">
         <div className="cam-row">

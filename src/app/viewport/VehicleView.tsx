@@ -656,7 +656,7 @@ function vehicleTarget(model: VehicleModel | null): FocusTarget {
   return { center: vec3(s.center.x, s.center.y, s.center.z), radius: s.radius };
 }
 
-export function VehicleViewport({ model, memoryKey = 'vehicle' }: { model: VehicleModel | null; memoryKey?: string }) {
+export function VehicleViewport({ model, memoryKey = 'vehicle', active = true }: { model: VehicleModel | null; memoryKey?: string; active?: boolean }) {
   const projection = useApp((s) => s.projection);
   const bg = useMemo(() => getComputedStyle(document.documentElement).getPropertyValue('--viewport-bg').trim() || '#16191e', []);
   const target = vehicleTarget(model);
@@ -665,8 +665,8 @@ export function VehicleViewport({ model, memoryKey = 'vehicle' }: { model: Vehic
   const showValues = useApp((s) => s.forceValues);
   const arrows = useMemo(() => forceList(model ?? ({} as VehicleModel)).filter((a) => vis[a.kind]), [model, vis]);
   const visAll = useApp((s) => s.visibility);
-  const active = useApp((s) => s.activeCorner);
-  const labels = useMemo(() => overlayLabels(model, arrows, showValues, k, visAll, active), [model, arrows, showValues, k, visAll, active]);
+  const activeCorner = useApp((s) => s.activeCorner);
+  const labels = useMemo(() => overlayLabels(model, arrows, showValues, k, visAll, activeCorner), [model, arrows, showValues, k, visAll, activeCorner]);
   const layer = useRef<HTMLDivElement>(null);
   const onMiddle = useMiddleDoubleClick();
   // Force labels are written in N; show them in the display force unit.
@@ -674,13 +674,13 @@ export function VehicleViewport({ model, memoryKey = 'vehicle' }: { model: Vehic
   const forceText = (t: string) => t.replace(/(-?\d+(?:\.\d+)?) N\b/g, (_, n: string) => disp.format(Number(n), 'N', 0));
   return (
     <div className="viewport" onMouseDown={onMiddle}>
-      <Canvas key={projection} dpr={[1, 2]} style={{ position: 'absolute', inset: 0 }}
+      <Canvas key={projection} dpr={[1, 2]} style={{ position: 'absolute', inset: 0 }} frameloop={active ? 'always' : 'never'}
         onPointerMissed={(e) => { const s = useApp.getState(); if (e.type === 'click' && !s.measureMode) s.select(null); }}>
         <color attach="background" args={[bg]} />
         {projection === 'orthographic'
           ? <OrthographicCamera makeDefault position={[0, 300, 8000]} zoom={0.3} near={1} far={200000} />
           : <PerspectiveCamera makeDefault position={[0, 300, 6000]} fov={30} near={1} far={200000} />}
-        <CameraRig target={target} memoryKey={memoryKey} fallbackKey={memoryKey === 'vehicle' ? 'testsStatic' : 'vehicle'} />
+        <CameraRig target={target} memoryKey={memoryKey} fallbackKey={memoryKey === 'vehicle' ? 'testsStatic' : 'vehicle'} active={active} />
         <DevProjectBridge />
         {model && <VehicleScene model={model} arrows={arrows} />}
         <LabelSync labels={labels} layer={layer} />

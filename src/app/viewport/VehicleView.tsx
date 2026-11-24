@@ -198,6 +198,7 @@ export function VehicleScene({ model, arrows, ground = true }: { model: VehicleM
     <group>
       <ambientLight intensity={0.8} />
       <directionalLight position={[1500, 2500, 2000]} intensity={1.2} />
+      {/* Its own ground grid (off when the car sits on a course: the road is the ground there). */}
       {vis.ground && ground && (
         <Grid
           position={[0, model.groundY, -model.wheelbase / 2]} args={[8000, 8000]} cellSize={50} sectionSize={250}

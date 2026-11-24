@@ -25,11 +25,12 @@ import { ValueInput } from './ValueInput';
 import { RoadEditor } from './RoadEditor';
 import { PlaybackBar, SegmentMap } from './Playback';
 import { Section, fmt, FieldRows } from './FieldRows';
-import { useDisplay } from '../units';
+import { fromDisplay, localNow, toDisplay, useDisplay } from '../units';
 import { useLoop, optimizeTests, exploreRanges, acceptExploration, setMaxWiden, isUnfixable, WIDEN_CHOICES, widenLabel, tuneSpringsDampers, setRateSettings, rateVars, setSizeBrakes, sizeBrakesFrom, testsInScope } from '../testOptimize';
 import { SearchSelect, SensitivityReport } from './SearchTools';
 import { EstimatedNote } from './SetupWizard';
 import { VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META } from '../../core/optimize/vehicle';
+import { Local, Val } from './UnitText';
 
 const parse = (text: string, q: Quantity, prev: Field): Field => {
   const r = parseValue(text, q);
@@ -184,9 +185,22 @@ function ProfilePicker({ value, onPick, allowInherit }: { value: string | null; 
   );
 }
 
+/** A pass-rule threshold typed and shown in the display units (stored in base units: m, N·m; %, ° as they are). */
+function ThresholdInput({ value, unit, onChange }: { value: number | undefined; unit: string; onChange: (v: number | undefined) => void }) {
+  const conv = useDisplay().conv(unit);
+  const shown = (v: number | undefined) => { const d = toDisplay(v ?? 0, conv); return String(Number(d.toFixed(conv.identity ? 3 : 2))); };
+  const [text, setText] = useState<string | null>(null); // while typing
+  return (
+    <>
+      <input className="value-input small" value={text ?? shown(value)}
+        onChange={(e) => { setText(e.target.value); const n = Number(e.target.value); if (e.target.value.trim() !== '' && Number.isFinite(n)) onChange(fromDisplay(n, conv)); }}
+        onBlur={() => setText(null)} /> {conv.unit}
+    </>
+  );
+}
+
 function ChecksTable({ checks, onChange }: { checks: CheckProfile; onChange: (c: CheckProfile) => void }) {
   const set = (id: keyof CheckProfile, patch: Partial<CheckProfile[keyof CheckProfile]>) => onChange({ ...checks, [id]: { ...checks[id], ...patch } });
-  const num = (v: string, prev: number | undefined) => { const n = Number(v); return Number.isFinite(n) ? n : prev; };
   return (
     <table className="opt-table checks-table">
       <tbody>
@@ -194,7 +208,7 @@ function ChecksTable({ checks, onChange }: { checks: CheckProfile; onChange: (c:
           const m = CHECK_META[id];
           const c = checks[id];
           return (
-            <tr key={id} title={m.hint} className={`sev-${c.severity}`}>
+            <tr key={id} title={localNow(m.hint)} className={`sev-${c.severity}`}>
               <td>{m.label}</td>
               <td>
                 <select value={c.severity} disabled={m.fixed} onChange={(e) => set(id, { severity: e.target.value as Severity })}>
@@ -204,12 +218,12 @@ function ChecksTable({ checks, onChange }: { checks: CheckProfile; onChange: (c:
               <td className="nowrap">
                 {m.threshold && (
                   <label title={m.threshold.label}>
-                    <input className="value-input small" value={c.threshold ?? 0} onChange={(e) => set(id, { threshold: num(e.target.value, c.threshold) })} /> {m.threshold.unit}
+                    <ThresholdInput value={c.threshold} unit={m.threshold.unit} onChange={(v) => set(id, { threshold: v })} />
                   </label>
                 )}
                 {m.threshold2 && (
                   <label title={m.threshold2.label}>
-                    {' '}<input className="value-input small" value={c.threshold2 ?? 0} onChange={(e) => set(id, { threshold2: num(e.target.value, c.threshold2) })} /> {m.threshold2.unit}
+                    {' '}<ThresholdInput value={c.threshold2} unit={m.threshold2.unit} onChange={(v) => set(id, { threshold2: v })} />
                   </label>
                 )}
               </td>
@@ -578,7 +592,7 @@ export function TestsSidebar() {
               : <button className="wide-btn" onClick={stopRuns}>■ Stop</button>}
           </div>
           {run.running && !run.batch && <p className="muted small-text run-line"><span className="spinner" /> Running {tests.find((t) => t.id === run.testId)?.name ?? 'the test'}…</p>}
-          {run.error && <p className="hint warn-text">Test failed to run: {run.error}</p>}
+          {run.error && <p className="hint warn-text">Test failed to run: <Local text={run.error} /></p>}
           {sel && <SegmentEditor test={test} seg={sel} index={Math.max(0, selIndex)} wheelbase={wheelbase} />}
           <p className="hint">
             Order = the sequence the car drives; priority (tests A, B…; segments P1, P2…) = how much it counts when optimizing. Combine in one segment
@@ -594,8 +608,10 @@ export function TestsSidebar() {
 
 const STATE_TEXT: Record<string, string> = { grip: 'grip', sliding: 'sliding', 'abs-limit': 'ABS limit', locked: 'locked', wheelspin: 'wheelspin' };
 
+/** The findings, their values in the display units (the core writes them in mm, m, km/h, N, …). */
 function Findings({ list }: { list: Finding[] }) {
-  return <>{list.map((f) => <div key={`${f.check}${f.text}`} className={`small-text finding sev-${f.severity}`}>{SEV_ICON[f.severity]} {f.text}</div>)}</>;
+  const disp = useDisplay();
+  return <>{list.map((f) => <div key={`${f.check}${f.text}`} className={`small-text finding sev-${f.severity}`}>{SEV_ICON[f.severity]} {disp.local(f.text)}</div>)}</>;
 }
 
 /** Every test's last result (after Run all), click to open one. */
@@ -733,7 +749,7 @@ export function TestResults() {
                   {segRes.steer.none ? 'Steering: no steered wheels.' : <>
                     Steering: road wheels {fmt(Math.abs(segRes.steer.wheelAngle), 1)}° {segRes.steer.wheelAngle > 0 ? 'left' : 'right'}
                     {Math.abs(segRes.steer.slip) > 0.05 ? ` (${segRes.steer.slip > 0 ? '+' : '−'}${fmt(Math.abs(segRes.steer.slip), 1)}° for the tires' slip: ${segRes.steer.slip > 0 ? 'understeer' : 'oversteer'})` : ''}
-                    {' '}· rack {fmt(Math.abs(segRes.steer.rack), 1)} of ±{fmt(segRes.steer.limit, 0)} mm
+                    {' '}· rack {disp.format(Math.abs(segRes.steer.rack), 'mm', 1)} of ±{disp.format(segRes.steer.limit, 'mm', 0)}
                     {Number.isFinite(segRes.steer.steeringWheel) ? ` · steering wheel ${fmt(Math.abs(segRes.steer.steeringWheel), 0)}°` : ''}
                     {segRes.steer.over ? ` · full lock gives only ${fmt(segRes.steer.maxAngle, 1)}°` : ''}
                   </>}
@@ -882,7 +898,7 @@ function OptimizeSection({ test, onOpenOptimizer }: { test: TestDesign; onOpenOp
           <button className="chip" onClick={() => loop.cancel?.()} title="Stop (rate tuning keeps the best found so far)">■ Stop</button>
         </div>
       )}
-      {loop.log.length > 0 && <ol className="loop-log">{loop.log.map((l, i) => <li key={i} className="small-text">{l}</li>)}</ol>}
+      {loop.log.length > 0 && <ol className="loop-log">{loop.log.map((l, i) => <li key={i} className="small-text"><Local text={l} /></li>)}</ol>}
       {loop.outcome === 'passed' && <p className="small-text ok-text">✓ Passes now. Each applied round can be undone (Ctrl+Z).</p>}
       {loop.outcome === 'improved' && <p className="small-text ok-text">Done improving. Each applied round can be undone (Ctrl+Z).</p>}
       {loop.outcome === 'stopped' && <p className="small-text muted">Stopped.</p>}
@@ -968,9 +984,9 @@ function TireChoiceBox({ test, busy }: { test: TestDesign; busy: boolean }) {
           <thead><tr><th>Tire</th><th>Tests</th><th title="Priority-weighted score: lower is better">Score</th><th title="Unsprung mass change per corner">kg</th><th /></tr></thead>
           <tbody>
             {tc.results.map((r) => (
-              <tr key={r.text} title={r.skipped ?? r.error ?? r.model ?? ''} className={r.skipped || r.error ? 'off' : ''}>
+              <tr key={r.text} title={localNow(r.skipped ?? r.error ?? r.model ?? '')} className={r.skipped || r.error ? 'off' : ''}>
                 <td>{r.text}{r.change !== undefined && r.change > 0.2 && <span className="warn-text" title="Far from the measured tire: a rough guess"> ⚠</span>}</td>
-                <td>{r.skipped ? <span className="muted">{r.skipped}</span> : r.error ? <span className="bad-text">{r.error}</span> : r.passed === undefined ? '—' : r.passed ? <span className="ok-text">pass</span> : <span className="bad-text">fail</span>}</td>
+                <td>{r.skipped ? <span className="muted"><Local text={r.skipped} /></span> : r.error ? <span className="bad-text"><Local text={r.error} /></span> : r.passed === undefined ? '—' : r.passed ? <span className="ok-text">pass</span> : <span className="bad-text">fail</span>}</td>
                 <td className="mono">{r.score !== undefined ? fmt(r.score, 2) : ''}</td>
                 <td className="mono">{r.massChange !== undefined ? fmt(r.massChange, 1) : ''}</td>
                 <td>{!r.skipped && !r.error && !r.text.endsWith('(now)') && <button className="chip" onClick={() => applyTire(r.text)} title="Put this tire on the car (Ctrl+Z undoes)">Use</button>}</td>

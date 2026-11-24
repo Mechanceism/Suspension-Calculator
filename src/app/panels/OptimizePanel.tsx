@@ -36,6 +36,7 @@ import { Section, FieldRows, fmt } from './FieldRows';
 import { useDisplay } from '../units';
 import { TireGripFields } from './TireGripPanel';
 import { SearchSelect, SensitivityReport } from './SearchTools';
+import { Local, Val } from './UnitText';
 
 const AXES = ['X', 'Y', 'Z'] as const;
 
@@ -504,7 +505,7 @@ export function OptimizePanel() {
       <p className="hint">
         Optimizes the <b>{root}</b> design{sharers.length > 1 ? ` (shared with ${sharers.filter((s) => s !== root).join(', ')})` : ''}: it moves only the
         free coordinates, each within its range, to meet the goals. Locked values never move; locked arm dimensions are held.
-        Travel range {-Math.abs(droop)} to +{Math.abs(bump)} mm (motion bar). For goals across the whole car, use Optimize in the Vehicle view.
+        Travel range <Val v={-Math.abs(droop)} unit="mm" digits={0} /> to +<Val v={Math.abs(bump)} unit="mm" digits={0} /> (motion bar). For goals across the whole car, use Optimize in the Vehicle view.
       </p>
       <CornerPresets />
       <Section title="Goals">

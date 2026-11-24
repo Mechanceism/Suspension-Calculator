@@ -11,6 +11,8 @@ import { useApp, type TireAxle } from '../store';
 import { runTireFitJob } from '../optimizer';
 import { download } from '../fileActions';
 import { fmt } from './FieldRows';
+import { Local, Val } from './UnitText';
+import { localNow } from '../units';
 
 interface FitState { name: string; csv: TireCsv | null; running: boolean; progress: string; result: TireFitResult | null; error: string | null; stop: (() => void) | null }
 const useFit = create<FitState>(() => ({ name: '', csv: null, running: false, progress: '', result: null, error: null, stop: null }));
@@ -39,7 +41,7 @@ function FitPlot({ csv, r }: { csv: TireCsv; r: TireFitResult }) {
       {pts.map((s, i) => <circle key={i} cx={px(xOf(s))} cy={py(yOf(s))} r={1.2} fill="#7fd1c7" opacity={0.6} />)}
       <polyline points={curve.map(([x, y]) => `${px(x).toFixed(1)},${py(y).toFixed(1)}`).join(' ')} fill="none" stroke="#ffd166" strokeWidth={1.6} />
       <text x={PAD} y={H - 3} className="axis-text">{lat ? `slip angle ±${fmt((xMax * 180) / Math.PI, 0)}°` : `slip ratio ±${fmt(xMax, 2)}`}</text>
-      <text x={W - PAD} y={PAD} className="axis-text" textAnchor="end">{lat ? 'Fy' : 'Fx'} ±{fmt(yMax, 0)} N · near {fmt(m.fnomin, 0)} N, level</text>
+      <text x={W - PAD} y={PAD} className="axis-text" textAnchor="end">{lat ? 'Fy' : 'Fx'} ±<Val v={yMax} unit="N" digits={0} /> · near <Val v={m.fnomin} unit="N" digits={0} />, level</text>
     </svg>
   );
 }
@@ -70,7 +72,7 @@ export function TireFit() {
   };
   const r = st.result;
   const csv = st.csv;
-  const q = (x: TireFitResult['lateral'], what: string) => (x ? `${what}: ${x.rows} rows, error ${fmt(x.rmsN, 0)} N RMS, R² ${fmt(x.r2, 3)}` : `${what}: not fitted`);
+  const q = (x: TireFitResult['lateral'], what: string) => (x ? localNow(`${what}: ${x.rows} rows, error ${fmt(x.rmsN, 0)} N RMS, R² ${fmt(x.r2, 3)}`) : `${what}: not fitted`);
   return (
     <details className="tire-advanced tire-fit">
       <summary>Fit a tire model to measured data</summary>
@@ -114,10 +116,10 @@ export function TireFit() {
             {q(r.lateral, 'Cornering')}<br />{q(r.longitudinal, 'Braking / driving')}
             {r.combinedLateral !== undefined && <><br />{q(r.combinedLateral ?? null, 'Combined slip, side force')}</>}
             {r.combinedLongitudinal !== undefined && <><br />{q(r.combinedLongitudinal ?? null, 'Combined slip, braking / driving force')}</>}
-            {r.moment && <><br />{`Aligning moment: ${r.moment.rows} rows, error ${fmt(r.moment.rmsN, 1)} N·m RMS, R² ${fmt(r.moment.r2, 3)}`}</>}
+            {r.moment && <><br />{localNow(`Aligning moment: ${r.moment.rows} rows, error ${fmt(r.moment.rmsN, 1)} N·m RMS, R² ${fmt(r.moment.r2, 3)}`)}</>}
           </p>
           <p className="small-text">
-            Nominal load {fmt(r.model.fnomin, 0)} N{r.model.nompres > 0 ? `, pressure ${fmt(r.model.nompres, 0)} kPa` : ''} · peak side μ {fmt(r.model.p.PDY1, 2)}, braking μ {fmt(r.model.p.PDX1, 2)} at the nominal load
+            Nominal load <Val v={r.model.fnomin} unit="N" digits={0} />{r.model.nompres > 0 ? <Local text={`, pressure ${fmt(r.model.nompres, 0)} kPa`} /> : ''} · peak side μ {fmt(r.model.p.PDY1, 2)}, braking μ {fmt(r.model.p.PDX1, 2)} at the nominal load
           </p>
           {r.warnings.map((x) => <p key={x} className="small-text muted">{x}</p>)}
           <FitPlot csv={csv} r={r} />

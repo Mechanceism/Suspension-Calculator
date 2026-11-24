@@ -13,6 +13,7 @@ import { STATE_KEY } from './anchors';
 import { pointAxisLocked } from './locks';
 import { componentDefs, POINT_LABELS } from './components';
 import type { SuspensionKind } from '../core/suspension/doubleWishbone';
+import { localNow } from './units';
 
 export const toSpec = (d: HeldDimension): DimensionSpec => ({
   a: STATE_KEY[d.a] as HardpointId, b: STATE_KEY[d.b] as HardpointId, measure: d.measure, value: d.value, travel: d.travel,
@@ -23,7 +24,7 @@ export const MEASURE_LABELS: Record<DimMeasure, string> = {
 };
 
 export const dimensionLabel = (d: Pick<HeldDimension, 'a' | 'b' | 'measure'>) => `${POINT_LABELS[d.a]} → ${POINT_LABELS[d.b]} ${MEASURE_LABELS[d.measure]}`;
-export const holdLabel = (travel: number | null) => (travel === null ? 'permanent' : travel === 0 ? 'at ride height' : `at ${travel} mm travel`);
+export const holdLabel = (travel: number | null) => (travel === null ? 'permanent' : travel === 0 ? 'at ride height' : `at ${localNow(`${travel} mm`)} travel`);
 
 /** Rigid parts (points that keep their distances through travel). The chassis never moves in the corner frame. */
 function rigidGroups(damperArm: ArmChoice, kind: SuspensionKind = 'doubleWishbone', layout: 'coilover' | 'rocker' = 'coilover'): { chassis: PointKey[]; moving: PointKey[][] } {

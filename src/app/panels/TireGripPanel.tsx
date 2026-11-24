@@ -12,6 +12,7 @@ import { tireGripFor } from '../optimizer';
 import { importTireFile, tirDimensions } from '../tireActions';
 import { TireFit } from './TireFitPanel';
 import { FieldRows, fmt } from './FieldRows';
+import { Local, Val } from './UnitText';
 
 const DEG = Math.PI / 180;
 const W = 280, H = 140, PAD = { l: 30, r: 8, t: 8, b: 22 };
@@ -142,7 +143,7 @@ export function TireGripFields() {
       {file ? (
         <p className="hint">
           <b>{file.name}</b>: Magic Formula {file.version} (FITTYP {file.fittyp || '—'}), nominal load {fmt(file.fnomin, 0)} N
-          {file.nompres > 0 ? `, nominal pressure ${fmt(file.nompres, 0)} kPa` : ''}, {Object.keys(file.p).length} values. Saved in your project.
+          {file.nompres > 0 ? <Local text={`, nominal pressure ${fmt(file.nompres, 0)} kPa`} /> : ''}, {Object.keys(file.p).length} values. Saved in your project.
           Forces use the full model; the car uses each tire&apos;s peak in the direction it pushes (both directions averaged, since left and right tires are mirror images).
           {tirDimensions(file) && <> <button className="link-btn" onClick={() => useApp.getState().applyTireDims(importAxle, tirDimensions(file)!)}>Use the file&apos;s tire size</button></>}
         </p>
@@ -167,7 +168,7 @@ export function TireGripFields() {
         <span><i className="dash" />Fz0 leaning 2° into / out of the turn</span>
       </p>
       <p className="small-text">
-        At Fz0 ({fmt(fz0, 0)} N): peak side μ <b>{fmt(info.pk.y / fz0, 2)}</b> (at half load {fmt(info.half.y / (0.5 * fz0), 2)}) at {fmt(info.slips.alpha / DEG, 1)}° slip
+        At Fz0 (<Val v={fz0} unit="N" digits={0} />): peak side μ <b>{fmt(info.pk.y / fz0, 2)}</b> (at half load {fmt(info.half.y / (0.5 * fz0), 2)}) at {fmt(info.slips.alpha / DEG, 1)}° slip
         {' '}· sliding keeps {fmt(info.pk.slideY * 100, 0)} % · best lean {fmt(Math.abs(info.lean.best), 1)}° {info.lean.best >= 0 ? 'into' : 'away from'} the turn ({leanGain >= 0 ? '+' : ''}{fmt(leanGain, 1)} %)
         {' '}· peak braking μ {fmt(info.pk.x / fz0, 2)}, locked keeps {fmt(info.pk.slideX * 100, 0)} %
       </p>

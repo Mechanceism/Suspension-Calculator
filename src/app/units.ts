@@ -140,6 +140,53 @@ export function convertText(text: string, c: Conversion): string {
 /** Is this typed text just numbers (no unit)? Then it is read in the display unit. */
 export const isPlainNumber = (text: string) => /^[\s\d.+\-eE]+$/.test(text) && /\d/.test(text);
 
+/**
+ * Units written inside sentences (findings, notes, messages built in the core in base units) → the base
+ * unit the converter knows and the factor to it. Longest first, so "mm²" wins over "mm" and "km/h" over "m".
+ */
+const TEXT_UNITS: [string, string, number][] = [
+  ['mm²', 'mm²', 1], ['cm²', 'cm²', 1], ['km/h', 'm/s', 1 / 3.6], ['m/s', 'm/s', 1], ['N·s/m', 'N·s/m', 1], ['N·m', 'N·m', 1],
+  ['N/mm', 'N/mm', 1], ['kN', 'N', 1000], ['kPa', 'kPa', 1], ['bar', 'kPa', 100], ['°C', '°C', 1], ['mm', 'mm', 1], ['kg', 'kg', 1],
+  ['N', 'N', 1], ['m', 'm', 1],
+];
+const NUM = String.raw`[±+\-−]?\d+(?:[.,]\d+)?`;
+// Numbers (a single one, or a range / pair: "12–30", "2 / 3", "4 to 6") followed by a unit, not part of a longer
+// unit ("kg/m³", "m/s²", "N·m/deg" stay as written) or a word.
+const TEXT_RE = new RegExp(String.raw`(${NUM}(?:\s*(?:–|—|-|/|to)\s*${NUM})*)(\s?)(${TEXT_UNITS.map(([u]) => u).join('|')})(?![\p{L}\d²³/·])`, 'gu');
+
+/**
+ * Re-express the values in a sentence written in base units ("rack 26.0 mm, limit ±25 mm", "34 km/h at the
+ * end instead of 48 km/h") in the display units, keeping each number's precision. Unchanged when the display
+ * unit is the base one (degrees, g and shares are the same in every system).
+ */
+export function localizeText(text: string, units: Record<DisplayQuantity, string>): string {
+  return text.replace(TEXT_RE, (whole, nums: string, space: string, unit: string) => {
+    const def = TEXT_UNITS.find(([u]) => u === unit);
+    if (!def) return whole;
+    const [, base, factor] = def;
+    const c = conversionFor(base, units);
+    // From the unit as written to the display unit (km/h → mph: 0.62).
+    const scale = factor * c.scale;
+    if (c.unit === unit && Math.abs(scale - 1) < 1e-12 && c.offset === 0) return whole;
+    const shift = Math.floor(-Math.log10(Math.abs(scale) || 1) + 1e-9);
+    const conv = (n: string) => {
+      const sign = /^[±+]/.test(n) ? n[0]! : '';
+      const raw = n.slice(sign.length);
+      const unicodeMinus = raw.startsWith('−');
+      const body = raw.replace('−', '-').replace(',', '.');
+      const decimals = body.includes('.') ? body.split('.')[1]!.length : 0;
+      const out = toDisplay(Number(body) * factor, c).toFixed(Math.max(0, Math.min(6, decimals + shift)));
+      const clean = /^-0(\.0+)?$/.test(out) ? out.slice(1) : out;
+      return sign + (unicodeMinus ? clean.replace(/^-/, '−') : clean);
+    };
+    const converted = nums.replace(new RegExp(NUM, 'gu'), conv);
+    return `${converted}${space}${c.unit}`;
+  });
+}
+
+/** localizeText with the current preferences, outside React (titles, strings built in helpers). */
+export const localNow = (text: string) => localizeText(text, activeUnits(useUnits.getState()));
+
 /** Hook: the conversion for a base unit string with the current preferences. */
 export function useConversion(baseUnit: string): Conversion {
   const units = useUnits((s) => activeUnits(s));
@@ -156,6 +203,8 @@ export function useDisplay() {
     conv: (baseUnit: string) => conversionFor(baseUnit, units),
     /** "12.50" + "mm" → { text: "0.492", unit: "in" } */
     text: (text: string, baseUnit: string) => { const c = conversionFor(baseUnit, units); return { text: convertText(text, c), unit: c.unit }; },
+    /** A sentence written in base units, re-expressed in the display units (see localizeText). */
+    local: (text: string) => localizeText(text, units),
     /** Number → "0.492 in" */
     format: (v: number, baseUnit: string, digits = 2) => {
       const c = conversionFor(baseUnit, units);

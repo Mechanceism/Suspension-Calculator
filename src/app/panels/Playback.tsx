@@ -17,6 +17,7 @@ import { segmentSpec, type TestDesign } from '../tests';
 import { useRun } from './TestsPanels';
 import { useDisplay } from '../units';
 import { fmt } from './FieldRows';
+import { Local, Val } from './UnitText';
 
 interface PlaybackState {
   testId: string | null;
@@ -246,11 +247,11 @@ export function PlaybackBar({ test }: { test: TestDesign | null }) {
         {cur && test ? (
           <div className="small-text playback-hud">
             <b>{cur.segment + 1}. {test.segments[cur.segment]?.name}</b> · {disp.format(cur.speed, 'm/s', 0)} · lateral {fmt(cur.ay, 2)} g · long. {fmt(cur.ax, 2)} g
-            {cur.rack ? ` · rack ${fmt(cur.rack, 1)} mm` : ''}
+            {cur.rack ? <> · rack <Val v={cur.rack} unit="mm" digits={1} /></> : ''}
             {cur.ride ? ` · roll ${fmt((cur.ride.pose.roll * 180) / Math.PI, 2)}° · pitch ${fmt((cur.ride.pose.pitch * 180) / Math.PI, 2)}°` : ''}
             {cur.handling && (
               <span title="Handling (driver steering): distance off the path (+ = left of it), sideslip angle (where the car points vs where it goes) and the road-wheel steer angle">
-                {' · off line '}<span className={Math.abs(cur.handling.pathError) > 1 ? 'bad-text' : Math.abs(cur.handling.pathError) > 0.5 ? 'warn-text' : ''}>{fmt(cur.handling.pathError, 2)} m</span>
+                {' · off line '}<span className={Math.abs(cur.handling.pathError) > 1 ? 'bad-text' : Math.abs(cur.handling.pathError) > 0.5 ? 'warn-text' : ''}><Val v={cur.handling.pathError} unit="m" digits={2} /></span>
                 {' · sideslip '}<span className={Math.abs(cur.handling.sideslip) > 12 ? 'bad-text' : Math.abs(cur.handling.sideslip) > 6 ? 'warn-text' : ''}>{fmt(cur.handling.sideslip, 1)}°</span>
                 {` · steer ${fmt(cur.handling.steer, 1)}°`}{cur.handling.atLock ? <span className="warn-text"> (full lock)</span> : null}
               </span>

@@ -25,6 +25,7 @@ import type { BrakeMount } from '../../core/vehicle/vehicle';
 import { ValueInput } from './ValueInput';
 import type { VehicleModel } from '../useVehicle';
 import { FieldRows, Section, fmt } from './FieldRows';
+import { Local, Val } from './UnitText';
 
 const G = 9.80665;
 
@@ -544,7 +545,7 @@ function BrakePanel() {
           <FieldRows rows={moreKeys(['brakeRoom', 'padHeight'])} />
           {fit.map(({ a, m, ok, drum }) => (
             <p key={a} className={`small-text ${ok ? 'muted' : 'bad-text'}`} title="From the rim diameter, the room for the caliper and the pad height">
-              {a === 'front' ? 'Front' : 'Rear'} wheel fits {drum ? `a drum up to ${fmt(m.drumRadius, 0)} mm radius` : `a rotor up to ${fmt(m.diameter, 0)} mm (effective radius ${fmt(m.effectiveRadius, 0)} mm)`}{ok ? '' : ': the brake is larger than fits!'}
+              {a === 'front' ? 'Front' : 'Rear'} wheel fits <Local text={drum ? `a drum up to ${fmt(m.drumRadius, 0)} mm radius` : `a rotor up to ${fmt(m.diameter, 0)} mm (effective radius ${fmt(m.effectiveRadius, 0)} mm)`} />{ok ? '' : ': the brake is larger than fits!'}
             </p>
           ))}
           <div className="jm-row" title="Simple: pressure and force only. Detailed: also the fluid the master cylinder pushes, so the pedal travel and the master cylinder's stroke (Long pedal, Master cylinder runs out in the tests).">
@@ -625,7 +626,7 @@ function ShimmyPanel() {
           <p>New parts: {line(rep.r.fresh)}</p>
           <p>Worn parts: {line(rep.r.worn)}</p>
           {rep.kick && <p className={rep.kick.worn.shimmies || rep.kick.fresh.shimmies ? 'bad-text' : 'muted'}>Kicked at {kmh(m.shimMaxSpeed.value)} (free play and wheel imbalance as set): {rep.kick.fresh.shimmies ? 'wobbles even with new parts' : rep.kick.worn.shimmies ? `wobbles with worn parts (${fmt(rep.kick.worn.late, 2)}° a second later)` : 'settles'}.</p>}
-          <p className="muted">Trail {fmt(rep.r.params.trail * 1000, 0)} mm + pneumatic {fmt(rep.r.params.pneumaticTrail * 1000, 0)} mm{steer.pneumaticTrail.value > 0 ? '' : ' (estimated)'}, relaxation length {fmt(rep.r.params.relaxation * 1000, 0)} mm{vehicle.relaxation.value > 0 ? '' : ' (estimated)'}{rep.r.params.axle ? ', solid axle: tramp included' : ''}. Goal: Vehicle → Optimize → Shimmy margin.</p>
+          <p className="muted">Trail <Val v={rep.r.params.trail * 1000} unit="mm" digits={0} /> + pneumatic <Val v={rep.r.params.pneumaticTrail * 1000} unit="mm" digits={0} />{steer.pneumaticTrail.value > 0 ? '' : ' (estimated)'}, relaxation length <Val v={rep.r.params.relaxation * 1000} unit="mm" digits={0} />{vehicle.relaxation.value > 0 ? '' : ' (estimated)'}{rep.r.params.axle ? ', solid axle: tramp included' : ''}. Goal: Vehicle → Optimize → Shimmy margin.</p>
         </div>
       )}
     </>
@@ -698,7 +699,7 @@ function GripSection({ grip }: { grip: GripSummary }) {
         </tbody>
       </table>
       <p className="small-text">Axles (cornering): front {fmt(grip.axles.front * 100, 0)} % · rear {fmt(grip.axles.rear * 100, 0)} %</p>
-      {grip.limits.map((l) => <p key={l.text} className="hint warn-text">{l.text}</p>)}
+      {grip.limits.map((l) => <p key={l.text} className="hint warn-text"><Local text={l.text} /></p>)}
       <p className="hint">Tire grip: Magic Formula with generic coefficients (edit in Optimize → Tire grip model). Lean = inclination toward the turn: leaning into it adds camber thrust.</p>
     </Section>
   );

@@ -8,6 +8,7 @@ import type { Model } from '../useModel';
 import type { Vec3 } from '../../core/math/vec3';
 import { Scene } from './Scene';
 import { cornerFrame, lastCamera, recallView, rememberView, sameFrame } from './cameraMemory';
+import { Local } from '../panels/UnitText';
 
 /** Camera azimuth (about +Y, from +Z toward +X) and polar (from +Y) for each standard view. */
 const VIEWS: Record<ViewName, { azimuth: number; polar: number; label: string }> = {
@@ -262,7 +263,7 @@ export function Viewport({ model, active = true }: { model: Model; active?: bool
         </div>
       )}
       {measureMode && measureCount === 2 && <MeasurePanel cur={model.current} />}
-      {model.error && <div className="viewport-error">{model.error}</div>}
+      {model.error && <div className="viewport-error"><Local text={model.error} /></div>}
     </div>
   );
 }

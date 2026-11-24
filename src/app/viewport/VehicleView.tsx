@@ -671,7 +671,7 @@ export function VehicleViewport({ model, memoryKey = 'vehicle', active = true }:
   const onMiddle = useMiddleDoubleClick();
   // Force labels are written in N; show them in the display force unit.
   const disp = useDisplay();
-  const forceText = (t: string) => t.replace(/(-?\d+(?:\.\d+)?) N\b/g, (_, n: string) => disp.format(Number(n), 'N', 0));
+  const forceText = (t: string) => disp.local(t);
   return (
     <div className="viewport" onMouseDown={onMiddle}>
       <Canvas key={projection} dpr={[1, 2]} style={{ position: 'absolute', inset: 0 }} frameloop={active ? 'always' : 'never'}
@@ -691,7 +691,7 @@ export function VehicleViewport({ model, memoryKey = 'vehicle', active = true }:
       <ViewButtons />
       <ForceToggles />
       <div className="viewport-hint">Click a joint to move it (linked corners move mirrored) · 📏 Measure between any points · double-click a corner to edit it in the Corner view · arrows start where each force acts</div>
-      {model?.error && <div className="viewport-error">{model.error}</div>}
+      {model?.error && <div className="viewport-error">{disp.local(model.error)}</div>}
     </div>
   );
 }

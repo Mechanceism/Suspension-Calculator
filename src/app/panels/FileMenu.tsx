@@ -7,6 +7,7 @@ import { importTireFile } from '../tireActions';
 import { openWizard } from './SetupWizard';
 import { CAR_PROFILES } from '../carProfiles';
 import { importAeroFile } from './AeroPanel';
+import { Local, Val } from './UnitText';
 
 const when = (iso: string) => {
   const d = new Date(iso);
@@ -227,7 +228,7 @@ export function Notice() {
   if (!notice) return null;
   return (
     <div className={`notice notice-${notice.kind}`} role="status">
-      <pre>{notice.text}</pre>
+      <pre><Local text={notice.text} /></pre>
       {notice.action && <button className="chip" onClick={() => { const a = notice.action!; set('notice', null); a.run(); }}>{notice.action.label}</button>}
       <button className="icon-btn" onClick={() => set('notice', null)} title="Dismiss">✕</button>
     </div>

@@ -9,6 +9,7 @@ import { damperOf } from '../optimizer';
 import { ValueInput } from './ValueInput';
 import { parseValue } from '../../core/units/units';
 import { rockerRatio, rockerRatioMove } from '../../core/suspension/coilover';
+import { Local, Val } from './UnitText';
 
 /** Spring layout, rate, free length (+ fit) and the corner-load inputs it carries. */
 export function SpringFields({ keys = SPRING_KEYS }: { keys?: readonly SpringKey[] }) {
@@ -172,7 +173,7 @@ function DamperCurve() {
       <polyline points={pts} fill="none" stroke="#ffd166" strokeWidth={1.6} />
       <text x={pad} y={H - 3} className="axis-text">bump −{vMax} m/s</text>
       <text x={W - pad} y={H - 3} className="axis-text" textAnchor="end">rebound +{vMax} m/s</text>
-      <text x={cx + 4} y={pad} className="axis-text">{Math.round(fMax)} N</text>
+      <text x={cx + 4} y={pad} className="axis-text"><Val v={Math.round(fMax)} unit="N" digits={0} /></text>
     </svg>
   );
 }
@@ -202,7 +203,7 @@ function RockerRatioRow() {
     <div className="row" title="Spring end's lever about the rocker pivot ÷ the pushrod end's. Above 1 the spring moves more than the pushrod. Typing a value slides the spring's rocker end along its arm (and the coilover with it, keeping its length).">
       <span className="muted">Rocker ratio (spring ÷ pushrod lever)</span>
       <ValueInput field={{ text: Number.isFinite(ratio) ? ratio.toFixed(3) : '', value: ratio }} unit="" width={64} onCommit={commit} />
-      <span className="muted small-text">{fmtMm(lp)} / {fmtMm(ls)} mm</span>
+      <span className="muted small-text"><Local text={`${fmtMm(lp)} / ${fmtMm(ls)} mm`} /></span>
     </div>
   );
 }

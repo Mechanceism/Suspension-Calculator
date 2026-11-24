@@ -100,8 +100,8 @@ Discussed with the user item by item; do them in this order.
 | — | Fix: the dev server served a half-written `run.ts` (the file was written in steps and Vite cached a middle one), so *Driver lifts* failed with "LIFT_HELPS is not defined". Reloaded; no code change. | ✅ | |
 | U4a | **No flash on changing tabs / views** (user review 4): keep each 3D view alive while hidden (not rendering) instead of rebuilding it, and start the camera sweep on its first drawn frame (the blank canvas while it rebuilt was hiding the sweep). | ✅ | 7ea022e |
 | U4b | **Free camera: pivot on the track** — it orbits a point kept on the track's center line; dragging slides that point along the track ("scrolling" along the course), orbit and zoom like chase; starts close, not over the whole track. | ✅ | 94252de |
-| U4c | **Units everywhere**: finding / message text (e.g. *Too tight for the steering … rack 26.0 mm, limit ±25 mm*, *34 km/h at the end instead of 48*) and every other displayed value in the display units; an audit of the whole UI. | next | |
-| U4d | **Clearer driver messages**: the pedal driver's "lifted to stay on the line" is not the *Driver lifts* option (reword: *eased off*); report the lowest speed in the segment, not only its end speed; when the car is recovering off the line (steering on a straight), say so instead of *Too tight for the steering*. | | |
+| U4c | **Units everywhere**: finding / message text (e.g. *Too tight for the steering … rack 26.0 mm, limit ±25 mm*, *34 km/h at the end instead of 48*) and every other displayed value in the display units; an audit of the whole UI. | ✅ | |
+| U4d | **Clearer driver messages**: the pedal driver's "lifted to stay on the line" is not the *Driver lifts* option (reword: *eased off*); report the lowest speed in the segment, not only its end speed; when the car is recovering off the line (steering on a straight), say so instead of *Too tight for the steering*. | next | |
 | U4e | **Speeds as maximums** (details below). | | |
 | R9 | **Snapshots and compare** (agreed, details below). | after U4 | |
 
@@ -265,6 +265,8 @@ Reference corner: **front driver's-side corner (driver on the left), viewed from
 - **User-definable defaults:** the default display unit per quantity type (length, angle, etc.) is a user setting. Nothing is hard-coded to mm in the UI. ✅ Units menu: Metric / Imperial / Custom per quantity (display and typed plain numbers; the math stays in base units).
 
 ---
+
+- **Values inside sentences (user review 4, U4c):** findings, notes, notices, optimizer logs and error lines are written by the core in base units (`rack 26.0 mm`, `34 km/h`); `localizeText` (`src/app/units.ts`) re-expresses every "number(s) + unit" in them in the display units (single values, ranges `12–30 mm`, `±`, the minus sign; precision kept), leaving units it doesn't own (`kg/m³`, `m/s²`, `g`, `%`, `°`) alone. Panels use `Val` / `Local` (`UnitText.tsx`) instead of writing a unit after `fmt(…)`; pass-rule thresholds are typed in display units. (Damper velocities stay in m/s: there is no velocity-of-a-part quantity yet.)
 
 ## Variable / Constraint Model
 Every input in the UI is a variable with:

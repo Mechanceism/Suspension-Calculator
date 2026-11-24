@@ -81,8 +81,8 @@ describe('setup wizard: entered values are locked', () => {
     old.formatVersion = 36;
     delete old.wizardLocks;
     const r = importProject(old);
-    expect(FORMAT_VERSION).toBe(37);
-    expect(r.warnings).toEqual(['Upgraded from file format 36 to 37.']);
+    expect(FORMAT_VERSION).toBeGreaterThanOrEqual(37);
+    expect(r.warnings).toEqual(Array.from({ length: FORMAT_VERSION - 36 }, (_, i) => `Upgraded from file format ${i + 36} to ${i + 37}.`));
     expect(r.design.wizardLocks).toEqual({});
     expect(r.design.locks['vehicle.mass']).toBe(true);
   });

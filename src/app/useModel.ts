@@ -11,23 +11,8 @@ import { useApp, ratioSpecOf, toGeometry, toProfile, toForceModel, sprungLoad, v
 import { DoubleWishbone, type CornerState } from '../core/suspension/doubleWishbone';
 import { rollCamber, ackermann } from '../core/suspension/derived';
 import { steeringWheelAngle, inputPerRev } from '../core/tests/steer';
-import type { SteeringMechanism } from '../core/suspension/steering';
-import { normalize as normV, sub as subV, add as addV } from '../core/math/vec3';
-import { mulVec } from '../core/math/mat3';
-import { centerLinkPose } from '../core/suspension/steering';
 
-/** How the corner's steering input moves the inner tie-rod joint. */
-const mechanismOf = (c: { rackAxis: import('../core/math/vec3').Vec3; geometry: import('../core/suspension/doubleWishbone').DoubleWishboneGeometry }, input = 0): SteeringMechanism => {
-  const s = c.geometry.steering;
-  if (s?.kind === 'centerLink') {
-    // The inner joint rides on the center link: its motion per radian of pitman angle (central difference at the input).
-    const at = (deg: number) => { const cl = centerLinkPose(s, deg); return cl ? addV(cl.A, mulVec(cl.R, subV(c.geometry.tieRod.inner, cl.A0))) : null; };
-    const a = at(input - 0.05), b = at(input + 0.05);
-    const k = 180 / Math.PI / 0.1;
-    return { kind: 'arm', pivot: s.pivot1, axis: normV(subV(s.pivot2, s.pivot1)), ...(a && b ? { rate: { x: (b.x - a.x) * k, y: (b.y - a.y) * k, z: (b.z - a.z) * k } } : {}) };
-  }
-  return s?.kind === 'arm' ? { kind: 'arm', pivot: s.pivot1, axis: normV(subV(s.pivot2, s.pivot1)) } : { kind: 'rack', axis: c.rackAxis };
-};
+const mechanismOf = steeringMechanism;
 import { characteristics, deg, type Characteristics } from '../core/suspension/characteristics';
 import { loadCorner, type LoadedCorner } from '../core/suspension/loaded';
 import {
@@ -39,7 +24,7 @@ import { patchSamples } from '../core/tire/geometry';
 import { dot, vec3, Y_AXIS, type Vec3 } from '../core/math/vec3';
 import { damperTravelLimits, type TravelLimits } from '../core/suspension/spring';
 import {
-  headingAngle, lowerArmAngle, steeringLoads, steeringArmLever, parkingTorque, type SteeringLoads,
+  headingAngle, lowerArmAngle, steeringLoads, steeringMechanism, steeringArmLever, parkingTorque, type SteeringLoads,
 } from '../core/suspension/steering';
 import { normalize, sub } from '../core/math/vec3';
 

@@ -22,6 +22,7 @@ import { armMetrics } from '../suspension/armGeometry';
 import { type LsqResult } from './leastSquares';
 import { multiStartLeastSquares } from './search';
 import { dimensionValue, type DimensionSpec } from '../suspension/dimensions';
+import { steeringEffort, type EffortSpec, type SteeringEffort } from '../suspension/steeringEffort';
 
 export type HardpointId =
   | 'ucaFwd' | 'ucaAft' | 'ucaOut' | 'lcaFwd' | 'lcaAft' | 'lcaOut'
@@ -51,7 +52,8 @@ export const staticCamberToe = (g: DoubleWishboneGeometry) => {
 export type GoalKind =
   | 'bumpSteer' | 'camberGain' | 'rollCamber' | 'rollCenter' | 'rcMigration'
   | 'kpi' | 'caster' | 'scrubRadius' | 'trail' | 'antiAngle' | 'motionRatio'
-  | 'contactArea' | 'grip' | 'casterGain' | 'trackChange' | 'ackermann';
+  | 'contactArea' | 'grip' | 'casterGain' | 'trackChange' | 'ackermann'
+  | 'parkingEffort' | 'steeringEffort' | 'scrubLimit';
 
 export interface GoalMeta {
   /** Short name for narrow tables. */
@@ -66,6 +68,8 @@ export interface GoalMeta {
   hint: string;
   /** Maximized (no target): the residual is start value / value, tolerance = relative change. */
   maximize?: boolean;
+  /** A limit (the target is a maximum): only a value above it counts. */
+  limit?: boolean;
 }
 
 export const GOAL_META: Record<GoalKind, GoalMeta> = {
@@ -84,6 +88,9 @@ export const GOAL_META: Record<GoalKind, GoalMeta> = {
   casterGain: { short: 'Caster gain', label: 'Caster change in heave', unit: '°/100 mm', target: 0, tolerance: 0.05, hint: 'Caster change per 100 mm of bump, fitted over the travel range (anti-dive geometry gains caster in bump).' },
   trackChange: { short: 'Track change', label: 'Track change (scrub) in heave', unit: 'mm/100 mm', target: 0, tolerance: 0.5, hint: 'Half-track change per 100 mm of bump (+ = contact moves outboard): tire scrub over bumps. Fitted over the travel range.' },
   ackermann: { short: 'Ackermann', label: 'Ackermann (at the check rack travel)', unit: '%', target: 50, tolerance: 2, hint: 'With the mirrored corner, at the rack travel set for the bump-steer check (or 20 mm), the vehicle wheelbase and the steering-axis track: 100 % = ideal Ackermann, 0 = parallel, < 0 = anti-Ackermann.' },
+  parkingEffort: { short: 'Parking effort', label: 'Steering effort when parking (both front wheels)', unit: 'N·m', target: 20, tolerance: 0.5, limit: true, hint: 'Steering-wheel torque to turn both front wheels at standstill: the patch twisted about the steering axis’s ground point (tire μ for parking in the Steering panel), through the car’s own steering ratio. Grows with the scrub radius. Only above the limit counts (no power assist).' },
+  steeringEffort: { short: 'Effort at speed', label: 'Steering effort at speed (both front wheels)', unit: 'N·m', target: 8, tolerance: 0.2, limit: true, hint: 'Steering-wheel torque to hold the front wheels at the lateral g set in the Steering panel (Effort check at), from the side force on the mechanical + pneumatic trail, through the steering ratio. Only above the limit counts.' },
+  scrubLimit: { short: 'Scrub limit', label: 'Scrub radius limit (size either way)', unit: 'mm', target: 50, tolerance: 1, limit: true, hint: 'Keeps the scrub radius (+ or −) under this size. A large scrub radius makes braking and bump forces kick the steering and pulls the car under uneven braking. Only above the limit counts.' },
   motionRatio: { short: 'Motion ratio', label: 'Motion ratio (static)', unit: '', target: 0.7, tolerance: 0.005, hint: 'Damper travel per wheel travel at design height.' },
 };
 export const GOAL_KINDS = Object.keys(GOAL_META) as GoalKind[];
@@ -118,6 +125,8 @@ export interface CornerProblem {
   keepClose?: number;
   /** Wheelbase, mm (Ackermann goal; default 1550). */
   wheelbase?: number;
+  /** Steering: ratio, parking μ, pneumatic trail, lateral g and load, for the steering-effort goals (steered corners only). */
+  steering?: EffortSpec;
   /** Tire, static corner load and grip model, for the contact-area and grip goals. */
   tire?: { profile: TireProfile; model: TireForceModel; staticLoad: number; rollLoadFactor: number; grip?: GripModel; tireGrip?: TireGrip; pressure?: number };
   maxIterations?: number;
@@ -220,6 +229,8 @@ export interface CornerSamples {
    * outside wheel in roll (roll load, pushing inboard: leaning its top inboard gains camber thrust).
    */
   grip: { static: PatchGrip; roll: PatchGrip | null; staticPeak: number; rollPeak: number | null } | null;
+  /** Steering effort at ride height (null when not asked, not steered or not solvable). */
+  effort?: SteeringEffort | null;
 }
 
 /**
@@ -318,7 +329,11 @@ export function sampleCorner(geometry: DoubleWishboneGeometry, p: Omit<CornerPro
       ackermannPct = Number.isFinite(v) ? v : null;
     }
   }
-  return { travels, chars, i0, rackToe, roll, motionRatio, grip, ackermann: ackermannPct };
+  let effort: SteeringEffort | null = null;
+  if ((all || need.has('parkingEffort') || need.has('steeringEffort')) && p.steering) {
+    effort = steeringEffort(corner, states[i0]!, { ...p.steering, ...(p.tire && !p.steering.tire ? { tire: { profile: p.tire.profile, model: p.tire.model } } : {}) });
+  }
+  return { travels, chars, i0, rackToe, roll, motionRatio, grip, ackermann: ackermannPct, effort };
 }
 
 /** Least-squares slope through the origin-shifted points (x, y − y0). */
@@ -360,6 +375,9 @@ export function goalValue(kind: GoalKind, s: CornerSamples, target = GOAL_META[k
     case 'casterGain': return 100 * deg(slopeThrough(s.travels, s.chars.map((c) => c.caster), s.i0));
     case 'trackChange': return 100 * slopeThrough(s.travels, s.chars.map((c) => c.halfTrack), s.i0);
     case 'ackermann': return s.ackermann ?? null;
+    case 'parkingEffort': return s.effort?.parking ?? null;
+    case 'steeringEffort': return s.effort?.atSpeed ?? null;
+    case 'scrubLimit': return Math.abs(c0.scrubRadius);
     case 'contactArea': {
       if (!s.grip) return null;
       const v = [s.grip.static.area, ...(s.grip.roll ? [s.grip.roll.area] : [])];
@@ -383,6 +401,12 @@ export function cornerGoalResiduals(goal: Goal, s: CornerSamples, ref?: number |
     // one tolerance of miss on a target goal.
     const v = goalValue(goal.kind, s);
     return [v === null || !(v > 0) || !ref ? BAD : (ref / v) / Math.sqrt(tol)];
+  }
+  if (GOAL_META[goal.kind].limit) {
+    // A maximum: nothing below it, the excess above it (a goal that doesn't apply here adds nothing).
+    const v = goalValue(goal.kind, s, goal.target);
+    if (v === null) return [];
+    return [Number.isFinite(v) ? Math.max(0, v - goal.target) / tol : BAD];
   }
   switch (goal.kind) {
     case 'bumpSteer': {

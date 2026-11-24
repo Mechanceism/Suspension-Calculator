@@ -156,3 +156,16 @@ export function centerLinkPose(c: CenterLinkGeometry, angleDeg: number, guess = 
   const R = s < 1e-12 ? IDENTITY : fromAxisAngle(scale(axis, 1 / s), Math.atan2(s, co));
   return { R, A, A0: c.pitmanEnd, idlerAngle: phi };
 }
+
+/** How a corner's steering input moves its inner tie-rod joint (rack, steering arm, or center link at `input` degrees). */
+export function steeringMechanism(c: { rackAxis: Vec3; geometry: DoubleWishboneGeometry }, input = 0): SteeringMechanism {
+  const s = c.geometry.steering;
+  if (s?.kind === 'centerLink') {
+    // The inner joint rides on the center link: its motion per radian of pitman angle (central difference at the input).
+    const at = (a: number) => { const cl = centerLinkPose(s, a); return cl ? add(cl.A, mulVec(cl.R, sub(c.geometry.tieRod.inner, cl.A0))) : null; };
+    const a = at(input - 0.05), b = at(input + 0.05);
+    const k = 180 / Math.PI / 0.1;
+    return { kind: 'arm', pivot: s.pivot1, axis: normalize(sub(s.pivot2, s.pivot1)), ...(a && b ? { rate: scale(sub(b, a), k) } : {}) };
+  }
+  return s?.kind === 'arm' ? { kind: 'arm', pivot: s.pivot1, axis: normalize(sub(s.pivot2, s.pivot1)) } : { kind: 'rack', axis: c.rackAxis };
+}

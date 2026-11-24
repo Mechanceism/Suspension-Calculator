@@ -74,7 +74,7 @@ function GoalTable<K extends string>({ kinds, meta, goals, now, onChange }: {
               <td className="nowrap">
                 {m.maximize
                   ? <span className="muted" title="Maximized: as large as possible">max</span>
-                  : <ValueInput field={g.target} unit={m.unit} width={50} onCommit={(t) => onChange(k, { target: parseField(t, 'ratio', g.target) })} />}
+                  : <>{m.limit && <span className="muted" title="A limit: only a value above it counts">≤ </span>}<ValueInput field={g.target} unit={m.unit} width={50} onCommit={(t) => onChange(k, { target: parseField(t, 'ratio', g.target) })} /></>}
               </td>
               <td><ValueInput field={g.weight} unit="" width={36} onCommit={(t) => onChange(k, { weight: parseField(t, 'ratio', g.weight) })} /></td>
               <td className="mono muted nowrap">{now ? disp.text(goalNumber(m.unit, now[k] ?? null), m.unit).text : '…'}</td>
@@ -283,7 +283,7 @@ function RunArea({ useRun, blockers, notes, label, start, current, meta, onApply
                     <td className="mono">{disp.text(goalNumber(m.unit, g.before), m.unit).text}</td>
                     <td className="mono"><b>{disp.text(goalNumber(m.unit, g.after), m.unit).text}</b></td>
                     <td className="mono muted nowrap">
-                      {m.maximize ? 'max' : g.kind === 'bumpSteer' ? '0°' : disp.text(fmt(g.target, 2), m.unit).text}{' '}
+                      {m.maximize ? 'max' : g.kind === 'bumpSteer' ? '0°' : `${m.limit ? '≤ ' : ''}${disp.text(fmt(g.target, 2), m.unit).text}`}{' '}
                       <span className="unit">{m.maximize || g.kind === 'bumpSteer' ? '' : disp.conv(m.unit).unit}</span>
                     </td>
                   </tr>
@@ -352,7 +352,7 @@ const useProblemDeps = () => [
   useApp((s) => s.locks), useApp((s) => s.links), useApp((s) => s.activeCorner), useApp((s) => s.droop), useApp((s) => s.bump),
   useApp((s) => s.settings), useApp((s) => s.tire), useApp((s) => s.tireModel), useApp((s) => s.volumeChange), useApp((s) => s.spring),
   useApp((s) => s.damper), useApp((s) => s.bumpStop), useApp((s) => s.vehicle), useApp((s) => s.grip), useApp((s) => s.shared),
-  useApp((s) => s.cornerLoadMode), useApp((s) => s.autoPreload), useApp((s) => s.tests),
+  useApp((s) => s.cornerLoadMode), useApp((s) => s.autoPreload), useApp((s) => s.tests), useApp((s) => s.steer), useApp((s) => s.steerCurve),
 ];
 
 // ---------------------------------------------------------------- corner optimizer
@@ -461,7 +461,7 @@ export function OptimizePanel() {
   const now = useMemo(() => {
     if (interacting) return null;
     const p = built.problem;
-    const s = sampleCorner(p.geometry, { droop: p.droop, bump: p.bump, samples: p.samples, rackPositions: p.rackPositions, rollAngle: p.rollAngle, tire: p.tire });
+    const s = sampleCorner(p.geometry, { droop: p.droop, bump: p.bump, samples: p.samples, rackPositions: p.rackPositions, rollAngle: p.rollAngle, tire: p.tire, steering: p.steering });
     if (!s) return null;
     return Object.fromEntries(GOAL_KINDS.map((k) => [k, goalValue(k, s, setup.goals[k].target.value)])) as Record<GoalKind, number | null>;
   }, [built, setup, interacting]);

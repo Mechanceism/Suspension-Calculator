@@ -317,6 +317,17 @@ Moment of the tire force about the **steering axis** (not about the axis's groun
 - `û` = steering-axis unit vector, `q` = any point on the axis, `p` = force application point (contact center / center of pressure), `F` = tire force vector, `M_z` = tire aligning moment.
 - Covers: vertical load acting through KPI/caster (jacking, self-centering), longitudinal force acting through scrub radius (brake/torque steer), lateral force acting through trail, and low-speed parking scrub (patch friction torque, page 1 of the hand math).
 
+### Steering effort (goals) ✅ (round 3, R3; `src/core/suspension/steeringEffort.ts`)
+For the optimizers' *Parking effort* and *Effort at speed* goals: the steering-wheel torque for **both front wheels**, straight ahead at ride height, by virtual work through the corner's own steering kinematics:
+
+`T_sw = T_axis · dθ/dθ_sw`,  `dθ/dθ_sw = (dθ/d input) · c / 2π`
+
+dθ = the knuckle's rotation about the steering axis (the spin axis seen along û, central difference at ±0.5 of input), c = input per steering-wheel turn at center (rack mm/rev or arm °/rev; a measured ratio curve gives its slope at center). The same formula serves a rack, a steering arm and a center link. Rotation about the axis, not the heading change about vertical: they differ by about cos KPI (0.5 % at 6°).
+- **Parking:** T_axis = the parking scrub torque (above) over the loaded patch (or the rigid contact without a tire model) about the axis's ground point at the loaded ground height, load = the corner's static tire load, μ = *Tire friction μ (parking)*. × 2 wheels. It grows with the size of the scrub radius: the patch is dragged round a larger circle.
+- **At speed:** a side force F = a · F_z on the outside wheel, inboard, a pneumatic trail behind the patch (Steering → *Pneumatic trail*), a = *Effort check at (lateral g)* (default 0.5 g, format 38). Only its torque about the axis (mechanical + pneumatic trail, the axis's tilt); the vertical-load (jacking) torques of the two sides cancel straight ahead. The inside wheel's lower load and the outside's higher one add up to 2 × static, so × 2. With no caster trail and no pneumatic trail it is 0: set the pneumatic trail (typically 20–40 mm) for a realistic number.
+- **Limit goals** (corner and vehicle optimizer): the target is a maximum and only the excess counts, so they stop the optimizer from making the steering heavy (or the scrub radius large) without pulling the design anywhere else. *Scrub radius limit* bounds \|scrub radius\| (default 50 mm): a large scrub radius lets braking and bump forces kick the steering (kickback is checked over time in R6).
+- **Tested:** equal to the tie-rod / rack force balance (the Steering panel's numbers) to 0.005 N·m, at speed and parking; linear in load, lateral g and c; parking effort rises with \|scrub radius\|; the corner optimizer brings a 40 mm-wider scrub radius under a 20 mm limit and the parking effort under 80 % of where it started; the vehicle goal reports the steered design's value.
+
 ---
 
 ## Steering ✅ (`src/core/suspension/steering.ts`)
@@ -678,6 +689,9 @@ Tested: every corner solves at full droop, ride height and full bump; the tire s
 | Caster change in heave | caster(t) − caster(0) − slope·t at every sample (°/100 mm) | 0.05° |
 | Track change (scrub) in heave | half track(t) − half track(0) − slope·t at every sample (mm/100 mm) | 0.5 mm |
 | Ackermann | Ackermann % with the mirrored corner at the bump-steer check rack travel (or 20 mm), the vehicle wheelbase and the steering-axis track − target | 2 % |
+| Parking effort (limit) | max(0, steering-wheel torque to turn both front wheels at standstill − limit), § Steering effort | 0.5 N·m |
+| Effort at speed (limit) | max(0, steering-wheel torque to hold both front wheels at the *Effort check* lateral g − limit) | 0.2 N·m |
+| Scrub radius limit | max(0, \|scrub radius\| − limit) | 1 mm |
 | Prefer small changes | √w·Δx/10 mm per variable (default w = 0.01) | — |
 
 Tested: moving the tie-rod joints' X reaches an Ackermann target of 60 % within 5 %; moving the upper pivots' heights reaches a caster gain of 2°/100 mm; a front anti-roll bar raises the front roll-stiffness share by more than 10 points.
@@ -750,6 +764,7 @@ Same solver; every evaluation rebuilds the corners from the candidate hardpoints
 | Brake pitch | nose-down pitch in the braking case | 0.02° |
 | Anti-dive / anti-squat | classic geometric % at static height (brake / drive mount, bias / split) | 1 % |
 | Bump steer (every design) | as in the corner optimizer, for every design | 0.01° |
+| Parking effort / effort at speed / scrub radius limit (steered designs) | as in the corner optimizer, one residual per steered design (its corner's static tire load); reported: the worst | 0.5 N·m / 0.2 N·m / 1 mm |
 
 Because load sensitivity rewards evenly loaded tires, the grip goal also cares how load transfer is split. Front/rear differences (LLTD) need separate front and rear designs (untick *Rear same dimensions as front*). Tested: identical front and rear give LLTD ≈ the weight split (50.4 %); moving the four UCA pivot heights reaches a 55 % target within the ranges in ~2 s; one evaluation (two cases, two designs) takes ~0.1 s.
 

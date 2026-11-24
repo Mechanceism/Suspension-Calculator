@@ -22,6 +22,8 @@ import type { TireSample, TireFitResult } from '../core/tire/fit';
 import type { TireForceModel } from '../core/tire/model';
 import { CORNER_IDS, tirePressure, type AxleShared, type CornerId, type DamperSpec } from '../core/vehicle/vehicle';
 import { vec3 } from '../core/math/vec3';
+import type { EffortSpec } from '../core/suspension/steeringEffort';
+import { inputPerRev } from '../core/tests/steer';
 import { ratioSpecOf, layoutOf,
   POINT_KEYS, rootOf, toGeometry, toProfile, toForceModel, mergedCorners, vehicleStaticLoads, defaultOptimizerSetup, GRIP_KEYS, MF_KEYS,
   DEFAULT_DAMPER_CURVE, type DamperCurveText, type AppState, type FadeKey, type PointKey, type OptimizerSetup, type SharedDesign, type GripKey, type MFKey, type Field, type DamperKey, type DamperMode,
@@ -204,6 +206,7 @@ export function buildProblem(s: AppState): BuiltProblem<CornerProblem> {
       return [{ hold, lo: r.lo.value, hi: r.hi.value }];
     }),
     tire: model ? { profile: toProfile(s.geom), model, staticLoad, rollLoadFactor: o.rollLoadFactor.value, grip: gripModelOf(s.grip), tireGrip: tireGripFor(s, s.activeCorner === 'FL' || s.activeCorner === 'FR' ? 'front' : 'rear'), pressure: tirePressure(model) } : undefined,
+    ...(s.settings[s.activeCorner].steered && s.geom.kind !== 'twistBeam' ? { steering: effortSpecOf(s, staticLoad) } : {}),
   };
   const blockers: string[] = [];
   if (!goals.length) blockers.push('Turn on at least one goal.');
@@ -211,6 +214,26 @@ export function buildProblem(s: AppState): BuiltProblem<CornerProblem> {
   if (goals.length && goals.every((g) => g.weight <= 0)) blockers.push('Every goal has weight 0.');
   if (!model && goals.some((g) => GOAL_META[g.kind].maximize)) blockers.push('Contact area and grip need a tire model (Tire: stiffness or air spring).');
   return { problem, skippedLocked, blockers };
+}
+
+/** The steering-effort goals' inputs: ratio at center, parking μ, pneumatic trail, the check's lateral g, the tire load. */
+export function effortSpecOf(s: Pick<AppState, 'steer' | 'steerCurve'>, load: number): EffortSpec {
+  return {
+    cFactor: inputPerRev(0, ratioSpecOf(s)), mu: s.steer.mu.value, load,
+    lateralG: s.steer.effortG.value, pneumaticTrail: s.steer.pneumaticTrail.value,
+  };
+}
+
+/** Steering-effort inputs for each steered design (by root corner), with that corner's static tire load. */
+function effortByDesign(s: AppState): Partial<Record<CornerId, EffortSpec>> {
+  const all = mergedCorners(s);
+  const loads = vehicleStaticLoads(s.vehicle, all, s.links);
+  const out: Partial<Record<CornerId, EffortSpec>> = {};
+  for (const { root, corners } of designRoots(s)) {
+    if (all[root].geom.kind === 'twistBeam' || !corners.some((id) => s.settings[id].steered)) continue;
+    out[root] = effortSpecOf(s, loads[root]);
+  }
+  return out;
 }
 
 /** The corner designs in use (root corners) and which corners share each. */
@@ -282,6 +305,7 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
       rackLimit: Math.abs(s.steer.rackLimit.value), cFactor: s.steer.cFactor.value, cFactorLock: s.steer.cFactorLock.value,
       ...(ratioSpecOf(s).curve ? { curve: ratioSpecOf(s).curve } : {}),
     },
+    ...(goals.some((g) => VEHICLE_GOAL_META[g.kind].limit) ? { effort: effortByDesign(s) } : {}),
     ride: { rollInertia: Math.max(0.1, v.rollInertia.value), pitchInertia: Math.max(0.1, v.pitchInertia.value), yawInertia: Math.max(0.1, v.yawInertia.value), tireDamping: Math.max(0, v.tireDamping.value), relaxation: Math.max(0, v.relaxation.value) },
     mass: v.mass.value, cg: { x: v.cgX.value, height: v.cgY.value, z: v.cgZ.value }, wheelbase: v.wheelbase.value,
     brakeBias: brk?.useBias ?? v.brakeBias.value / 100, driveSplit: v.driveSplit.value / 100, autoPreload: s.autoPreload,

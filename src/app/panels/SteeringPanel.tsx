@@ -17,7 +17,7 @@ export function steerLabel(k: SteerKey, arm: boolean): { label: string; unit: st
   if (k === 'rackLimit') return { label: 'Arm angle limit (±)', unit: '°' };
   return { label: m.label, unit: m.unit };
 }
-const FORCES: SteerKey[] = ['lateral', 'longitudinal', 'pneumaticTrail', 'mu'];
+const FORCES: SteerKey[] = ['lateral', 'longitudinal', 'pneumaticTrail', 'mu', 'effortG'];
 
 export function SteerFields({ keys }: { keys: SteerKey[] }) {
   const steer = useApp((s) => s.steer);

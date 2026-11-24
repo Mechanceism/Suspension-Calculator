@@ -60,7 +60,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 37;
+export const FORMAT_VERSION = 38;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -375,6 +375,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   35: (f) => ({ ...f, formatVersion: 36 }),
   // 36 → 37: no locks from the setup wizard (older locks are the user's own).
   36: (f) => ({ ...f, formatVersion: 37 }),
+  // 37 → 38: the steering-effort check at 0.5 g (new steering input).
+  37: (f) => ({ ...f, formatVersion: 38, ...(isObj(f.steering) ? { steering: { ...f.steering, effortG: { text: '0.5', value: 0.5 } } } : {}) }),
   // 34 → 35: aero side force, roll sensitivity and balance shift off.
   34: (f) => ({ ...f, formatVersion: 35, ...(isObj(f.aero) && isObj(f.aero.fields) ? { aero: { ...f.aero, fields: { ...f.aero.fields, CsA: { text: '0', value: 0 }, sideCp: { text: '900', value: 900 }, rollSensF: { text: '0', value: 0 }, rollSensR: { text: '0', value: 0 }, yawBalance: { text: '0', value: 0 } } } } : {}) }),
 };

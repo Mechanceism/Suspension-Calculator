@@ -15,6 +15,7 @@ export * from './suspension/spring';
 export * from './math/roots';
 export * from './suspension/armGeometry';
 export * from './suspension/steering';
+export * from './suspension/steeringEffort';
 export * from './vehicle/cornerTable';
 export * from './vehicle/vehicle';
 export * from './optimize/leastSquares';

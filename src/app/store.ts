@@ -150,7 +150,7 @@ export const DAMPER_META: Record<DamperKey, { label: string; quantity: Quantity;
 };
 
 /** Steering system and tire-force inputs (docs/MATH.md § Steering). */
-export const STEER_KEYS = ['cFactor', 'cFactorLock', 'rackLimit', 'lateral', 'longitudinal', 'pneumaticTrail', 'mu'] as const;
+export const STEER_KEYS = ['cFactor', 'cFactorLock', 'rackLimit', 'lateral', 'longitudinal', 'pneumaticTrail', 'mu', 'effortG'] as const;
 /** Steering values that belong to a mechanism (their units change with it): each mechanism keeps its own. */
 export const MECH_STEER_KEYS = ['cFactor', 'cFactorLock', 'rackLimit'] as const;
 export type MechSteerKey = (typeof MECH_STEER_KEYS)[number];
@@ -163,6 +163,7 @@ export const STEER_META: Record<SteerKey, { label: string; quantity: Quantity; u
   longitudinal: { label: 'Longitudinal tire force (+ drive, − brake)', quantity: 'force', unit: 'N', initial: 0 },
   pneumaticTrail: { label: 'Pneumatic trail', quantity: 'length', unit: 'mm', initial: 0 },
   mu: { label: 'Tire friction μ (parking)', quantity: 'ratio', unit: '×', initial: 1 },
+  effortG: { label: 'Effort check at (lateral g)', quantity: 'ratio', unit: 'g', initial: 0.5, hint: 'The steering-effort-at-speed goal holds the front wheels at this lateral acceleration (side force = g × tire load on each wheel).' },
 };
 
 export const ARM_DERIVED = ['length', 'inclination', 'planAngle', 'frontViewAngle'] as const;

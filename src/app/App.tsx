@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useState, type PointerEvent as RPointerEvent, type ReactNode } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode } from 'react';
 import { showView, slotRef, useViewFade } from './viewport/viewFade';
 import { useModel } from './useModel';
 import { useApp, pickDesign } from './store';
@@ -89,6 +89,11 @@ export function App() {
   const workspace = useApp((s) => s.workspace);
   const setWorkspace = switchWorkspace;
   const vehicle = useVehicle(workspace !== 'corner');
+  // The whole car isn't worked out in the Corner workspace; its 3D views keep the last one meanwhile, so the
+  // view fading out on entering Corner still shows the car (it went blank: the black flash).
+  const lastVehicle = useRef(vehicle);
+  if (vehicle) lastVehicle.current = vehicle;
+  const vehicleShown = vehicle ?? lastVehicle.current;
   const testMode = useTestView((s) => s.mode);
   const activeView: ViewKey = workspace === 'tests' ? (testMode === 'static' ? 'testsStatic' : 'testsDynamic') : workspace;
   const dirty = useDirty();
@@ -175,7 +180,7 @@ export function App() {
           </aside>
           <Splitter area="lsplit" width={leftW} setWidth={setLeftW} sign={1} />
           <main className="center">
-            <ViewStack corner={model} vehicle={vehicle} active={activeView} />
+            <ViewStack corner={model} vehicle={vehicleShown} active={activeView} />
             <MotionBar model={model} />
           </main>
           <Splitter area="rsplit" width={rightW} setWidth={setRightW} sign={-1} />
@@ -189,7 +194,7 @@ export function App() {
           <aside className="left"><div className="tab-body"><TestsSidebar /></div></aside>
           <Splitter area="lsplit" width={leftW} setWidth={setLeftW} sign={1} />
           <main className="center">
-            <ViewStack corner={model} vehicle={vehicle} active={activeView} />
+            <ViewStack corner={model} vehicle={vehicleShown} active={activeView} />
             <TestViewBar />
           </main>
           <Splitter area="rsplit" width={rightW} setWidth={setRightW} sign={-1} />
@@ -200,7 +205,7 @@ export function App() {
           <aside className="left"><VehicleSidebar model={vehicle} /></aside>
           <Splitter area="lsplit" width={leftW} setWidth={setLeftW} sign={1} />
           <main className="center">
-            <ViewStack corner={model} vehicle={vehicle} active={activeView} />
+            <ViewStack corner={model} vehicle={vehicleShown} active={activeView} />
             <VehicleMotionBar />
           </main>
           <Splitter area="rsplit" width={rightW} setWidth={setRightW} sign={-1} />

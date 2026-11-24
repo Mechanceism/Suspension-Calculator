@@ -470,7 +470,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     // Driver speed control: the segment lasts until its distance is covered (at most a few times its nominal time).
     const maxSteps = drv ? nSteps * 4 + Math.ceil(5 / h) : nSteps;
     const aProf = sg.distance > 0 ? (sg.v1 * sg.v1 - sg.v0 * sg.v0) / (2 * sg.distance) : 0;
-    let sDrv = sCarry, segEnd = false, tEnd = T, lifted = 0, slowed = 0, held = 0, kickSeg = 0, kickT = 0;
+    let sDrv = sCarry, segEnd = false, tEnd = T, lifted = 0, slowed = 0, held = 0, kickSeg = 0, kickT = 0, vMin = Infinity;
     for (let n = 1; n <= maxSteps && !(drv && segEnd); n++) {
       const tt = n * h;
       let kin: ReturnType<typeof kinFrom>;
@@ -506,6 +506,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
         if (!sg.coast && Math.abs(Ft - want) > 0.02 * mass * G) held += h;
         const aSmooth = (Ft - drag - gradeF - rr) / mass;
         uDrv = Math.max(0.5, uDrv + h * (aSmooth - bumpPush / mass));
+        vMin = Math.min(vMin, uDrv);
         sDrv += h * uDrv;
         segEnd = sDrv >= sg.distance || n === maxSteps;
         if (segEnd) { tEnd = tt; sCarry = Math.max(0, sDrv - sg.distance); }
@@ -678,8 +679,10 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     // The driver lifted, or the tires / pedals couldn't hold the speed, and the car ended well short of it: say so.
     if (drv && !sg.coast && (lifted > 0 || slowed > 0 || held > 0.2) && uDrv < sg.v1 - 0.5) {
       const sev = (checks.speedNotReached ?? PROFILES.default.checks.speedNotReached).severity;
-      const why = lifted > 0 ? `lifted to stay on the line (${lifted.toFixed(1)} s)` : slowed > 0 ? 'slowed for the turn (the tires cannot take it at the set speed)' : `couldn't hold the speed (${!canDrive ? 'no powered wheels against drag, grade and rolling resistance' : 'not enough grip or brakes'})`;
-      if (sev !== 'pass') findings[i]!.push({ check: 'speedNotReached', severity: sev, text: `The driver ${why}: ${(uDrv * 3.6).toFixed(0)} km/h at the end instead of ${(sg.v1 * 3.6).toFixed(0)}`, t: t0 + tEnd });
+      // (Not the "Driver lifts" option: the pedal driver slows down by itself when the car runs wide.)
+      const why = lifted > 0 ? `slowed down to stay on the line (for ${lifted.toFixed(1)} s)` : slowed > 0 ? 'slowed for the turn (the tires cannot take it at the set speed)' : `couldn't hold the speed (${!canDrive ? 'no powered wheels against drag, grade and rolling resistance' : 'not enough grip or brakes'})`;
+      const low = Number.isFinite(vMin) && vMin < uDrv - 0.5 ? `down to ${(vMin * 3.6).toFixed(0)} km/h, ` : '';
+      if (sev !== 'pass') findings[i]!.push({ check: 'speedNotReached', severity: sev, text: `The driver ${why}: ${low}${(uDrv * 3.6).toFixed(0)} km/h at the end instead of ${(sg.v1 * 3.6).toFixed(0)} km/h`, t: t0 + tEnd });
     }
     t0 += drv ? tEnd : T;
   });
@@ -700,10 +703,14 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     if (tb.ideal || (tb.none && straight)) return null;
     const lockEff = Math.abs(effAt(tb, Math.sign(hs.cmd || hs.rack || 1) * tb.limit, 0));
     const wheel = hs.want;
+    const turn = Math.atan(car!.L * kappa);
+    // Mostly steering back toward the line (well off it, and most of the angle isn't the turn's).
+    const recovering = Math.abs(hs.eY) > 0.5 && Math.abs(wheel - turn) > Math.abs(turn);
     return {
-      rack: hs.cmd, rackUsed: hs.rack, wheelAngle: wheel * DEG, slip: (wheel - Math.atan(car!.L * kappa)) * DEG, maxAngle: lockEff * DEG,
+      rack: hs.cmd, rackUsed: hs.rack, wheelAngle: wheel * DEG, slip: (wheel - turn) * DEG, maxAngle: lockEff * DEG,
       steeringWheel: p.steering && p.steering.cFactor > 0 ? steeringWheelAngle(hs.cmd, p.steering) : NaN,
       limit: tb.limit, over: tb.none || Math.abs(hs.cmd) > tb.limit + 1e-6, none: tb.none,
+      ...(recovering ? { offLine: hs.eY, turnAngle: turn * DEG } : {}),
     };
   }
 }

@@ -120,6 +120,12 @@ export interface SteerNeed {
   limit: number;
   /** Needs more than the rack limit (or the steering can't reach it at all). */
   over: boolean;
+  /**
+   * Over time: the driver is steering mostly to get back to the line (m off it, + = left), not for the turn
+   * itself; `turnAngle` is what the turn alone needs at the road wheels, deg (no slip).
+   */
+  offLine?: number;
+  turnAngle?: number;
   /** No steered wheels (or the rack doesn't turn them). */
   none: boolean;
 }

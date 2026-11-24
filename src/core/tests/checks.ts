@@ -144,7 +144,11 @@ export function classifyState(f: StateFacts, profile: CheckProfile): Finding[] {
   if (f.requiredG > f.availableG * 1.001) add('beyondGrip', `Needs ${f.requiredG.toFixed(2)} g, the tires give at most about ${f.availableG.toFixed(2)} g: no suspension can pass this`);
   const st = f.steer;
   if (st?.none) add('steerLimit', "No steered wheels (or the rack doesn't turn them): the car can't follow the turn");
-  else if (st?.over) {
+  else if (st?.over && st.offLine !== undefined) {
+    // Over time, steering back to the line (the car ran wide or slid): not the turn being too tight.
+    add('steerLimit', `Steering at full lock to get back to the line (${Math.abs(st.offLine).toFixed(2)} m ${st.offLine > 0 ? 'left' : 'right'} of it): it asks ${Math.abs(st.wheelAngle).toFixed(1)}° at the road wheels`
+      + `${(st.turnAngle ?? 0) !== 0 ? `, the turn itself ${Math.abs(st.turnAngle!).toFixed(1)}°` : ' on a straight'}; full lock gives ${st.maxAngle.toFixed(1)}°`);
+  } else if (st?.over) {
     add('steerLimit', `Too tight for the steering: needs ${Math.abs(st.wheelAngle).toFixed(1)}° at the road wheels${Math.abs(st.slip) > 0.05 ? ` (${st.slip > 0 ? '+' : '−'}${Math.abs(st.slip).toFixed(1)}° of it for the tires' slip)` : ''}`
       + `${Number.isFinite(st.rack) ? ` (rack ${Math.abs(st.rack).toFixed(1)} mm, limit ±${st.limit.toFixed(0)} mm)` : ''}; full lock gives ${st.maxAngle.toFixed(1)}°`);
   }

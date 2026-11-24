@@ -700,10 +700,13 @@ export function TestResults() {
             {s.impossible && <div className="small-text warn-text">No suspension change can make this pass: the tires can't give that much force. Lower the speed, enlarge the radius, or improve the tires.</div>}
             {s.findings.some((f) => f.check === 'steerLimit' && f.severity === 'fail') && <div className="small-text warn-text">Slowing down doesn't help: enlarge the radius, or allow more rack travel / a longer-reach steering arm (Corner view → Steering rack).</div>}
             {s.rideFail && <div className="small-text warn-text">Passes as steady states but fails over time (bumps at speed, transients): softer / firmer damping, more travel or a lower speed can help. Play it back to watch.</div>}
-            {s.speedLimit !== undefined && !s.rideFail && !s.findings.some((f) => f.check === 'steerLimit' && f.severity === 'fail') && (
+            {s.drivenScale !== undefined && (
+              <div className="small-text">Driver lifts: driven at {fmt(s.drivenScale * 100, 0)}% of its speed (≈ {disp.format(vmax * s.drivenScale, 'm/s', 0)}) and judged there.</div>
+            )}
+            {s.drivenScale === undefined && s.speedLimit !== undefined && !s.rideFail && !s.findings.some((f) => f.check === 'steerLimit' && f.severity === 'fail') && (
               <div className="small-text">
                 {s.speedLimit > 0
-                  ? <>Passes at {fmt(s.speedLimit * 100, 0)}% of its speed (max ≈ {disp.format(vmax * s.speedLimit, 'm/s', 0)}){s.lifted ? ' — driver lifts: re-run at that speed passes.' : '.'}</>
+                  ? <>Passes at {fmt(s.speedLimit * 100, 0)}% of its speed (max ≈ {disp.format(vmax * s.speedLimit, 'm/s', 0)}){s.lifted ? ' — driver lifts: judged at that speed.' : '.'}</>
                   : 'Fails even at a crawl: check the pass rules, bumps, travel limits or powered / braked wheels.'}
               </div>
             )}

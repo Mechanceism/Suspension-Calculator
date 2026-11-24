@@ -48,8 +48,13 @@ describe('driver lifts', () => {
     const lim = lift.segments[0]!.speedLimit!;
     expect(report.passed).toBe(false);
     expect(lim).toBeGreaterThan(0);
-    expect(lim).toBeLessThan(28);
-    expect(Math.max(...lift.ride!.frames.map((f) => f.speed))).toBeLessThanOrEqual(lim + 1e-6);
-    expect(Math.max(...report.ride!.frames.map((f) => f.speed))).toBeGreaterThan(lim);
+    // A speed scale (× the segment's speed): driven slower, but not crawling, and judged there.
+    expect(lim).toBeLessThan(1);
+    expect(lim).toBeGreaterThan(0.3);
+    const top = Math.max(...lift.ride!.frames.map((f) => f.speed));
+    expect(top).toBeLessThanOrEqual(28 * lim + 1e-6);
+    expect(top).toBeGreaterThan(28 * lim * 0.8);
+    expect(Math.max(...report.ride!.frames.map((f) => f.speed))).toBeGreaterThan(top);
+    expect(lift.segments[0]!.passed).toBe(true);
   });
 });

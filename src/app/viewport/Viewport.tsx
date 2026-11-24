@@ -7,6 +7,7 @@ import { useApp, type FocusKey, type ViewName } from '../store';
 import type { Model } from '../useModel';
 import type { Vec3 } from '../../core/math/vec3';
 import { Scene } from './Scene';
+import { cornerFrame, lastCamera, recallView, rememberView, sameFrame } from './cameraMemory';
 
 /** Camera azimuth (about +Y, from +Z toward +X) and polar (from +Y) for each standard view. */
 const VIEWS: Record<ViewName, { azimuth: number; polar: number; label: string }> = {
@@ -54,8 +55,16 @@ function focusSphere(model: Model, focus: FocusKey, radius: number): { center: V
 
 export type FocusTarget = { center: Vec3; radius: number } | null;
 
-/** Camera controls with standard views, fit-to-target and optional follow. */
-export function CameraRig({ target }: { target: FocusTarget }) {
+/**
+ * Camera controls with standard views, fit-to-target and optional follow. Each view (`memoryKey`) remembers
+ * its camera: on showing it the camera starts where the last view's camera was around the car (`frame` maps
+ * this view's coordinates to / from the vehicle frame) and sweeps to where this view was left, or to its
+ * default (Iso, fitted) the first time — or where `fallbackKey` was left (Vehicle and Tests static show the
+ * same car, so the first visit to one keeps the other's camera).
+ */
+export function CameraRig({ target, memoryKey, fallbackKey, frame = sameFrame }: {
+  target: FocusTarget; memoryKey: string; fallbackKey?: string; frame?: { toVehicle: (v: THREE.Vector3) => THREE.Vector3; fromVehicle: (v: THREE.Vector3) => THREE.Vector3 };
+}) {
   const controls = useRef<ComponentRef<typeof CameraControls>>(null);
   // CameraControls is rebuilt when the default camera changes, so view requests re-apply then too.
   const camera = useThree((s) => s.camera);
@@ -63,27 +72,62 @@ export function CameraRig({ target }: { target: FocusTarget }) {
   const follow = useApp((s) => s.followFocus);
   const targetRef = useRef(target);
   targetRef.current = target;
+  const frameRef = useRef(frame);
+  frameRef.current = frame;
+  // The request seen when this view opened: only newer ones (a button pressed here) move the camera.
+  const openedAt = useRef(request.nonce);
+  const ready = useRef(false);
 
-  // Standard view / refocus requests.
+  // Opening: from the last view's camera, sweep to this view's own (or its default).
   useEffect(() => {
     const c = controls.current;
     const t = targetRef.current;
     if (!c || !t) return;
-    const animate = request.nonce > 0; // snap on first load, animate afterwards
+    ready.current = true;
+    const ortho = (camera as THREE.OrthographicCamera).isOrthographicCamera;
+    const from = lastCamera(frameRef.current.fromVehicle);
+    const to = recallView(memoryKey) ?? (fallbackKey ? recallView(fallbackKey) : null);
+    if (from) {
+      void c.setLookAt(from.pos.x, from.pos.y, from.pos.z, from.target.x, from.target.y, from.target.z, false);
+      if (ortho && from.zoom) void c.zoomTo(from.zoom, false);
+    }
+    if (to) {
+      void c.setLookAt(to.pos.x, to.pos.y, to.pos.z, to.target.x, to.target.y, to.target.z, !!from);
+      if (ortho && to.zoom) void c.zoomTo(to.zoom, !!from);
+    } else {
+      const v = VIEWS[request.view ?? 'iso'];
+      void c.rotateTo(v.azimuth, v.polar, !!from);
+      void c.fitToSphere(new THREE.Sphere(new THREE.Vector3(t.center.x, t.center.y, t.center.z), t.radius * 1.15), !!from);
+    }
+  }, [camera, !!target]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Standard view / refocus requests made while this view is open.
+  useEffect(() => {
+    const c = controls.current;
+    const t = targetRef.current;
+    if (!c || !t || request.nonce === openedAt.current) return;
     if (request.view) {
       const v = VIEWS[request.view];
-      void c.rotateTo(v.azimuth, v.polar, animate);
+      void c.rotateTo(v.azimuth, v.polar, true);
     }
-    void c.fitToSphere(new THREE.Sphere(new THREE.Vector3(t.center.x, t.center.y, t.center.z), t.radius * 1.15), animate);
+    void c.fitToSphere(new THREE.Sphere(new THREE.Vector3(t.center.x, t.center.y, t.center.z), t.radius * 1.15), true);
   }, [request.nonce, request.view, camera]);
 
   // Lock the camera to the focused component as it moves. Done every frame, just before rendering,
   // so the camera and the parts move together (an effect after the render made it stutter).
   const tmp = useMemo(() => new THREE.Vector3(), []);
+  const pose = useMemo(() => ({ pos: new THREE.Vector3(), target: new THREE.Vector3() }), []);
   useFrame(() => {
     const c = controls.current;
     const t = targetRef.current;
-    if (!c || !follow || !t) return;
+    if (!c) return;
+    // Remember where this view's camera is (where it's heading, mid-sweep).
+    if (ready.current) {
+      c.getPosition(pose.pos, true);
+      c.getTarget(pose.target, true);
+      rememberView(memoryKey, { ...pose, zoom: (camera as THREE.OrthographicCamera).isOrthographicCamera ? camera.zoom : undefined }, frameRef.current.toVehicle);
+    }
+    if (!follow || !t) return;
     c.getTarget(tmp);
     const dx = t.center.x - tmp.x, dy = t.center.y - tmp.y, dz = t.center.z - tmp.z;
     if (dx * dx + dy * dy + dz * dz < 1e-6) return;
@@ -93,7 +137,7 @@ export function CameraRig({ target }: { target: FocusTarget }) {
     c.update(0);
   }, -2);
 
-  return <CameraControls ref={controls} makeDefault smoothTime={0.2} />;
+  return <CameraControls ref={controls} makeDefault smoothTime={0.25} />;
 }
 
 /** Dev only: lets automated UI checks turn a 3D point into screen pixels (window.__project). */
@@ -160,6 +204,9 @@ export function Viewport({ model }: { model: Model }) {
   const focus = useApp((s) => s.focus);
   const radius = useApp((s) => s.geom.scalars.tireDiameter.value / 2);
   const target = focusSphere(model, focus, radius);
+  const corner = useApp((s) => s.activeCorner);
+  const wheelbase = useApp((s) => s.vehicle.wheelbase.value);
+  const frame = useMemo(() => cornerFrame(corner, wheelbase), [corner, wheelbase]);
   const bg = useMemo(() => getComputedStyle(document.documentElement).getPropertyValue('--viewport-bg').trim() || '#16191e', []);
   const onMiddle = useMiddleDoubleClick();
   return (
@@ -172,7 +219,7 @@ export function Viewport({ model }: { model: Model }) {
         {projection === 'orthographic'
           ? <OrthographicCamera makeDefault position={[300, 150, 5000]} zoom={0.6} near={1} far={100000} />
           : <PerspectiveCamera makeDefault position={[300, 150, 3500]} fov={30} near={1} far={100000} />}
-        <CameraRig target={target} />
+        <CameraRig target={target} memoryKey="corner" frame={frame} />
         <DevProjectBridge />
         <Scene model={model} />
       </Canvas>

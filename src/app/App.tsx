@@ -24,7 +24,7 @@ function TestsViewport({ model }: { model: ReturnType<typeof useVehicle> }) {
         <button role="tab" aria-selected={mode === 'static'} className={`chip${mode === 'static' ? ' on' : ''}`} onClick={() => setTestView({ mode: 'static' })} title="The car in place, posed for the selected segment or the playback moment">Static</button>
         <button role="tab" aria-selected={mode === 'dynamic'} className={`chip${mode === 'dynamic' ? ' on' : ''}`} onClick={() => setTestView({ mode: 'dynamic' })} title="The course in 3D with the car driving it (Play)">Dynamic</button>
       </div>
-      {mode === 'static' ? <VehicleViewport model={model} /> : <CourseViewport model={model} test={test} />}
+      {mode === 'static' ? <VehicleViewport model={model} memoryKey="testsStatic" /> : <CourseViewport model={model} test={test} />}
     </div>
   );
 }

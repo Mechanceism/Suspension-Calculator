@@ -59,13 +59,16 @@ export function newLayout(dirty: boolean | { model: boolean; tests: boolean }): 
 
 /** File → New from car profile: a whole-car starting point (carProfiles.ts). */
 export function newFromProfile(id: string, dirty: boolean | { model: boolean; tests: boolean }): void {
-  if (!confirmDiscard(dirty)) return;
+  // A car profile replaces the model only (like importing a model): the tests stay, with their saved state.
+  if (!confirmDiscard(dirty, { model: true, tests: false })) return;
   const p = CAR_PROFILES.find((c) => c.id === id);
   if (!p) return;
-  const d = carProfileDesign(id);
-  useApp.getState().applyDesign(d, null, modelSnapshot(d), testsSnapshot(d));
+  const s = useApp.getState();
+  const d = { ...carProfileDesign(id), tests: s.tests };
+  s.applyDesign(d, null, modelSnapshot(d), s.savedTests);
+  useApp.getState().set('activeTestId', s.activeTestId && s.tests.some((t) => t.id === s.activeTestId) ? s.activeTestId : s.tests[0]?.id ?? null);
   resetHistory();
-  useApp.getState().notify(`New ${p.label}: ${p.hint} Springs from a ride frequency, dampers from critical damping; every value is a starting point to edit.`);
+  useApp.getState().notify(`New ${p.label} (your tests kept): ${p.hint} Springs from a ride frequency, dampers from critical damping; every value is a starting point to edit.`);
 }
 
 export function saveAs(name: string): void {

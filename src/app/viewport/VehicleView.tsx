@@ -656,7 +656,7 @@ function vehicleTarget(model: VehicleModel | null): FocusTarget {
   return { center: vec3(s.center.x, s.center.y, s.center.z), radius: s.radius };
 }
 
-export function VehicleViewport({ model }: { model: VehicleModel | null }) {
+export function VehicleViewport({ model, memoryKey = 'vehicle' }: { model: VehicleModel | null; memoryKey?: string }) {
   const projection = useApp((s) => s.projection);
   const bg = useMemo(() => getComputedStyle(document.documentElement).getPropertyValue('--viewport-bg').trim() || '#16191e', []);
   const target = vehicleTarget(model);
@@ -680,7 +680,7 @@ export function VehicleViewport({ model }: { model: VehicleModel | null }) {
         {projection === 'orthographic'
           ? <OrthographicCamera makeDefault position={[0, 300, 8000]} zoom={0.3} near={1} far={200000} />
           : <PerspectiveCamera makeDefault position={[0, 300, 6000]} fov={30} near={1} far={200000} />}
-        <CameraRig target={target} />
+        <CameraRig target={target} memoryKey={memoryKey} fallbackKey={memoryKey === 'vehicle' ? 'testsStatic' : 'vehicle'} />
         <DevProjectBridge />
         {model && <VehicleScene model={model} arrows={arrows} />}
         <LabelSync labels={labels} layer={layer} />

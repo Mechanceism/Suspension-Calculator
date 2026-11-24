@@ -28,8 +28,10 @@ interface PlaybackState {
   rate: number;
   /** Design used (stale if it changed). */
   from: unknown;
+  /** Display only: body motion and wheel travel × this (to see small motions). */
+  motion: number;
 }
-export const usePlayback = create<PlaybackState>(() => ({ testId: null, frames: [], computing: false, error: null, playing: false, t: 0, rate: 1, from: null }));
+export const usePlayback = create<PlaybackState>(() => ({ testId: null, frames: [], computing: false, error: null, playing: false, t: 0, rate: 1, from: null, motion: 1 }));
 
 const frameAt = (frames: PlaybackFrame[], t: number) => {
   let lo = 0, hi = frames.length - 1;
@@ -38,12 +40,35 @@ const frameAt = (frames: PlaybackFrame[], t: number) => {
 };
 
 /** Each frame's pose object, kept so the 3D view can reuse what it built for that frame. */
-const rideViews = new WeakMap<PlaybackFrame, { pose: NonNullable<PlaybackFrame['ride']>['pose']; travel: NonNullable<PlaybackFrame['ride']>['travel'] }>();
+type RideView = { pose: NonNullable<PlaybackFrame['ride']>['pose']; travel: NonNullable<PlaybackFrame['ride']>['travel'] };
+/** Per motion factor, each frame's pose object (kept so the 3D view can reuse what it built for that frame). */
+const rideViews = new Map<number, WeakMap<PlaybackFrame, RideView>>();
+
+/**
+ * A frame's body pose and wheel travels for the display: × the motion factor about the run's first frame
+ * (display only, to see small motions; the results are the real ones).
+ */
+function rideViewOf(f: PlaybackFrame): RideView | undefined {
+  if (!f.ride) return undefined;
+  const k = Math.max(1, usePlayback.getState().motion);
+  let m = rideViews.get(k);
+  if (!m) { m = new WeakMap(); rideViews.set(k, m); }
+  let rv = m.get(f);
+  if (!rv) {
+    const r0 = usePlayback.getState().frames[0]?.ride ?? f.ride;
+    const x = (v: number, v0: number) => v0 + k * (v - v0);
+    rv = k === 1 ? { pose: f.ride.pose, travel: f.ride.travel } : {
+      pose: { heave: x(f.ride.pose.heave, r0.pose.heave), roll: x(f.ride.pose.roll, r0.pose.roll), pitch: x(f.ride.pose.pitch, r0.pose.pitch) },
+      travel: Object.fromEntries(Object.entries(f.ride.travel).map(([id, v]) => [id, x(v, r0.travel[id as keyof typeof r0.travel])])) as RideView['travel'],
+    };
+    m.set(f, rv);
+  }
+  return rv;
+}
 
 /** Pose the 3D car for a frame (sets the Vehicle view's sliders and road), in one store update. */
 function applyFrame(f: PlaybackFrame) {
-  let rv = f.ride ? rideViews.get(f) : undefined;
-  if (f.ride && !rv) { rv = { pose: f.ride.pose, travel: f.ride.travel }; rideViews.set(f, rv); }
+  const rv = rideViewOf(f);
   useApp.setState({
     lateralG: Number(f.ay.toFixed(3)),
     longitudinalG: Number(f.ax.toFixed(3)),
@@ -70,7 +95,8 @@ async function computeFrames(test: TestDesign) {
     const specs = test.segments.map((sg, i) => {
       const spec = segmentSpec(sg, test);
       const r = test.onFail === 'lift' ? last?.result.segments[i] : undefined;
-      return r?.lifted && r.speedLimit && r.speedLimit > 0 ? { ...spec, v0: Math.min(spec.v0, r.speedLimit), v1: Math.min(spec.v1, r.speedLimit) } : spec;
+      const k = r?.drivenScale ?? (r?.lifted && r.speedLimit && r.speedLimit > 0 ? r.speedLimit : 1);
+      return k < 1 ? { ...spec, v0: spec.v0 * k, v1: spec.v1 * k } : spec;
     });
     const frames = reuse ?? await runPlaybackJob(problem, specs, test.ride !== false, handling, handling && !!test.driverSpeed).done;
     usePlayback.setState({ frames, computing: false, t: 0 });
@@ -211,6 +237,10 @@ export function PlaybackBar({ test }: { test: TestDesign | null }) {
           <span className="mono small-text">{fmt(Math.min(pb.t, total), 1)} / {fmt(total, 1)} s</span>
           <select value={pb.rate} onChange={(e) => usePlayback.setState({ rate: Number(e.target.value) })} title="Playback speed">
             {[0.25, 0.5, 1, 2].map((r) => <option key={r} value={r}>{r}×</option>)}
+          </select>
+          <select value={pb.motion} title="Display only: body roll, pitch, heave and wheel travel exaggerated in the playback so small motions show (the results are the real ones)"
+            onChange={(e) => { usePlayback.setState({ motion: Number(e.target.value) }); const f = frames.length ? frameAt(frames, usePlayback.getState().t) : undefined; if (f) applyFrame(f); }}>
+            {[1, 2, 5, 10].map((m) => <option key={m} value={m}>{m === 1 ? 'Motion: real' : `Motion ×${m}`}</option>)}
           </select>
         </div>
         {cur && test ? (

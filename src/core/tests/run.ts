@@ -45,8 +45,10 @@ export interface SegmentResult {
   steer?: SteerNeed | null;
   /** Fastest speed scale (× the segment's speeds) with no Fail, when searched. */
   speedLimit?: number;
-  /** "Driver lifts": the segment re-run at its speed limit. */
+  /** "Driver lifts": the segment re-run at its speed limit (and judged there). */
   lifted?: StateResult[];
+  /** "Driver lifts": the speed scale it was driven at over time (× its speeds, < 1 when the driver lifted there). */
+  drivenScale?: number;
   /** Passes as steady states but fails over time (ride: bumps, transients). */
   rideFail?: boolean;
   /** Brake fade modeled: rotor temperatures at the start and end of the segment, °C. */
@@ -174,6 +176,9 @@ function speedLimitOf(p: VehicleProblem, asm: AssembledVehicle, seg: TestSegment
   return lo;
 }
 
+/** Failures over time that driving slower can cure (Driver lifts). */
+const LIFT_HELPS = new Set(['understeer', 'oversteer', 'pathError', 'spin', 'wheelLift', 'rollover', 'trailerSway', 'nearLimit']);
+
 export function runTest(
   p: VehicleProblem, geometries: Partial<Record<CornerId, DoubleWishboneGeometry>>, segments: TestSegmentSpec[], opts: TestRunOptions,
 ): TestRun {
@@ -256,17 +261,36 @@ export function runTest(
     };
     if (!res.passed && (opts.onFail === 'lift' || opts.speedLimits)) {
       res.speedLimit = speedLimitOf(p, asm, seg, i, checks);
-      if (opts.onFail === 'lift' && res.speedLimit > 0) res.lifted = segmentStates(seg, i, res.speedLimit, dimsOf(p, asm)).map((st) => evalState(p, asm, st, checks, undefined, seg));
+      if (opts.onFail === 'lift' && res.speedLimit > 0) {
+        res.lifted = segmentStates(seg, i, res.speedLimit, dimsOf(p, asm)).map((st) => evalState(p, asm, st, checks, undefined, seg));
+        // The driver lifts: the segment is judged at the speed it is driven at.
+        res.findings = dedupe(res.lifted.flatMap((r) => r.findings));
+        res.severity = worstSeverity(res.findings);
+        res.passed = res.severity !== 'fail';
+      }
     }
     segs.push(res);
   });
   let ride: TestRun['ride'];
   if (opts.ride) {
-    // Driver lifts: over time the failing segments are driven at the speed that passes (steady check).
-    const driven = opts.onFail === 'lift'
-      ? segments.map((sg, i) => { const lim = segs[i]?.speedLimit; return segs[i]?.lifted && lim && lim > 0 ? { ...sg, v0: Math.min(sg.v0, lim), v1: Math.min(sg.v1, lim) } : sg; })
-      : segments;
-    const rr = rideOn(p, asm, driven, { handling: !!opts.handling, driverSpeed: !!opts.handling && !!opts.driverSpeed });
+    // Driver lifts: over time the segments are driven at the speed scale that passed the steady check, and a
+    // segment still failing over time (running wide, sliding, spinning, lifting a wheel) is driven 12 % slower
+    // again, up to six times.
+    const lift = opts.onFail === 'lift';
+    const scale = segs.map((sr) => (lift && sr.lifted && sr.speedLimit && sr.speedLimit > 0 ? sr.speedLimit : 1));
+    const driven = () => segments.map((sg, i) => (scale[i]! < 1 ? { ...sg, v0: sg.v0 * scale[i]!, v1: sg.v1 * scale[i]! } : sg));
+    const rideOpts = { handling: !!opts.handling, driverSpeed: !!opts.handling && !!opts.driverSpeed };
+    let rr = rideOn(p, asm, driven(), rideOpts);
+    if (lift) {
+      for (let k = 0; k < 6; k++) {
+        const bad = rr.findings.map((fs) => fs.some((f) => f.severity === 'fail' && LIFT_HELPS.has(f.check)));
+        let changed = false;
+        bad.forEach((b, i) => { if (b && scale[i]! > 0.3) { scale[i] = scale[i]! * 0.88; changed = true; } });
+        if (!changed) break;
+        rr = rideOn(p, asm, driven(), rideOpts);
+      }
+      scale.forEach((sc, i) => { if (sc < 1 && segs[i]) { segs[i]!.drivenScale = sc; segs[i]!.speedLimit = Math.min(segs[i]!.speedLimit ?? 1, sc); } });
+    }
     ride = { frames: withBrakeTemps(p, rr.frames), metrics: rr.metrics, ...(rr.error ? { error: rr.error } : {}) };
     segs.forEach((sr, i) => {
       // Add what only shows over time (the steady samples already report the rest).

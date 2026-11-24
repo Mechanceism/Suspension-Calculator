@@ -34,6 +34,7 @@ import { multiStartSteps, latinHypercube, rng, sensitivity, type Sensitivity } f
 import type { RoadState } from '../tests/segments';
 import { checkResiduals } from '../tests/checks';
 import type { EffortSpec } from '../suspension/steeringEffort';
+import type { BrakeSystem, BrakeDetail } from '../vehicle/brakes';
 import {
   withVariables, variableValue, sampleCorner, cornerGoalResiduals, goalValue, holdValue, holdTarget, getPoint,
   type Variable, type Hold, type ProgressInfo,
@@ -154,6 +155,8 @@ export interface VehicleProblem {
   brakeLimit?: { front: number; rear: number; maxPedal: number };
   /** Brake fade (with brakeLimit): the rotors heat through a test and the pads lose grip when hot. */
   brakeThermal?: BrakeThermal;
+  /** Detailed brake hydraulics (with brakeLimit): the system and its fluid volumes, for pedal travel in tests. */
+  brakeDetail?: { system: BrakeSystem; detail: BrakeDetail };
   /** Towing a trailer (static). */
   trailer?: TrailerSpec;
   /**

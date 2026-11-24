@@ -4,6 +4,9 @@ import { Num, UnitLabel } from './UnitText';
 import { openWizard, EstimatedNote } from './SetupWizard';
 import { AeroPanel } from './AeroPanel';
 import { brakesOf } from '../optimizer';
+import { maxRotor, fitsWheel, pedalTravel, brakeFixes, pedalFixes } from '../../core/vehicle/brakes';
+import { hardestUse } from '../brakeLadder';
+import { useRun } from './TestsPanels';
 import { useConversion, toDisplay, fromDisplay, useDisplay } from '../units';
 import type { GripSummary, SlipState } from '../../core/vehicle/vehicle';
 import { LocksPanel } from './LocksPanel';
@@ -14,7 +17,7 @@ import { isOneAxle, SUSPENSION_LABELS } from '../../core/suspension/doubleWishbo
 import { angleInput, ratioSpecOf,
   useApp, VEHICLE_KEYS, VEHICLE_META, CORNER_NAMES, SHARED_META, rootOf, resolvedCorner, canSteer,
   type CornerLinks, type DiffType, type Axle, type SharedDesign,
-  BRAKE_KEYS, BRAKE_META, FADE_KEYS, FADE_META, TOW_KEYS, TOW_META,
+  BRAKE_KEYS, BRAKE_META, FADE_KEYS, FADE_META, BRAKE_MORE_META, type BrakeMoreKey, TOW_KEYS, TOW_META,
 } from '../store';
 import type { BrakeMount } from '../../core/vehicle/vehicle';
 import { ValueInput } from './ValueInput';
@@ -500,8 +503,19 @@ function BrakePanel() {
   const disp = useDisplay();
   const st = useApp.getState();
   const brk = brakesOf(st);
-  const keys = BRAKE_KEYS.filter((k) => b.dualMc || k !== 'balanceFront');
+  const setMore = useApp((s) => s.setBrakeMoreField);
+  const results = useRun((r) => r.results);
+  // Disc fields only on a disc axle; a drum axle shows its own (wheel cylinder, drum, shoe factor).
+  const DISC_F: string[] = ['pistonDiaF', 'pistonsF', 'padMuF', 'rotorRF'], DISC_R: string[] = ['pistonDiaR', 'pistonsR', 'padMuR', 'rotorRR'];
+  const keys = BRAKE_KEYS.filter((k) => (b.dualMc || k !== 'balanceFront') && !(b.drumF && DISC_F.includes(k)) && !(b.drumR && DISC_R.includes(k)));
+  const moreKeys = (ks: BrakeMoreKey[]) => ks.map((k) => ({ label: BRAKE_MORE_META[k].label, field: b[k], unit: BRAKE_MORE_META[k].unit, hint: BRAKE_MORE_META[k].hint, onCommit: (t: string) => setMore(k, t) }));
+  const drumKeys: BrakeMoreKey[] = [...(b.drumF ? ['wcBoreF', 'drumRF', 'brakeFactorF'] as const : []), ...(b.drumR ? ['wcBoreR', 'drumRR', 'brakeFactorR'] as const : [])];
   const mass = st.vehicle.mass.value;
+  // Fit in the wheel, the pedal (detailed hydraulics) and what the last test runs asked of the brakes.
+  const fit = brk ? (['front', 'rear'] as const).map((a) => ({ a, m: maxRotor(brk.room[a]), ok: fitsWheel(brk.system[a], brk.room[a]), drum: brk.system[a].kind === 'drum' })) : [];
+  const full = brk?.detail ? pedalTravel(brk.system, brk.detail, 1) : null;
+  const use = hardestUse(Object.values(results).map((e) => e.result));
+  const worst = use ? Math.max(use.front, use.rear) : 0;
   return (
     <>
       <div className="jm-row" title="Off: the brakes can always make the braking asked (only grip limits it). On: from the pedal through the master cylinders, calipers and rotors, the braking is limited to what they make at the most pedal force.">
@@ -511,7 +525,35 @@ function BrakePanel() {
       {b.on && (
         <>
           <label className="check-row"><input type="checkbox" checked={b.dualMc} onChange={(e) => setB({ dualMc: e.target.checked })} /> Two master cylinders on a balance bar (else one tandem master cylinder)</label>
+          <div className="jm-row" title="Disc: a caliper clamps a rotor. Drum: a wheel cylinder pushes two shoes out into a drum; the shoes wrap into it (more torque per pressure) and fade sooner.">
+            {(['F', 'R'] as const).map((x) => (
+              <label key={x} className="check-label">{x === 'F' ? 'Front' : 'Rear'}{' '}
+                <select value={(x === 'F' ? b.drumF : b.drumR) ? 'drum' : 'disc'} onChange={(e) => setB(x === 'F' ? { drumF: e.target.value === 'drum' } : { drumR: e.target.value === 'drum' })}>
+                  <option value="disc">Disc</option><option value="drum">Drum</option>
+                </select>
+              </label>
+            ))}
+          </div>
           <FieldRows rows={keys.map((k) => ({ label: BRAKE_META[k].label, field: b[k], unit: BRAKE_META[k].unit, hint: BRAKE_META[k].hint, onCommit: (t: string) => setF(k, t) }))} />
+          {drumKeys.length > 0 && <FieldRows rows={moreKeys(drumKeys)} />}
+          <FieldRows rows={moreKeys(['brakeRoom', 'padHeight'])} />
+          {fit.map(({ a, m, ok, drum }) => (
+            <p key={a} className={`small-text ${ok ? 'muted' : 'bad-text'}`} title="From the rim diameter, the room for the caliper and the pad height">
+              {a === 'front' ? 'Front' : 'Rear'} wheel fits {drum ? `a drum up to ${fmt(m.drumRadius, 0)} mm radius` : `a rotor up to ${fmt(m.diameter, 0)} mm (effective radius ${fmt(m.effectiveRadius, 0)} mm)`}{ok ? '' : ': the brake is larger than fits!'}
+            </p>
+          ))}
+          <div className="jm-row" title="Simple: pressure and force only. Detailed: also the fluid the master cylinder pushes, so the pedal travel and the master cylinder's stroke (Long pedal, Master cylinder runs out in the tests).">
+            <span className="muted">Hydraulics</span>
+            <button className={`chip${!b.detail ? ' on' : ''}`} onClick={() => setB({ detail: false })}>Simple</button>
+            <button className={`chip${b.detail ? ' on' : ''}`} onClick={() => setB({ detail: true })}>Detailed (pedal travel)</button>
+          </div>
+          {b.detail && <FieldRows rows={moreKeys(['mcStroke', 'maxPedalTravel', 'padClearance', ...(b.drumF || b.drumR ? ['shoeClearance' as const] : []), 'complianceF', 'complianceR'])} />}
+          {full && (
+            <FieldRows rows={[
+              { label: 'Pedal travel at the most pedal force', value: fmt(full.pedal, 0), unit: 'mm', hint: 'Pads closing their clearance plus the circuits swelling at full pressure, through the master cylinders and the pedal ratio' },
+              { label: 'Master-cylinder stroke used', value: fmt(full.strokeUse * 100, 0), unit: '%' },
+            ]} />
+          )}
           <label className="check-row" title="Use the front / rear split the hydraulics make as the brake bias (instead of the Brake bias input)"><input type="checkbox" checked={b.useBias} onChange={(e) => setB({ useBias: e.target.checked })} /> Brake bias from the hydraulics</label>
           {brk && (
             <FieldRows rows={[
@@ -522,8 +564,26 @@ function BrakePanel() {
               { label: 'Hydraulic bias (front share)', value: fmt(brk.capacity.bias * 100, 1), unit: '%' },
             ]} />
           )}
+          {use && (
+            <div className="small-text" title="From the last run of each test (Tests workspace): the hardest stop's braking divided by what the (faded) brakes make at the most pedal force">
+              <p className={worst > 1 ? 'bad-text' : 'muted'}>Last test runs: the hardest stop needs {fmt(use.front * 100, 0)} % of the front brakes, {fmt(use.rear * 100, 0)} % of the rear{worst > 1 ? ': too weak.' : '.'}</p>
+              {worst > 1 && brk && (
+                <>
+                  <p className="muted">What would fix it (any one of these, per axle):</p>
+                  <ul className="fix-list">
+                    {(['front', 'rear'] as const).filter((a) => use[a] > 1).flatMap((a) => brakeFixes(brk.system[a], use[a], brk.room[a]).map((f) => (
+                      <li key={`${a}${f.what}`} className={f.fits ? '' : 'muted'}>{a === 'front' ? 'Front' : 'Rear'} {f.what.toLowerCase()}: {fmt(f.now, 2)} → {fmt(f.needed, 2)} {f.unit}{f.fits ? '' : ' (does not fit / not available)'}</li>
+                    )))}
+                    {pedalFixes(brk.system, worst).map((f) => <li key={f.what} className={f.fits ? '' : 'muted'}>{f.what}: {fmt(f.now, 2)} → {fmt(f.needed, 2)} {f.unit}{f.fits ? '' : ' (beyond the usual)'}</li>)}
+                  </ul>
+                  <p className="muted">Or let the brake ladder pick sizes: Tests → Optimize → Brakes (step ladder).</p>
+                </>
+              )}
+            </div>
+          )}
           <label className="check-row" title="Tests heat the rotors with every stop (and cool them with the air); hot pads lose grip, so a long or repeated stop can need more pedal force than the driver has."><input type="checkbox" checked={b.fade} onChange={(e) => setB({ fade: e.target.checked })} /> Brake fade in tests (rotors heat up, pads lose grip when hot)</label>
           {b.fade && <FieldRows rows={FADE_KEYS.map((k) => ({ label: FADE_META[k].label, field: b[k], unit: FADE_META[k].unit, hint: FADE_META[k].hint, onCommit: (t: string) => setFade(k, t) }))} />}
+          {b.fade && (b.drumF || b.drumR) && <FieldRows rows={moreKeys(['drumFadeK'])} />}
         </>
       )}
     </>

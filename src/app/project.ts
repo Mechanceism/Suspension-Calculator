@@ -53,14 +53,14 @@ import {
   defaultDesign, mergedCorners, layoutOf, rootOf, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META, SPRING_KEYS, SPRING_META,
   DAMPER_KEYS, DAMPER_META, STEER_KEYS, STEER_META, MECH_STEER_KEYS, TIRE_KEYS, TIRE_META, VEHICLE_KEYS, VEHICLE_META,
   DEFAULT_LINKS, DEFAULT_SETTINGS, SHARED_META, defaultShared, defaultOptimizerSetup, defaultVehicleOptimizerSetup, defaultGrip, GRIP_KEYS, GRIP_META,
-  defaultTireGrip, MF_KEYS, MF_META, RIDE_KEYS, DAMPER_TWO_STAGE_KEYS, SETUP_STEPS, AERO_KEYS, AERO_META, defaultAero, BRAKE_KEYS, BRAKE_META, FADE_KEYS, FADE_META, defaultBrakes, TOW_KEYS, TOW_META, defaultTow,
+  defaultTireGrip, MF_KEYS, MF_META, RIDE_KEYS, DAMPER_TWO_STAGE_KEYS, SETUP_STEPS, AERO_KEYS, AERO_META, defaultAero, BRAKE_KEYS, BRAKE_META, FADE_KEYS, FADE_META, BRAKE_MORE_KEYS, BRAKE_MORE_META, defaultBrakes, TOW_KEYS, TOW_META, defaultTow,
   type VehicleOptimizerSetup, type HeldDimension, newDimId,
   type OptimizerSetup,
   type DesignState, type CornerDesign, type Field, type CornerLinks, type CornerSettings, type SharedDesign, type Axle, centerLinkDefaults, type DamperCurveText,
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 38;
+export const FORMAT_VERSION = 39;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -133,7 +133,11 @@ export interface ProjectFile {
   tireFile?: { name: string; fittyp: number; version: '6.1' | '5.2'; fnomin: number; nompres: number; p: Record<string, number> } | null;
   /** Aerodynamics (format 16). */
   aero?: { on: boolean; fields: Record<string, FieldJson>; file: AeroModel | null };
-  brakes?: { on: boolean; dualMc: boolean; useBias: boolean; fields: Record<string, FieldJson>; fade?: { on: boolean; fields: Record<string, FieldJson> } };
+  brakes?: {
+    on: boolean; dualMc: boolean; useBias: boolean; fields: Record<string, FieldJson>; fade?: { on: boolean; fields: Record<string, FieldJson> };
+    /** Format 39: drums, wheel room, detailed hydraulics, the ladder's reserve and permissions. */
+    more?: { drumF: boolean; drumR: boolean; detail: boolean; allowDiscF: boolean; allowDiscR: boolean; fields: Record<string, FieldJson> };
+  };
   tow?: { on: boolean; fields: Record<string, FieldJson> };
   /** Setup wizard status per step (format 14). */
   setupStatus?: Record<string, 'entered' | 'estimated'>;
@@ -229,7 +233,8 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
     tireFileRear: d.tireFileRear === 'simple' ? 'simple' : d.tireFileRear ? tirJson(d.tireFileRear) : null,
     setupStatus: { ...d.setupStatus },
     aero: { on: d.aero.on, fields: mapFields(AERO_KEYS, d.aero), file: d.aero.file ? JSON.parse(JSON.stringify(d.aero.file)) as AeroModel : null },
-    brakes: { on: d.brakes.on, dualMc: d.brakes.dualMc, useBias: d.brakes.useBias, fields: mapFields(BRAKE_KEYS, d.brakes), fade: { on: d.brakes.fade, fields: mapFields(FADE_KEYS, d.brakes) } },
+    brakes: { on: d.brakes.on, dualMc: d.brakes.dualMc, useBias: d.brakes.useBias, fields: mapFields(BRAKE_KEYS, d.brakes), fade: { on: d.brakes.fade, fields: mapFields(FADE_KEYS, d.brakes) },
+      more: { drumF: d.brakes.drumF, drumR: d.brakes.drumR, detail: d.brakes.detail, allowDiscF: d.brakes.allowDiscF, allowDiscR: d.brakes.allowDiscR, fields: mapFields(BRAKE_MORE_KEYS, d.brakes) } },
     tow: { on: d.tow.on, fields: mapFields(TOW_KEYS, d.tow) },
     ...(include.tests ? { tests: JSON.parse(JSON.stringify(d.tests)) as unknown[] } : {}),
     dimensions: d.dimensions.map((x) => ({
@@ -377,6 +382,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   36: (f) => ({ ...f, formatVersion: 37 }),
   // 37 → 38: the steering-effort check at 0.5 g (new steering input).
   37: (f) => ({ ...f, formatVersion: 38, ...(isObj(f.steering) ? { steering: { ...f.steering, effortG: { text: '0.5', value: 0.5 } } } : {}) }),
+  // 38 → 39: disc brakes, the simple hydraulics (drums, wheel room, detailed hydraulics and the ladder take defaults).
+  38: (f) => ({ ...f, formatVersion: 39 }),
   // 34 → 35: aero side force, roll sensitivity and balance shift off.
   34: (f) => ({ ...f, formatVersion: 35, ...(isObj(f.aero) && isObj(f.aero.fields) ? { aero: { ...f.aero, fields: { ...f.aero.fields, CsA: { text: '0', value: 0 }, sideCp: { text: '900', value: 900 }, rollSensF: { text: '0', value: 0 }, rollSensR: { text: '0', value: 0 }, yawBalance: { text: '0', value: 0 } } } } : {}) }),
 };
@@ -885,7 +892,13 @@ export function importProject(data: unknown): ImportResult {
       // Brake fade came with format 25: older files have it off, quietly.
       const fd = isObj(b.fade) ? b.fade : {};
       const fade = readRecord(fd.fields, FADE_KEYS, (k) => FADE_META[k].quantity, defaultBrakes(), 'brakes.fade', isObj(b.fade) ? warnings : []);
-      return { ...fields, ...fade, on: b.on === true, fade: fd.on === true, dualMc: b.dualMc === true, useBias: b.useBias === true };
+      // Drums, wheel room, detailed hydraulics and the ladder came with format 39: older files get discs, the simple model, quietly.
+      const mo = isObj(b.more) ? b.more : {};
+      const more = readRecord(mo.fields, BRAKE_MORE_KEYS, (k) => BRAKE_MORE_META[k].quantity, defaultBrakes(), 'brakes.more', isObj(b.more) ? warnings : []);
+      return {
+        ...fields, ...fade, ...more, on: b.on === true, fade: fd.on === true, dualMc: b.dualMc === true, useBias: b.useBias === true,
+        drumF: mo.drumF === true, drumR: mo.drumR === true, detail: mo.detail === true, allowDiscF: mo.allowDiscF === true, allowDiscR: mo.allowDiscR === true,
+      };
     })(),
     // Towing came with format 22: older files have no trailer, quietly.
     tow: (() => {

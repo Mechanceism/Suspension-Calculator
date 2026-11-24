@@ -10,7 +10,7 @@ export type Severity = 'pass' | 'warn' | 'fail';
 
 export type CheckId =
   | 'nearLimit' | 'understeer' | 'oversteer' | 'wheelspin' | 'absActive' | 'lockup' | 'speedNotReached'
-  | 'bumpStop' | 'bottoming' | 'wheelLift' | 'rollover' | 'noSolution' | 'beyondGrip' | 'steerLimit' | 'pathError' | 'spin' | 'brakeLimit' | 'brakeFade' | 'trailerSway' | 'hitchLoad' | 'lightTongue';
+  | 'bumpStop' | 'bottoming' | 'wheelLift' | 'rollover' | 'noSolution' | 'beyondGrip' | 'steerLimit' | 'pathError' | 'spin' | 'brakeLimit' | 'brakeFade' | 'longPedal' | 'mcStroke' | 'trailerSway' | 'hitchLoad' | 'lightTongue';
 
 export interface CheckSetting {
   severity: Severity;
@@ -47,6 +47,8 @@ export const CHECK_META: Record<CheckId, CheckMeta> = {
   hitchLoad: { label: 'Hitch overloaded', hint: 'Towing: the load on the hitch ball (tongue weight plus what braking, accelerating and bumps add) is above the hitch\'s rated tongue load (Towing → Hitch rating).' },
   lightTongue: { label: 'Light tongue', hint: 'Towing: the trailer\'s static tongue weight is below this share of its weight. Below about 10 % a trailer tends to sway.', threshold: { label: 'least tongue share', unit: '%' } },
   trailerSway: { label: 'Trailer sway', hint: 'Towing, driving over time with the driver steering: the trailer swings side to side about the line it would follow without tire slip by more than this (or jackknifes). More tongue weight, a lighter or shorter trailer (less yaw inertia), a longer hitch-to-axle distance or a lower speed help.', threshold: { label: 'allowed', unit: '°' } },
+  longPedal: { label: 'Long pedal', hint: 'Detailed brake hydraulics: in this stop the pedal travels further than the most you set (pad clearance, the circuit swelling under pressure, the master-cylinder bore). A larger master cylinder, less piston area, stiffer hoses or less pedal ratio shorten it (and raise the pedal force).' },
+  mcStroke: { label: 'Master cylinder runs out', hint: 'Detailed brake hydraulics: the master cylinder would need more than its stroke to make this stop (the pedal hits the floor). A larger bore or a longer stroke, less piston area or stiffer hoses help.' },
   brakeFade: { label: 'Brake fade', hint: 'With brake fade modeled: the rotors are hot enough that the pads have lost more than this share of their grip. If the faded brakes can no longer make the braking asked, it counts as Brakes too weak. Heavier rotors, more cooling, or pads that fade hotter help.', threshold: { label: 'allowed pad grip loss', unit: '%' } },
   pathError: { label: 'Off the line', hint: 'Driving over time with the driver steering: the car is further than this from the path (runs wide or cuts in).', threshold: { label: 'allowed', unit: 'm' } },
   spin: { label: 'Spin / slide', hint: 'Driving over time with the driver steering: the car\'s sideslip angle (how far it points away from where it travels) is beyond this.', threshold: { label: 'allowed', unit: '°' } },
@@ -73,6 +75,8 @@ const base: CheckProfile = {
   pathError: { severity: 'fail', threshold: 1 },
   brakeLimit: { severity: 'fail' },
   brakeFade: { severity: 'warn', threshold: 10 },
+  longPedal: { severity: 'warn' },
+  mcStroke: { severity: 'fail' },
   trailerSway: { severity: 'fail', threshold: 5 },
   hitchLoad: { severity: 'fail' },
   lightTongue: { severity: 'warn', threshold: 10 },
@@ -252,3 +256,12 @@ export function checkResiduals(r: VehicleResult | null, profile: CheckProfile): 
 }
 
 export const worstSeverity = (fs: Finding[]): Severity => (fs.some((x) => x.severity === 'fail') ? 'fail' : fs.some((x) => x.severity === 'warn') ? 'warn' : 'pass');
+
+/** Detailed hydraulics at a stop: the pedal travel and master-cylinder stroke it takes (brakes.ts § pedalTravel). */
+export function pedalFindings(t: { pedal: number; strokeUse: number }, maxPedalTravel: number, profile: CheckProfile): Finding[] {
+  const out: Finding[] = [];
+  const add = (check: CheckId, text: string) => { const severity = sevOf(profile, check); if (severity !== 'pass') out.push({ check, severity, text }); };
+  if (t.strokeUse > 1 + 1e-9) add('mcStroke', `The master cylinder runs out: this stop needs ${(100 * t.strokeUse).toFixed(0)} % of its stroke`);
+  else if (maxPedalTravel > 0 && t.pedal > maxPedalTravel * (1 + 1e-9)) add('longPedal', `Long pedal: ${t.pedal.toFixed(0)} mm of pedal travel (most ${maxPedalTravel.toFixed(0)} mm)`);
+  return out;
+}

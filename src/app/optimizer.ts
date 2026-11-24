@@ -3,7 +3,7 @@
  * CornerProblem or a VehicleProblem, and runs them in a Web Worker so the UI stays responsive.
  */
 import { blendCurves, parseDamperCurve } from '../core/vehicle/vehicle';
-import { brakeCapacity, type BrakeSystem, type BrakeCapacity } from '../core/vehicle/brakes';
+import { brakeCapacity, type BrakeSystem, type BrakeCapacity, type BrakeAxle, type BrakeDetail, type WheelRoom } from '../core/vehicle/brakes';
 import type { BrakeThermal } from '../core/vehicle/brakeThermal';
 import type { TrailerSpec } from '../core/vehicle/towing';
 import {
@@ -27,7 +27,7 @@ import { inputPerRev } from '../core/tests/steer';
 import { ratioSpecOf, layoutOf,
   POINT_KEYS, rootOf, toGeometry, toProfile, toForceModel, mergedCorners, vehicleStaticLoads, defaultOptimizerSetup, GRIP_KEYS, MF_KEYS,
   DEFAULT_DAMPER_CURVE, type DamperCurveText, type AppState, type FadeKey, type PointKey, type OptimizerSetup, type SharedDesign, type GripKey, type MFKey, type Field, type DamperKey, type DamperMode,
-  type BrakeKey,
+  type BrakeKey, type BrakeMoreKey,
 } from './store';
 import { STATE_KEY } from './anchors';
 import { lockKeys, pointAxisLocked } from './locks';
@@ -80,23 +80,47 @@ export const RIGID_TIRE: TireForceModel = { kind: 'stiffness', rate: 1e5 };
 /** Magic Formula coefficients from their fields. */
 /** Aerodynamics for the solver (undefined when off): the imported model or the generic values, and the air density. */
 /** The brake system from the inputs (front / rear tire radii from the designs on each axle). */
-export function brakesOf(s: Pick<AppState, 'brakes'> & Parameters<typeof mergedCorners>[0]): { system: BrakeSystem; capacity: BrakeCapacity; thermal?: BrakeThermal } | null {
+export interface BrakesModel {
+  system: BrakeSystem;
+  capacity: BrakeCapacity;
+  thermal?: BrakeThermal;
+  /** Detailed hydraulics (fluid and pedal travel), when chosen. */
+  detail?: BrakeDetail;
+  /** Room for the brakes inside each axle's wheel. */
+  room: { front: WheelRoom; rear: WheelRoom };
+  /** Tire radius per axle, mm. */
+  tireRadius: { front: number; rear: number };
+}
+
+export function brakesOf(s: Pick<AppState, 'brakes'> & Parameters<typeof mergedCorners>[0]): BrakesModel | null {
   const b = s.brakes;
   if (!b?.on) return null;
-  const v = (k: BrakeKey) => b[k].value;
+  const v = (k: BrakeKey | BrakeMoreKey) => b[k].value;
+  const axle = (side: 'F' | 'R', drum: boolean): BrakeAxle => ({
+    kind: drum ? 'drum' : 'disc',
+    mcBore: v(`mcBore${side}`), pistonDiameter: v(`pistonDia${side}`), pistonsPerSide: v(`pistons${side}`), padMu: v(`padMu${side}`), rotorRadius: v(`rotorR${side}`),
+    wheelCylinder: v(`wcBore${side}`), drumRadius: v(`drumR${side}`), brakeFactor: v(`brakeFactor${side}`), fadeSensitivity: drum ? v('drumFadeK') : 1,
+  });
   const system: BrakeSystem = {
     maxPedalForce: v('maxPedalForce'), pedalRatio: v('pedalRatio'), boost: v('boost'), dualMc: b.dualMc, balanceFront: v('balanceFront') / 100,
-    front: { mcBore: v('mcBoreF'), pistonDiameter: v('pistonDiaF'), pistonsPerSide: v('pistonsF'), padMu: v('padMuF'), rotorRadius: v('rotorRF') },
-    rear: { mcBore: v('mcBoreR'), pistonDiameter: v('pistonDiaR'), pistonsPerSide: v('pistonsR'), padMu: v('padMuR'), rotorRadius: v('rotorRR') },
+    front: axle('F', !!b.drumF), rear: axle('R', !!b.drumR),
   };
   const all = mergedCorners(s);
-  const r = (id: CornerId) => all[rootOf(id, s.links)].geom.scalars.tireDiameter.value / 2;
+  const g = (id: CornerId) => all[rootOf(id, s.links)].geom.scalars;
+  const r = (id: CornerId) => g(id).tireDiameter.value / 2;
+  const room = (id: CornerId): WheelRoom => ({ rimDiameter: g(id).rimDiameter.value, clearance: v('brakeRoom'), padHeight: v('padHeight') });
   const f = (k: FadeKey) => b[k].value;
   const thermal: BrakeThermal | undefined = b.fade ? {
     rotorMass: { front: f('rotorMassF'), rear: f('rotorMassR') }, cooling: f('cooling'),
     fadeStart: f('fadeStart'), fadeEnd: f('fadeEnd'), fadeLoss: f('fadeLoss') / 100, air: f('fadeAir'), start: f('fadeStartTemp'),
+    sensitivity: { front: system.front.fadeSensitivity ?? 1, rear: system.rear.fadeSensitivity ?? 1 },
   } : undefined;
-  return { system, capacity: brakeCapacity(system, { front: r('FL'), rear: r('RL') }), ...(thermal ? { thermal } : {}) };
+  const detail: BrakeDetail | undefined = b.detail ? {
+    mcStroke: v('mcStroke'), maxPedalTravel: v('maxPedalTravel'), padClearance: v('padClearance'), shoeClearance: v('shoeClearance'),
+    compliance: { front: v('complianceF'), rear: v('complianceR') },
+  } : undefined;
+  const tireRadius = { front: r('FL'), rear: r('RL') };
+  return { system, capacity: brakeCapacity(system, tireRadius), ...(thermal ? { thermal } : {}), ...(detail ? { detail } : {}), room: { front: room('FL'), rear: room('RL') }, tireRadius };
 }
 
 /** The trailer from the towing inputs, or undefined when not towing. */
@@ -313,6 +337,7 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
     brakeBias: brk?.useBias ?? v.brakeBias.value / 100, driveSplit: v.driveSplit.value / 100, autoPreload: s.autoPreload,
     ...(brk ? { brakeLimit: brk.limit } : {}),
     ...(brakes?.thermal ? { brakeThermal: brakes.thermal } : {}),
+    ...(brakes?.detail ? { brakeDetail: { system: brakes.system, detail: brakes.detail } } : {}),
     ...(trailerOf(s) ? { trailer: trailerOf(s)! } : {}),
     shared: { front: toAxleShared(s.shared.front), rear: toAxleShared(s.shared.rear) },
     dropLinks: { front: dl(s.shared.front), rear: dl(s.shared.rear) },

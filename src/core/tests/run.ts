@@ -11,8 +11,9 @@ import { segmentStates, segmentLatG, roadEffective, G, type RoadState, type Segm
 import { wheelHeights } from './road';
 import { steerForTurn, type SteerNeed } from './steer';
 import { rideOn, type RideMeasures } from './ride';
-import { classifyState, fadeFindings, worstSeverity, PROFILES, type CheckProfile, type Finding, type Severity } from './checks';
+import { classifyState, fadeFindings, pedalFindings, worstSeverity, PROFILES, type CheckProfile, type Finding, type Severity } from './checks';
 import { brakeStep, padFactors, type AxleTemps } from '../vehicle/brakeThermal';
+import { pedalTravel } from '../vehicle/brakes';
 
 export interface StateResult {
   state: RoadState;
@@ -73,6 +74,12 @@ export interface TestRun {
   error?: string;
   /** The ride over time (Phase B) when asked for: frames for playback. */
   ride?: { frames: PlaybackFrame[]; metrics?: RideMeasures; error?: string };
+  /**
+   * Brake hydraulics: the most each axle's braking asks of its (faded) capacity over the steady states
+   * (1 = the most pedal force; > 1 = too weak), and with the detailed hydraulics the longest pedal and the
+   * most master-cylinder stroke used.
+   */
+  brakeUse?: { front: number; rear: number; pedal?: number; strokeUse?: number };
 }
 
 /** Segment physics plus the checks that decide its pass / fail. */
@@ -197,6 +204,33 @@ export function runTest(
     }
     return { start, end };
   };
+  // How much of each axle's (faded) brake capacity the stops ask; with the detailed hydraulics, the pedal.
+  let brakeUse: TestRun['brakeUse'];
+  const brakeUseOf = (rs: StateResult[], temps: { start: AxleTemps; end: AxleTemps } | undefined, checks: CheckProfile) => {
+    const L = p.brakeLimit;
+    if (!L) return;
+    const factor = th && temps ? padFactors(th, { front: Math.max(temps.start.front, temps.end.front), rear: Math.max(temps.start.rear, temps.end.rear) }) : { front: 1, rear: 1 };
+    brakeUse ??= { front: 0, rear: 0 };
+    for (const r of rs) {
+      if (!r.corners) continue;
+      const use = (d: number, cap: number, f: number) => (d > 1e-9 ? (cap * f > 0 ? d / (cap * f) : Infinity) : 0);
+      const uf = use(-(r.corners.FL.brakeForce + r.corners.FR.brakeForce), L.front, factor.front);
+      const ur = use(-(r.corners.RL.brakeForce + r.corners.RR.brakeForce), L.rear, factor.rear);
+      brakeUse.front = Math.max(brakeUse.front, uf);
+      brakeUse.rear = Math.max(brakeUse.rear, ur);
+      const share = Math.max(uf, ur);
+      if (!p.brakeDetail || !(share > 0)) continue;
+      // The driver pushes at most the most pedal force; the pressure (and the fluid) follow the pedal.
+      const t = pedalTravel(p.brakeDetail.system, p.brakeDetail.detail, Math.min(1, share));
+      brakeUse.pedal = Math.max(brakeUse.pedal ?? 0, t.pedal);
+      brakeUse.strokeUse = Math.max(brakeUse.strokeUse ?? 0, t.strokeUse);
+      const extra = pedalFindings(t, p.brakeDetail.detail.maxPedalTravel, checks);
+      if (!extra.length) continue;
+      r.findings = [...r.findings, ...extra];
+      r.severity = worstSeverity(r.findings);
+      r.passed = r.severity !== 'fail';
+    }
+  };
   segments.forEach((seg, i) => {
     const checks = seg.checks ?? PROFILES.default.checks;
     const rs = segmentStates(seg, i, 1, dimsOf(p, asm)).map((st) => {
@@ -205,6 +239,7 @@ export function runTest(
       return r;
     });
     const brakeTemp = fadeOf(rs, seg, checks);
+    brakeUseOf(rs, brakeTemp, checks);
     states.push(...rs);
     const findings = dedupe(rs.flatMap((r) => r.findings));
     const severity = worstSeverity(findings);
@@ -239,7 +274,7 @@ export function runTest(
     });
   }
   const severity = worstSeverity(segs.flatMap((s) => s.findings));
-  return { severity, passed: severity !== 'fail', states, segments: segs, ...(ride ? { ride } : {}) };
+  return { severity, passed: severity !== 'fail', states, segments: segs, ...(ride ? { ride } : {}), ...(brakeUse ? { brakeUse } : {}) };
 }
 
 /**

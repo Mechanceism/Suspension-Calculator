@@ -27,6 +27,7 @@ import { rankWeight, segmentSpec, type TestDesign } from './tests';
 import { pointAxisLocked } from './locks';
 import { startTestRun, runTestsTogether, useRun } from './panels/TestsPanels';
 import { POOL_SIZE, runLimited } from './workerPool';
+import { sizeBrakes, hardestUse, type BrakeSizing } from './brakeLadder';
 
 export type Scope = 'test' | 'all';
 
@@ -78,6 +79,10 @@ interface LoopState {
   explanation: string[];
   exploration: Exploration | null;
   cancel: (() => void) | null;
+  /** Size the brakes with the ladder inside Optimize until it passes / Improve (with the brake hydraulics on). */
+  sizeBrakes: boolean;
+  /** Drum axles whose drums ran out at the last sizing (the user may allow discs). */
+  askDisc: ('front' | 'rear')[];
 }
 
 const loadWiden = (): number => {
@@ -89,7 +94,27 @@ const loadRates = (): RateSettings => {
 export const useLoop = create<LoopState>(() => ({
   running: false, mode: null, scope: 'test', maxWiden: loadWiden(), widen: 1, round: 0, log: [], outcome: null, explanation: [], exploration: null, cancel: null,
   rates: loadRates(), rateProgress: null,
+  sizeBrakes: (() => { try { return localStorage.getItem('susp.sizeBrakes') === '1'; } catch { return false; } })(), askDisc: [],
 }));
+export function setSizeBrakes(on: boolean) {
+  useLoop.setState({ sizeBrakes: on });
+  try { localStorage.setItem('susp.sizeBrakes', on ? '1' : '0'); } catch { /* private mode */ }
+}
+
+/**
+ * Size the brakes (the ladder) from test runs and apply it; returns what changed (empty: nothing).
+ * Without runs, from the last result of every test in the Tests panel.
+ */
+export function sizeBrakesFrom(runs?: TestRun[]): BrakeSizing | null {
+  const all = runs ?? Object.values(useRun.getState().results).map((e) => e.result);
+  const use = hardestUse(all);
+  if (!use) return null;
+  const z = sizeBrakes(useApp.getState(), use);
+  if (!z) return null;
+  useLoop.setState({ askDisc: z.askDisc });
+  if (Object.keys(z.patch).length) useApp.getState().setBrakes(z.patch);
+  return z;
+}
 export function setRateSettings(patch: Partial<RateSettings>) {
   const rates = { ...useLoop.getState().rates, ...patch };
   useLoop.setState({ rates });
@@ -350,6 +375,22 @@ export async function optimizeTests(scope: Scope, active: TestDesign | null, mod
     let lastAtLimit: string[] = [];
     let ratesTried = false;
     const rates = useLoop.getState().rates;
+    // The brake ladder: after a test run, size the brakes to the hardest stop and run again if they changed.
+    let brakeSizings = 0;
+    const sizeAndRerun = async (): Promise<boolean> => {
+      if (!useLoop.getState().sizeBrakes || !useApp.getState().brakes.on || brakeSizings >= 6) return false;
+      const z = sizeBrakesFrom(set.runs.map((r) => r.run));
+      if (!z) return false;
+      for (const b of z.blocked) log(`Brakes: ${b}`);
+      if (!z.changes.length) return false;
+      brakeSizings++;
+      log(`Brakes sized: ${z.changes.join('; ')}`);
+      const next = await runSet(tests, mode, isStopped);
+      if (!next) return false;
+      set = next;
+      return true;
+    };
+    await sizeAndRerun();
     // Springs / dampers on the ride, when geometry alone stops helping (once per stall).
     const tryRates = async (): Promise<boolean> => {
       if (!rates.withLoop || ratesTried || !rateVars(useApp.getState(), rates).length) return false;
@@ -397,6 +438,7 @@ export async function optimizeTests(scope: Scope, active: TestDesign | null, mod
         gain = set.score > 0 ? (set.score - next.score) / set.score : 0;
         log(`Round ${round}: ${describe(next)} · score ${set.score.toFixed(2)} → ${next.score.toFixed(2)} (${(gain * 100).toFixed(1)}% better) · largest move ${moved.toFixed(1)} mm`);
         set = next;
+        await sizeAndRerun();
       } else {
         log(`Round ${round}: nothing moved${k > 1 ? ` at ×${k}` : ' within your ranges'}.`);
       }

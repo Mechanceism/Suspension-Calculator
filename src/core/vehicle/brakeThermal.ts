@@ -26,6 +26,8 @@ export interface BrakeThermal {
   /** Air temperature and the rotors' temperature at the start of a test, °C. */
   air: number;
   start: number;
+  /** Drum axles: the brake factor falls faster than the lining μ (BF ∝ μ^k, k > 1); 1 (disc) when absent. */
+  sensitivity?: { front: number; rear: number };
 }
 
 export interface AxleTemps { front: number; rear: number }
@@ -61,4 +63,8 @@ export function brakeStep(th: BrakeThermal, T: AxleTemps, force: AxleTemps, v: n
   };
 }
 
-export const padFactors = (th: BrakeThermal, T: AxleTemps): AxleTemps => ({ front: padFactor(th, T.front), rear: padFactor(th, T.rear) });
+/** Each axle's braking capacity as a share of its cold value (a drum's falls faster: its sensitivity). */
+export const padFactors = (th: BrakeThermal, T: AxleTemps): AxleTemps => ({
+  front: padFactor(th, T.front) ** Math.max(1, th.sensitivity?.front ?? 1),
+  rear: padFactor(th, T.rear) ** Math.max(1, th.sensitivity?.rear ?? 1),
+});

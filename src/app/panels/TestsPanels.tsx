@@ -14,7 +14,7 @@ import { CORNER_IDS, type CornerId } from '../../core/vehicle/vehicle';
 import { segmentLongG, segmentLatG, segmentDuration, type PathKind } from '../../core/tests/segments';
 import type { TestRun, StateResult } from '../../core/tests/run';
 import { CHECK_IDS, CHECK_META, PROFILES, cloneProfile, type CheckProfile, type Severity, type BuiltinProfile, type Finding } from '../../core/tests/checks';
-import { useApp, type Field } from '../store';
+import { useApp, BRAKE_MORE_META, type Field } from '../store';
 import { SEGMENT_PRESETS, TEST_PRESETS, newSegment, newTestId, segmentSpec, isOff, OFF, type TestDesign, type TestSegment } from '../tests';
 import { buildVehicleProblem, runTestJob } from '../optimizer';
 import { POOL_SIZE, runLimited } from '../workerPool';
@@ -23,9 +23,9 @@ import { switchWorkspace } from '../viewport/SafeHtml';
 import { ValueInput } from './ValueInput';
 import { RoadEditor } from './RoadEditor';
 import { PlaybackBar, SegmentMap } from './Playback';
-import { Section, fmt } from './FieldRows';
+import { Section, fmt, FieldRows } from './FieldRows';
 import { useDisplay } from '../units';
-import { useLoop, optimizeTests, exploreRanges, acceptExploration, setMaxWiden, isUnfixable, WIDEN_CHOICES, widenLabel, tuneSpringsDampers, setRateSettings, rateVars } from '../testOptimize';
+import { useLoop, optimizeTests, exploreRanges, acceptExploration, setMaxWiden, isUnfixable, WIDEN_CHOICES, widenLabel, tuneSpringsDampers, setRateSettings, rateVars, setSizeBrakes, sizeBrakesFrom } from '../testOptimize';
 import { SearchSelect, SensitivityReport } from './SearchTools';
 import { EstimatedNote } from './SetupWizard';
 import { VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META } from '../../core/optimize/vehicle';
@@ -864,6 +864,7 @@ function OptimizeSection({ test, onOpenOptimizer }: { test: TestDesign; onOpenOp
         <p className="hint warn-text">These failures can't be fixed by moving suspension points (no powered / braked wheels, more than the tires can give, or too tight for the steering): change the corner or steering settings, the test, or the tires.</p>
       )}
       <RateTuning test={test} busy={busy} />
+      <BrakeLadderBox busy={busy} />
       {loop.running && (
         <div className="jm-row">
           <span className="run-line"><span className="spinner" /> {loop.rateProgress
@@ -909,6 +910,55 @@ function OptimizeSection({ test, onOpenOptimizer }: { test: TestDesign; onOpenOp
         />
       </details>
     </Section>
+  );
+}
+
+/** The brake ladder: size the brakes to the tests' hardest stop, keeping a reserve. */
+function BrakeLadderBox({ busy }: { busy: boolean }) {
+  const loop = useLoop();
+  const b = useApp((s) => s.brakes);
+  const setB = useApp((s) => s.setBrakes);
+  const setMore = useApp((s) => s.setBrakeMoreField);
+  const [last, setLast] = useState<{ changes: string[]; blocked: string[] } | null>(null);
+  if (!b.on) return null;
+  const axleName = (a: 'front' | 'rear') => (a === 'front' ? 'front' : 'rear');
+  return (
+    <details className="tire-advanced rate-tuning" open>
+      <summary>Brakes (step ladder)</summary>
+      <p className="hint">Picks the smallest brakes that still have the reserve in the hardest stop of the tests (fade included): more pistons first, larger rotors last, only rotors that fit the wheel; steps down when there is a lot to spare.</p>
+      <FieldRows rows={[{ label: BRAKE_MORE_META.ladderReserve.label, field: b.ladderReserve, unit: '%', hint: BRAKE_MORE_META.ladderReserve.hint, onCommit: (t: string) => setMore('ladderReserve', t) }]} />
+      {(b.drumF || b.drumR) && (
+        <div className="jm-row" title="A drum axle stays on drums unless you allow discs here (it depends on your project).">
+          {b.drumF && <label className="check-label"><input type="checkbox" checked={b.allowDiscF} onChange={(e) => setB({ allowDiscF: e.target.checked })} /> front may switch to discs</label>}
+          {b.drumR && <label className="check-label"><input type="checkbox" checked={b.allowDiscR} onChange={(e) => setB({ allowDiscR: e.target.checked })} /> rear may switch to discs</label>}
+        </div>
+      )}
+      <label className="check-label small-text"><input type="checkbox" checked={loop.sizeBrakes} onChange={(e) => setSizeBrakes(e.target.checked)} /> also inside Optimize until it passes / Improve</label>
+      {!loop.running && (
+        <div className="jm-row">
+          <button className="wide-btn" disabled={busy} title="From the last run of every test (run them first)"
+            onClick={() => { const z = sizeBrakesFrom(); setLast(z ? { changes: z.changes, blocked: z.blocked } : { changes: [], blocked: ['Run the tests first (with the brake hydraulics on).'] }); }}>
+            ▶ Size the brakes from the last test runs
+          </button>
+        </div>
+      )}
+      {last && (
+        <div className="small-text">
+          {last.changes.length ? last.changes.map((c) => <p key={c} className="ok-text">{c}</p>) : !last.blocked.length && <p className="muted">The brakes already fit the tests with the reserve: nothing changed.</p>}
+          {last.blocked.map((c) => <p key={c} className="warn-text">{c}</p>)}
+          {last.changes.length > 0 && <p className="muted">Run the tests again to see the new brakes (Ctrl+Z undoes).</p>}
+        </div>
+      )}
+      {loop.askDisc.length > 0 && (
+        <div className="jm-row">
+          {loop.askDisc.map((a) => (
+            <button key={a} className="chip" onClick={() => { setB(a === 'front' ? { allowDiscF: true } : { allowDiscR: true }); const z = sizeBrakesFrom(); setLast(z ? { changes: z.changes, blocked: z.blocked } : null); }}>
+              Allow discs on the {axleName(a)} and size again
+            </button>
+          ))}
+        </div>
+      )}
+    </details>
   );
 }
 

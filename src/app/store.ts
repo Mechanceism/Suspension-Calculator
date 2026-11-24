@@ -662,8 +662,9 @@ export interface AppState extends DesignState {
   setAeroField(key: AeroKey, text: string): void;
   setAero(patch: Partial<Pick<AeroSettings, 'on' | 'file'>>): void;
   setBrakeField(key: BrakeKey, text: string): void;
-  setBrakes(patch: Partial<Pick<BrakeSettings, 'on' | 'fade' | 'dualMc' | 'useBias'>>): void;
+  setBrakes(patch: Partial<BrakeSettings>): void;
   setFadeField(key: FadeKey, text: string): void;
+  setBrakeMoreField(key: BrakeMoreKey, text: string): void;
   setTowField(key: TowKey, text: string): void;
   setTow(patch: Partial<Pick<TowSettings, 'on'>>): void;
   /** Grip scale of a loaded file (λμ): side (LMUY) or braking / drive (LMUX). */
@@ -936,7 +937,45 @@ export const FADE_META: Record<FadeKey, { label: string; quantity: Quantity; uni
   fadeAir: { label: 'Air temperature', quantity: 'temperature', unit: '°C', initial: 20 },
   fadeStartTemp: { label: 'Rotor temperature at the start of a test', quantity: 'temperature', unit: '°C', initial: 50 },
 };
-export interface BrakeSettings extends Record<BrakeKey, Field>, Record<FadeKey, Field> {
+/**
+ * More brake inputs (round 3, R5): drums, the room for the brakes inside the wheel, the detailed
+ * hydraulics (fluid and pedal travel) and the reserve the brake ladder sizes to.
+ */
+export const BRAKE_MORE_KEYS = [
+  'wcBoreF', 'wcBoreR', 'drumRF', 'drumRR', 'brakeFactorF', 'brakeFactorR', 'drumFadeK',
+  'brakeRoom', 'padHeight',
+  'mcStroke', 'maxPedalTravel', 'padClearance', 'shoeClearance', 'complianceF', 'complianceR',
+  'ladderReserve',
+] as const;
+export type BrakeMoreKey = (typeof BRAKE_MORE_KEYS)[number];
+export const BRAKE_MORE_META: Record<BrakeMoreKey, { label: string; quantity: Quantity; unit: string; initial: number; hint?: string }> = {
+  wcBoreF: { label: 'Wheel-cylinder bore, front', quantity: 'length', unit: 'mm', initial: 22.2, hint: 'Drum: the bore of the cylinder that pushes both shoes (3/4" = 19.05, 7/8" = 22.2 mm)' },
+  wcBoreR: { label: 'Wheel-cylinder bore, rear', quantity: 'length', unit: 'mm', initial: 19.05 },
+  drumRF: { label: 'Drum radius (inside), front', quantity: 'length', unit: 'mm', initial: 114.3, hint: 'Half the drum’s inside diameter (9" drum = 114 mm)' },
+  drumRR: { label: 'Drum radius (inside), rear', quantity: 'length', unit: 'mm', initial: 114.3 },
+  brakeFactorF: { label: 'Shoe brake factor, front', quantity: 'ratio', unit: '', initial: 2.2, hint: 'Torque ÷ (wheel-cylinder force × drum radius) for both shoes: leading / trailing ≈ 2–2.5, duo-servo ≈ 3–5 (lining μ ≈ 0.4). A disc’s is 2μ ≈ 0.9' },
+  brakeFactorR: { label: 'Shoe brake factor, rear', quantity: 'ratio', unit: '', initial: 2.2 },
+  drumFadeK: { label: 'Drum fade sensitivity', quantity: 'ratio', unit: '×', initial: 1.8, hint: 'A drum’s brake factor falls faster than its lining μ when hot: factor ∝ μ^k (leading / trailing ≈ 1.5–2, duo-servo ≈ 2.5–3; a disc is 1)' },
+  brakeRoom: { label: 'Room inside the rim for the caliper', quantity: 'length', unit: 'mm', initial: 38, hint: 'Radial room from the rim’s bead seat to the rotor’s outer edge (rim barrel + caliper body). Sets the largest rotor that fits the wheel (a drum gets half of it)' },
+  padHeight: { label: 'Pad height', quantity: 'length', unit: 'mm', initial: 36, hint: 'The effective rotor radius sits half the pad height inside the rotor’s edge' },
+  mcStroke: { label: 'Master-cylinder stroke', quantity: 'length', unit: 'mm', initial: 32, hint: 'A tandem master cylinder’s two chambers share it' },
+  maxPedalTravel: { label: 'Most pedal travel', quantity: 'length', unit: 'mm', initial: 100, hint: 'At the pedal pad, in the hardest stop: more = Long pedal' },
+  padClearance: { label: 'Pad clearance (each pad)', quantity: 'length', unit: 'mm', initial: 0.15, hint: 'How far each pad moves before it clamps (knock-back, run-out): ≈ 0.1–0.3 mm' },
+  shoeClearance: { label: 'Shoe clearance (drums, each shoe)', quantity: 'length', unit: 'mm', initial: 0.4, hint: 'Shoe travel at the wheel cylinder before the lining touches: ≈ 0.25–0.6 mm' },
+  complianceF: { label: 'Circuit swell, front', quantity: 'ratio', unit: 'mm³/MPa', initial: 150, hint: 'Fluid the front circuit takes per MPa (both wheels): hose swell, caliper flex, pad compression. Rubber hoses and floating calipers ≈ 150–300, braided lines and stiff race calipers ≈ 50–100' },
+  complianceR: { label: 'Circuit swell, rear', quantity: 'ratio', unit: 'mm³/MPa', initial: 120 },
+  ladderReserve: { label: 'Brake reserve to keep', quantity: 'ratio', unit: '%', initial: 25, hint: 'The brake ladder picks the smallest brakes that still have this much to spare in the hardest stop of the tests (fade included)' },
+};
+
+export interface BrakeSettings extends Record<BrakeKey, Field>, Record<FadeKey, Field>, Record<BrakeMoreKey, Field> {
+  /** Drum brakes on the front / rear axle (else discs). */
+  drumF: boolean;
+  drumR: boolean;
+  /** Detailed hydraulics: fluid volumes and pedal travel (else the simple pressure-only model). */
+  detail: boolean;
+  /** The brake ladder may switch a drum axle to discs (only with the user's permission). */
+  allowDiscF: boolean;
+  allowDiscR: boolean;
   /** Model the brake hydraulics (off = the brakes are always strong enough). */
   on: boolean;
   /** Model brake fade in tests (with the hydraulics). */
@@ -949,7 +988,8 @@ export interface BrakeSettings extends Record<BrakeKey, Field>, Record<FadeKey, 
 export const defaultBrakes = (): BrakeSettings => ({
   ...(Object.fromEntries(BRAKE_KEYS.map((k) => [k, field(BRAKE_META[k].initial, BRAKE_META[k].quantity)])) as Record<BrakeKey, Field>),
   ...(Object.fromEntries(FADE_KEYS.map((k) => [k, field(FADE_META[k].initial, FADE_META[k].quantity)])) as Record<FadeKey, Field>),
-  on: false, fade: false, dualMc: false, useBias: false,
+  ...(Object.fromEntries(BRAKE_MORE_KEYS.map((k) => [k, field(BRAKE_MORE_META[k].initial, BRAKE_MORE_META[k].quantity)])) as Record<BrakeMoreKey, Field>),
+  on: false, fade: false, dualMc: false, useBias: false, drumF: false, drumR: false, detail: false, allowDiscF: false, allowDiscR: false,
 });
 
 /** Towing inputs (docs/MATH.md § Towing). */
@@ -1512,6 +1552,10 @@ export const useApp = create<AppState>((set, get) => ({
   setFadeField: (key, text) => {
     const b = get().brakes;
     set({ brakes: { ...b, [key]: parseField(text, FADE_META[key].quantity, b[key]) } });
+  },
+  setBrakeMoreField: (key, text) => {
+    const b = get().brakes;
+    set({ brakes: { ...b, [key]: parseField(text, BRAKE_MORE_META[key].quantity, b[key]) } });
   },
   setTowField: (key, text) => {
     const t = get().tow;

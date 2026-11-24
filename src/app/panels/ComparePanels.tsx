@@ -247,8 +247,8 @@ function PairTable({ title, pairs }: { title: string; pairs: Pair[] }) {
   const delta = (p: Pair) => {
     const x = p.a?.value, y = p.b?.value;
     if (x === undefined || y === undefined || !Number.isFinite(x) || !Number.isFinite(y) || !differs(p)) return '';
-    const t = d.text(fmt(y - x, p.digits), p.unit).text;
-    return y - x > 0 ? `+${t}` : t;
+    const t = d.text(fmt(x - y, p.digits), p.unit).text;
+    return x - y > 0 ? `+${t}` : t;
   };
   const Row = ({ p }: { p: Pair }) => (
     <tr className={differs(p) ? 'differs' : ''} title={p.hint}>
@@ -260,7 +260,7 @@ function PairTable({ title, pairs }: { title: string; pairs: Pair[] }) {
       <td className="unit">{d.conv(p.unit).unit}</td>
     </tr>
   );
-  const head = <thead><tr><th /><th /><th>Current</th><th>Snapshot</th><th title="Snapshot − current">Δ</th><th /></tr></thead>;
+  const head = <thead><tr><th /><th /><th>Current</th><th>Snapshot</th><th title="Current − snapshot: negative = the current one is lower">Δ</th><th /></tr></thead>;
   return (
     <Section title={title} extra={<label className="small-text muted" title="Hide the rows that are the same in both"><input type="checkbox" checked={onlyDiff} onChange={() => useCompareView.setState({ onlyDiff: !onlyDiff })} /> only differences</label>}>
       {pinned.length > 0 && (
@@ -314,7 +314,7 @@ function TestScores({ snap }: { snap: Snapshot }) {
   const score = (r: TestRun | SavedResult | undefined) => (r ? <span className={`sev-text-${r.severity}`}>{SEV_ICON[r.severity]}{typeof r.time === 'number' ? ` ${r.time.toFixed(2)} s` : ''}</span> : <span className="muted">—</span>);
   const dt = (x?: number, y?: number) => {
     if (typeof x !== 'number' || typeof y !== 'number') return '';
-    const d = Math.abs(y - x) < 0.005 ? 0 : y - x;
+    const d = Math.abs(x - y) < 0.005 ? 0 : x - y;
     return `${d > 0 ? '+' : ''}${d.toFixed(2)} s`;
   };
   return (
@@ -322,7 +322,7 @@ function TestScores({ snap }: { snap: Snapshot }) {
       {!rows.length && <p className="muted small-text">{cmp.running ? 'Running…' : 'Run both on both sets of tests (left) to compare their scores.'}</p>}
       {rows.length > 0 && (
         <table className="compare-table">
-          <thead><tr><th /><th>Test</th><th>Current</th><th>Snapshot</th><th title="Snapshot − current">Δ time</th><th title="The snapshot's own results, saved with it (its last run)">Last run</th></tr></thead>
+          <thead><tr><th /><th>Test</th><th>Current</th><th>Snapshot</th><th title="Current − snapshot: negative = the current one is lower">Δ time</th><th title="The snapshot's own results, saved with it (its last run)">Last run</th></tr></thead>
           <tbody>
             {order.map((row: CompareTest) => {
               const ra = cmp.runs[runKey(row, 'A')], rb = cmp.runs[runKey(row, 'B')];

@@ -180,7 +180,8 @@ function ForceArrows({ arrows }: { arrows: ForceArrow[] }) {
   );
 }
 
-function VehicleScene({ model, arrows }: { model: VehicleModel; arrows: ForceArrow[] }) {
+/** The car (and its forces, markers). `ground`: its own ground grid (off when it sits on a course). */
+export function VehicleScene({ model, arrows, ground = true }: { model: VehicleModel; arrows: ForceArrow[]; ground?: boolean }) {
   const setActiveCorner = useApp((s) => s.setActiveCorner);
   const activeCorner = useApp((s) => s.activeCorner);
   const vis = useApp((s) => s.visibility);
@@ -197,7 +198,7 @@ function VehicleScene({ model, arrows }: { model: VehicleModel; arrows: ForceArr
     <group>
       <ambientLight intensity={0.8} />
       <directionalLight position={[1500, 2500, 2000]} intensity={1.2} />
-      {vis.ground && (
+      {vis.ground && ground && (
         <Grid
           position={[0, model.groundY, -model.wheelbase / 2]} args={[8000, 8000]} cellSize={50} sectionSize={250}
           cellColor={COLORS.ground} sectionColor="#566075" fadeDistance={12000} infiniteGrid

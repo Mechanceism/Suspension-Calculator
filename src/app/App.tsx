@@ -5,13 +5,29 @@ import { modelSnapshot, testsSnapshot } from './project';
 import { FileMenu, Notice } from './panels/FileMenu';
 import { ViewMenu } from './panels/ViewMenu';
 import { UnitsMenu } from './panels/UnitsMenu';
-import { TestsSidebar as TestsSidebarRaw, TestResults as TestResultsRaw, TestViewBar as TestViewBarRaw } from './panels/TestsPanels';
+import { TestsSidebar as TestsSidebarRaw, TestResults as TestResultsRaw, TestViewBar as TestViewBarRaw, useActiveTest } from './panels/TestsPanels';
+import { CourseViewport, useTestView, setTestView } from './viewport/CourseView';
 
 // The Tests panels read the store themselves: memoized so the vehicle model changing (every playback
 // frame) doesn't re-render them.
 const TestsSidebar = memo(TestsSidebarRaw);
 const TestResults = memo(TestResultsRaw);
 const TestViewBar = memo(TestViewBarRaw);
+
+/** Tests: the Static view (the car in place) or the Dynamic one (driving the course); one or the other. */
+function TestsViewport({ model }: { model: ReturnType<typeof useVehicle> }) {
+  const mode = useTestView((s) => s.mode);
+  const test = useActiveTest();
+  return (
+    <div className="tests-viewport">
+      <div className="view-mode-switch" role="tablist" aria-label="Test view">
+        <button role="tab" aria-selected={mode === 'static'} className={`chip${mode === 'static' ? ' on' : ''}`} onClick={() => setTestView({ mode: 'static' })} title="The car in place, posed for the selected segment or the playback moment">Static</button>
+        <button role="tab" aria-selected={mode === 'dynamic'} className={`chip${mode === 'dynamic' ? ' on' : ''}`} onClick={() => setTestView({ mode: 'dynamic' })} title="The course in 3D with the car driving it (Play)">Dynamic</button>
+      </div>
+      {mode === 'static' ? <VehicleViewport model={model} /> : <CourseViewport model={model} test={test} />}
+    </div>
+  );
+}
 import { HelpOverlay } from './panels/HelpOverlay';
 import { BusyIndicator } from './panels/BusyIndicator';
 import { SetupWizard } from './panels/SetupWizard';
@@ -131,7 +147,7 @@ export function App() {
           <aside className="left"><div className="tab-body"><TestsSidebar /></div></aside>
           <Splitter area="lsplit" width={leftW} setWidth={setLeftW} sign={1} />
           <main className="center">
-            <VehicleViewport model={vehicle} />
+            <TestsViewport model={vehicle} />
             <TestViewBar />
           </main>
           <Splitter area="rsplit" width={rightW} setWidth={setRightW} sign={-1} />

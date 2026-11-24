@@ -38,6 +38,7 @@ export * from './suspension/twistBeam';
 export * from './suspension/customLinkage';
 export * from './suspension/compliance';
 export * from './tests/segments';
+export * from './tests/course';
 export * from './tests/run';
 export * from './tests/checks';
 export * from './tests/road';

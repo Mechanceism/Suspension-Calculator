@@ -110,7 +110,7 @@ Discussed with the user item by item; do them in this order.
 | U4f | **Cameras, user review 5:** Free unlocks where the camera is (no jump back to where Free was first used); the Dynamic view is orthographic or perspective like the others (*Ortho / Persp* top right); the camera's scale (visible height at the target) is carried between views, so orthographic ↔ perspective hand-overs don't jump in size. | ✅ | bfb7736 |
 | U4e | **Speeds as maximums** (details below): planner (grip target, brake earlier, per-axle / inside-wheel grip ellipse), the ladder (other ways, then lower targets with a finding), time and average speed, *Maximums / Hold exactly* per test (format 42). Still to do: optimizers scoring on time (U4j); the gates' speeds (U4i). | ✅ | 61348fc |
 | R9 | **Snapshots and compare** (agreed, details below). | in progress | |
-| R9a | Results (scores only) in model-and-tests files (format 43); File → *Take snapshot* (download + session list) and *Import snapshot…*. | ✅ | |
+| R9a | Results (scores only) in model-and-tests files (format 43); File → *Take snapshot* (download + session list) and *Import snapshot…*. | ✅ | b199f94 |
 | R9b | Compare runs: both models on both sets of tests (four pairings), in the worker pool. | next | |
 | R9c | **Compare** tab (agreed 2026-11-24: a 4th workspace; a list of snapshots, one compared): scores side by side with the snapshot's saved ones as "last run"; the vehicles compared by the Corner results, the tests by the vehicle and test results; pin results to the top; ghost overlay (Static) and race (Dynamic). | | |
 

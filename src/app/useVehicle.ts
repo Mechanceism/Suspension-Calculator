@@ -4,10 +4,11 @@
  */
 import { rollStiffness, ackermannLinesCross } from '../core/suspension/derived';
 import { brakesOf, trailerOf } from './optimizer';
+import { useDesignApp } from './designOverride';
 import { useMemo, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import {
-  useApp, toGeometry, toProfile, toForceModel, mergedCorners, rootOf, vehicleStaticLoads,
+  toGeometry, toProfile, toForceModel, mergedCorners, rootOf, vehicleStaticLoads,
   type CornerDesign, type DesignState,
 } from './store';
 import { DoubleWishbone, type CornerState } from '../core/suspension/doubleWishbone';
@@ -96,23 +97,23 @@ const pickVehicleInputs = (s: DesignState) => ({
 });
 
 export function useVehicle(enabled: boolean): VehicleModel | null {
-  const s = useApp(useShallow(pickVehicleInputs));
+  const s = useDesignApp(useShallow(pickVehicleInputs));
   // Motion inputs are separate so moving a slider doesn't rebuild the corners (or their cached curves).
-  const rack = useApp((st) => st.rack);
-  const lateralGKin = useApp((st) => st.lateralG);
-  const longitudinalG = useApp((st) => st.longitudinalG);
-  const roadGrade = useApp((st) => st.roadGrade);
-  const roadBank = useApp((st) => st.roadBank);
-  const wheelBumps = useApp((st) => st.wheelBumps);
-  const gripFields = useApp((st) => st.tireGrip);
+  const rack = useDesignApp((st) => st.rack);
+  const lateralGKin = useDesignApp((st) => st.lateralG);
+  const longitudinalG = useDesignApp((st) => st.longitudinalG);
+  const roadGrade = useDesignApp((st) => st.roadGrade);
+  const roadBank = useDesignApp((st) => st.roadBank);
+  const wheelBumps = useDesignApp((st) => st.wheelBumps);
+  const gripFields = useDesignApp((st) => st.tireGrip);
   // The test playback's pose (ride over time) belongs to the Tests workspace only: elsewhere the car is solved.
-  const rideView = useApp((st) => (st.workspace === 'tests' ? st.rideView : null));
-  const tireFile = useApp((st) => st.tireFile);
-  const tireFileRear = useApp((st) => st.tireFileRear);
-  const aeroSettings = useApp((st) => st.aero);
-  const brakeSettings = useApp((st) => st.brakes);
-  const towSettings = useApp((st) => st.tow);
-  const speed = useApp((st) => st.vehicleSpeed);
+  const rideView = useDesignApp((st) => (st.workspace === 'tests' ? st.rideView : null));
+  const tireFile = useDesignApp((st) => st.tireFile);
+  const tireFileRear = useDesignApp((st) => st.tireFileRear);
+  const aeroSettings = useDesignApp((st) => st.aero);
+  const brakeSettings = useDesignApp((st) => st.brakes);
+  const towSettings = useDesignApp((st) => st.tow);
+  const speed = useDesignApp((st) => st.vehicleSpeed);
   // Grade and bank fold into what the tires must supply (see core/tests/segments.ts).
   const road = roadEffective(lateralGKin, longitudinalG, Math.atan(roadGrade / 100), (roadBank * Math.PI) / 180);
   const lateralG = road.lateralG;

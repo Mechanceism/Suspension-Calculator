@@ -40,10 +40,12 @@ Calculating and visualizing come first. **Later:** export to modeling software (
 | 7 | **Other suspension types**: MacPherson, multilink, etc., plus user-defined linkages | ✅ MacPherson strut, five-link multilink and no suspension (rigid) (per design: Inspector / Inputs → Type, setup wizard, presets M and L), mixed on one car through the vehicle, ride, handling and optimizers. Since then: single arm (swing / trailing arm), solid axle (4-link, 3-link + Panhard, leaf springs), twist beam, pushrod / rocker spring layouts, custom (user-defined) linkages. |
 | 8 | **Tests workspace** (alongside Corner and Vehicle, sharing one design): chainable / combinable test segments (speed change over distance, straight / left / right turn with radius, flat / grade / bank / bumps / potholes / lumpy), per-tire grip use and slip detection, speed limits, test goals for the optimizer | Phase A done: segments with speed / path / road (rough height maps, placed bumps), pass / warning / fail rules and profiles, test (A, B…) and segment (P1, P2…) priorities, enable / run all, optimize one or all tests until they pass (widening ranges up to a chosen maximum) / improve / preview wider ranges, steering through turns (steering lock check), track map, playback, export in parts. Phase B done: ride over time (7 DOF: body heave / roll / pitch + four wheels, dampers, tire damping, road at speed, transients at segment changes), checked by the pass rules, played back with real body motion. Phase C done: handling over time (a driver steers along the path through the car's steering kinematics with a lag, a rate limit and the rack limit; each tire's side force from its slip angle; yaw and sideslip; checks for running off the line and spinning; playback shows the line actually driven). Aero done (generic values or imported characteristics) |
 
-## Current status and handoff (2026-11-23)
+## Current status and handoff (2026-11-24)
 Read this first when picking the work up again; the details of each item are in the sections below and in [docs/MATH.md](docs/MATH.md).
 
-**Branch.** Items 1–14 are **merged to main** (`5b79062`, the merge of `feature/pending-goals`, 2026-11-23). **Round 3** (list below) is on `feature/round-3`; merge it when the user asks (they merge at milestones). 432 tests pass (`npm test`, about 2 min); `npm run typecheck` is clean. Project file format: `FORMAT_VERSION = 41`.
+**Branch.** Items 1–14 (2026-11-23) and **Round 3** with user reviews 2–9 (R1–R9, V1–V2, U4a–U4k, R9a–R9f; 2026-11-24) are **merged to main**; `feature/round-3` is merged and deleted, so there are no open branches. New work starts on a new branch; merge it when the user asks (they merge at milestones). 462 tests pass (`npm test`, about 2½ min — the timing tests *runs fast enough* and *every built-in test also runs over time* can run past their limits when the machine is busy, and pass on their own); `npm run typecheck` is clean. Project file format: `FORMAT_VERSION = 43` (42: speeds as maximums; 43: results in model-and-tests files).
+
+**What's left.** Item 15 (hardpoints in the setup wizard) is on hold; 16–17 are skipped for now (user). Ideas raised but not started: rounding the course's crests and dips (vertical curves) so the ride's suspension feels them; Compare shows the Corner results for one corner at a time (the active one) — all four side by side could come later.
 
 **How the user wants the work done.**
 - Finish one item at a time: implement, test (unit tests plus a check in the running app for anything visual), update the docs (docs/MATH.md, README.md, GOALS.md), then commit and push. Work through the pending list in order.
@@ -79,7 +81,7 @@ Read this first when picking the work up again; the details of each item are in 
 | 16 | Export / integration (Phase 5: hardpoint CSV, Fusion parameters, Blender script, Fusion add-in) | skipped for now (user) | |
 | 17 | Phone companion app (probe to capture real 3D points) | skipped for now (user) | |
 
-### Round 3 (agreed 2026-11-23, branch `feature/round-3`)
+### Round 3 (agreed 2026-11-23; merged to main 2026-11-24)
 Discussed with the user item by item; do them in this order.
 
 | # | Item | Status | Commit(s) |

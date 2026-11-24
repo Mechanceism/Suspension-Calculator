@@ -100,7 +100,7 @@ Discussed with the user item by item; do them in this order.
 | — | Fix: the dev server served a half-written `run.ts` (the file was written in steps and Vite cached a middle one), so *Driver lifts* failed with "LIFT_HELPS is not defined". Reloaded; no code change. | ✅ | |
 | U4a | **No flash on changing tabs / views** (user review 4): keep each 3D view alive while hidden (not rendering) instead of rebuilding it, and start the camera sweep on its first drawn frame (the blank canvas while it rebuilt was hiding the sweep). | ✅ | 7ea022e |
 | U4b | **Free camera: pivot on the track** — it orbits a point kept on the track's center line; dragging slides that point along the track ("scrolling" along the course), orbit and zoom like chase; starts close, not over the whole track. | ✅ | 94252de |
-| U4c | **Units everywhere**: finding / message text (e.g. *Too tight for the steering … rack 26.0 mm, limit ±25 mm*, *34 km/h at the end instead of 48*) and every other displayed value in the display units; an audit of the whole UI. | ✅ | |
+| U4c | **Units everywhere**: finding / message text (e.g. *Too tight for the steering … rack 26.0 mm, limit ±25 mm*, *34 km/h at the end instead of 48*) and every other displayed value in the display units; an audit of the whole UI. | ✅ | 2028fed |
 | U4d | **Clearer driver messages**: the pedal driver's "lifted to stay on the line" is not the *Driver lifts* option (reword: *eased off*); report the lowest speed in the segment, not only its end speed; when the car is recovering off the line (steering on a straight), say so instead of *Too tight for the steering*. | next | |
 | U4e | **Speeds as maximums** (details below). | | |
 | R9 | **Snapshots and compare** (agreed, details below). | after U4 | |

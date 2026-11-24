@@ -209,7 +209,7 @@ export interface EditableGeometry {
 export const VIS_KEYS = [
   'chassis', 'uca', 'lca', 'upright', 'tieRod', 'wheel',
   'spring', 'patch', 'steeringAxis', 'icConstruction', 'rollCenter', 'ground', 'datum', 'labels', 'dimensions', 'ackermann',
-  'cg', 'arb', 'markerLabels',
+  'cg', 'arb',
 ] as const;
 export type VisKey = (typeof VIS_KEYS)[number];
 
@@ -1403,8 +1403,8 @@ export const useApp = create<AppState>((set, get) => ({
   ghosts: true,
   visibility: {
     chassis: true, uca: true, lca: true, upright: true, tieRod: true, wheel: true, spring: true,
-    patch: true, steeringAxis: true, icConstruction: true, rollCenter: true, ground: true, datum: true, labels: params.get('labels') === '1',
-    dimensions: true, ackermann: true, cg: true, arb: true, markerLabels: true,
+    patch: true, steeringAxis: true, icConstruction: true, rollCenter: true, ground: true, datum: true, labels: params.get('labels') !== '0',
+    dimensions: true, ackermann: true, cg: true, arb: true,
   },
   projection: params.get('projection') === 'perspective' ? 'perspective' : 'orthographic',
   focus: 'corner',

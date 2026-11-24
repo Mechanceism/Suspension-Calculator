@@ -565,7 +565,8 @@ function overlayLabels(model: VehicleModel | null, arrows: ForceArrow[], showVal
   const P = poseFns(model.result.pose);
   const L = model.wheelbase;
   const mark = (key: string, text: string, pos: Vec3) => out.push({ key, text, pos, className: 'cg' });
-  if (vis.markerLabels) {
+  // Labels: one switch, and each label only with its item.
+  if (vis.labels) {
     if (vis.cg && model.sprungCgWorld) mark('cg', 'CG (sprung)', model.sprungCgWorld);
     const rcF = model.rollCenters.front, rcR = model.rollCenters.rear;
     if (vis.rollCenter && rcF && rcR) {
@@ -590,8 +591,8 @@ function overlayLabels(model: VehicleModel | null, arrows: ForceArrow[], showVal
   const v = model.corners[active];
   if (vis.labels && v && v.state.kind !== 'custom') {
     const pl = placement(active, L), p = v.state.points;
-    if (v.state.kind !== 'macpherson') mark('ubj', `${active} upper ball joint`, P.point(pl.point(p.ucaOut)));
-    mark('lbj', `${active} lower ball joint`, P.point(pl.point(p.lcaOut)));
+    if (v.state.kind !== 'macpherson' && (vis.uca || vis.upright)) mark('ubj', `${active} upper ball joint`, P.point(pl.point(p.ucaOut)));
+    if (vis.lca || vis.upright) mark('lbj', `${active} lower ball joint`, P.point(pl.point(p.lcaOut)));
   }
   return out;
 }

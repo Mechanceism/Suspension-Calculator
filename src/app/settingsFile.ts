@@ -45,6 +45,8 @@ export function applySettingsFile(data: unknown): string[] {
     if (isObj(v.visibility)) {
       const vis = { ...s.visibility };
       for (const k of VIS_KEYS) if (typeof v.visibility[k] === 'boolean') vis[k] = v.visibility[k] as boolean;
+      // Older settings had marker labels and point labels apart: one Labels now, on if either was.
+      if (typeof v.visibility.markerLabels === 'boolean') vis.labels = v.visibility.markerLabels === true || v.visibility.labels === true;
       s.set('visibility', vis);
     }
     for (const k of ['simpleTire', 'trails', 'ghosts', 'followFocus', 'forceValues', 'snapToGrid'] as const) if (typeof v[k] === 'boolean') s.set(k, v[k] as never);

@@ -82,7 +82,7 @@ describe('road surface in tests', () => {
   it('rough surface and features save, load and reach the core; format-8 lumpy becomes rough', async () => {
     const { roadSpecOf } = await import('../src/app/tests');
     const d = defaultDesign();
-    const t = { ...TEST_PRESETS[2]!.make(), id: newTestId('test') }; // hills: features + rough
+    const t = { ...TEST_PRESETS[3]!.make(), id: newTestId('test') }; // hills: features + rough
     d.tests = [t];
     const back = importProject(JSON.parse(JSON.stringify(serializeProject(d, 'R')))).design.tests[0]!;
     expect(back.segments[1]!.features.map((f) => f.kind)).toEqual(['bump', 'pothole']);
@@ -102,8 +102,8 @@ describe('priority ranks', () => {
     expect(rankWeight(1, 2)).toBe(2);
     expect(rankWeight(2, 2)).toBe(1);
     expect(rankWeight(1, 4)).toBe(rankWeight(1, 4));
-    const a = { ...TEST_PRESETS[3]!.make(), id: 'a', rank: 1 };
-    const b = { ...TEST_PRESETS[3]!.make(), id: 'b', rank: 2 };
+    const a = { ...TEST_PRESETS[4]!.make(), id: 'a', rank: 1 };
+    const b = { ...TEST_PRESETS[4]!.make(), id: 'b', rank: 2 };
     const st = statesForTests([a, b], 'all');
     const wa = st.filter((s) => s.name.startsWith(a.name) && st.indexOf(s) < st.length / 2).reduce((x, s) => x + (s.weight ?? 0), 0);
     const wb = st.slice(st.length / 2).reduce((x, s) => x + (s.weight ?? 0), 0);
@@ -113,7 +113,7 @@ describe('priority ranks', () => {
   it('older files: priority % and segment weights become ranks (largest = P1)', () => {
     const d = defaultDesign();
     const t1 = { ...TEST_PRESETS[0]!.make(), id: 't1' };
-    const t2 = { ...TEST_PRESETS[3]!.make(), id: 't2' };
+    const t2 = { ...TEST_PRESETS[4]!.make(), id: 't2' };
     d.tests = [t1, t2];
     const f = JSON.parse(JSON.stringify(serializeProject(d, 'Old')));
     for (const t of f.tests) delete t.rank;
@@ -127,8 +127,8 @@ describe('priority ranks', () => {
 
   it('skipped tests are left out of all-tests optimizing and saved as skipped; segment presets start with Empty', async () => {
     const { statesForTests, SEGMENT_PRESETS } = await import('../src/app/tests');
-    const a = { ...TEST_PRESETS[3]!.make(), id: 'a' };
-    const b = { ...TEST_PRESETS[3]!.make(), id: 'b', enabled: false };
+    const a = { ...TEST_PRESETS[4]!.make(), id: 'a' };
+    const b = { ...TEST_PRESETS[4]!.make(), id: 'b', enabled: false };
     const both = statesForTests([a, { ...b, enabled: true }], 'all');
     expect(statesForTests([a, b], 'all')).toHaveLength(both.length / 2);
     // A skipped test can still be optimized on its own.
@@ -148,7 +148,7 @@ describe('priority ranks', () => {
     const b = buildVehicleProblem(d as AppState);
     expect(b.problem.steering?.steered).toMatchObject({ FL: true, FR: true, RL: false, RR: false });
     expect(b.problem.steering?.rackLimit).toBe(30);
-    const o = buildVehicleProblem({ ...d, tests: [{ ...TEST_PRESETS[3]!.make(), id: 'x' }] } as AppState, { caseSource: 'x' });
+    const o = buildVehicleProblem({ ...d, tests: [{ ...TEST_PRESETS[4]!.make(), id: 'x' }] } as AppState, { caseSource: 'x' });
     expect(o.problem.states?.length).toBeGreaterThan(0);
   });
 

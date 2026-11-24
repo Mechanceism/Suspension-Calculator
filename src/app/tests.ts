@@ -136,9 +136,9 @@ export const SEGMENT_PRESETS: SegmentPreset[] = [
 /** Whole tests to start from. */
 export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }[] = [
   {
-    label: 'Autocross sequence',
+    label: 'Autocross (simple)',
     make: () => ({
-      name: 'Autocross sequence', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, ride: true, handling: true,
+      name: 'Autocross (simple)', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, ride: true, handling: true,
       segments: [
         newSegment({ name: 'Launch 0–40', distance: f(50, 'distance'), speedStart: f(0, 'speed'), speedEnd: f(40 * MPH, 'speed') }),
         newSegment({ name: 'Brake 40–30', distance: f(15, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(30 * MPH, 'speed') }),
@@ -147,6 +147,36 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
         newSegment({ name: 'Exit 22–45', distance: f(60, 'distance'), speedStart: f(22 * MPH, 'speed'), speedEnd: f(45 * MPH, 'speed') }),
       ],
     }),
+  },
+  {
+    label: 'Autocross (complex): slalom, offset gates, sweepers',
+    make: () => {
+      // Flat (no bank, no grade) and balanced: the same number and kind of left and right turns, so both
+      // sides of the car work equally. A slalom (R 25 m at 30 mph, ≈ 0.7 g, cones ≈ 15 m apart), two
+      // mirrored sets of offset gates (R 18 m at 25 mph), and a broad 90° sweeper each way (R 40 m at 35 mph).
+      // Every turn sequence ends on the heading it started on, so the course runs straight overall.
+      const arc = (name: string, path: 'left' | 'right', radius: number, d: number, mph: number) =>
+        newSegment({ name, path, radius: f(radius, 'distance'), distance: f(d, 'distance'), speedStart: f(mph * MPH, 'speed'), speedEnd: f(mph * MPH, 'speed') });
+      const seg = (name: string, d: number, v0: number, v1: number) => newSegment({ name, distance: f(d, 'distance'), speedStart: f(v0 * MPH, 'speed'), speedEnd: f(v1 * MPH, 'speed') });
+      const sweep = (Math.PI / 2) * 40;
+      return {
+        name: 'Autocross (complex)', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', enabled: true, ride: true, handling: true,
+        segments: [
+          seg('Launch 0–30', 40, 0, 30),
+          // Slalom: half, full, full… half arcs, alternating; three left and three right, net heading 0.
+          arc('Slalom 1 (left, entry)', 'left', 25, 7.5, 30), arc('Slalom 2 (right)', 'right', 25, 15, 30), arc('Slalom 3 (left)', 'left', 25, 15, 30),
+          arc('Slalom 4 (right)', 'right', 25, 15, 30), arc('Slalom 5 (left)', 'left', 25, 15, 30), arc('Slalom 6 (right, exit)', 'right', 25, 7.5, 30),
+          seg('Accelerate 30–40', 50, 30, 40), seg('Brake 40–25', 25, 40, 25),
+          // Offset gates: a quick jog out and back, first to the left, then the mirror image to the right.
+          arc('Offset gate A1 (left)', 'left', 18, 12, 25), arc('Offset gate A2 (right)', 'right', 18, 24, 25), arc('Offset gate A3 (left)', 'left', 18, 12, 25),
+          seg('Between the gates', 20, 25, 25),
+          arc('Offset gate B1 (right)', 'right', 18, 12, 25), arc('Offset gate B2 (left)', 'left', 18, 24, 25), arc('Offset gate B3 (right)', 'right', 18, 12, 25),
+          seg('Accelerate 25–35', 40, 25, 35),
+          arc('Left sweeper (90°)', 'left', 40, sweep, 35), seg('Short straight', 30, 35, 35), arc('Right sweeper (90°)', 'right', 40, sweep, 35),
+          seg('Stop box 35–0', 30, 35, 0),
+        ],
+      };
+    },
   },
   {
     label: 'Pothole while braking in a turn',

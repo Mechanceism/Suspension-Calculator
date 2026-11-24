@@ -43,7 +43,7 @@ Calculating and visualizing come first. **Later:** export to modeling software (
 ## Current status and handoff (2026-11-24)
 Read this first when picking the work up again; the details of each item are in the sections below and in [docs/MATH.md](docs/MATH.md).
 
-**Branch.** Items 1–14 (2026-11-23) and **Round 3** with user reviews 2–9 (R1–R9, V1–V2, U4a–U4k, R9a–R9f; 2026-11-24) are **merged to main** (`e54cc6c`); `feature/round-3` is merged and deleted, so there are no open branches. New work starts on a new branch; merge it when the user asks (they merge at milestones). 462 tests pass (`npm test`, about 2½ min — the timing tests *runs fast enough* and *every built-in test also runs over time* can run past their limits when the machine is busy, and pass on their own); `npm run typecheck` is clean. Project file format: `FORMAT_VERSION = 43` (42: speeds as maximums; 43: results in model-and-tests files).
+**Branch.** Now on `fix/round-4` (small fixes and checking the calculator works right, see *Round 4* below). Items 1–14 (2026-11-23) and **Round 3** with user reviews 2–9 (R1–R9, V1–V2, U4a–U4k, R9a–R9f; 2026-11-24) are **merged to main** (`e54cc6c`); `feature/round-3` is merged and deleted, so there are no open branches. New work starts on a new branch; merge it when the user asks (they merge at milestones). 462 tests pass (`npm test`, about 2½ min — the timing tests *runs fast enough* and *every built-in test also runs over time* can run past their limits when the machine is busy, and pass on their own); `npm run typecheck` is clean. Project file format: `FORMAT_VERSION = 43` (42: speeds as maximums; 43: results in model-and-tests files).
 
 **What's left.** Item 15 (hardpoints in the setup wizard) is on hold; 16–17 are skipped for now (user). Ideas raised but not started: rounding the course's crests and dips (vertical curves) so the ride's suspension feels them; Compare shows the Corner results for one corner at a time (the active one) — all four side by side could come later.
 
@@ -80,6 +80,14 @@ Read this first when picking the work up again; the details of each item are in 
 | 15 | Enter hardpoints inside the setup wizard | on hold (round 3 first) | |
 | 16 | Export / integration (Phase 5: hardpoint CSV, Fusion parameters, Blender script, Fusion add-in) | skipped for now (user) | |
 | 17 | Phone companion app (probe to capture real 3D points) | skipped for now (user) | |
+
+### Round 4: small fixes and checks (started 2026-11-24, branch `fix/round-4`)
+
+| # | Item | Status | Commit(s) |
+|---|---|---|---|
+| F1 | **Compare: Δ sign.** Δ is now current − snapshot (was snapshot − current): a lower current value shows negative, e.g. a faster current car has a negative Δ time. | ✅ | 2f68d50 |
+| F2 | **Which way is the front.** The cars look the same from either end: a blue arrow on the ground between the front wheels points forward (Vehicle view, with the ground grid; its tip is kept in *Fit*). | ✅ | FRONT_ID |
+| F3 | **Is the optimizer working?** Optimizing a test often leaves the score unchanged or says nothing changed, though another car runs the same test differently (and sometimes better); two cars with everything unlocked on the same tests don't end up alike. To check why. | in progress | |
 
 ### Round 3 (agreed 2026-11-23; merged to main 2026-11-24)
 Discussed with the user item by item; do them in this order.

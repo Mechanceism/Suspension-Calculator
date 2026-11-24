@@ -181,6 +181,44 @@ function ForceArrows({ arrows }: { arrows: ForceArrow[] }) {
   );
 }
 
+/**
+ * Which way is the front: an arrow on the ground at the front axle, pointing forward (+Z), sized to the car
+ * (the cars look much the same from either end).
+ */
+export function frontArrow(model: VehicleModel): Vec3[] {
+  const wc = (id: CornerId) => {
+    const v = model.corners[id];
+    return v ? placement(id, model.wheelbase).point(v.state.points.wheelCenter) : null;
+  };
+  const fl = wc('FL') ?? wc('FR');
+  const halfTrack = fl ? Math.abs(fl.x) : 600;
+  const radius = fl ? Math.max(100, fl.y - model.groundY) : 300;
+  const y = model.groundY + 1;
+  // Between the front wheels, its tip just past the front of the tires.
+  const len = Math.max(250, 0.3 * model.wheelbase);
+  const z0 = radius + 0.06 * model.wheelbase - len;
+  const w = Math.max(60, 0.15 * halfTrack); // shaft half-width
+  const head = 0.45 * len;
+  // Outline from the shaft's back left corner, round the head, to its back right corner.
+  return [
+    vec3(w, y, z0), vec3(w, y, z0 + len - head), vec3(2.4 * w, y, z0 + len - head), vec3(0, y, z0 + len),
+    vec3(-2.4 * w, y, z0 + len - head), vec3(-w, y, z0 + len - head), vec3(-w, y, z0),
+  ];
+}
+
+function FrontArrow({ model }: { model: VehicleModel }) {
+  const p = useMemo(() => frontArrow(model), [model]);
+  const color = '#4cc9f0';
+  return (
+    <group>
+      <Tri a={p[0]!} b={p[1]!} c={p[5]!} color={color} opacity={0.3} />
+      <Tri a={p[0]!} b={p[5]!} c={p[6]!} color={color} opacity={0.3} />
+      <Tri a={p[2]!} b={p[3]!} c={p[4]!} color={color} opacity={0.3} />
+      <Polyline pts={[...p, p[0]!]} color={color} width={1.5} opacity={0.8} />
+    </group>
+  );
+}
+
 /** The car (and its forces, markers). `ground`: its own ground grid (off when it sits on a course). */
 export function VehicleScene({ model, arrows, ground = true }: { model: VehicleModel; arrows: ForceArrow[]; ground?: boolean }) {
   const setActiveCorner = useApp((s) => s.setActiveCorner);
@@ -206,6 +244,7 @@ export function VehicleScene({ model, arrows, ground = true }: { model: VehicleM
           cellColor={COLORS.ground} sectionColor="#566075" fadeDistance={12000} infiniteGrid
         />
       )}
+      {vis.ground && ground && <FrontArrow model={model} />}
       {/* Chassis (everything sprung) moves with the solved pose. */}
       <group ref={frame} position={[0, pose.heave, 0]} rotation={euler}>
         {vis.chassis && <Frame model={model} />}
@@ -653,6 +692,9 @@ function vehicleTarget(model: VehicleModel | null): FocusTarget {
     box.expandByPoint(new THREE.Vector3(c.contact.x, c.contact.y, c.contact.z));
     box.expandByPoint(new THREE.Vector3(c.wheelCenter.x, c.wheelCenter.y + 300, c.wheelCenter.z));
   }
+  // The front arrow's tip in view too.
+  const tip = frontArrow(model)[3]!;
+  box.expandByPoint(new THREE.Vector3(0, tip.y, tip.z));
   const s = box.getBoundingSphere(new THREE.Sphere());
   return { center: vec3(s.center.x, s.center.y, s.center.z), radius: s.radius };
 }

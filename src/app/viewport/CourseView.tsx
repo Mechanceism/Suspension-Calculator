@@ -5,7 +5,7 @@
  * Several runs can be shown at once (`ghosts`: other frame sets drawn as see-through cars), so the compare
  * window (R9) can race a snapshot on the same course.
  */
-import { useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera } from '@react-three/drei';
 import * as THREE from 'three';
@@ -90,17 +90,16 @@ function Road({ points, segs, halfWidth }: { points: CoursePoint[]; segs: Return
   );
 }
 
+type Pose = { pos: THREE.Vector3; heading: number; grade: number; bank: number };
+
 /** The car placed on the course at the playback time (its own model, posed by the playback). */
-function CarOnCourse({ model, frames, points, segStart, follow }: { model: VehicleModel | null; frames: PlaybackFrame[]; points: CoursePoint[]; segStart: number[]; follow: React.MutableRefObject<{ pos: THREE.Vector3; heading: number }> }) {
+function CarOnCourse({ model, poseNow }: { model: VehicleModel | null; poseNow: () => Pose | null }) {
   const group = useRef<THREE.Group>(null);
-  const startPoint = points[0];
   useFrame(() => {
-    const t = usePlayback.getState().t;
-    const at = poseAt(points, segStart, frames, t) ?? (startPoint ? { pos: toScene(startPoint.x, startPoint.y, startPoint.z), heading: startPoint.heading, grade: startPoint.grade, bank: startPoint.bank } : null);
+    const at = poseNow();
     if (!at || !group.current) return;
     group.current.position.copy(at.pos);
     group.current.rotation.set(-at.grade, at.heading, -at.bank, 'YXZ');
-    follow.current = { pos: at.pos.clone(), heading: at.heading };
   });
   if (!model?.result) return null;
   return (
@@ -132,31 +131,55 @@ function GhostCar({ frames, color, wheelbase, track, points, segStart }: { frame
   );
 }
 
-/** Chase (behind and above), overhead (straight down) or free (orbit) camera following the car. */
-function CourseCamera({ mode, follow, size }: { mode: CourseCamera; follow: React.MutableRefObject<{ pos: THREE.Vector3; heading: number }>; size: number }) {
-  const cam = useThree((s) => s.camera);
-  const target = useRef(new THREE.Vector3());
-  useFrame((_, dt) => {
-    if (mode === 'free') return;
-    const { pos, heading } = follow.current;
-    const fwd = new THREE.Vector3(Math.sin(heading), 0, Math.cos(heading));
-    const want = mode === 'chase'
-      ? pos.clone().addScaledVector(fwd, -size * 2.2).add(new THREE.Vector3(0, size * 0.9, 0))
-      : pos.clone().add(new THREE.Vector3(0, size * 6, 0)).addScaledVector(fwd, -1);
-    // Smoothing by time (the same feel at any frame rate).
-    cam.position.lerp(want, 1 - Math.exp(-dt * 6));
-    target.current.lerp(pos.clone().addScaledVector(fwd, mode === 'chase' ? size * 0.6 : 0), 1 - Math.exp(-dt * 10));
-    cam.lookAt(target.current);
+/**
+ * Cameras. Chase: orbit around the car (drag to look round, scroll to zoom) while it carries you along and
+ * turns you with it; the Chase button puts you back behind it. Overhead: above the car, following. Free:
+ * orbit about a point you choose (where the car was when you switched; pan to move it); nothing follows.
+ * The car and the camera read the same pose each frame (no lag between them).
+ */
+function CourseCamera({ mode, poseNow, size, resetKey }: { mode: CourseCamera; poseNow: () => Pose | null; size: number; resetKey: number }) {
+  const cam = useThree((st) => st.camera);
+  const controls = useRef<{ target: THREE.Vector3; update: () => void } | null>(null);
+  const prev = useRef<Pose | null>(null);
+  const up = useMemo(() => new THREE.Vector3(0, size * 0.25, 0), [size]);
+  const freeTarget = useMemo(() => poseNow()?.pos.clone() ?? new THREE.Vector3(), [mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Behind the car, a little above: the chase view's start (and its reset).
+  useEffect(() => {
+    if (mode !== 'chase') return;
+    const p = poseNow();
+    if (!p) return;
+    const fwd = new THREE.Vector3(Math.sin(p.heading), 0, Math.cos(p.heading));
+    cam.position.copy(p.pos).addScaledVector(fwd, -size * 2.2).add(new THREE.Vector3(0, size * 0.9, 0));
+    if (controls.current) { controls.current.target.copy(p.pos).add(up); controls.current.update(); }
+    prev.current = { ...p, pos: p.pos.clone() };
+  }, [mode, resetKey, size]); // eslint-disable-line react-hooks/exhaustive-deps
+  useFrame(() => {
+    const p = poseNow();
+    if (!p) return;
+    if (mode === 'chase' && controls.current) {
+      const pr = prev.current ?? p;
+      // Carry the camera with the car: move by its move, turn by its turn about it.
+      const off = cam.position.clone().sub(pr.pos).applyAxisAngle(new THREE.Vector3(0, 1, 0), p.heading - pr.heading);
+      cam.position.copy(p.pos).add(off);
+      controls.current.target.copy(p.pos).add(up);
+      controls.current.update();
+      prev.current = { ...p, pos: p.pos.clone() };
+    } else if (mode === 'overhead') {
+      cam.position.set(p.pos.x, p.pos.y + size * 2.4, p.pos.z - 1);
+      cam.lookAt(p.pos);
+    }
   });
-  return mode === 'free' ? <OrbitControls makeDefault target={follow.current.pos} /> : null;
+  if (mode === 'overhead') return null;
+  return <OrbitControls ref={controls as never} makeDefault enableDamping={false} {...(mode === 'free' ? { target: freeTarget } : {})} />;
 }
 
 export function CourseViewport({ model, test, ghosts = [] }: {
   model: VehicleModel | null; test: TestDesign | null; ghosts?: { frames: PlaybackFrame[]; color: string; label: string }[];
 }) {
   const tv = useTestView();
-  const pb = usePlayback();
-  const s = useApp.getState();
+  // Only the frames (not the playback time: that is read each frame, so the view doesn't re-render per tick).
+  const pbFrames = usePlayback((st) => st.frames), pbTest = usePlayback((st) => st.testId);
+  const [resetKey, setResetKey] = useState(0);
   const segs = useMemo(() => (test ? test.segments.map((sg) => segmentSpec(sg, test)) : []), [test]);
   const points = useMemo(() => course(segs), [segs]);
   const segStart = useMemo(() => { const o: number[] = []; segs.reduce((a, sg) => { o.push(a); return a + sg.distance; }, 0); return o; }, [segs]);
@@ -172,8 +195,14 @@ export function CourseViewport({ model, test, ghosts = [] }: {
     const w = test?.segments[seg]?.width?.value;
     return (w && w > 0 ? w : dims.width * tv.widthFactor) / 2;
   }, [test, dims.width, tv.widthFactor]);
-  const frames = pb.testId === test?.id ? pb.frames : [];
-  const follow = useRef({ pos: new THREE.Vector3(), heading: 0 });
+  const frames = useMemo(() => (pbTest === test?.id ? pbFrames : []), [pbTest, pbFrames, test?.id]);
+  // The pose now (playback time), shared by the car and the camera; at the start before Play.
+  const poseNow = useMemo(() => () => {
+    const at = poseAt(points, segStart, frames, usePlayback.getState().t);
+    if (at) return at;
+    const p0 = points[0];
+    return p0 ? { pos: toScene(p0.x, p0.y, p0.z), heading: p0.heading, grade: p0.grade, bank: p0.bank } : null;
+  }, [points, segStart, frames]);
   const bg = useMemo(() => getComputedStyle(document.documentElement).getPropertyValue('--viewport-bg').trim() || '#16191e', []);
   const pathLine = useMemo(() => points.map((p) => [p.y * 1000, p.z * 1000 + 15, p.x * 1000] as [number, number, number]), [points]);
   // The line driven, one piece per segment colored by its result (the worst of its frames).
@@ -196,7 +225,6 @@ export function CourseViewport({ model, test, ghosts = [] }: {
     return pieces.filter((p) => p.pts.length > 1);
   }, [frames, points, segStart]);
   const size = Math.max(2500, (model?.wheelbase ?? 1550) * 1.6);
-  void s;
   return (
     <div className="viewport">
       <Canvas dpr={[1, 2]} style={{ position: 'absolute', inset: 0 }}>
@@ -207,13 +235,15 @@ export function CourseViewport({ model, test, ghosts = [] }: {
         {points.length > 1 && <Road points={points} segs={segs} halfWidth={halfWidth} />}
         {pathLine.length > 1 && <Line points={pathLine} color="#8a93a3" lineWidth={1.5} dashed dashSize={1500} gapSize={1000} />}
         {driven.map((p, i) => <Line key={i} points={p.pts} color={SEV[p.sev] ?? '#ffffff'} lineWidth={2.5} />)}
-        <CarOnCourse model={model} frames={frames} points={points} segStart={segStart} follow={follow} />
+        <CarOnCourse model={model} poseNow={poseNow} />
         {ghosts.map((g) => <GhostCar key={g.label} frames={g.frames} color={g.color} wheelbase={model?.wheelbase ?? 1550} track={dims.track} points={points} segStart={segStart} />)}
-        <CourseCamera mode={tv.camera} follow={follow} size={size} />
+        <CourseCamera mode={tv.camera} poseNow={poseNow} size={size} resetKey={resetKey} />
       </Canvas>
       <div className="course-camera">
         {(['chase', 'overhead', 'free'] as const).map((c) => (
-          <button key={c} className={`chip${tv.camera === c ? ' on' : ''}`} onClick={() => setTestView({ camera: c })}>{c === 'chase' ? 'Chase' : c === 'overhead' ? 'Overhead' : 'Free'}</button>
+          <button key={c} className={`chip${tv.camera === c ? ' on' : ''}`}
+            title={c === 'chase' ? 'Follow the car; drag to orbit round it, scroll to zoom. Click again to get back behind it' : c === 'overhead' ? 'Above the car, following it' : 'Orbit freely about a point (pan to move it); nothing follows the car'}
+            onClick={() => { if (c === 'chase') setResetKey((k) => k + 1); setTestView({ camera: c }); }}>{c === 'chase' ? 'Chase' : c === 'overhead' ? 'Overhead' : 'Free'}</button>
         ))}
         <span className="muted small-text" title="Road width where a segment has no track width of its own">Road</span>
         <select value={tv.widthFactor} onChange={(e) => setTestView({ widthFactor: Number(e.target.value) })} title="Road width: a share of the car's overall width (a segment's own track width wins)">

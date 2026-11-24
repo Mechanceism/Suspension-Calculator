@@ -204,6 +204,12 @@ export interface VehicleInput {
   trailer?: TrailerSpec;
   /** Rolling resistance coefficient (rolling only): the tires' drag, force ÷ load. Omit = none. */
   rollingResistance?: number;
+  /**
+   * The car's speed (m/s) and yaw rate (rad/s, + = turning left), for a locked axle's wheel slips. Without
+   * the yaw rate a steady turn's is used (lateral g · g ÷ speed).
+   */
+  speed?: number;
+  yawRate?: number;
   /** Aerodynamics at the car's speed (drag on the body, lift / downforce at each axle). Omit = none. */
   aero?: AeroInput;
   /** Differential per axle for chassis-driven corners (default open). */
@@ -599,6 +605,29 @@ export function shareLateral(F: number, fx: number[], cap: number[], capX: numbe
   return { fy: f.map((v) => (Math.sign(F) * v * need) / sum), u };
 }
 
+/** Tires' longitudinal slip stiffness per unit load (force per unit slip ÷ load): ≈ 15–25 for car tires. */
+export const SLIP_STIFFNESS = 18;
+
+/**
+ * A locked axle (no differential) while turning at yaw rate r: both wheels turn at the same speed, but the
+ * outside one has farther to go, so it is dragged back and the inside one pushes. Each wheel's slip
+ * κ = (ωR − v) / v with v = u ∓ r · (half track) (left wheel at +y); force = C · κ, C = SLIP_STIFFNESS × load;
+ * ωR so that the two add up to the drive asked (coasting: 0). A pair of forces against the yaw: the kart's
+ * push (why karts lift the inside rear). Each is capped at its tire's grip. Returns [left, right], N.
+ */
+export function lockedAxleForces(drive: number, u: number, yaw: number, halfTrack: [number, number], loads: [number, number], peaks: [number, number] | null): [number, number] {
+  const v = [u - yaw * halfTrack[0], u + yaw * halfTrack[1]].map((x) => Math.max(x, 0.3));
+  const C = loads.map((fz) => SLIP_STIFFNESS * Math.max(fz, 0));
+  const sumC = C[0]! + C[1]!;
+  if (!(sumC > 0)) return [drive / 2, drive / 2];
+  // Σ C_i (ωR − v_i) / v_i = drive → ωR.
+  const a = C[0]! / v[0]! + C[1]! / v[1]!;
+  const wR = (drive + C[0]! + C[1]!) / a;
+  const f = [C[0]! * (wR - v[0]!) / v[0]!, C[1]! * (wR - v[1]!) / v[1]!];
+  const cap = (x: number, i: number) => { const p = peaks ? peaks[i]! : Infinity; return Math.max(-p, Math.min(p, x)); };
+  return [cap(f[0]!, 0), cap(f[1]!, 1)];
+}
+
 /** Within-axle drive split for a differential (forces in proportion; sums to 1). */
 function diffSplit(diff: DiffType, loadL: number, loadR: number, bias: number): [number, number] {
   if (diff === 'open') return [0.5, 0.5];
@@ -715,14 +744,27 @@ export function tireForcesFor(input: VehicleInput, fs: ForceSetup, loads: Record
   const dShares = { ...fs.driveShares };
   const diffOf = (front: boolean): DiffType => (front ? input.diff?.front : input.diff?.rear) ?? 'open';
   const chassisAxle = (l: CornerId, r: CornerId) => [l, r].every((id) => (input.corners.find((c) => c.id === id)?.drive ?? 'none') === 'chassis');
+  // A locked axle while turning: forces from the wheels' slips (below), not shares of the drive.
+  const lockedDrive: Partial<Record<CornerId, number>> = {};
   for (const [l, r, front] of [['FL', 'FR', true], ['RL', 'RR', false]] as const) {
     if (!chassisAxle(l, r)) continue;
     const axleShare = dShares[l] + dShares[r];
+    const u = input.speed ?? 0;
+    const yaw = input.yawRate ?? (u > 0.5 ? (input.lateralG * G) / u : 0);
+    if (diffOf(front) === 'locked' && u > 0.5 && Math.abs(yaw) > 1e-4) {
+      const lc = input.corners.find((c) => c.id === l), rc = input.corners.find((c) => c.id === r);
+      if (lc && rc) {
+        const ht = (c: VehicleCorner) => Math.abs(c.table.at(0).cp.x) / 1000;
+        const f = lockedAxleForces(fs.driveTotal * axleShare, u, yaw, [ht(lc), ht(rc)], [loads[l], loads[r]], caps ? [caps[l].x, caps[r].x] : null);
+        lockedDrive[l] = f[0]; lockedDrive[r] = f[1];
+        continue;
+      }
+    }
     const [a, b] = diffSplit(diffOf(front), loads[l], loads[r], input.lsdBias ?? 2.5);
     dShares[l] = axleShare * a; dShares[r] = axleShare * b;
   }
   const brakeF = (id: CornerId) => -fs.brakeTotal * bShares[id];
-  const driveF = (id: CornerId) => fs.driveTotal * dShares[id];
+  const driveF = (id: CornerId) => lockedDrive[id] ?? fs.driveTotal * dShares[id];
   const lat: Record<CornerId, number> = { FL: 0, FR: 0, RL: 0, RR: 0 };
   for (const [l, r, share] of [['FL', 'FR', fs.frontLatShare], ['RL', 'RR', 1 - fs.frontLatShare]] as const) {
     const F = fs.latTotal * share;

@@ -241,9 +241,12 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     for (const id of CORNER_IDS) ground[id] = (sg.bumps?.[id] ?? 0) + wh[id];
     return { s, v, ...k, ground };
   };
+  /** The handling model's yaw rate now (rad/s), once it runs. */
+  let yawNow: number | undefined;
   const inputAt = (k: ReturnType<typeof kinAt>, ayH?: number) => {
     const eff = roadEffective(ayH ?? k.ay, k.ax, k.grade, k.bank);
-    return { ...vehicleInputOf(p, asm, { lateralG: eff.lateralG, brakingG: eff.brakingG, accelG: eff.accelG, gravityScale: eff.gravityScale, groundOffset: k.ground, speed: k.v }), corners };
+    // With handling, the car's own yaw rate (a locked axle's wheel slips follow it).
+    return { ...vehicleInputOf(p, asm, { lateralG: eff.lateralG, brakingG: eff.brakingG, accelG: eff.accelG, gravityScale: eff.gravityScale, groundOffset: k.ground, speed: k.v }), corners, ...(yawNow !== undefined ? { yawRate: yawNow } : {}) };
   };
 
   // Start from the steady state at t = 0.
@@ -517,6 +520,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       if (H) {
         const grav = G * Math.sin(kin.bank) * Math.cos(kin.grade);
         hf = advance(kin.v, starts[i]! + kin.s, grav, h, kappaAt, kin.ax * G);
+        yawNow = H.r;
         ayH = (hf.sumFy / car!.mass + grav) / (G * Math.max(Math.cos(kin.bank), 0.1));
       }
       const input = inputAt(kin, ayH);

@@ -381,6 +381,7 @@ export const vehicleInputOf = (p: VehicleProblem, asm: AssembledVehicle, c: Omit
   ...(p.brakeLimit ? { brakeLimit: p.brakeLimit } : {}),
   ...(p.trailer ? { trailer: p.trailer } : {}),
   ...(p.rollingResistance && (c.speed ?? c.state?.speed ?? 0) > 0 ? { rollingResistance: p.rollingResistance } : {}),
+  ...((c.speed ?? c.state?.speed ?? 0) > 0 ? { speed: c.speed ?? c.state?.speed ?? 0 } : {}),
 });
 
 /** Solve one load case on an assembled car. null = didn't converge. */

@@ -262,7 +262,11 @@ export function runTest(
   });
   let ride: TestRun['ride'];
   if (opts.ride) {
-    const rr = rideOn(p, asm, segments, { handling: !!opts.handling, driverSpeed: !!opts.handling && !!opts.driverSpeed });
+    // Driver lifts: over time the failing segments are driven at the speed that passes (steady check).
+    const driven = opts.onFail === 'lift'
+      ? segments.map((sg, i) => { const lim = segs[i]?.speedLimit; return segs[i]?.lifted && lim && lim > 0 ? { ...sg, v0: Math.min(sg.v0, lim), v1: Math.min(sg.v1, lim) } : sg; })
+      : segments;
+    const rr = rideOn(p, asm, driven, { handling: !!opts.handling, driverSpeed: !!opts.handling && !!opts.driverSpeed });
     ride = { frames: withBrakeTemps(p, rr.frames), metrics: rr.metrics, ...(rr.error ? { error: rr.error } : {}) };
     segs.forEach((sr, i) => {
       // Add what only shows over time (the steady samples already report the rest).

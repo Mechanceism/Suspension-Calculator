@@ -66,7 +66,13 @@ async function computeFrames(test: TestDesign) {
     const handling = test.ride !== false && test.handling !== false;
     const reuse = test.ride !== false && fresh && (last.test === undefined || last.test === test) && last.result.ride?.frames.length && !!last.result.ride.frames[0]!.handling === handling ? last.result.ride.frames : null;
     const { problem } = buildVehicleProblem(s);
-    const frames = reuse ?? await runPlaybackJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), test.ride !== false, handling, handling && !!test.driverSpeed).done;
+    // Driver lifts: the segments the last run lifted are driven at the speed that passes.
+    const specs = test.segments.map((sg, i) => {
+      const spec = segmentSpec(sg, test);
+      const r = test.onFail === 'lift' ? last?.result.segments[i] : undefined;
+      return r?.lifted && r.speedLimit && r.speedLimit > 0 ? { ...spec, v0: Math.min(spec.v0, r.speedLimit), v1: Math.min(spec.v1, r.speedLimit) } : spec;
+    });
+    const frames = reuse ?? await runPlaybackJob(problem, specs, test.ride !== false, handling, handling && !!test.driverSpeed).done;
     usePlayback.setState({ frames, computing: false, t: 0 });
     if (frames[0]) applyFrame(frames[0]);
     return frames;

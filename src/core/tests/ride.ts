@@ -42,6 +42,7 @@ import {
   handlingCar, handlingForces, stepHandling, driverCommand, wheelAngles, rackFor, effAt, kinematicForces, slipUse, handlingGrip,
   KINEMATIC_SPEED, type HandlingState, type HandlingForces, type TireNow, type DriverSpec,
 } from './handling';
+import { planAt, planAtTime, planDuration } from './plan';
 import { stateFacts, slipDifference, dimsOf, type PlaybackFrame, type TestSegmentSpec } from './run';
 import { steeringEffort } from '../suspension/steeringEffort';
 import { steeringLoads } from '../suspension/steering';
@@ -188,7 +189,8 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     return { ...c, tireForceAt: tables.get(key)! };
   });
   const byId = Object.fromEntries(corners.map((c) => [c.id, c])) as Record<CornerId, VehicleCorner>;
-  const durations = segments.map((sg) => { const v = (sg.v0 + sg.v1) / 2; return v > 0 ? sg.distance / v : 0; });
+  // A planned segment (speeds as maximums) takes its plan's time; otherwise v₀ → v₁ at constant acceleration.
+  const durations = segments.map((sg) => { if (sg.plan && sg.plan.s.length > 1) return planDuration(sg.plan); const v = (sg.v0 + sg.v1) / 2; return v > 0 ? sg.distance / v : 0; });
   const total = durations.reduce((a, b) => a + b, 0);
   const maxFrames = o.maxFrames ?? 1500;
   const frameDt = Math.max(1 / (o.hz ?? 25), total / maxFrames);
@@ -220,6 +222,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
   // The road and accelerations at time t.
   const kinAt = (i: number, tt: number) => {
     const sg = segments[i]!;
+    if (sg.plan && sg.plan.s.length > 1) { const q = planAtTime(sg.plan, tt); return kinFrom(i, q.s, q.v, q.a, tt); }
     const T = durations[i]!;
     const a = (sg.v1 - sg.v0) / T;
     return kinFrom(i, sg.v0 * tt + 0.5 * a * tt * tt, sg.v0 + a * tt, a, tt);
@@ -478,7 +481,8 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
         // Target: the profile's speed here; command: the profile's acceleration plus a correction toward it.
         // The driver never aims above what the tires can corner (0.95 μ g R) here, or than they can still
         // brake down to it for a tighter bend up to 40 m ahead.
-        let vT = Math.sqrt(Math.max(0.01, sg.v0 * sg.v0 + 2 * aProf * Math.min(sDrv, sg.distance)));
+        const planned = sg.plan && sg.plan.s.length > 1 ? planAt(sg.plan, Math.min(sDrv, sg.distance)) : null;
+        let vT = planned ? Math.max(0.1, planned.v) : Math.sqrt(Math.max(0.01, sg.v0 * sg.v0 + 2 * aProf * Math.min(sDrv, sg.distance)));
         const vSet = vT;
         const aBrake = 0.8 * muEst * G;
         for (let d = 0; d <= 40; d += 2) {
@@ -486,7 +490,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
           if (kd > 1e-6) vT = Math.min(vT, Math.sqrt((0.95 * muEst * G) / kd + 2 * aBrake * d));
         }
         if (vT < vSet - 0.05) slowed += h;
-        let aCmd = aProf + 1.5 * (vT - uDrv);
+        let aCmd = (planned ? planned.a : aProf) + 1.5 * (vT - uDrv);
         // Running wide of the line (off it toward the outside of the turn): lift / brake to tighten the line.
         const kap = kappaAt(starts[i]! + sDrv);
         const wide = H && Math.abs(kap) > 1e-6 ? -Math.sign(kap) * H.eY : 0;
@@ -677,12 +681,13 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       if (kc && kc.severity !== 'pass' && kickSeg > (kc.threshold ?? 5)) findings[i]!.push({ check: 'kickback', severity: kc.severity, text: `Kickback: a ${kickSeg.toFixed(1)} N·m jolt at the steering wheel (bump / braking forces through the scrub radius and the kingpin offset) at ${kickT.toFixed(1)} s`, t: kickT });
     }
     // The driver lifted, or the tires / pedals couldn't hold the speed, and the car ended well short of it: say so.
-    if (drv && !sg.coast && (lifted > 0 || slowed > 0 || held > 0.2) && uDrv < sg.v1 - 0.5) {
+    const vEnd = sg.plan && sg.plan.v.length ? sg.plan.v[sg.plan.v.length - 1]! : sg.v1;
+    if (drv && !sg.coast && (lifted > 0 || slowed > 0 || held > 0.2) && uDrv < vEnd - 0.5) {
       const sev = (checks.speedNotReached ?? PROFILES.default.checks.speedNotReached).severity;
       // (Not the "Driver lifts" option: the pedal driver slows down by itself when the car runs wide.)
       const why = lifted > 0 ? `slowed down to stay on the line (for ${lifted.toFixed(1)} s)` : slowed > 0 ? 'slowed for the turn (the tires cannot take it at the set speed)' : `couldn't hold the speed (${!canDrive ? 'no powered wheels against drag, grade and rolling resistance' : 'not enough grip or brakes'})`;
       const low = Number.isFinite(vMin) && vMin < uDrv - 0.5 ? `down to ${(vMin * 3.6).toFixed(0)} km/h, ` : '';
-      if (sev !== 'pass') findings[i]!.push({ check: 'speedNotReached', severity: sev, text: `The driver ${why}: ${low}${(uDrv * 3.6).toFixed(0)} km/h at the end instead of ${(sg.v1 * 3.6).toFixed(0)} km/h`, t: t0 + tEnd });
+      if (sev !== 'pass') findings[i]!.push({ check: 'speedNotReached', severity: sev, text: `The driver ${why}: ${low}${(uDrv * 3.6).toFixed(0)} km/h at the end instead of ${(vEnd * 3.6).toFixed(0)} km/h${sg.plan ? ' (planned)' : ''}`, t: t0 + tEnd });
     }
     t0 += drv ? tEnd : T;
   });

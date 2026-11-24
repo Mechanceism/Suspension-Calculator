@@ -23,7 +23,7 @@ import { buildVehicleProblem, runVehicleOptimizer, runTestJob, runRatesJob, desi
 import { testScore as coreTestScore, isUnfixable as coreUnfixable } from '../core/tests/score';
 import type { RateVar, RateTest, RateProgress } from '../core/optimize/rates';
 import { lockKeys } from './locks';
-import { rankWeight, segmentSpec, type TestDesign } from './tests';
+import { planOption, rankWeight, segmentSpec, type TestDesign } from './tests';
 import { pointAxisLocked } from './locks';
 import { startTestRun, runTestsTogether, useRun } from './panels/TestsPanels';
 import { POOL_SIZE, runLimited } from './workerPool';
@@ -210,7 +210,7 @@ export async function tuneSpringsDampers(scope: Scope, active: TestDesign | null
     return null;
   }
   const rateTests: RateTest[] = tests.map((t) => ({
-    segments: t.segments.map((sg) => segmentSpec(sg, t)), weight: tests.length > 1 ? rankWeight(t.rank, tests.length) : 1, onFail: t.onFail, handling: t.handling !== false, driverSpeed: t.handling !== false && !!t.driverSpeed,
+    segments: t.segments.map((sg) => segmentSpec(sg, t)), weight: tests.length > 1 ? rankWeight(t.rank, tests.length) : 1, onFail: t.onFail, handling: t.handling !== false, driverSpeed: t.handling !== false && !!t.driverSpeed, ...planOption(t, false),
   }));
   const { problem } = buildVehicleProblem(s);
   let last: RateProgress | null = null;
@@ -512,7 +512,7 @@ export async function exploreRanges(scope: Scope, active: TestDesign | null): Pr
     const jobs = new Set<() => void>();
     currentCancel = () => { for (const c of jobs) c(); };
     const after = await runLimited(tests, POOL_SIZE, async (t) => {
-      const job = runTestJob(candidate, t.segments.map((sg) => segmentSpec(sg, t)), { onFail: t.onFail, speedLimits: false });
+      const job = runTestJob(candidate, t.segments.map((sg) => segmentSpec(sg, t)), { onFail: t.onFail, speedLimits: false, ...planOption(t, false) });
       let stop = () => {};
       const cancelled = new Promise<null>((res) => { stop = () => { job.cancel(); res(null); }; });
       jobs.add(stop);

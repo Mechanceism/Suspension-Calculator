@@ -92,9 +92,11 @@ async function computeFrames(test: TestDesign) {
     const handling = test.ride !== false && test.handling !== false;
     const reuse = test.ride !== false && fresh && (last.test === undefined || last.test === test) && last.result.ride?.frames.length && !!last.result.ride.frames[0]!.handling === handling ? last.result.ride.frames : null;
     const { problem } = buildVehicleProblem(s);
-    // Driver lifts: the segments the last run lifted are driven at the speed that passes.
+    // Speeds as maximums: the speeds the last run planned. Driver lifts: the segments it lifted are driven at the speed that passes.
     const specs = test.segments.map((sg, i) => {
       const spec = segmentSpec(sg, test);
+      const planned = test.speedMode === 'max' ? last?.result.segments[i]?.plan : undefined;
+      if (planned) return { ...spec, plan: planned };
       const r = test.onFail === 'lift' ? last?.result.segments[i] : undefined;
       const k = r?.drivenScale ?? (r?.lifted && r.speedLimit && r.speedLimit > 0 ? r.speedLimit : 1);
       return k < 1 ? { ...spec, v0: spec.v0 * k, v1: spec.v1 * k } : spec;

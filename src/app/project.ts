@@ -60,7 +60,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 41;
+export const FORMAT_VERSION = 42;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -390,6 +390,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   // 39 → 40: no rolling resistance (results stay as they were); segments don't coast.
   // 40 → 41: shimmy inputs take their defaults (on read).
   40: (f) => ({ ...f, formatVersion: 41 }),
+  // 41 → 42: tests from before hold their set speeds exactly (speeds as maximums is new; read below).
+  41: (f) => ({ ...f, formatVersion: 42 }),
   39: (f) => ({ ...f, formatVersion: 40, ...(isObj(f.vehicle) && isObj(f.vehicle.fields) ? { vehicle: { ...f.vehicle, fields: { ...f.vehicle.fields, rollingResistance: { text: '0', value: 0 } } } } : {}) }),
   // 34 → 35: aero side force, roll sensitivity and balance shift off.
   34: (f) => ({ ...f, formatVersion: 35, ...(isObj(f.aero) && isObj(f.aero.fields) ? { aero: { ...f.aero, fields: { ...f.aero.fields, CsA: { text: '0', value: 0 }, sideCp: { text: '900', value: 900 }, rollSensF: { text: '0', value: 0 }, rollSensR: { text: '0', value: 0 }, yawBalance: { text: '0', value: 0 } } } } : {}) }),
@@ -492,6 +494,8 @@ function readTests(raw: unknown, warnings: string[]): TestDesign[] {
       handling: t.handling !== false,
       ...(t.driverSpeed === true ? { driverSpeed: true } : {}),
       ...(t.racingLine === true ? { racingLine: true } : {}),
+      speedMode: t.speedMode === 'max' ? 'max' : 'hold',
+      ...(t.speedMode === 'max' ? { gripTarget: typeof t.gripTarget === 'number' && t.gripTarget > 0.2 && t.gripTarget <= 1 ? t.gripTarget : 0.95 } : {}),
     });
   }
   return out;

@@ -14,6 +14,7 @@
 import type { CornerId } from '../vehicle/vehicle';
 import type { CheckProfile } from './checks';
 import { wheelHeights, worstRoadSpots, type RoadSpec } from './road';
+import { planAt, type SegmentPlan } from './plan';
 
 export const G = 9.80665;
 
@@ -45,7 +46,21 @@ export interface SegmentSpec {
   samples?: number;
   /** Rough surface and placed bumps / potholes along the segment. */
   road?: RoadSpec;
+  /**
+   * Speeds as maximums (plan.ts): the speeds planned along the segment (v₀ / v₁ are then the most it may go).
+   * When set, the steady states, the ride over time and the playback follow it instead of v₀ → v₁.
+   */
+  plan?: SegmentPlan;
 }
+
+/** The speed at distance s along a segment (its plan, or v₀ → v₁ at constant acceleration). */
+export function speedAlong(s: SegmentSpec, at: number): number {
+  if (s.plan) return planAt(s.plan, at).v;
+  const frac = s.distance > 0 ? Math.min(1, Math.max(0, at / s.distance)) : 0;
+  return Math.sqrt(Math.max(0, s.v0 * s.v0 + (s.v1 * s.v1 - s.v0 * s.v0) * frac));
+}
+/** The fastest a segment goes. */
+export const topSpeed = (s: SegmentSpec) => (s.plan ? Math.max(...s.plan.v) : Math.max(s.v0, s.v1));
 
 /** Car dimensions needed to put the wheels on the road. */
 export interface CarDims { wheelbase: number; halfTrack: number }
@@ -111,6 +126,7 @@ export function roadEffective(ay: number, ax: number, grade: number, bank: numbe
 
 /** Steady states of one segment (speeds scaled by `speedScale`, e.g. for a speed-limit search). */
 export function segmentStates(s: SegmentSpec, index: number, speedScale = 1, dims?: CarDims): RoadState[] {
+  if (s.plan && s.plan.s.length > 1) return planStates(s, index, dims);
   const v0 = s.v0 * speedScale, v1 = s.v1 * speedScale;
   const n = Math.abs(v1 - v0) < 1e-9 ? 1 : Math.max(2, Math.round(s.samples ?? 3));
   const scaled: SegmentSpec = { ...s, v0, v1 };
@@ -146,6 +162,39 @@ export function segmentStates(s: SegmentSpec, index: number, speedScale = 1, dim
         name: `${index + 1}.r${k + 1}`, segment: index, speed: v, ay, ax, at,
         ...roadEffective(ay, ax, s.grade, s.bank), groundOffset: ground, grade: s.grade, bank: s.bank,
       });
+    });
+  }
+  return out;
+}
+
+/**
+ * Steady states of a planned segment: its fastest and slowest points and where it brakes and drives hardest
+ * (each at the speed and acceleration planned there), plus the rough road's worst spots at the planned speed.
+ */
+function planStates(s: SegmentSpec, index: number, dims?: CarDims): RoadState[] {
+  const pl = s.plan!;
+  const at = pl.s.map((x) => ({ x, ...planAt(pl, Math.min(x + 1e-6, s.distance)) }));
+  const pick = new Map<number, (typeof at)[number]>();
+  const by = (f: (p: (typeof at)[number]) => number) => at.reduce((a, p) => (f(p) > f(a) ? p : a), at[0]!);
+  for (const p of [by((p) => p.v), by((p) => -p.v), by((p) => -p.a), by((p) => p.a)]) pick.set(Math.round(p.x * 10), p);
+  const out: RoadState[] = [];
+  let k = 0;
+  for (const p of [...pick.values()].sort((a, b) => a.x - b.x)) {
+    const ay = segmentLatG(s, p.v), ax = Math.abs(p.a) > 1e-6 ? p.a / G : 0;
+    out.push({ name: `${index + 1}.${++k}`, segment: index, speed: p.v, ay, ax, at: p.x, ...roadEffective(ay, ax, s.grade, s.bank), groundOffset: { ...(s.bumps ?? {}) }, grade: s.grade, bank: s.bank });
+  }
+  if (dims && s.road) {
+    const wb = dims.wheelbase / 1000, ht = dims.halfTrack / 1000;
+    worstRoadSpots(s.road, s.distance, wb, ht).forEach((x, j) => {
+      const q = planAt(pl, x);
+      const ay = segmentLatG(s, q.v), ax = q.a / G;
+      const h = wheelHeights(s.road!, x, wb, ht);
+      const ground: Partial<Record<CornerId, number>> = {};
+      for (const id of ['FL', 'FR', 'RL', 'RR'] as CornerId[]) {
+        const v2 = (s.bumps?.[id] ?? 0) + h[id];
+        if (Math.abs(v2) > 1e-6) ground[id] = v2;
+      }
+      out.push({ name: `${index + 1}.r${j + 1}`, segment: index, speed: q.v, ay, ax, at: x, ...roadEffective(ay, ax, s.grade, s.bank), groundOffset: ground, grade: s.grade, bank: s.bank });
     });
   }
   return out;

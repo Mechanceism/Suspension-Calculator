@@ -15,7 +15,7 @@ import { segmentLongG, segmentLatG, segmentDuration, type PathKind } from '../..
 import type { TestRun, StateResult } from '../../core/tests/run';
 import { CHECK_IDS, CHECK_META, PROFILES, cloneProfile, type CheckProfile, type Severity, type BuiltinProfile, type Finding } from '../../core/tests/checks';
 import { useApp, BRAKE_MORE_META, type Field } from '../store';
-import { SEGMENT_PRESETS, TEST_PRESETS, newSegment, newTestId, segmentSpec, isOff, OFF, type TestDesign, type TestSegment } from '../tests';
+import { SEGMENT_PRESETS, TEST_PRESETS, newSegment, newTestId, planOption, segmentSpec, isOff, OFF, type TestDesign, type TestSegment } from '../tests';
 import { buildVehicleProblem, runTestJob } from '../optimizer';
 import { POOL_SIZE, runLimited } from '../workerPool';
 import { useTireChoice, TIRE_CATALOG, rankTires, applyTire, currentTire, type TireAxleChoice } from '../tireChoice';
@@ -31,6 +31,7 @@ import { SearchSelect, SensitivityReport } from './SearchTools';
 import { EstimatedNote } from './SetupWizard';
 import { VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META } from '../../core/optimize/vehicle';
 import { Local, Val } from './UnitText';
+import { SHAPE_LABEL } from '../../core/tests/plan';
 
 const parse = (text: string, q: Quantity, prev: Field): Field => {
   const r = parseValue(text, q);
@@ -102,7 +103,7 @@ export function startTestRun(test: TestDesign) {
   run.cancel?.();
   const s = useApp.getState();
   const { problem } = buildVehicleProblem(s);
-  const job = runTestJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), { onFail: test.onFail, speedLimits: true, ride: test.ride !== false, handling: test.ride !== false && test.handling !== false, driverSpeed: !!test.driverSpeed });
+  const job = runTestJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), { onFail: test.onFail, speedLimits: true, ride: test.ride !== false, handling: test.ride !== false && test.handling !== false, driverSpeed: !!test.driverSpeed, ...planOption(test) });
   const from = designRef(s);
   useRun.setState({ running: true, testId: test.id, runningIds: [test.id], error: null, cancel: job.cancel });
   return job.done
@@ -128,7 +129,7 @@ export async function runTestsTogether(tests: TestDesign[]): Promise<(TestRun | 
   let stopped = false, done = 0;
   useRun.setState({ running: true, testId: tests[0]?.id ?? null, runningIds: [], error: null, batch: { index: 0, total: tests.length }, cancel: () => { stopped = true; for (const f of [...stops]) f(); } });
   const out = await runLimited(tests, POOL_SIZE, async (test) => {
-    const job = runTestJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), { onFail: test.onFail, speedLimits: true, ride: test.ride !== false, handling: test.ride !== false && test.handling !== false, driverSpeed: !!test.driverSpeed });
+    const job = runTestJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), { onFail: test.onFail, speedLimits: true, ride: test.ride !== false, handling: test.ride !== false && test.handling !== false, driverSpeed: !!test.driverSpeed, ...planOption(test) });
     useRun.setState((r) => ({ runningIds: [...r.runningIds, test.id] }));
     // Stopping ends the wait too (a terminated worker never answers).
     let stop = () => {};
@@ -562,13 +563,30 @@ export function TestsSidebar() {
                   </label>
                 </td>
               </tr>
-              <tr title="Report: show the failure. Driver lifts: also re-run the failing segment at the fastest speed that passes.">
-                <td>When a segment fails</td>
+              <tr title="Maximums: the set speeds are the most the driver may go; the driver plans the speed to the grip target (braking earlier before turns, accelerating out), tries other ways of taking a failing segment (brake in, coast in, hold the speed, speed up in) and then lower grip targets (with a finding saying so); the test is scored on time. Hold exactly: the set speeds are driven as they are (to check a car can do a given speed).">
+                <td>Speeds</td>
                 <td>
-                  <button className={`chip${test.onFail === 'report' ? ' on' : ''}`} onClick={() => updateTest(test.id, (t) => ({ ...t, onFail: 'report' }))}>Report</button>
-                  <button className={`chip${test.onFail === 'lift' ? ' on' : ''}`} onClick={() => updateTest(test.id, (t) => ({ ...t, onFail: 'lift' }))}>Driver lifts</button>
+                  <button className={`chip${test.speedMode === 'max' ? ' on' : ''}`} onClick={() => updateTest(test.id, (t) => ({ ...t, speedMode: 'max', gripTarget: t.gripTarget ?? 0.95 }))}>Maximums</button>
+                  <button className={`chip${test.speedMode !== 'max' ? ' on' : ''}`} onClick={() => updateTest(test.id, (t) => ({ ...t, speedMode: 'hold' }))}>Hold exactly</button>
                 </td>
               </tr>
+              {test.speedMode === 'max' ? (
+                <tr title="The share of the tires' grip the driver plans to (in turns, braking and accelerating). Lower is steadier; 100 % is at the limit, where transients often tip it over.">
+                  <td>Grip target</td>
+                  <td>
+                    <input className="value-input small" type="number" min={30} max={100} step={1} value={Math.round((test.gripTarget ?? 0.95) * 100)}
+                      onChange={(e) => { const v = Number(e.target.value); if (Number.isFinite(v) && v >= 30 && v <= 100) updateTest(test.id, (t) => ({ ...t, gripTarget: v / 100 })); }} /> %
+                  </td>
+                </tr>
+              ) : (
+                <tr title="Report: show the failure. Driver lifts: also re-run the failing segment at the fastest speed that passes.">
+                  <td>When a segment fails</td>
+                  <td>
+                    <button className={`chip${test.onFail === 'report' ? ' on' : ''}`} onClick={() => updateTest(test.id, (t) => ({ ...t, onFail: 'report' }))}>Report</button>
+                    <button className={`chip${test.onFail === 'lift' ? ' on' : ''}`} onClick={() => updateTest(test.id, (t) => ({ ...t, onFail: 'lift' }))}>Driver lifts</button>
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
           <PassRules test={test} />
@@ -689,8 +707,13 @@ export function TestResults() {
       <AllTests />
       <EstimatedNote />
       {stale && <p className="hint warn-text">The design changed since this run: run again.</p>}
+      {r.time !== undefined && r.time > 0 && (
+        <p className="small-text" title="Speeds as maximums: the planned time over the whole test and its average speed (faster is better, within the pass rules)">
+          Time <b>{fmt(r.time, 1)} s</b> · average <b>{disp.format((r.distance ?? 0) / r.time, 'm/s', 0)}</b> over {disp.format(r.distance ?? 0, 'm', 0)} · planned to {fmt((test.gripTarget ?? 0.95) * 100, 0)} % grip
+        </p>
+      )}
       <table className="corner-table test-table">
-        <thead><tr><th>#</th><th>Segment</th><th title="Worst tire grip use">Grip</th>{r.segments.some((s) => s.brakeTemp) && <th title="Brake fade: rotor temperature at the end of the segment, front / rear">Brakes</th>}<th /></tr></thead>
+        <thead><tr><th>#</th><th>Segment</th>{r.time !== undefined && <th title="Planned speed through the segment (lowest – highest) and its time">Speed</th>}<th title="Worst tire grip use">Grip</th>{r.segments.some((s) => s.brakeTemp) && <th title="Brake fade: rotor temperature at the end of the segment, front / rear">Brakes</th>}<th /></tr></thead>
         <tbody>
           {r.segments.map((s) => {
             const def = test.segments[s.index];
@@ -698,6 +721,12 @@ export function TestResults() {
               <tr key={s.index} className={`sev-${s.severity}${view?.segment === s.index ? ' sel' : ''}`} onClick={() => pick(s.index, 0)} title="Show this segment">
                 <td>{s.index + 1}</td>
                 <td>{def?.name ?? ''}</td>
+                {r.time !== undefined && (
+                  <td className="small-text nowrap" title={s.approach && s.approach !== 'plan' ? `Taken: ${SHAPE_LABEL[s.approach]}` : undefined}>
+                    {s.plan ? <Local text={`${Math.round(Math.min(...s.plan.v) * 3.6)}–${Math.round(Math.max(...s.plan.v) * 3.6)} km/h`} /> : '—'}
+                    {s.time !== undefined ? ` · ${fmt(s.time, 1)} s` : ''}
+                  </td>
+                )}
                 <td>{Number.isFinite(s.maxUtilization) ? `${fmt(s.maxUtilization * 100, 0)} %` : '—'}</td>
                 {s.brakeTemp && <td className="small-text">{disp.format(s.brakeTemp.end.front, '°C', 0)} / {disp.format(s.brakeTemp.end.rear, '°C', 0)}</td>}
                 <td>{SEV_ICON[s.severity]}</td>
@@ -713,6 +742,9 @@ export function TestResults() {
           <div key={s.index} className={`seg-fail sev-${s.severity}`}>
             <b>{s.index + 1}. {def?.name}</b>
             <Findings list={s.findings} />
+            {s.approach && (s.approach !== 'plan' || (s.gripTarget ?? 1) < (test.gripTarget ?? 0.95) - 1e-9) && (
+              <div className="small-text">Taken: {SHAPE_LABEL[s.approach]} at {fmt((s.gripTarget ?? 0.95) * 100, 0)} % grip.</div>
+            )}
             {s.impossible && <div className="small-text warn-text">No suspension change can make this pass: the tires can't give that much force. Lower the speed, enlarge the radius, or improve the tires.</div>}
             {s.findings.some((f) => f.check === 'steerLimit' && f.severity === 'fail') && <div className="small-text warn-text">Slowing down doesn't help: enlarge the radius, or allow more rack travel / a longer-reach steering arm (Corner view → Steering rack).</div>}
             {s.rideFail && <div className="small-text warn-text">Passes as steady states but fails over time (bumps at speed, transients): softer / firmer damping, more travel or a lower speed can help. Play it back to watch.</div>}

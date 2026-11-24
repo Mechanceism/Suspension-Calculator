@@ -10,7 +10,7 @@ export type Severity = 'pass' | 'warn' | 'fail';
 
 export type CheckId =
   | 'nearLimit' | 'understeer' | 'oversteer' | 'wheelspin' | 'absActive' | 'lockup' | 'speedNotReached'
-  | 'bumpStop' | 'bottoming' | 'wheelLift' | 'rollover' | 'noSolution' | 'beyondGrip' | 'steerLimit' | 'pathError' | 'spin' | 'brakeLimit' | 'brakeFade' | 'longPedal' | 'mcStroke' | 'kickback' | 'shimmy' | 'trailerSway' | 'hitchLoad' | 'lightTongue';
+  | 'bumpStop' | 'bottoming' | 'wheelLift' | 'rollover' | 'noSolution' | 'beyondGrip' | 'steerLimit' | 'pathError' | 'spin' | 'brakeLimit' | 'brakeFade' | 'longPedal' | 'mcStroke' | 'kickback' | 'shimmy' | 'trailerSway' | 'hitchLoad' | 'lightTongue' | 'gripTarget';
 
 export interface CheckSetting {
   severity: Severity;
@@ -55,6 +55,7 @@ export const CHECK_META: Record<CheckId, CheckMeta> = {
   pathError: { label: 'Off the line', hint: 'Driving over time with the driver steering: the car is further than this from the path (runs wide or cuts in).', threshold: { label: 'allowed', unit: 'm' } },
   spin: { label: 'Spin / slide', hint: 'Driving over time with the driver steering: the car\'s sideslip angle (how far it points away from where it travels) is beyond this.', threshold: { label: 'allowed', unit: '°' } },
   steerLimit: { label: 'Steering lock', hint: 'The turn is tighter than the steering allows: its road-wheel angle (atan(wheelbase ÷ radius), plus the front − rear tire slip angle at speed) needs more rack travel than the rack limit, or no wheel steers.' },
+  gripTarget: { label: 'Grip target lowered', hint: 'Speeds as maximums: every way of taking the segment at the test’s grip target (brake before, brake in, coast in, hold the speed, speed up in) failed over time, so the driver planned it at a lower share of the tires’ grip. The finding says to what.' },
   beyondGrip: { label: 'Beyond the tires', hint: 'The state asks for more total force than all four tires can give: no suspension can pass it. Lower the speed, enlarge the radius, or improve the tires.', fixed: true },
 };
 export const CHECK_IDS = Object.keys(CHECK_META) as CheckId[];
@@ -85,6 +86,7 @@ const base: CheckProfile = {
   hitchLoad: { severity: 'fail' },
   lightTongue: { severity: 'warn', threshold: 10 },
   spin: { severity: 'fail', threshold: 12 },
+  gripTarget: { severity: 'warn' },
 };
 
 export type BuiltinProfile = 'default' | 'street' | 'track' | 'drift' | 'offroad';

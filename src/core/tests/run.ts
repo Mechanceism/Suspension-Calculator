@@ -7,7 +7,8 @@
 import { assembleVehicle, solveCase, type VehicleProblem, type AssembledVehicle } from '../optimize/vehicle';
 import type { DoubleWishboneGeometry } from '../suspension/doubleWishbone';
 import { CORNER_IDS, type CornerId, type ChassisPose, type CornerStatus, type GripSummary, type VehicleResult } from '../vehicle/vehicle';
-import { segmentStates, segmentLatG, roadEffective, G, type RoadState, type SegmentSpec, type CarDims } from './segments';
+import { segmentStates, segmentLatG, roadEffective, topSpeed, G, type RoadState, type SegmentSpec, type CarDims } from './segments';
+import { planDuration, planSpeeds, SHAPE_LABEL, type PlanCar, type PlanShape, type SegmentPlan } from './plan';
 import { wheelHeights } from './road';
 import { steerForTurn, type SteerNeed } from './steer';
 import { rideOn, type RideMeasures } from './ride';
@@ -51,6 +52,11 @@ export interface SegmentResult {
   drivenScale?: number;
   /** Passes as steady states but fails over time (ride: bumps, transients). */
   rideFail?: boolean;
+  /** Speeds as maximums: the speeds it was planned at, how (the way of taking it and the grip target), and its time (s). */
+  plan?: SegmentPlan;
+  approach?: PlanShape;
+  gripTarget?: number;
+  time?: number;
   /** Brake fade modeled: rotor temperatures at the start and end of the segment, °C. */
   brakeTemp?: { start: AxleTemps; end: AxleTemps };
 }
@@ -66,6 +72,12 @@ export interface TestRunOptions {
   handling?: boolean;
   /** With handling: the driver also works the throttle and brakes (the speeds become targets; lifts when running wide). */
   driverSpeed?: boolean;
+  /**
+   * Speeds as maximums (plan.ts): the set speeds are the most the driver may go; the speeds are planned to
+   * this share of the tires' grip (0–1), and a segment that still fails over time is tried other ways and
+   * then at lower grip targets. Omitted: the set speeds are held exactly (with `onFail`).
+   */
+  plan?: { gripTarget: number; /** Try other ways / lower targets when a segment fails (default on; optimizers plan once). */ ladder?: boolean };
 }
 
 export interface TestRun {
@@ -85,6 +97,9 @@ export interface TestRun {
   brakeUse?: { front: number; rear: number; pedal?: number; strokeUse?: number };
   /** Shimmy check: the fastest speed tried where the wheels kept wobbling (and with which parts). */
   shimmy?: { speed: number; worn: boolean; fresh: boolean };
+  /** Speeds as maximums: the planned time over the whole test (s) and its distance (m). */
+  time?: number;
+  distance?: number;
 }
 
 /** Segment physics plus the checks that decide its pass / fail. */
@@ -176,6 +191,50 @@ function speedLimitOf(p: VehicleProblem, asm: AssembledVehicle, seg: TestSegment
   return lo;
 }
 
+/**
+ * Speeds as maximums: the car's limits for the planner, from its static grip (each axle's peak side and
+ * braking / driving force over its load, at rest on the level).
+ */
+function planCarOf(p: VehicleProblem, asm: AssembledVehicle): PlanCar | null {
+  const st: RoadState = { name: 'rest', segment: 0, speed: 10, ay: 0, ax: 0, lateralG: 0, brakingG: 0, accelG: 0, gravityScale: 1, groundOffset: {}, grade: 0, bank: 0 };
+  const r = evalState(p, asm, st, PROFILES.default.checks);
+  if (!r.grip || !r.corners) return null;
+  const axle = (ids: CornerId[]) => {
+    const load = ids.reduce((a, id) => a + Math.max(1, r.corners![id].tireLoad), 0);
+    return { y: ids.reduce((a, id) => a + r.grip!.corners[id].capY, 0) / load, x: ids.reduce((a, id) => a + r.grip!.corners[id].capX, 0) / load, load };
+  };
+  const fr = axle(['FL', 'FR']), rr = axle(['RL', 'RR']);
+  // Cornering as the car really does it (load moving to the outside wheels, the tires' load sensitivity, a
+  // locked axle's drag): solve a turn at about 60 % of the static grip and read each axle's side-grip use.
+  let muF = fr.y, muR = rr.y;
+  const ay = 0.6 * Math.min(fr.y, rr.y);
+  const v = 12, radius = (v * v) / (ay * G);
+  const turn: RoadState = { name: 'turn', segment: 0, speed: v, ay, ax: 0, ...roadEffective(ay, 0, 0, 0), groundOffset: {}, grade: 0, bank: 0 };
+  const rt = evalState(p, asm, turn, PROFILES.default.checks, undefined, { path: 'left', radius });
+  if (rt.grip && rt.grip.axles.front > 0.05 && rt.grip.axles.rear > 0.05) {
+    muF = Math.min(muF, ay / rt.grip.axles.front);
+    muR = Math.min(muR, ay / rt.grip.axles.rear);
+  }
+  const set = p.settings;
+  return {
+    muFront: muF, muRear: muR, muLongFront: fr.x, muLongRear: rr.x,
+    frontShare: fr.load / (fr.load + rr.load), cgHeight: p.cg.height, wheelbase: p.wheelbase, track: 2 * dimsOf(p, asm).halfTrack,
+    brakeBias: p.brakeBias, driveSplit: p.driveSplit,
+    brakesFront: set.FL.brake !== 'none' || set.FR.brake !== 'none', brakesRear: set.RL.brake !== 'none' || set.RR.brake !== 'none',
+    drivenFront: set.FL.drive !== 'none' || set.FR.drive !== 'none', drivenRear: set.RL.drive !== 'none' || set.RR.drive !== 'none',
+    ...(p.brakeLimit ? { brakeForce: { front: p.brakeLimit.front, rear: p.brakeLimit.rear } } : {}),
+    mass: p.mass, rollingResistance: p.rollingResistance ?? 0,
+  };
+}
+
+/**
+ * Speeds as maximums: what a failing segment tries next, in order — the other ways of taking it at the
+ * test's grip target, then lower grip targets (with a finding saying so).
+ */
+export const PLAN_SHAPES: PlanShape[] = ['brakeIn', 'coastIn', 'hold', 'accelIn'];
+/** Failures over time that taking a segment another way or slower can cure. */
+const PLAN_HELPS = new Set(['understeer', 'oversteer', 'pathError', 'spin', 'wheelLift', 'rollover', 'trailerSway', 'nearLimit', 'lockup', 'wheelspin', 'steerLimit', 'speedNotReached']);
+
 /** Failures over time that driving slower can cure (Driver lifts). */
 const LIFT_HELPS = new Set(['understeer', 'oversteer', 'pathError', 'spin', 'wheelLift', 'rollover', 'trailerSway', 'nearLimit']);
 
@@ -196,7 +255,8 @@ export function runTest(
     const ok = rs.filter((r) => r.corners);
     const mean = (f: (r: StateResult) => number) => (ok.length ? ok.reduce((a, r) => a + f(r), 0) / ok.length : 0);
     const force = { front: mean((r) => -(r.corners!.FL.brakeForce + r.corners!.FR.brakeForce)), rear: mean((r) => -(r.corners!.RL.brakeForce + r.corners!.RR.brakeForce)) };
-    const v = Math.max(0.1, (seg.v0 + seg.v1) / 2), T = seg.distance / v;
+    const T = seg.plan && seg.plan.s.length > 1 ? planDuration(seg.plan) : seg.distance / Math.max(0.1, (seg.v0 + seg.v1) / 2);
+    const v = Math.max(0.1, seg.distance / Math.max(T, 1e-6));
     const start = temp, end = brakeStep(th, temp, force, v, T);
     temp = end;
     // Check every sample at the hottest the segment gets.
@@ -239,9 +299,74 @@ export function runTest(
       r.passed = r.severity !== 'fail';
     }
   };
+  // Speeds as maximums: plan, check it (steady states and over time), and take each segment that still fails
+  // up the ladder — the other ways of taking it, then lower grip targets (each about 15 % slower there) —
+  // until it passes or the ladder ends.
+  const gripTarget = Math.min(1, Math.max(0.3, opts.plan?.gripTarget ?? 0.95));
+  const rideOpts = { handling: !!opts.handling, driverSpeed: !!opts.handling && !!opts.driverSpeed };
+  let planRide: ReturnType<typeof rideOn> | null = null;
+  /** Per segment: the way it is taken (rung of PLAN_SHAPES) and its grip target. */
+  let tries: { shape: number; target: number; lowered?: boolean }[] = [];
+  const tryOf = (i: number): { shape: PlanShape; target: number } => {
+    const t = tries[i];
+    return t ? { shape: t.shape < 0 ? 'plan' : PLAN_SHAPES[t.shape]!, target: t.target } : { shape: 'plan', target: gripTarget };
+  };
+  // Steady states of a planned segment, kept while its plan is the same (the ladder and the results share them).
+  const steadyCache = new Map<string, StateResult[]>();
+  const planKey = (i: number, sg: TestSegmentSpec) => `${i}|${sg.plan ? sg.plan.v.map((x) => x.toFixed(2)).join(',') : `${sg.v0},${sg.v1}`}`;
+  const steadyOf = (i: number, sg: TestSegmentSpec) => {
+    const key = planKey(i, sg);
+    let rs = steadyCache.get(key);
+    if (!rs) { rs = segmentStates(sg, i, 1, dimsOf(p, asm)).map((st) => evalState(p, asm, st, sg.checks ?? PROFILES.default.checks, undefined, sg)); steadyCache.set(key, rs); }
+    return rs;
+  };
+  if (opts.plan) {
+    const car = planCarOf(p, asm);
+    if (car) {
+      const base = segments;
+      tries = base.map(() => ({ shape: -1, target: gripTarget }));
+      const build = () => {
+        const pl = planSpeeds(base, car, base.map((_, i) => tryOf(i).target), base.map((_, i) => tryOf(i).shape));
+        return base.map((sg, i) => ({ ...sg, plan: pl.plans[i]! }));
+      };
+      const fails = (fs: Finding[]) => fs.some((f) => f.severity === 'fail' && PLAN_HELPS.has(f.check));
+      segments = build();
+      for (let iter = 0; iter <= (opts.plan.ladder === false ? 0 : PLAN_SHAPES.length + 8); iter++) {
+        if (opts.ride) planRide = rideOn(p, asm, segments, rideOpts);
+        let changed = false;
+        segments.forEach((sg, i) => {
+          const bad = fails(steadyOf(i, sg).flatMap((r) => r.findings)) || (planRide ? fails(planRide.findings[i] ?? []) : false);
+          if (!bad) return;
+          const t = tries[i]!;
+          // The other ways first (at the test's own grip target only), skipping any that plans the same speeds
+          // here (e.g. coasting in when the segment is held at its set speed anyway).
+          if (!t.lowered) {
+            const now = planKey(i, sg);
+            while (t.shape < PLAN_SHAPES.length - 1) {
+              t.shape++;
+              if (planKey(i, build()[i]!) !== now) { changed = true; return; }
+            }
+          }
+          // Every way failed: a lower grip target, slow enough to take about 15 % off its lowest speed.
+          if (t.target <= 0.2 + 1e-9) return;
+          const v = sg.plan?.v ?? [sg.v0, sg.v1];
+          const vLow = Math.min(...v.filter((x) => x > 0.5));
+          const k = Math.abs(sg.path === 'straight' ? 0 : 1 / Math.max(sg.radius, 0.1));
+          const mu = Math.min(car.muFront, car.muRear);
+          const forSpeed = k > 0 && Number.isFinite(vLow) ? ((0.85 * vLow) ** 2 * k) / (G * mu) : t.target * 0.8;
+          t.shape = -1; // the plan's own way, at the lower target
+          t.lowered = true;
+          t.target = Math.max(0.2, Math.min(t.target * 0.85, forSpeed));
+          changed = true;
+        });
+        if (!changed || opts.plan.ladder === false) break;
+        segments = build();
+      }
+    }
+  }
   segments.forEach((seg, i) => {
     const checks = seg.checks ?? PROFILES.default.checks;
-    const rs = segmentStates(seg, i, 1, dimsOf(p, asm)).map((st) => {
+    const rs = opts.plan && seg.plan ? steadyOf(i, seg) : segmentStates(seg, i, 1, dimsOf(p, asm)).map((st) => {
       const r = evalState(p, asm, st, checks, guess, seg);
       if (r.pose) guess = r.pose;
       return r;
@@ -259,7 +384,7 @@ export function runTest(
       steer: rs.reduce<SteerNeed | null>((a, x) => (x.steer && (!a || Math.abs(x.steer.wheelAngle) > Math.abs(a.wheelAngle)) ? x.steer : a), null),
       ...(brakeTemp ? { brakeTemp } : {}),
     };
-    if (!res.passed && (opts.onFail === 'lift' || opts.speedLimits)) {
+    if (!opts.plan && !res.passed && (opts.onFail === 'lift' || opts.speedLimits)) {
       res.speedLimit = speedLimitOf(p, asm, seg, i, checks);
       if (opts.onFail === 'lift' && res.speedLimit > 0) {
         res.lifted = segmentStates(seg, i, res.speedLimit, dimsOf(p, asm)).map((st) => evalState(p, asm, st, checks, undefined, seg));
@@ -276,11 +401,10 @@ export function runTest(
     // Driver lifts: over time the segments are driven at the speed scale that passed the steady check, and a
     // segment still failing over time (running wide, sliding, spinning, lifting a wheel) is driven 12 % slower
     // again, up to six times.
-    const lift = opts.onFail === 'lift';
+    const lift = !opts.plan && opts.onFail === 'lift';
     const scale = segs.map((sr) => (lift && sr.lifted && sr.speedLimit && sr.speedLimit > 0 ? sr.speedLimit : 1));
     const driven = () => segments.map((sg, i) => (scale[i]! < 1 ? { ...sg, v0: sg.v0 * scale[i]!, v1: sg.v1 * scale[i]! } : sg));
-    const rideOpts = { handling: !!opts.handling, driverSpeed: !!opts.handling && !!opts.driverSpeed };
-    let rr = rideOn(p, asm, driven(), rideOpts);
+    let rr = planRide ?? rideOn(p, asm, driven(), rideOpts);
     if (lift) {
       for (let k = 0; k < 6; k++) {
         const bad = rr.findings.map((fs) => fs.some((f) => f.severity === 'fail' && LIFT_HELPS.has(f.check)));
@@ -307,8 +431,8 @@ export function runTest(
   // Shimmy: the wheels kicked at the test's fastest speeds (new and worn parts); reported on the fastest segment.
   let shimmy: TestRun['shimmy'];
   if (p.shimmy?.check && segments.length) {
-    const fastest = segments.reduce((bi, sg, i) => (Math.max(sg.v0, sg.v1) > Math.max(segments[bi]!.v0, segments[bi]!.v1) ? i : bi), 0);
-    const top = Math.max(segments[fastest]!.v0, segments[fastest]!.v1);
+    const fastest = segments.reduce((bi, sg, i) => (topSpeed(sg) > topSpeed(segments[bi]!) ? i : bi), 0);
+    const top = topSpeed(segments[fastest]!);
     for (const k of [1, 0.8, 0.6]) {
       const u = top * k;
       if (u < 3) continue;
@@ -328,8 +452,31 @@ export function runTest(
       }
     }
   }
+  // Speeds as maximums: how each segment was taken, and a finding where the grip target had to come down.
+  let time: number | undefined;
+  if (opts.plan && segments.every((sg) => sg.plan)) {
+    time = 0;
+    const pct = (x: number) => `${Math.round(x * 100)} %`;
+    segs.forEach((sr, i) => {
+      const sg = segments[i]!, t = tryOf(i);
+      sr.plan = sg.plan; sr.approach = t.shape; sr.gripTarget = t.target;
+      sr.time = planDuration(sg.plan!);
+      time! += sr.time;
+      if (t.target < gripTarget - 1e-9) {
+        const checks = sg.checks ?? PROFILES.default.checks;
+        const sev = (checks.gripTarget ?? PROFILES.default.checks.gripTarget)?.severity ?? 'warn';
+        const still = !sr.passed ? `; even at ${pct(t.target)} it still fails there` : '';
+        if (sev !== 'pass') sr.findings = dedupe([...sr.findings, { check: 'gripTarget', severity: sev, text: `Had to lower the grip target to ${pct(t.target)} (from ${pct(gripTarget)}): at ${pct(gripTarget)} every way of taking it (${(['plan', 'brakeIn', 'coastIn', 'hold', 'accelIn'] as PlanShape[]).map((x) => SHAPE_LABEL[x]).join(', ')}) failed over time${still}` }]);
+        sr.severity = worstSeverity(sr.findings);
+        sr.passed = sr.severity !== 'fail';
+      }
+    });
+  }
   const severity = worstSeverity(segs.flatMap((s) => s.findings));
-  return { severity, passed: severity !== 'fail', states, segments: segs, ...(ride ? { ride } : {}), ...(brakeUse ? { brakeUse } : {}), ...(shimmy ? { shimmy } : {}) };
+  return {
+    severity, passed: severity !== 'fail', states, segments: segs, ...(ride ? { ride } : {}), ...(brakeUse ? { brakeUse } : {}), ...(shimmy ? { shimmy } : {}),
+    ...(time !== undefined ? { time, distance: segments.reduce((a, sg) => a + sg.distance, 0) } : {}),
+  };
 }
 
 /**

@@ -66,3 +66,27 @@ export const sameFrame = { toVehicle: (v: THREE.Vector3) => v, fromVehicle: (v: 
 
 /** Smooth 0 → 1 (ease in and out). */
 export const ease = (u: number) => (u <= 0 ? 0 : u >= 1 ? 1 : u * u * (3 - 2 * u));
+
+/** How long a camera sweep (and the views' fade with it) takes, s. */
+export const SWEEP = 0.9;
+/** A sweep's step: by frame time, at most 50 ms a frame (a stalled frame slows it rather than jumping it). */
+export const sweepStep = (delta: number) => Math.min(delta, 0.05) / SWEEP;
+
+const sa = new THREE.Spherical(), sb = new THREE.Spherical();
+/**
+ * Part way (`u`, eased) from one camera to another: the target slides across, the camera orbits round it the
+ * shorter way (not cutting through it) and the scale eases on a log scale. A pose without a height is taken
+ * as a 45° perspective view at its distance.
+ */
+export function between(f: CamPose, d: CamPose, u: number): CamPose {
+  const hOf = (p: CamPose) => Math.max(1, p.height ?? 2 * p.pos.distanceTo(p.target) * Math.tan(Math.PI / 8));
+  const target = f.target.clone().lerp(d.target, u);
+  sa.setFromVector3(f.pos.clone().sub(f.target));
+  sb.setFromVector3(d.pos.clone().sub(d.target));
+  let dth = sb.theta - sa.theta;
+  dth -= Math.round(dth / (2 * Math.PI)) * 2 * Math.PI;
+  const height = Math.exp(Math.log(hOf(f)) * (1 - u) + Math.log(hOf(d)) * u);
+  const dist = sa.radius * (1 - u) + sb.radius * u;
+  const dir = new THREE.Vector3().setFromSphericalCoords(Math.max(dist, 1), sa.phi + (sb.phi - sa.phi) * u, sa.theta + dth * u);
+  return { pos: target.clone().add(dir), target, height };
+}

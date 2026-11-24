@@ -7,7 +7,8 @@ import { useApp, type FocusKey, type ViewName } from '../store';
 import type { Model } from '../useModel';
 import type { Vec3 } from '../../core/math/vec3';
 import { Scene } from './Scene';
-import { cornerFrame, lastCamera, placeFor, recallView, rememberView, sameFrame, viewHeight, type CamPose } from './cameraMemory';
+import { between, cornerFrame, ease, lastCamera, placeFor, recallView, rememberView, sameFrame, sweepStep, viewHeight, type CamPose } from './cameraMemory';
+import { FadeRoot, fadeIn, isLeaving } from './viewFade';
 import { Local } from '../panels/UnitText';
 
 /** Camera azimuth (about +Y, from +Z toward +X) and polar (from +Y) for each standard view. */
@@ -86,8 +87,14 @@ export function CameraRig({ target, memoryKey, fallbackKey, frame = sameFrame, a
   const settle = useRef({ smooth: 0, waited: 0 });
   const hasTarget = !!target;
   // Before the first frame is drawn (a layout effect), so it never shows this view's old camera first.
+  const sweep = useRef<{ from: CamPose; to: CamPose; u: number } | null>(null);
   useLayoutEffect(() => {
-    if (!active) { phase.current = 'off'; return; }
+    if (!active) {
+      phase.current = 'off';
+      if (sweep.current && controls.current) controls.current.enabled = true;
+      sweep.current = null;
+      return;
+    }
     if (!hasTarget || phase.current === 'on') return;
     openedAt.current = useApp.getState().cameraRequest.nonce;
     phase.current = 'jump';
@@ -110,7 +117,6 @@ export function CameraRig({ target, memoryKey, fallbackKey, frame = sameFrame, a
   // Lock the camera to the focused component as it moves. Done every frame, just before rendering,
   // so the camera and the parts move together (an effect after the render made it stutter).
   const tmp = useMemo(() => new THREE.Vector3(), []);
-  const pose = useMemo(() => ({ pos: new THREE.Vector3(), target: new THREE.Vector3() }), []);
   const from = useRef<ReturnType<typeof lastCamera>>(null);
   const size = useThree((s) => s.size);
   // Show a remembered camera with this camera: its direction, and its scale as a zoom (orthographic) or a distance.
@@ -119,11 +125,25 @@ export function CameraRig({ target, memoryKey, fallbackKey, frame = sameFrame, a
     void c.setLookAt(at.pos.x, at.pos.y, at.pos.z, p.target.x, p.target.y, p.target.z, animate);
     if (at.zoom) void c.zoomTo(at.zoom, animate);
   };
+  // The camera now (as drawn) and where it is heading (the controls' own smoothing).
+  const poseOf = (c: NonNullable<typeof controls.current>, heading: boolean): CamPose => {
+    const q = { pos: new THREE.Vector3(), target: new THREE.Vector3() };
+    c.getPosition(q.pos, heading);
+    c.getTarget(q.target, heading);
+    return { ...q, height: viewHeight(camera, q.pos, q.target, size.height) };
+  };
   useFrame((_, delta) => {
     const c = controls.current;
     const t = targetRef.current;
     if (!c) return;
-    const ortho = (camera as THREE.OrthographicCamera).isOrthographicCamera;
+    // Still drawn under the view now shown (fading out): follow its camera around the car.
+    if (phase.current === 'off') {
+      if (isLeaving(memoryKey)) {
+        const last = lastCamera(frameRef.current.fromVehicle);
+        if (last) { put(c, last, false); c.update(0); }
+      } else if (active && !t) fadeIn(memoryKey, 1); // nothing to show the camera round
+      return;
+    }
     if (phase.current === 'jump' && t) {
       from.current = lastCamera(frameRef.current.fromVehicle);
       const f = from.current;
@@ -144,23 +164,38 @@ export function CameraRig({ target, memoryKey, fallbackKey, frame = sameFrame, a
       phase.current = 'sweep';
     }
     if (phase.current === 'sweep' && t) {
-      const animate = !!from.current;
-      const to = recallView(memoryKey) ?? (fallbackKey ? recallView(fallbackKey) : null);
-      if (to) put(c, to, animate);
-      else {
+      const f = from.current;
+      let to = recallView(memoryKey) ?? (fallbackKey ? recallView(fallbackKey) : null);
+      if (!to) {
+        // The default (Iso, fitted): set it at once to read it, then put the camera back where it starts.
         const v = VIEWS[useApp.getState().cameraRequest.view ?? 'iso'];
-        void c.rotateTo(v.azimuth, v.polar, animate);
-        fit(c, t, animate);
+        void c.rotateTo(v.azimuth, v.polar, false);
+        fit(c, t, false);
+        c.update(0);
+        to = poseOf(c, true);
+        if (f) { put(c, f, false); c.update(0); }
       }
-      if (!animate) c.update(0);
+      if (f) {
+        // The sweep runs frame by frame (below), so the fade goes with it and a view shown again mid-way turns from where it is.
+        sweep.current = { from: f, to, u: 0 };
+        c.enabled = false;
+      } else {
+        put(c, to, false);
+        c.update(0);
+        fadeIn(memoryKey, 1);
+      }
       phase.current = 'on';
     }
-    // Remember where this view's camera is (where it's heading, mid-sweep).
-    if (phase.current === 'on') {
-      c.getPosition(pose.pos, true);
-      c.getTarget(pose.target, true);
-      rememberView(memoryKey, { ...pose, height: viewHeight(camera, pose.pos, pose.target, size.height) }, frameRef.current.toVehicle);
+    const sw = sweep.current;
+    if (sw) {
+      sw.u = Math.min(1, sw.u + sweepStep(delta));
+      put(c, between(sw.from, sw.to, ease(sw.u)), false);
+      c.update(0);
+      fadeIn(memoryKey, sw.u);
+      if (sw.u >= 1) { sweep.current = null; c.enabled = true; }
     }
+    // Remember where this view's camera is heading (its own memory), and where it is now (the next view starts there).
+    if (phase.current === 'on') rememberView(memoryKey, poseOf(c, false), frameRef.current.toVehicle, sw ? sw.to : poseOf(c, true));
     if (!follow || !t) return;
     c.getTarget(tmp);
     const dx = t.center.x - tmp.x, dy = t.center.y - tmp.y, dz = t.center.z - tmp.z;
@@ -256,6 +291,7 @@ export function Viewport({ model, active = true }: { model: Model; active?: bool
           ? <OrthographicCamera makeDefault position={[300, 150, 5000]} zoom={0.6} near={1} far={100000} />
           : <PerspectiveCamera makeDefault position={[300, 150, 3500]} fov={30} near={1} far={100000} />}
         <CameraRig target={target} memoryKey="corner" frame={frame} active={active} />
+        <FadeRoot viewKey="corner" />
         <DevProjectBridge />
         <Scene model={model} />
       </Canvas>

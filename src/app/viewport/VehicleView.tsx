@@ -22,6 +22,7 @@ import { SafeHtml as Html } from './SafeHtml';
 import { pointAxisLocked } from '../locks';
 import type { VehicleModel, VehicleCornerView, AckermannAxle } from '../useVehicle';
 import { CameraRig, DevProjectBridge, ViewButtons, useMiddleDoubleClick, type FocusTarget } from './Viewport';
+import { FadeRoot } from './viewFade';
 import { COLORS, CustomDrawing } from './Scene';
 import { Joint, Seg, Polyline, Tri, Wheel, PatchMesh, Coilover, Arrow } from './primitives';
 
@@ -681,6 +682,7 @@ export function VehicleViewport({ model, memoryKey = 'vehicle', active = true }:
           ? <OrthographicCamera makeDefault position={[0, 300, 8000]} zoom={0.3} near={1} far={200000} />
           : <PerspectiveCamera makeDefault position={[0, 300, 6000]} fov={30} near={1} far={200000} />}
         <CameraRig target={target} memoryKey={memoryKey} fallbackKey={memoryKey === 'vehicle' ? 'testsStatic' : 'vehicle'} active={active} />
+        <FadeRoot viewKey={memoryKey} />
         <DevProjectBridge />
         {model && <VehicleScene model={model} arrows={arrows} />}
         <LabelSync labels={labels} layer={layer} />

@@ -1,4 +1,5 @@
-import { memo, useEffect, useState, type PointerEvent as RPointerEvent, type ReactNode } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useState, type PointerEvent as RPointerEvent, type ReactNode } from 'react';
+import { showView, slotRef, useViewFade } from './viewport/viewFade';
 import { useModel } from './useModel';
 import { useApp, pickDesign } from './store';
 import { modelSnapshot, testsSnapshot } from './project';
@@ -30,18 +31,28 @@ function TestsViewSwitch() {
  * re-renders from its props while hidden). Rebuilding a view on every tab change left the screen blank
  * while its 3D context and shaders started up, which flashed and hid the camera's sweep.
  */
-const Keep = memo(function Keep({ active, children }: { active: boolean; children: ReactNode }) {
-  return <div className={`view-slot${active ? '' : ' hidden'}`} aria-hidden={!active}>{children}</div>;
-}, (a, b) => !a.active && !b.active);
+type SlotState = 'active' | 'leaving' | 'hidden';
+const Keep = memo(function Keep({ viewKey, state, children }: { viewKey: string; state: SlotState; children: ReactNode }) {
+  const ref = useMemo(() => slotRef(viewKey), [viewKey]);
+  return <div ref={ref} className={`view-slot${state === 'active' ? '' : ` ${state}`}`} aria-hidden={state !== 'active'}>{children}</div>;
+}, (a, b) => a.state === 'hidden' && b.state === 'hidden');
 
 type ViewKey = 'corner' | 'vehicle' | 'testsStatic' | 'testsDynamic';
 const VIEW_KEYS: ViewKey[] = ['corner', 'vehicle', 'testsStatic', 'testsDynamic'];
 
-/** All the 3D views in one place: the active one shown, the others kept (built on first use, or soon after start). */
+/**
+ * All the 3D views in one place: the active one shown, the others kept (built on first use, or soon after
+ * start). A view shown fades in over the last one with its camera's sweep (viewFade.ts); the last one is drawn
+ * underneath until then.
+ */
 function ViewStack({ corner, vehicle, active }: { corner: ReturnType<typeof useModel>; vehicle: ReturnType<typeof useVehicle>; active: ViewKey }) {
   const test = useActiveTest();
   const [built, setBuilt] = useState<Record<ViewKey, boolean>>(() => ({ corner: false, vehicle: false, testsStatic: false, testsDynamic: false, [active]: true }));
   useEffect(() => { setBuilt((b) => (b[active] ? b : { ...b, [active]: true })); }, [active]);
+  // Before the first frame is drawn: the view shown starts hidden over the last one (which stays drawn).
+  useLayoutEffect(() => showView(active), [active]);
+  const leaving = useViewFade((s) => s.leaving);
+  const st = (k: ViewKey): SlotState => (k === active ? 'active' : leaving.includes(k) ? 'leaving' : 'hidden');
   // Build the others a little after start, one at a time, so the first visit to each doesn't flash either.
   useEffect(() => {
     const timers = VIEW_KEYS.map((k, i) => window.setTimeout(() => setBuilt((b) => (b[k] ? b : { ...b, [k]: true })), 2500 + i * 700));
@@ -49,10 +60,10 @@ function ViewStack({ corner, vehicle, active }: { corner: ReturnType<typeof useM
   }, []);
   return (
     <div className="viewport-stack">
-      {built.corner && <Keep active={active === 'corner'}><Viewport model={corner} active={active === 'corner'} /></Keep>}
-      {built.vehicle && <Keep active={active === 'vehicle'}><VehicleViewport model={vehicle} active={active === 'vehicle'} /></Keep>}
-      {built.testsStatic && <Keep active={active === 'testsStatic'}><VehicleViewport model={vehicle} memoryKey="testsStatic" active={active === 'testsStatic'} /></Keep>}
-      {built.testsDynamic && <Keep active={active === 'testsDynamic'}><CourseViewport model={vehicle} test={test} active={active === 'testsDynamic'} /></Keep>}
+      {built.corner && <Keep viewKey="corner" state={st('corner')}><Viewport model={corner} active={active === 'corner'} /></Keep>}
+      {built.vehicle && <Keep viewKey="vehicle" state={st('vehicle')}><VehicleViewport model={vehicle} active={active === 'vehicle'} /></Keep>}
+      {built.testsStatic && <Keep viewKey="testsStatic" state={st('testsStatic')}><VehicleViewport model={vehicle} memoryKey="testsStatic" active={active === 'testsStatic'} /></Keep>}
+      {built.testsDynamic && <Keep viewKey="testsDynamic" state={st('testsDynamic')}><CourseViewport model={vehicle} test={test} active={active === 'testsDynamic'} /></Keep>}
       {(active === 'testsStatic' || active === 'testsDynamic') && <TestsViewSwitch />}
     </div>
   );

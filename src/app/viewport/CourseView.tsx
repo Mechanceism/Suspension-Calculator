@@ -19,7 +19,8 @@ import { VehicleScene } from './VehicleView';
 import { COLORS } from './Scene';
 import { usePlayback } from '../panels/Playback';
 import { Line } from './primitives';
-import { ease, lastCamera, placeFor, recallView, rememberView, viewHeight } from './cameraMemory';
+import { between, ease, lastCamera, placeFor, recallView, rememberView, sweepStep, viewHeight } from './cameraMemory';
+import { FadeRoot, fadeIn, isLeaving } from './viewFade';
 
 export type CourseCamera = 'chase' | 'overhead' | 'free';
 export type CourseFollow = 'vehicle' | 'track';
@@ -187,7 +188,8 @@ function carMatrix(p: Pose, groundY: number, out = new THREE.Matrix4()): THREE.M
 /** A camera view: where it is, what it looks at, how much it shows there (visible height at the target, mm). */
 type View = { pos: THREE.Vector3; target: THREE.Vector3; height: number };
 const UP = new THREE.Vector3(0, 1, 0);
-const SWEEP = 0.9; // s
+/** This view's slot in the view stack (viewFade.ts). */
+const SLOT = 'testsDynamic';
 /** The default views' scale is set as for a 45° perspective camera at their distance. */
 const TAN_HALF_45 = Math.tan(Math.PI / 8);
 
@@ -260,7 +262,7 @@ function CourseCamera({ active, mode, follow, followPose, carPose, carDistance, 
   // Changing to free: unlock where the camera is (its pivot: the track where the car is now).
   useEffect(() => {
     const c = controls.current, car = carPose();
-    if (!active) { opened.current = false; anim.current = null; return; }
+    if (!active) { opened.current = false; anim.current = null; if (c) c.enabled = true; return; }
     if (!c) return;
     const switchedToFree = opened.current && mode === 'free' && lastMode.current !== 'free';
     lastMode.current = mode;
@@ -273,10 +275,9 @@ function CourseCamera({ active, mode, follow, followPose, carPose, carDistance, 
     if (mode === 'free' && freeAt === null) freeAt = carDistance();
     if (!opened.current) {
       opened.current = true;
-      const mt = car ? carMatrix(car, groundY) : null;
-      const last = mt ? lastCamera((v) => v.applyMatrix4(mt)) : null;
+      const last = car ? lastAroundCar() : null;
       const p = pivot(), h = home();
-      if (last) show({ pos: last.pos, target: last.target, height: last.height ?? 2 * last.pos.distanceTo(last.target) * TAN_HALF_45 });
+      if (last) show(last);
       else if (p) show(world(p, h));
     }
     prev.current = pivot();
@@ -336,29 +337,33 @@ function CourseCamera({ active, mode, follow, followPose, carPose, carDistance, 
     if (!import.meta.env.DEV) return;
     (window as unknown as { __courseCam?: () => unknown }).__courseCam = () => ({ pos: cam.position.toArray(), target: controls.current?.target.toArray(), car: carPose()?.pos.toArray(), freeAt, anim: !!anim.current, ortho, height: controls.current ? current().height : null });
   });
-  const sa = useMemo(() => new THREE.Spherical(), []), sb = useMemo(() => new THREE.Spherical(), []);
   const inv = useMemo(() => new THREE.Matrix4(), []);
+  // The last view's camera around the car (the same scale), as a view here.
+  const lastAroundCar = (): View | null => {
+    const car = carPose();
+    const last = car ? lastCamera((v) => v.applyMatrix4(carMatrix(car, groundY))) : null;
+    return last ? { pos: last.pos, target: last.target, height: last.height ?? 2 * last.pos.distanceTo(last.target) * TAN_HALF_45 } : null;
+  };
   useFrame((_, delta) => {
     const c = controls.current;
     if (!c) return;
+    // Still drawn under the view now shown (fading out): follow its camera around the car.
+    if (!active) {
+      const last = isLeaving(SLOT) ? lastAroundCar() : null;
+      if (last) show(last);
+      return;
+    }
     const p = pivot();
     if (!p) return;
     const a = anim.current;
     if (a) {
-      // Sweep: the target slides across, the camera orbits round it, the scale eases (log).
-      const f = world(p, a.from), d = world(p, a.dest);
-      a.u = Math.min(1, a.u + Math.min(delta, 0.05) / SWEEP);
-      const u = ease(a.u);
-      const target = f.target.clone().lerp(d.target, u);
-      sa.setFromVector3(f.pos.clone().sub(f.target));
-      sb.setFromVector3(d.pos.clone().sub(d.target));
-      let dth = sb.theta - sa.theta;
-      dth -= Math.round(dth / (2 * Math.PI)) * 2 * Math.PI;
-      const height = Math.exp(Math.log(Math.max(f.height, 1)) * (1 - u) + Math.log(Math.max(d.height, 1)) * u);
-      const dir = new THREE.Vector3().setFromSphericalCoords(1000, sa.phi + (sb.phi - sa.phi) * u, sa.theta + dth * u);
-      show({ pos: target.clone().add(dir), target, height });
-      if (u >= 1) { anim.current = null; c.enabled = true; }
+      // Sweep: the target slides across, the camera orbits round it, the scale eases (log); the view fades in with it.
+      a.u = Math.min(1, a.u + sweepStep(delta));
+      show(between(world(p, a.from), world(p, a.dest), ease(a.u)) as View);
+      fadeIn(SLOT, a.u);
+      if (a.u >= 1) { anim.current = null; c.enabled = true; }
     } else {
+      if (opened.current) fadeIn(SLOT, 1);
       // Carry the camera: move by the pivot's move, turn by its turn about it.
       const pr = prev.current ?? p;
       cam.position.copy(toWorld(p, toLocal(pr, cam.position)));
@@ -366,12 +371,13 @@ function CourseCamera({ active, mode, follow, followPose, carPose, carDistance, 
       c.update();
     }
     prev.current = { ...p, pos: p.pos.clone() };
-    // Remember this camera (in its own frame) and the camera around the car (for the next view opened).
+    // Remember this camera (in its own frame; mid-sweep, where it is heading) and the camera around the car
+    // now (the next view opened starts there).
     const car = carPose();
-    if (car && !anim.current && opened.current) {
+    if (car && opened.current) {
       inv.copy(carMatrix(car, groundY)).invert();
       const now = current();
-      rememberView(key, now, (v) => v.applyMatrix4(inv), local(p, now));
+      rememberView(key, now, (v) => v.applyMatrix4(inv), anim.current ? anim.current.dest : local(p, now));
     }
   });
   return <OrbitControls ref={controls as never} makeDefault enableDamping={false} enablePan={false}
@@ -402,11 +408,12 @@ export function CourseViewport({ model, test, ghosts = [], active = true }: {
   }, [test, dims.width, tv.widthFactor]);
   const frames = useMemo(() => (pbTest === test?.id ? pbFrames : []), [pbTest, pbFrames, test?.id]);
   // The pose now (playback time), shared by the car and the camera; at the start before Play.
-  const poseOf = useMemo(() => (onCenter: boolean) => {
+  // No test chosen (no course): the car stands at the origin, so the cameras still have it to go round.
+  const poseOf = useMemo(() => (onCenter: boolean): Pose => {
     const at = poseAt(points, segStart, frames, usePlayback.getState().t, onCenter);
     if (at) return at;
     const p0 = points[0];
-    return p0 ? { pos: toScene(p0.x, p0.y, p0.z), heading: p0.heading, grade: p0.grade, bank: p0.bank } : null;
+    return p0 ? { pos: toScene(p0.x, p0.y, p0.z), heading: p0.heading, grade: p0.grade, bank: p0.bank } : { pos: new THREE.Vector3(), heading: 0, grade: 0, bank: 0 };
   }, [points, segStart, frames]);
   const poseNow = useMemo(() => () => poseOf(false), [poseOf]);
   // The car's distance from the start now (m), and a point of the track's center line at a distance (the free pivot).
@@ -420,7 +427,7 @@ export function CourseViewport({ model, test, ghosts = [], active = true }: {
   }, [frames, segStart]);
   const length = points.length ? points[points.length - 1]!.total : 0;
   const trackAt = useMemo(() => (d: number): Pose | null => {
-    if (!points.length) return null;
+    if (!points.length) return { pos: new THREE.Vector3(), heading: 0, grade: 0, bank: 0 };
     let seg = 0;
     while (seg + 1 < segStart.length && segStart[seg + 1]! <= d) seg++;
     const q = placeOnCourse(points, segStart, { segment: seg, s: d - (segStart[seg] ?? 0), grade: 0, bank: 0, handling: undefined });
@@ -478,6 +485,7 @@ export function CourseViewport({ model, test, ghosts = [], active = true }: {
         {ghosts.map((g) => <GhostCar key={g.label} frames={g.frames} color={g.color} wheelbase={model?.wheelbase ?? 1550} track={dims.track} points={points} segStart={segStart} />)}
         {/* The ground just below the course's lowest point (it can't cut through the road), potholes included. */}
         {groundOn && <CourseGround center={extent.center} low={extent.low} span={extent.span} bg={bg} />}
+        <FadeRoot viewKey={SLOT} />
         <CourseCamera active={active} mode={tv.camera} follow={tv.follow} followPose={followPose} carPose={poseNow} carDistance={carDistance} trackAt={trackAt} length={length} groundY={model?.groundY ?? 0} size={size} reach={reach} resetKey={resetKey} />
       </Canvas>
       <div className="course-camera">

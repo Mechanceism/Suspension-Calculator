@@ -8,6 +8,7 @@ export * from './suspension/characteristics';
 export * from './units/units';
 export * from './math/quadrature';
 export * from './tire/geometry';
+export * from './tire/scale';
 export * from './tire/model';
 export * from './tire/size';
 export * from './suspension/loaded';

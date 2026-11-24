@@ -18,6 +18,7 @@ import { useApp, BRAKE_MORE_META, type Field } from '../store';
 import { SEGMENT_PRESETS, TEST_PRESETS, newSegment, newTestId, segmentSpec, isOff, OFF, type TestDesign, type TestSegment } from '../tests';
 import { buildVehicleProblem, runTestJob } from '../optimizer';
 import { POOL_SIZE, runLimited } from '../workerPool';
+import { useTireChoice, TIRE_CATALOG, rankTires, applyTire, currentTire, type TireAxleChoice } from '../tireChoice';
 import { useProfiles } from '../settings';
 import { switchWorkspace } from '../viewport/SafeHtml';
 import { ValueInput } from './ValueInput';
@@ -25,7 +26,7 @@ import { RoadEditor } from './RoadEditor';
 import { PlaybackBar, SegmentMap } from './Playback';
 import { Section, fmt, FieldRows } from './FieldRows';
 import { useDisplay } from '../units';
-import { useLoop, optimizeTests, exploreRanges, acceptExploration, setMaxWiden, isUnfixable, WIDEN_CHOICES, widenLabel, tuneSpringsDampers, setRateSettings, rateVars, setSizeBrakes, sizeBrakesFrom } from '../testOptimize';
+import { useLoop, optimizeTests, exploreRanges, acceptExploration, setMaxWiden, isUnfixable, WIDEN_CHOICES, widenLabel, tuneSpringsDampers, setRateSettings, rateVars, setSizeBrakes, sizeBrakesFrom, testsInScope } from '../testOptimize';
 import { SearchSelect, SensitivityReport } from './SearchTools';
 import { EstimatedNote } from './SetupWizard';
 import { VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META } from '../../core/optimize/vehicle';
@@ -869,6 +870,7 @@ function OptimizeSection({ test, onOpenOptimizer }: { test: TestDesign; onOpenOp
       )}
       <RateTuning test={test} busy={busy} />
       <BrakeLadderBox busy={busy} />
+      <TireChoiceBox test={test} busy={busy} />
       {loop.running && (
         <div className="jm-row">
           <span className="run-line"><span className="spinner" /> {loop.rateProgress
@@ -914,6 +916,67 @@ function OptimizeSection({ test, onOpenOptimizer }: { test: TestDesign; onOpenOp
         />
       </details>
     </Section>
+  );
+}
+
+/** Tire choice: rank candidate tire sizes on the tests in scope (a .tir approximated at each size). */
+function TireChoiceBox({ test, busy }: { test: TestDesign; busy: boolean }) {
+  const tc = useTireChoice();
+  const loop = useLoop();
+  const [own, setOwn] = useState('');
+  const set = (patch: Partial<typeof tc.settings>) => useTireChoice.setState({ settings: { ...tc.settings, ...patch } });
+  const toggle = (z: string) => useTireChoice.setState({ picked: tc.picked.includes(z) ? tc.picked.filter((x) => x !== z) : [...tc.picked, z] });
+  const texts = [...tc.picked, ...own.split(/[\n,;]+/)];
+  const n = texts.filter((t) => t.trim()).length;
+  const cur = currentTire(useApp.getState() as never, tc.settings.axle === 'rear' ? 'rear' : 'front');
+  return (
+    <details className="tire-advanced rate-tuning">
+      <summary>Tires (choose a size)</summary>
+      <p className="hint">Tries other tire sizes on the {loop.scope === 'all' ? 'enabled tests' : 'test'} and ranks them. A loaded .tir is approximated at each size (its nominal load, radius and width scaled; the further from the measured size, the rougher); the generic model only changes when both axles do. The tire + wheel's estimated weight counts (unsprung). Now: {cur.text}.</p>
+      <div className="jm-row">
+        <span className="muted">Axle</span>
+        <select value={tc.settings.axle} onChange={(e) => set({ axle: e.target.value as TireAxleChoice })}>
+          <option value="both">both</option><option value="front">front</option><option value="rear">rear</option>
+        </select>
+        <label className="check-label"><input type="checkbox" checked={tc.settings.rimsMayChange} onChange={(e) => set({ rimsMayChange: e.target.checked })} /> other rim sizes</label>
+        <label className="check-label" title="Run the vehicle optimizer (its goals and free coordinates) for each tire before testing it: slower"><input type="checkbox" checked={tc.settings.reoptimize} onChange={(e) => set({ reoptimize: e.target.checked })} /> re-optimize geometry for each</label>
+      </div>
+      <div className="jm-row" title="Room around the tire: how much taller and wider than the current one it may be">
+        <span className="muted">Room: taller by</span>
+        <input className="value-input" style={{ width: 48 }} type="number" value={tc.settings.maxGrowDiameter} onChange={(e) => set({ maxGrowDiameter: Number(e.target.value) || 0 })} />
+        <span className="muted">mm, wider by</span>
+        <input className="value-input" style={{ width: 48 }} type="number" value={tc.settings.maxGrowWidth} onChange={(e) => set({ maxGrowWidth: Number(e.target.value) || 0 })} />
+        <span className="muted">mm</span>
+      </div>
+      {TIRE_CATALOG.map((g) => (
+        <div key={g.group} className="jm-row small-text">
+          <span className="muted">{g.group}</span>
+          {g.sizes.map((z) => <button key={z} className={`chip${tc.picked.includes(z) ? ' on' : ''}`} onClick={() => toggle(z)}>{z}</button>)}
+        </div>
+      ))}
+      <textarea className="value-input wide-text" rows={2} placeholder="Your own sizes, one per line (e.g. 215/45R17)" value={own} onChange={(e) => setOwn(e.target.value)} />
+      <div className="jm-row">
+        {!tc.running
+          ? <button className="wide-btn" disabled={busy || !n} onClick={() => void rankTires(testsInScope(loop.scope, test), texts)}>▶ Rank {n} tire{n === 1 ? '' : 's'} (and the current one)</button>
+          : <button className="wide-btn" onClick={() => tc.cancel?.()}><span className="spinner" /> Testing {tc.progress} · Stop</button>}
+      </div>
+      {tc.results.length > 0 && (
+        <table className="opt-table small-text">
+          <thead><tr><th>Tire</th><th>Tests</th><th title="Priority-weighted score: lower is better">Score</th><th title="Unsprung mass change per corner">kg</th><th /></tr></thead>
+          <tbody>
+            {tc.results.map((r) => (
+              <tr key={r.text} title={r.skipped ?? r.error ?? r.model ?? ''} className={r.skipped || r.error ? 'off' : ''}>
+                <td>{r.text}{r.change !== undefined && r.change > 0.2 && <span className="warn-text" title="Far from the measured tire: a rough guess"> ⚠</span>}</td>
+                <td>{r.skipped ? <span className="muted">{r.skipped}</span> : r.error ? <span className="bad-text">{r.error}</span> : r.passed === undefined ? '—' : r.passed ? <span className="ok-text">pass</span> : <span className="bad-text">fail</span>}</td>
+                <td className="mono">{r.score !== undefined ? fmt(r.score, 2) : ''}</td>
+                <td className="mono">{r.massChange !== undefined ? fmt(r.massChange, 1) : ''}</td>
+                <td>{!r.skipped && !r.error && !r.text.endsWith('(now)') && <button className="chip" onClick={() => applyTire(r.text)} title="Put this tire on the car (Ctrl+Z undoes)">Use</button>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </details>
   );
 }
 

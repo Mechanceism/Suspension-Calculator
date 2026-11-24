@@ -1,6 +1,0 @@
-car: new minZ 0.031 @45.0 f 32.7Hz onset undefined | worn minZ -0.053 onset 11.4 | kick +2 false r0.00 | -3 false r0.00
-car hands off: new minZ -0.199 @10.3 f 3.0Hz onset 10.3 | worn minZ -0.060 onset 9.3 | kick +2 true rInfinity | -3 true rInfinity
-low trail: new minZ 0.059 @45.0 f 32.1Hz onset undefined | worn minZ 0.038 onset undefined | kick +2 false r0.00 | -3 false r0.00
-soft steering: new minZ -0.070 @25.1 f 13.3Hz onset 8.3 | worn minZ -0.223 onset 3.0 | kick +2 true rInfinity | -3 false r0.00
-solid axle: new minZ 0.052 @25.1 f 32.8Hz onset undefined | worn minZ 0.019 onset undefined | kick +2 false r0.00 | -3 false r0.00
-solid axle soft, no damper: new minZ -0.126 @45.0 f 8.9Hz onset 16.6 | worn minZ -0.297 onset 3.0 | kick +2 true r7.64 | -3 false r0.06

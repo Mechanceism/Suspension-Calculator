@@ -44,11 +44,13 @@ import {
 const G = 9.80665;
 
 export type VehicleGoalKind =
-  | 'grip' | 'lateralLimit' | 'contactArea' | 'inclination' | 'roll' | 'lltd' | 'rollStiffness' | 'pitch' | 'antiDive' | 'antiSquat' | 'bumpSteer' | 'testPass' | 'testReserve'
+  | 'grip' | 'lateralLimit' | 'contactArea' | 'inclination' | 'roll' | 'lltd' | 'rollStiffness' | 'pitch' | 'antiDive' | 'antiSquat' | 'bumpSteer' | 'testPass' | 'testReserve' | 'testTime'
   | 'steeringEffort' | 'parkingEffort' | 'scrubLimit' | 'shimmy';
 
 export interface VehicleGoalMeta {
   short: string; label: string; unit: string; target: number; tolerance: number; hint: string; maximize?: boolean;
+  /** Made as small as possible (no target; shown as “min”). */
+  minimize?: boolean;
   /** A limit (the target is a maximum): only a value above it counts. */
   limit?: boolean;
   /** A floor (the target is a minimum): only a value below it counts. */
@@ -69,6 +71,7 @@ export const VEHICLE_GOAL_META: Record<VehicleGoalKind, VehicleGoalMeta> = {
   antiDive: { short: 'Anti-dive', label: 'Anti-dive (front, braking)', unit: '%', target: 20, tolerance: 1, uses: 'geometry', hint: 'Classic geometric anti-dive at static height from the side-view IC, brake mount and bias.' },
   antiSquat: { short: 'Anti-squat', label: 'Anti-squat (rear, accelerating)', unit: '%', target: 30, tolerance: 1, uses: 'geometry', hint: 'Classic geometric anti-squat of the powered rear corners (needs powered rear corners).' },
   testReserve: { short: 'Test reserve', label: 'More grip reserve in the tests (largest)', unit: '%', target: 0, tolerance: 1, maximize: true, uses: 'all', hint: 'Lowers every state\'s worst tire grip use, weighted by test priority and segment weight (the worst states count most). Use it to improve a test that already passes. Placeholder grip model.' },
+  testTime: { short: 'Test time', label: 'Fastest test time (speeds as maximums)', unit: '', target: 0, tolerance: 1, minimize: true, uses: 'all', hint: 'The tests whose speeds are maximums are scored on their time (the driver planning to its push, the ladder included) in the Tests optimize loop: its weight is how much time counts against the grip reserve and the ride (0: not at all; 1: 1 % faster ≈ 1 point of score; a Fail still costs 100, a warning nothing). Within each round the geometry is moved toward less grip use at the planned speeds (the same push then plans them faster). Shown in the optimize log as the time before → after.' },
   testPass: { short: 'Test passes', label: 'Every tire within its grip (test must pass)', unit: '%', target: 90, tolerance: 1, uses: 'all', hint: 'No tire in any load case may use more than this share of its grip (100% = sliding). With a test selected as the load cases, this makes the test pass with margin. Grip model is a placeholder until real tire data.' },
   steeringEffort: { short: 'Effort at speed', label: 'Steering effort at speed (steered designs)', unit: 'N·m', target: 8, tolerance: 0.2, limit: true, uses: 'geometry', hint: 'Steering-wheel torque to hold both front wheels at the lateral g set in the Steering panel (Effort check at), from the side force on the mechanical + pneumatic trail, through the steering ratio. Only above the limit counts. Reported: the heaviest steered design.' },
   parkingEffort: { short: 'Parking effort', label: 'Steering effort when parking (steered designs)', unit: 'N·m', target: 20, tolerance: 0.5, limit: true, uses: 'geometry', hint: 'Steering-wheel torque to turn both front wheels at standstill (patch twisted about the steering axis’s ground point). Grows with the scrub radius. Only above the limit counts.' },
@@ -545,6 +548,7 @@ export function vehicleGoalValue(kind: VehicleGoalKind, p: VehicleProblem, e: Ve
     case 'roll': return lat ? Math.abs(deg(lat.result.pose.roll)) / Math.abs(latGOf(lat)) : null;
     case 'testPass': return e.cases.length ? 100 * Math.max(...e.cases.map((c) => c.result.grip?.maxUtilization ?? 0)) : null;
     case 'testReserve': return e.cases.length ? 100 * wmean(e, (c) => 1 - (c.result.grip?.maxUtilization ?? 1)) : null;
+    case 'testTime': return null; // measured by the test runs (the optimize loop), not here
     case 'lltd': return lat ? lltdOf(lat) : null;
     case 'rollStiffness': return lat ? rollStiffnessShareOf(lat, e.chars) : null;
     case 'pitch': return brk ? deg(brk.result.pose.pitch) : null;
@@ -588,8 +592,9 @@ function vehicleResiduals(goal: VehicleGoal, p: VehicleProblem, e: VehicleEval, 
       return CORNER_IDS.map((id) => (Math.sqrt(c.weight) * Math.max(0, (c.result.grip?.corners[id].utilization ?? 0) - limit)) / (meta.tolerance / 100));
     });
   }
-  if (goal.kind === 'testReserve') {
-    // Lower grip use everywhere; squares make the worst states count most.
+  if (goal.kind === 'testReserve' || goal.kind === 'testTime') {
+    // Lower grip use everywhere; squares make the worst states count most. (Test time: at the planned speeds,
+    // less grip use lets the same push plan them faster — the time itself is scored on the test runs.)
     return e.cases.map((c) => (Math.sqrt(c.weight) * (c.result.grip?.maxUtilization ?? 1)) / 0.05);
   }
   if (meta.limit && (goal.kind === 'steeringEffort' || goal.kind === 'parkingEffort' || goal.kind === 'scrubLimit')) {

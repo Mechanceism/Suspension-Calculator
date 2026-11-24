@@ -7,6 +7,7 @@ import { formatValue, type Quantity } from '../core/units/units';
 import { segmentStates, type PathKind, type RoadState, type CarDims , racingLineRadius } from '../core/tests/segments';
 import type { RoadSpec } from '../core/tests/road';
 import type { TestSegmentSpec } from '../core/tests/run';
+import type { SegmentPlan } from '../core/tests/plan';
 import { PROFILES, cloneProfile, type CheckProfile } from '../core/tests/checks';
 import type { Field } from './store';
 
@@ -293,14 +294,19 @@ export function roadSpecOf(s: TestSegment): RoadSpec | undefined {
  * (test priority × segment priority, from their ranks) and the segment's pass rules.
  * `source`: a test id, or 'all' for every enabled test (weighted by its priority rank).
  */
-export function statesForTests(tests: TestDesign[], source: string, dims?: CarDims): RoadState[] {
+/**
+ * `plans`: per test id, the speeds its last run planned per segment (speeds as maximums): its states are then
+ * taken at those speeds, not at the set maximums (which the car may never be driven at).
+ */
+export function statesForTests(tests: TestDesign[], source: string, dims?: CarDims, plans?: Record<string, (SegmentPlan | undefined)[] | undefined>): RoadState[] {
   const chosen = source === 'all' ? tests.filter((t) => t.enabled !== false) : tests.filter((t) => t.id === source);
   const tw = (t: TestDesign) => (source === 'all' ? rankWeight(t.rank, chosen.length) : 1);
   const totalPriority = chosen.reduce((a, t) => a + tw(t), 0) || 1;
   const out: RoadState[] = [];
   for (const t of chosen) {
     const tp = tw(t) / totalPriority;
-    const specs = t.segments.map((sg) => segmentSpec(sg, t));
+    const planned = t.speedMode === 'max' ? plans?.[t.id] : undefined;
+    const specs = t.segments.map((sg, i) => { const sp = segmentSpec(sg, t); const pl = planned?.[i]; return pl && pl.s.length > 1 ? { ...sp, plan: pl } : sp; });
     const segTotal = specs.reduce((a, sp) => a + (sp.weight ?? 1), 0) || 1;
     specs.forEach((sp, i) => {
       const st = segmentStates(sp, i, 1, dims);

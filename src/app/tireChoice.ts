@@ -177,6 +177,15 @@ export async function rankTires(tests: TestDesign[], texts: string[]): Promise<v
   const w = (t: TestDesign) => (tests.length > 1 ? rankWeight(t.rank, tests.length) : 1);
   const tw = tests.reduce((a, t) => a + w(t), 0) || 1;
   let done = 0;
+  // Speeds as maximums with the Test time goal on: the time counts too (grippier tires plan faster), each
+  // test's against one reference time (the same for every candidate, so the ranking is fair).
+  const tg = useApp.getState().vehicleOptimizer.goals.testTime;
+  const timeWeight = tg?.on ? Math.max(0, tg.weight.value) : 0;
+  const refs = new Map<string, number>();
+  const scoreOf = (t: TestDesign, run: TestRun) => {
+    if (timeWeight > 0 && run.time && !refs.has(t.id)) refs.set(t.id, run.time);
+    return testScore(run, 'improve', timeWeight > 0 ? { weight: timeWeight, ref: refs.get(t.id) } : undefined);
+  };
   try {
     // Re-optimizing uses every core per candidate: one candidate at a time then; else several at once.
     await runLimited(todo, set.reoptimize ? 1 : Math.max(1, Math.floor(POOL_SIZE / Math.max(1, tests.length))), async ({ r, state }) => {
@@ -200,7 +209,7 @@ export async function rankTires(tests: TestDesign[], texts: string[]): Promise<v
         }, () => stopped);
         if (runs.some((x) => !x)) return;
         const rs = runs as TestRun[];
-        r.score = tests.reduce((a, t, i) => a + w(t) * testScore(rs[i]!, 'improve'), 0) / tw;
+        r.score = tests.reduce((a, t, i) => a + w(t) * scoreOf(t, rs[i]!), 0) / tw;
         r.passed = rs.every((x) => x.passed);
       } catch (e) {
         r.error = e instanceof Error ? e.message : String(e);

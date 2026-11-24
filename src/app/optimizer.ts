@@ -300,7 +300,7 @@ export function damperOf(d: { damper: Record<DamperKey, Field>; damperMode: Damp
 }
 
 /** `caseSource` overrides the optimizer's load-case source (a test id or 'all'), e.g. for the Tests optimize loop. */
-export function buildVehicleProblem(s: AppState, over: { caseSource?: string } = {}): BuiltProblem<VehicleProblem> {
+export function buildVehicleProblem(s: AppState, over: { caseSource?: string; plans?: Parameters<typeof statesForTests>[3] } = {}): BuiltProblem<VehicleProblem> {
   const brakes = brakesOf(s);
   const brk = brakes ? {
     limit: { front: brakes.capacity.axleForce.front, rear: brakes.capacity.axleForce.rear, maxPedal: brakes.system.maxPedalForce },
@@ -363,7 +363,7 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
       ...(o.caseWeights ? { weights: o.caseWeights } : {}),
     },
     states: o.caseSource && (o.caseSource === 'all' || s.tests.some((x) => x.id === o.caseSource))
-      ? statesForTests(s.tests, o.caseSource, { wheelbase: v.wheelbase.value, halfTrack: Math.abs(toGeometry(all[rootOf('FL', s.links)].geom).wheel.center.x) }) : undefined,
+      ? statesForTests(s.tests, o.caseSource, { wheelbase: v.wheelbase.value, halfTrack: Math.abs(toGeometry(all[rootOf('FL', s.links)].geom).wheel.center.x) }, over.plans) : undefined,
     goals, variables, holds, aero: aeroOf(s), grip: gripModelOf(s.grip), tireGrip: tireGripFor(s, 'front'), ...(s.tireFileRear ? { tireGripRear: tireGripFor(s, 'rear') } : {}), keepClose: Math.max(0, o.keepClose.value), starts: o.starts ?? 1,
   };
   const blockers: string[] = [];

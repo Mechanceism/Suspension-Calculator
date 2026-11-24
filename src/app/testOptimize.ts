@@ -137,7 +137,16 @@ const smallGain = (a: number, b: number): string[] => (a > 0 && (a - b) / a < 0.
   : []);
 
 /** Lower is better: fixable Fail findings dominate, then grip use over the limit, then (improve) average grip use, plus the ride measures. */
-export const testScore = (r: TestRun, mode: 'pass' | 'improve' | 'explore'): number => coreTestScore(r, mode);
+/** The Test time goal (speeds as maximums): its weight (0 = off), and each test's time when the optimizing began. */
+const timeWeight = () => { const g = useApp.getState().vehicleOptimizer.goals.testTime; return g?.on ? Math.max(0, g.weight.value) : 0; };
+const timeRefs = new Map<string, number>();
+export const testScore = (r: TestRun, mode: 'pass' | 'improve' | 'explore', testId?: string): number => {
+  const w = timeWeight();
+  if (w > 0 && testId && r.time && !timeRefs.has(testId)) timeRefs.set(testId, r.time);
+  return coreTestScore(r, mode, w > 0 ? { weight: w, ref: testId ? timeRefs.get(testId) : undefined } : undefined);
+};
+/** The planned speeds of the tests' last runs (speeds as maximums), for the geometry optimizer's states. */
+const lastPlans = () => Object.fromEntries(Object.entries(useRun.getState().results).map(([id, e]) => [id, e.result.segments.map((s) => s.plan)]));
 
 /** The springs, dampers and bars to tune (locked values left out), with their search ranges. */
 export function rateVars(s: AppState, settings: RateSettings): RateVar[] {
@@ -339,14 +348,17 @@ async function runSet(tests: TestDesign[], mode: 'pass' | 'improve' | 'explore',
   }
   const w = (t: TestDesign) => (tests.length > 1 ? rankWeight(t.rank, tests.length) : 1);
   const tw = runs.reduce((a, r) => a + w(r.test), 0) || 1;
-  return { runs, passed: runs.every((r) => r.run.passed), score: runs.reduce((a, r) => a + w(r.test) * testScore(r.run, mode), 0) / tw };
+  return { runs, passed: runs.every((r) => r.run.passed), score: runs.reduce((a, r) => a + w(r.test) * testScore(r.run, mode, r.test.id), 0) / tw };
 }
 
 const describe = (set: SetRun) => {
   const failing = set.runs.filter((r) => !r.run.passed).length;
   const warn = set.runs.some((r) => r.run.severity === 'warn');
-  if (set.runs.length === 1) return set.passed ? (warn ? 'passes with warnings' : 'passes') : 'fails';
-  return set.passed ? `all ${set.runs.length} pass${warn ? ' (some with warnings)' : ''}` : `${failing} of ${set.runs.length} fail`;
+  // Speeds as maximums: the time too.
+  const timed = set.runs.filter((r) => r.run.time);
+  const time = timed.length ? ` · time ${timed.map((r) => `${r.run.time!.toFixed(2)} s`).join(' + ')}` : '';
+  if (set.runs.length === 1) return (set.passed ? (warn ? 'passes with warnings' : 'passes') : 'fails') + time;
+  return (set.passed ? `all ${set.runs.length} pass${warn ? ' (some with warnings)' : ''}` : `${failing} of ${set.runs.length} fail`) + time;
 };
 
 const MAX_ROUNDS = 40;
@@ -365,6 +377,7 @@ export async function optimizeTests(scope: Scope, active: TestDesign | null, mod
   let currentCancel: (() => void) | null = null;
   const isStopped = () => stopped;
   useLoop.setState({ running: true, mode, scope, widen: 1, round: 0, log: [], outcome: null, explanation: [], exploration: null, cancel: () => { stopped = true; currentCancel?.(); useRun.getState().cancel?.(); } });
+  timeRefs.clear(); // times count against where this optimizing began
   try {
     const first = await runSet(tests, mode, isStopped);
     if (!first) { useLoop.setState({ outcome: 'stopped' }); return; }
@@ -417,7 +430,7 @@ export async function optimizeTests(scope: Scope, active: TestDesign | null, mod
       }
       const k = steps[wi]!;
       useLoop.setState({ round, widen: k });
-      const built = buildVehicleProblem(useApp.getState(), { caseSource });
+      const built = buildVehicleProblem(useApp.getState(), { caseSource, plans: lastPlans() });
       if (built.blockers.length) throw new Error(built.blockers.join(' '));
       const vars = widened(built.problem, k);
       log(`Round ${round}: optimizing ${vars.length} coordinates over ${built.problem.states?.length ?? 0} states${k > 1 ? ` (ranges ×${k})` : ''}…`);
@@ -436,9 +449,20 @@ export async function optimizeTests(scope: Scope, active: TestDesign | null, mod
         const next = await runSet(tests, mode, isStopped);
         if (!next) { useLoop.setState({ outcome: 'stopped' }); return; }
         gain = set.score > 0 ? (set.score - next.score) / set.score : 0;
-        log(`Round ${round}: ${describe(next)} · score ${set.score.toFixed(2)} → ${next.score.toFixed(2)} (${(gain * 100).toFixed(1)}% better) · largest move ${moved.toFixed(1)} mm`);
-        set = next;
-        await sizeAndRerun();
+        if (next.score > set.score * 1.0005 + 1e-6) {
+          // Worse on the tests (the round's steady states improved, the runs didn't): undo it, run again so
+          // the results shown are the kept design's, and go on as if nothing moved (wider ranges next).
+          log(`Round ${round}: ${describe(next)} · score ${set.score.toFixed(2)} → ${next.score.toFixed(2)}: worse, undone`);
+          useApp.getState().applyVehicleOptimized(result.variables.map((v) => ({ root: v.root!, key: pointKeyOf(v.point), axis: v.axis, value: v.before })));
+          const back = await runSet(tests, mode, isStopped);
+          if (!back) { useLoop.setState({ outcome: 'stopped' }); return; }
+          set = back;
+          gain = 0;
+        } else {
+          log(`Round ${round}: ${describe(next)} · score ${set.score.toFixed(2)} → ${next.score.toFixed(2)} (${(gain * 100).toFixed(1)}% better) · largest move ${moved.toFixed(1)} mm`);
+          set = next;
+          await sizeAndRerun();
+        }
       } else {
         log(`Round ${round}: nothing moved${k > 1 ? ` at ×${k}` : ' within your ranges'}.`);
       }
@@ -495,7 +519,7 @@ export async function exploreRanges(scope: Scope, active: TestDesign | null): Pr
   useLoop.setState({ running: true, mode: 'explore', scope, widen: k, round: 1, log: [], outcome: null, explanation: [], exploration: null, cancel: () => { stopped = true; currentCancel?.(); } });
   try {
     const s = useApp.getState();
-    const built = buildVehicleProblem(s, { caseSource: scope === 'all' ? 'all' : tests[0]!.id });
+    const built = buildVehicleProblem(s, { caseSource: scope === 'all' ? 'all' : tests[0]!.id, plans: lastPlans() });
     if (built.blockers.length) throw new Error(built.blockers.join(' '));
     const p = built.problem;
     const wide = widened(p, k);
@@ -522,7 +546,7 @@ export async function exploreRanges(scope: Scope, active: TestDesign | null): Pr
     const runsAfter = after as TestRun[];
     const w = (t: TestDesign) => (tests.length > 1 ? rankWeight(t.rank, tests.length) : 1);
     const tw = tests.reduce((a, t) => a + w(t), 0) || 1;
-    const afterScore = tests.reduce((a, t, i) => a + w(t) * testScore(runsAfter[i]!, 'pass'), 0) / tw;
+    const afterScore = tests.reduce((a, t, i) => a + w(t) * testScore(runsAfter[i]!, 'pass', t.id), 0) / tw;
     const moves = result.variables.map((v, i) => {
       const orig = p.variables[i]!;
       return {

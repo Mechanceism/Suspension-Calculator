@@ -876,7 +876,10 @@ function OptimizeSection({ test, onOpenOptimizer }: { test: TestDesign; onOpenOp
   const tests = useApp((s) => s.tests);
   const results = useRun((s) => s.results);
   const free = Object.keys(vo.ranges).length;
-  const goals = VEHICLE_GOAL_KINDS.filter((k) => vo.goals[k].on && k !== 'testPass' && k !== 'testReserve').map((k) => VEHICLE_GOAL_META[k].short);
+  const goals = VEHICLE_GOAL_KINDS.filter((k) => vo.goals[k].on && k !== 'testPass' && k !== 'testReserve' && k !== 'testTime').map((k) => VEHICLE_GOAL_META[k].short);
+  // Speeds as maximums: score on time too (the Test time goal; its weight: how much time counts).
+  const timeGoal = vo.goals.testTime;
+  const setTimeGoal = (patch: Partial<typeof timeGoal>) => useApp.getState().updateVehicleOptimizer((o) => ({ ...o, goals: { ...o.goals, testTime: { ...o.goals.testTime, ...patch } } }));
   const enabled = tests.filter((t) => t.enabled !== false);
   const inScope = loop.scope === 'all' ? enabled : [test];
   const runs = inScope.map((t) => results[t.id]?.result).filter((x): x is TestRun => !!x);
@@ -900,6 +903,15 @@ function OptimizeSection({ test, onOpenOptimizer }: { test: TestDesign; onOpenOp
           {WIDEN_CHOICES.map((v) => <option key={v} value={v}>{widenLabel(v)}</option>)}
         </select>
       </div>
+      {inScope.some((t) => t.speedMode === 'max') && (
+        <div className="jm-row" title="Speeds as maximums: score the tests on their time too. The weight is how much time counts against the grip reserve and the ride — 0: safest (time ignored); 1: 1 % faster ≈ 1 point; higher: fastest. A Fail still rules a setup out (100 points); warnings cost nothing. (The Test time goal in Vehicle → Optimize.)">
+          <label className="check"><input type="checkbox" checked={timeGoal.on} disabled={loop.running} onChange={() => setTimeGoal({ on: !timeGoal.on })} /> Score on time</label>
+          {timeGoal.on && <><span className="muted">weight</span>
+            <input className="value-input small" type="number" min={0} step={0.5} value={timeGoal.weight.value} disabled={loop.running}
+              onChange={(e) => { const v = Number(e.target.value); if (Number.isFinite(v) && v >= 0) setTimeGoal({ weight: { ...timeGoal.weight, text: String(v), value: v } }); }} />
+            <span className="muted small-text">safest 0 … fastest</span></>}
+        </div>
+      )}
       <div className="jm-row" title="Geometry rounds: local from your design, or wide (several starts from a design of experiments, keeping the best)">
         <span className="muted">Search</span>
         <SearchSelect value={vo.starts} onChange={(n) => useApp.getState().updateVehicleOptimizer((o) => ({ ...o, starts: n }))} />
@@ -912,7 +924,7 @@ function OptimizeSection({ test, onOpenOptimizer }: { test: TestDesign; onOpenOp
       {!loop.running && (
         <div className="jm-row">
           {failing && fixable && <button className="wide-btn primary" disabled={busy || !inScope.length} onClick={() => void optimizeTests(loop.scope, test, 'pass')} title="Optimize, apply, re-run, until it passes; widens the ranges when it stops making progress">▶ Optimize until {many ? 'they pass' : 'it passes'}</button>}
-          {(!failing || !known) && <button className="wide-btn primary" disabled={busy || !inScope.length} onClick={() => void optimizeTests(loop.scope, test, 'improve')} title="Lower grip use everywhere (priority-weighted; failing segments get extra weight)">▶ Improve (more grip reserve)</button>}
+          {(!failing || !known) && <button className="wide-btn primary" disabled={busy || !inScope.length} onClick={() => void optimizeTests(loop.scope, test, 'improve')} title={timeGoal.on ? 'Faster (the test time) and lower grip use everywhere (priority-weighted; failing segments get extra weight)' : 'Lower grip use everywhere (priority-weighted; failing segments get extra weight)'}>▶ Improve ({timeGoal.on ? 'faster, more grip reserve' : 'more grip reserve'})</button>}
           <button className="wide-btn" disabled={busy || !inScope.length} onClick={() => void exploreRanges(loop.scope, test)} title="One run with the ranges widened to the maximum; shows the result before using it">Preview wider ranges</button>
         </div>
       )}

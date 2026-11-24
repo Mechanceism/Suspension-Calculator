@@ -75,6 +75,7 @@ function GoalTable<K extends string>({ kinds, meta, goals, now, onChange }: {
               <td className="nowrap">
                 {m.maximize
                   ? <span className="muted" title="Maximized: as large as possible">max</span>
+                  : 'minimize' in m && m.minimize ? <span className="muted" title="Minimized: as short as possible">min</span>
                   : <>{m.limit && <span className="muted" title="A limit: only a value above it counts">≤ </span>}{'atLeast' in m && m.atLeast && <span className="muted" title="A floor: only a value below it counts">≥ </span>}<ValueInput field={g.target} unit={m.unit} width={50} onCommit={(t) => onChange(k, { target: parseField(t, 'ratio', g.target) })} /></>}
               </td>
               <td><ValueInput field={g.weight} unit="" width={36} onCommit={(t) => onChange(k, { weight: parseField(t, 'ratio', g.weight) })} /></td>

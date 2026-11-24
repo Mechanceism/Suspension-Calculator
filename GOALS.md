@@ -86,7 +86,7 @@ Read this first when picking the work up again; the details of each item are in 
 | # | Item | Status | Commit(s) |
 |---|---|---|---|
 | F1 | **Compare: Δ sign.** Δ is now current − snapshot (was snapshot − current): a lower current value shows negative, e.g. a faster current car has a negative Δ time. | ✅ | 2f68d50 |
-| F2 | **Which way is the front.** The cars look the same from either end: a blue arrow on the ground between the front wheels points forward (Vehicle view, with the ground grid; its tip is kept in *Fit*). | ✅ | FRONT_ID |
+| F2 | **Which way is the front.** The cars look the same from either end: a blue arrow on the ground between the front wheels points forward (Vehicle view, with the ground grid; its tip is kept in *Fit*). | ✅ | 43f7b32 |
 | F3 | **Is the optimizer working?** Optimizing a test often leaves the score unchanged or says nothing changed, though another car runs the same test differently (and sometimes better); two cars with everything unlocked on the same tests don't end up alike. To check why. | in progress | |
 
 ### Round 3 (agreed 2026-11-23; merged to main 2026-11-24)

@@ -6,10 +6,10 @@
  *   scores side by side, with the snapshot's saved last run), and the whole car's results of both.
  *   Any row can be pinned (☆): pinned rows are listed first, so the ones that matter needn't be searched for.
  */
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { create } from 'zustand';
 import { useApp, type DesignState } from '../store';
-import { DesignOverride, withActiveCorner } from '../designOverride';
+import { DesignOverride, withActiveCorner, type DesignOverrideValue } from '../designOverride';
 import { useModel, type Model } from '../useModel';
 import { useVehicle, type VehicleModel } from '../useVehicle';
 import { cornerResultRows, vehicleResultRows, type ResultRow } from '../resultRows';
@@ -110,36 +110,47 @@ export interface SnapshotModels { corner: Model; vehicle: VehicleModel | null }
  * same active corner). Comparing tests, its car is posed by its own run at the playhead (its ghost).
  * Rendered once (App) and handed to the tables and the 3D views.
  */
-export function CompareSource({ onModels }: { onModels: (b: SnapshotModels | null) => void }) {
-  const snap = useSnapshots((s) => s.list.find((x) => x.id === s.activeId) ?? null);
+/**
+ * The snapshot's design as the model hooks should see it (null: none): the same active corner as the app;
+ * comparing tests, posed by its own run at the playhead (its ghost). Each consumer works its models out
+ * itself under a DesignOverride — nothing is handed back up (an earlier hand-over through the App's state,
+ * repeated at every slider / playback tick, piled up into React's "maximum update depth" inside the play
+ * loop, which then stopped while still showing ❚❚).
+ */
+export function useSnapshotDesign(on = true): DesignOverrideValue | null {
+  const snap = useSnapshots((s) => (on ? s.list.find((x) => x.id === s.activeId) ?? null : null));
   const activeCorner = useApp((s) => s.activeCorner);
   const mode = useCompareView((s) => s.mode);
   const picked = useCompareView((s) => s.picked);
   const runs = useCompare((s) => s.runs);
-  const t = usePlayback((s) => s.t);
+  const t = usePlayback((s) => (on && mode === 'tests' ? s.t : 0));
   const base = useMemo(() => (snap ? withActiveCorner(snap.design, activeCorner) : null), [snap, activeCorner]);
-  const frames = useMemo(() => (mode === 'tests' ? ghostFrames(pickedRow()) : []), [mode, picked, runs]); // eslint-disable-line react-hooks/exhaustive-deps
+  const frames = useMemo(() => (on && mode === 'tests' ? ghostFrames(pickedRow()) : []), [on, mode, picked, runs]); // eslint-disable-line react-hooks/exhaustive-deps
   const frame = frames.length ? frameAt(frames, t) : undefined;
-  const value = useMemo(() => (base && frame ? { ...base, ...framePatch(frame) } : base), [base, frame]);
-  useEffect(() => { if (!value) onModels(null); }, [value, onModels]);
-  if (!value) return null;
-  return <DesignOverride.Provider value={value}><Inner onModels={onModels} /></DesignOverride.Provider>;
-}
-function Inner({ onModels }: { onModels: (b: SnapshotModels) => void }) {
-  const m = useModel();
-  const vehicle = useVehicle(true);
-  // useModel answers a new object each render: keep one while its parts are the same (else this reports forever).
-  const corner = useMemo(() => m, [m.error, m.corner, m.sweep, m.current, m.steerSweep, m.damperLimits]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { onModels({ corner, vehicle }); }, [corner, vehicle, onModels]);
-  return null;
+  return useMemo(() => (base && frame ? { ...base, ...framePatch(frame) } : base), [base, frame]);
 }
 
-/** Right: the comparison (`b`: the snapshot's models, from CompareSource). */
-export function CompareResults({ corner, vehicle, b }: { corner: Model; vehicle: VehicleModel | null; b: SnapshotModels | null }) {
+/** The snapshot's car for a 3D view (`on`: in Compare), drawn as its ghost; null otherwise. */
+export function WithGhost({ on, children }: { on: boolean; children: (ghost: VehicleModel | null) => ReactNode }) {
+  const value = useSnapshotDesign(on);
+  return <DesignOverride.Provider value={value}><GhostInner on={!!value}>{children}</GhostInner></DesignOverride.Provider>;
+}
+function GhostInner({ on, children }: { on: boolean; children: (ghost: VehicleModel | null) => ReactNode }) {
+  const ghost = useVehicle(on);
+  return <>{children(on ? ghost : null)}</>;
+}
+
+/** Right: the comparison (the snapshot's models worked out here). */
+export function CompareResults({ corner, vehicle }: { corner: Model; vehicle: VehicleModel | null }) {
   const snap = useSnapshots((s) => s.list.find((x) => x.id === s.activeId) ?? null);
-  if (!snap) return <section className="panel"><h2>Compare</h2><p className="muted">Take a snapshot (File → Take snapshot, or here on the left) or import one, then change the design: the two are compared here.</p></section>;
-  if (!b) return <section className="panel"><h2>Compare</h2><p className="muted">Working out the snapshot…</p></section>;
-  return <CompareBody a={{ corner, vehicle }} b={b} snap={snap} />;
+  const value = useSnapshotDesign(true);
+  if (!snap || !value) return <section className="panel"><h2>Compare</h2><p className="muted">Take a snapshot (File → Take snapshot, or here on the left) or import one, then change the design: the two are compared here.</p></section>;
+  return <DesignOverride.Provider value={value}><ResultsInner a={{ corner, vehicle }} snap={snap} /></DesignOverride.Provider>;
+}
+function ResultsInner({ a, snap }: { a: { corner: Model; vehicle: VehicleModel | null }; snap: Snapshot }) {
+  const corner = useModel();
+  const vehicle = useVehicle(true);
+  return <CompareBody a={a} b={{ corner, vehicle }} snap={snap} />;
 }
 
 interface Pair { key: string; group: string; label: string; unit: string; digits: number; hint?: string; a?: ResultRow; b?: ResultRow }

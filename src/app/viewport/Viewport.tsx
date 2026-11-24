@@ -7,6 +7,8 @@ import { useApp, type FocusKey, type ViewName } from '../store';
 import type { Model } from '../useModel';
 import type { Vec3 } from '../../core/math/vec3';
 import { Scene } from './Scene';
+import { SceneFrame } from './JointGizmo';
+import { isLeft } from '../../core/vehicle/vehicle';
 import { between, cornerFrame, ease, lastCamera, placeFor, recallView, rememberView, sameFrame, sweepStep, viewHeight, type CamPose } from './cameraMemory';
 import { FadeRoot, fadeIn, isLeaving } from './viewFade';
 import { Local } from '../panels/UnitText';
@@ -67,11 +69,14 @@ export type FocusTarget = { center: Vec3; radius: number } | null;
  * steadily (a view being shown can stall a few frames while it catches up, and the controls would cover a
  * stalled frame's whole step at once, cutting the sweep short) — the sweep.
  */
-export function CameraRig({ target, memoryKey, fallbackKey, frame = sameFrame, active = true }: {
+export function CameraRig({ target, memoryKey, fallbackKey, frame = sameFrame, active = true, mirror = false }: {
   target: FocusTarget; memoryKey: string; fallbackKey?: string; active?: boolean;
+  /** The scene is drawn mirrored in X (a right-hand corner): the standard views turn round with it (Outboard still looks at the outboard side). */
+  mirror?: boolean;
   frame?: { toVehicle: (v: THREE.Vector3) => THREE.Vector3; fromVehicle: (v: THREE.Vector3) => THREE.Vector3 };
 }) {
   const controls = useRef<ComponentRef<typeof CameraControls>>(null);
+  const viewOf = (n: ViewName) => (mirror ? { ...VIEWS[n], azimuth: -VIEWS[n].azimuth } : VIEWS[n]);
   // CameraControls is rebuilt when the default camera changes, so view requests re-apply then too.
   const camera = useThree((s) => s.camera);
   const request = useApp((s) => s.cameraRequest);
@@ -108,7 +113,7 @@ export function CameraRig({ target, memoryKey, fallbackKey, frame = sameFrame, a
     const t = targetRef.current;
     if (!active || !c || !t || request.nonce === openedAt.current) return;
     if (request.view) {
-      const v = VIEWS[request.view];
+      const v = viewOf(request.view);
       void c.rotateTo(v.azimuth, v.polar, true);
     }
     fit(c, t, true);
@@ -168,7 +173,7 @@ export function CameraRig({ target, memoryKey, fallbackKey, frame = sameFrame, a
       let to = recallView(memoryKey) ?? (fallbackKey ? recallView(fallbackKey) : null);
       if (!to) {
         // The default (Iso, fitted): set it at once to read it, then put the camera back where it starts.
-        const v = VIEWS[useApp.getState().cameraRequest.view ?? 'iso'];
+        const v = viewOf(useApp.getState().cameraRequest.view ?? 'iso');
         void c.rotateTo(v.azimuth, v.polar, false);
         fit(c, t, false);
         c.update(0);
@@ -274,10 +279,15 @@ export function Viewport({ model, active = true }: { model: Model; active?: bool
   const select = useApp((s) => s.select);
   const focus = useApp((s) => s.focus);
   const radius = useApp((s) => s.geom.scalars.tireDiameter.value / 2);
-  const target = focusSphere(model, focus, radius);
+  const focused = focusSphere(model, focus, radius);
+  const mirrorX = !isLeft(useApp((s) => s.activeCorner));
+  // Focus points are in the design's (left-hand) coordinates: mirrored with the scene for a right-hand corner.
+  const target = useMemo(() => (focused && mirrorX ? { ...focused, center: { ...focused.center, x: -focused.center.x } } : focused), [focused?.center.x, focused?.center.y, focused?.center.z, focused?.radius, mirrorX]); // eslint-disable-line react-hooks/exhaustive-deps
   const corner = useApp((s) => s.activeCorner);
   const wheelbase = useApp((s) => s.vehicle.wheelbase.value);
   const frame = useMemo(() => cornerFrame(corner, wheelbase), [corner, wheelbase]);
+  const mirror = !isLeft(corner);
+  const sceneFrame = useRef<THREE.Group>(null);
   const bg = useMemo(() => getComputedStyle(document.documentElement).getPropertyValue('--viewport-bg').trim() || '#16191e', []);
   const onMiddle = useMiddleDoubleClick();
   return (
@@ -290,10 +300,13 @@ export function Viewport({ model, active = true }: { model: Model; active?: bool
         {projection === 'orthographic'
           ? <OrthographicCamera makeDefault position={[300, 150, 5000]} zoom={0.6} near={1} far={100000} />
           : <PerspectiveCamera makeDefault position={[300, 150, 3500]} fov={30} near={1} far={100000} />}
-        <CameraRig target={target} memoryKey="corner" frame={frame} active={active} />
+        <CameraRig target={target} memoryKey="corner" frame={frame} active={active} mirror={mirror} />
         <FadeRoot viewKey="corner" />
         <DevProjectBridge />
-        <Scene model={model} />
+        {/* A right-hand corner is drawn mirrored (its design is the left one's): the right side, as on the car. */}
+        <group ref={sceneFrame} scale={[mirror ? -1 : 1, 1, 1]}>
+          <SceneFrame.Provider value={sceneFrame}><Scene model={model} /></SceneFrame.Provider>
+        </group>
       </Canvas>
       <ViewButtons />
       {measureMode && (

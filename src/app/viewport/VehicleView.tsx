@@ -662,7 +662,7 @@ function vehicleTarget(model: VehicleModel | null): FocusTarget {
  * tinted, see-through copy (checked each frame, so parts rebuilt since are caught too). Not pickable.
  */
 const GHOST = new THREE.Color('#ffb703');
-function GhostScene({ model }: { model: VehicleModel }) {
+export function GhostScene({ model }: { model: VehicleModel }) {
   const group = useRef<THREE.Group>(null);
   useFrame(() => {
     group.current?.traverse((o) => {

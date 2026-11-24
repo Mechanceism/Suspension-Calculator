@@ -54,12 +54,16 @@ export function placeFor(pose: CamPose, cam: AnyCamera, viewportHeight: number, 
   return { pos: pose.target.clone().addScaledVector(dir, pose.height / (2 * tanHalf(cam))) };
 }
 
-/** The Corner view draws the active corner in its own frame (as a front-left corner): to / from the vehicle frame. */
+/**
+ * The Corner view draws the active corner at its own axle (a rear corner Z + wheelbase from where it is on
+ * the car), a right-hand one mirrored as it is on the car (user review 7: it used to show every corner as a
+ * left one): to / from the vehicle frame.
+ */
 export function cornerFrame(id: CornerId, wheelbase: number) {
-  const sx = isLeft(id) ? 1 : -1, dz = isFront(id) ? 0 : -wheelbase;
+  const dz = isFront(id) ? 0 : -wheelbase;
   return {
-    toVehicle: (v: THREE.Vector3) => v.set(v.x * sx, v.y, v.z + dz),
-    fromVehicle: (v: THREE.Vector3) => v.set(v.x * sx, v.y, v.z - dz),
+    toVehicle: (v: THREE.Vector3) => v.set(v.x, v.y, v.z + dz),
+    fromVehicle: (v: THREE.Vector3) => v.set(v.x, v.y, v.z - dz),
   };
 }
 export const sameFrame = { toVehicle: (v: THREE.Vector3) => v, fromVehicle: (v: THREE.Vector3) => v };

@@ -4,7 +4,14 @@
  * Drag an arrow to move along that axis (the move snaps to the grid when enabled). The arrows keep a
  * constant size on screen, and updates are limited to one per frame so dragging stays smooth.
  */
-import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+
+/**
+ * The object a scene is drawn in when it isn't the world (the Corner view draws a right-hand corner
+ * mirrored, as it is on the car): the arrows take the pointer's ray into it, so a drag moves the design's
+ * own coordinate and the point follows the pointer.
+ */
+export const SceneFrame = createContext<RefObject<THREE.Object3D | null> | null>(null);
 import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { Vec3 } from '../../core/math/vec3';
@@ -76,7 +83,11 @@ function Arrow({ axis, line, origin, ids, locked, frame, sign = 1, onStart, onDe
   /** Why it is locked (shown when it is grabbed). */
   lockedText?: string;
 }) {
-  const localRay = (r: THREE.Ray) => (frame?.current ? r.clone().applyMatrix4(frame.current.matrixWorld.clone().invert()) : r);
+  const sceneFrame = useContext(SceneFrame);
+  const localRay = (r: THREE.Ray) => {
+    const f = frame?.current ?? sceneFrame?.current;
+    return f ? r.clone().applyMatrix4(f.matrixWorld.clone().invert()) : r;
+  };
   const label = line ? line.label : AXES[axis!].label;
   const dir = line ? line.dir : AXES[axis!].dir;
   const color = locked ? '#5b616d' : line ? '#ffd166' : AXES[axis!].color;

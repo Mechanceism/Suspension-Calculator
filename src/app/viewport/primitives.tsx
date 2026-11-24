@@ -21,7 +21,9 @@ export function Line({ points, color, lineWidth = 1, transparent = false, opacit
   points: V3[]; color: string; lineWidth?: number; transparent?: boolean; opacity?: number; dashed?: boolean; dashSize?: number; gapSize?: number;
 }) {
   const size = useThree((st) => st.size);
-  const line = useMemo(() => new Line2(new LineGeometry(), new LineMaterial()), []);
+  // Both sides: a scene drawn mirrored (a right-hand corner in the Corner view) turns the lines' screen-space
+  // quads round, and one-sided they'd be culled.
+  const line = useMemo(() => { const m = new LineMaterial(); m.side = THREE.DoubleSide; return new Line2(new LineGeometry(), m); }, []);
   useEffect(() => () => { line.geometry.dispose(); line.material.dispose(); }, [line]);
   useLayoutEffect(() => {
     const m = line.material;

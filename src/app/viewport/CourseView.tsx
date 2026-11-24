@@ -162,11 +162,8 @@ function CarOnCourse({ model, poseNow }: { model: VehicleModel | null; poseNow: 
   );
 }
 
-/**
- * Another run on the same course, from its frames: its own car drawn see-through (Compare: the snapshot,
- * posed by its own run), or without a model a see-through block of its size.
- */
-function GhostCar({ frames, color, wheelbase, track, points, segStart, model }: { frames: PlaybackFrame[]; color: string; wheelbase: number; track: number; points: CoursePoint[]; segStart: number[]; model?: VehicleModel | null }) {
+/** Another run on the same course, from its frames: its own car drawn see-through (Compare: the snapshot, posed by its own run). */
+function GhostCar({ frames, points, segStart, model }: { frames: PlaybackFrame[]; points: CoursePoint[]; segStart: number[]; model?: VehicleModel | null }) {
   const group = useRef<THREE.Group>(null);
   useFrame(() => {
     const at = poseAt(points, segStart, frames, usePlayback.getState().t);
@@ -176,14 +173,7 @@ function GhostCar({ frames, color, wheelbase, track, points, segStart, model }: 
   });
   return (
     <group ref={group}>
-      {model?.result
-        ? <group position={[0, -model.groundY, 0]}><GhostScene model={model} /></group>
-        : (
-          <mesh position={[0, 450, -wheelbase / 2]}>
-            <boxGeometry args={[track * 0.9, 500, wheelbase * 1.3]} />
-            <meshStandardMaterial color={color} transparent opacity={0.35} depthWrite={false} />
-          </mesh>
-        )}
+      {model?.result && <group position={[0, -model.groundY, 0]}><GhostScene model={model} /></group>}
     </group>
   );
 }
@@ -491,7 +481,7 @@ export function CourseViewport({ model, test, ghosts = [], active = true }: {
         {pathLine.length > 1 && <Line points={pathLine} color="#8a93a3" lineWidth={1.5} dashed dashSize={1500} gapSize={1000} />}
         {driven.map((p, i) => <Line key={i} points={p.pts} color={SEV[p.sev] ?? '#ffffff'} lineWidth={2.5} />)}
         <CarOnCourse model={model} poseNow={poseNow} />
-        {ghosts.map((g) => <GhostCar key={g.label} frames={g.frames} color={g.color} model={g.model} wheelbase={g.wheelbase ?? model?.wheelbase ?? 1550} track={dims.track} points={points} segStart={segStart} />)}
+        {ghosts.map((g) => <GhostCar key={g.label} frames={g.frames} model={g.model} points={points} segStart={segStart} />)}
         {/* The ground just below the course's lowest point (it can't cut through the road), potholes included. */}
         {groundOn && <CourseGround center={extent.center} low={extent.low} span={extent.span} bg={bg} />}
         <FadeRoot viewKey={SLOT} />

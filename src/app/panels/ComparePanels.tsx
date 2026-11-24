@@ -6,7 +6,7 @@
  *   scores side by side, with the snapshot's saved last run), and the whole car's results of both.
  *   Any row can be pinned (☆): pinned rows are listed first, so the ones that matter needn't be searched for.
  */
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { create } from 'zustand';
 import { useApp, type DesignState } from '../store';
 import { DesignOverride, withActiveCorner, type DesignOverrideValue } from '../designOverride';
@@ -140,17 +140,48 @@ function GhostInner({ on, children }: { on: boolean; children: (ghost: VehicleMo
   return <>{children(on ? ghost : null)}</>;
 }
 
-/** Right: the comparison (the snapshot's models worked out here). */
+/**
+ * A value that, while `on`, changes at most every `ms` (the last one shown after a pause). The tables follow the
+ * playback a few times a second instead of every frame: in turns each frame costs more to work out, and the
+ * panel recomputing the snapshot and redrawing all its rows each frame made the playback lag.
+ */
+function useThrottled<T>(v: T, ms: number, on: boolean): T {
+  const [shown, setShown] = useState(v);
+  const last = useRef(0);
+  const latest = useRef(v);
+  latest.current = v;
+  const timer = useRef(0);
+  useEffect(() => {
+    if (!on || timer.current) return;
+    // Outside React's commit (a timer), so a stream of ticks never chains updates.
+    timer.current = window.setTimeout(() => { timer.current = 0; last.current = performance.now(); setShown(latest.current); }, Math.max(0, ms - (performance.now() - last.current)));
+  }, [v, on, ms]);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  return on ? shown : v;
+}
+const usePlaying = () => {
+  const pb = usePlayback((s) => s.playing);
+  const app = useApp((s) => s.playingLateral || s.playingLongitudinal || s.playingSteer);
+  return pb || app;
+};
+
+/** Right: the comparison (the snapshot's models worked out here; while playing, 5 times a second). */
 export function CompareResults({ corner, vehicle }: { corner: Model; vehicle: VehicleModel | null }) {
   const snap = useSnapshots((s) => s.list.find((x) => x.id === s.activeId) ?? null);
-  const value = useSnapshotDesign(true);
+  const playing = usePlaying();
+  const value = useThrottled(useSnapshotDesign(true), 200, playing);
+  const cornerT = useThrottled(corner, 200, playing), vehicleT = useThrottled(vehicle, 200, playing);
+  const a = useMemo(() => ({ corner: cornerT, vehicle: vehicleT }), [cornerT, vehicleT]);
   if (!snap || !value) return <section className="panel"><h2>Compare</h2><p className="muted">Take a snapshot (File → Take snapshot, or here on the left) or import one, then change the design: the two are compared here.</p></section>;
-  return <DesignOverride.Provider value={value}><ResultsInner a={{ corner, vehicle }} snap={snap} /></DesignOverride.Provider>;
+  return <DesignOverride.Provider value={value}><ResultsInner a={a} snap={snap} /></DesignOverride.Provider>;
 }
 function ResultsInner({ a, snap }: { a: { corner: Model; vehicle: VehicleModel | null }; snap: Snapshot }) {
-  const corner = useModel();
+  const m = useModel();
   const vehicle = useVehicle(true);
-  return <CompareBody a={a} b={{ corner, vehicle }} snap={snap} />;
+  // useModel answers a new object each render: one per set of parts, so the body redraws only when they change.
+  const corner = useMemo(() => m, [m.error, m.corner, m.sweep, m.current, m.steerSweep, m.damperLimits]); // eslint-disable-line react-hooks/exhaustive-deps
+  const b = useMemo(() => ({ corner, vehicle }), [corner, vehicle]);
+  return <CompareBody a={a} b={b} snap={snap} />;
 }
 
 interface Pair { key: string; group: string; label: string; unit: string; digits: number; hint?: string; a?: ResultRow; b?: ResultRow }
@@ -172,7 +203,7 @@ const differs = (p: Pair) => {
   return Math.abs(a - b) >= 0.5 * 10 ** -p.digits;
 };
 
-function CompareBody({ a, b, snap }: { a: { corner: Model; vehicle: VehicleModel | null }; b: { corner: Model; vehicle: VehicleModel | null }; snap: Snapshot }) {
+const CompareBody = memo(function CompareBody({ a, b, snap }: { a: { corner: Model; vehicle: VehicleModel | null }; b: { corner: Model; vehicle: VehicleModel | null }; snap: Snapshot }) {
   const mode = useCompareView((s) => s.mode);
   const damperA = useApp((s) => s.damper);
   const current = useApp((s) => s.corners), geom = useApp((s) => s.geom), links = useApp((s) => s.links);
@@ -202,7 +233,7 @@ function CompareBody({ a, b, snap }: { a: { corner: Model; vehicle: VehicleModel
       )}
     </section>
   );
-}
+});
 
 /** Rows of both designs: pinned first, then by group; optionally only the ones that differ. */
 function PairTable({ title, pairs }: { title: string; pairs: Pair[] }) {

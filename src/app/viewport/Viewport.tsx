@@ -137,6 +137,21 @@ export function CameraRig({ target, memoryKey, fallbackKey, frame = sameFrame, a
     c.getTarget(q.target, heading);
     return { ...q, height: viewHeight(camera, q.pos, q.target, size.height) };
   };
+  // The other side's corner chosen (the scene mirrored in X): sweep the camera to the mirrored place, so it
+  // looks at the new corner from the same side of it as it did at the old one.
+  const lastMirror = useRef(mirror);
+  useEffect(() => {
+    if (lastMirror.current === mirror) return;
+    lastMirror.current = mirror;
+    const c = controls.current;
+    if (!c || !active || phase.current !== 'on') return;
+    const from = poseOf(c, false);
+    const to = poseOf(c, true);
+    to.pos.x = -to.pos.x; to.target.x = -to.target.x;
+    sweep.current = { from, to, u: 0 };
+    c.enabled = false;
+  }, [mirror]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useFrame((_, delta) => {
     const c = controls.current;
     const t = targetRef.current;

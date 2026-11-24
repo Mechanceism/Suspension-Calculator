@@ -60,6 +60,8 @@ function ViewStack({ corner, vehicle, active, ghost, course }: {
   useLayoutEffect(() => showView(active), [active]);
   const leaving = useViewFade((s) => s.leaving);
   const st = (k: ViewKey): SlotState => (k === active ? 'active' : leaving.includes(k) ? 'leaving' : 'hidden');
+  // Drawn: shown, or fading out under the one shown (a ghost car stays in it until it's gone).
+  const drawn = (k: ViewKey) => st(k) !== 'hidden';
   // Build the others a little after start, one at a time, so the first visit to each doesn't flash either.
   useEffect(() => {
     const timers = VIEW_KEYS.map((k, i) => window.setTimeout(() => setBuilt((b) => (b[k] ? b : { ...b, [k]: true })), 2500 + i * 700));
@@ -68,9 +70,9 @@ function ViewStack({ corner, vehicle, active, ghost, course }: {
   return (
     <div className="viewport-stack">
       {built.corner && <Keep viewKey="corner" state={st('corner')}><Viewport model={corner} active={active === 'corner'} /></Keep>}
-      {built.vehicle && <Keep viewKey="vehicle" state={st('vehicle')}><WithGhost on={!!ghost && active === 'vehicle'}>{(g) => <VehicleViewport model={vehicle} active={active === 'vehicle'} ghost={g} />}</WithGhost></Keep>}
-      {built.testsStatic && <Keep viewKey="testsStatic" state={st('testsStatic')}><WithGhost on={!!ghost && active === 'testsStatic'}>{(g) => <VehicleViewport model={vehicle} memoryKey="testsStatic" active={active === 'testsStatic'} ghost={g} />}</WithGhost></Keep>}
-      {built.testsDynamic && <Keep viewKey="testsDynamic" state={st('testsDynamic')}><WithGhost on={!!ghost && !!course && active === 'testsDynamic'}>{(g) => <CourseViewport model={vehicle} test={test} ghosts={course?.ghosts.map((x) => ({ ...x, model: g }))} active={active === 'testsDynamic'} />}</WithGhost></Keep>}
+      {built.vehicle && <Keep viewKey="vehicle" state={st('vehicle')}><WithGhost on={!!ghost && drawn('vehicle')}>{(g) => <VehicleViewport model={vehicle} active={active === 'vehicle'} ghost={g} />}</WithGhost></Keep>}
+      {built.testsStatic && <Keep viewKey="testsStatic" state={st('testsStatic')}><WithGhost on={!!ghost && drawn('testsStatic')}>{(g) => <VehicleViewport model={vehicle} memoryKey="testsStatic" active={active === 'testsStatic'} ghost={g} />}</WithGhost></Keep>}
+      {built.testsDynamic && <Keep viewKey="testsDynamic" state={st('testsDynamic')}><WithGhost on={!!ghost && !!course && drawn('testsDynamic')}>{(g) => <CourseViewport model={vehicle} test={test} ghosts={course?.ghosts.map((x) => ({ ...x, model: g }))} active={active === 'testsDynamic'} />}</WithGhost></Keep>}
       {(active === 'testsStatic' || active === 'testsDynamic') && <TestsViewSwitch />}
     </div>
   );

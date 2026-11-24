@@ -39,6 +39,7 @@
  *  24  solid axle types (4-link, 3-link + Panhard rod: FL_PH_Chs, FL_PH_Axle)
  */
 import pkg from '../../package.json';
+import { readResults, type SavedResult } from './savedResults';
 import { rockerFromCoilover } from '../core/suspension/coilover';
 import { SUSPENSION_KINDS, SUSPENSION_LABELS, isOneAxle, type SuspensionKind } from '../core/suspension/doubleWishbone';
 import type { CustomLinkage, CustomJoint } from '../core/suspension/customLinkage';
@@ -60,7 +61,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 42;
+export const FORMAT_VERSION = 43;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -150,6 +151,8 @@ export interface ProjectFile {
   /** Held dimensions (points named per corner, e.g. FL_UCA_Fwd). */
   dimensions: { root: CornerId; a: string; b: string; measure: string; value: number; travel: number | null }[];
   presetId?: string;
+  /** A model-and-tests file: its tests' last results (scores only; savedResults.ts), by test id. */
+  results?: Record<string, SavedResult>;
 }
 
 interface OptimizerJson {
@@ -182,7 +185,7 @@ function cornerToJson(id: CornerId, c: CornerDesign): CornerJson {
   };
 }
 
-export function serializeProject(d: DesignState, name: string, include: { tests: boolean } = { tests: true }): ProjectFile {
+export function serializeProject(d: DesignState, name: string, include: { tests: boolean; results?: Record<string, SavedResult> } = { tests: true }): ProjectFile {
   const corners = mergedCorners(d);
   return {
     format: FILE_FORMAT,
@@ -245,6 +248,7 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
       measure: x.measure, value: x.value, travel: x.travel,
     })),
     presetId: d.presetId,
+    ...(include.tests && include.results && Object.keys(include.results).length ? { results: include.results } : {}),
   };
 }
 
@@ -392,6 +396,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   40: (f) => ({ ...f, formatVersion: 41 }),
   // 41 → 42: tests from before hold their set speeds exactly (speeds as maximums is new; read below).
   41: (f) => ({ ...f, formatVersion: 42 }),
+  // 42 → 43: an optional results section (a model-and-tests file's test scores; R9 snapshots).
+  42: (f) => ({ ...f, formatVersion: 43 }),
   39: (f) => ({ ...f, formatVersion: 40, ...(isObj(f.vehicle) && isObj(f.vehicle.fields) ? { vehicle: { ...f.vehicle, fields: { ...f.vehicle.fields, rollingResistance: { text: '0', value: 0 } } } } : {}) }),
   // 34 → 35: aero side force, roll sensitivity and balance shift off.
   34: (f) => ({ ...f, formatVersion: 35, ...(isObj(f.aero) && isObj(f.aero.fields) ? { aero: { ...f.aero, fields: { ...f.aero.fields, CsA: { text: '0', value: 0 }, sideCp: { text: '900', value: 900 }, rollSensF: { text: '0', value: 0 }, rollSensR: { text: '0', value: 0 }, yawBalance: { text: '0', value: 0 } } } } : {}) }),
@@ -622,6 +628,8 @@ export interface ImportResult {
   design: DesignState;
   name: string;
   warnings: string[];
+  /** The file's saved test results (scores), by test id; empty when it has none. */
+  results: Record<string, SavedResult>;
 }
 
 const isObj = (v: unknown): v is Json => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -928,5 +936,5 @@ export function importProject(data: unknown): ImportResult {
     tests: readTests(f.tests, warnings),
   };
   Object.assign(design, corners[rootOf(activeCorner, links)]);
-  return { design, name: typeof f.name === 'string' && f.name ? f.name : 'Imported layout', warnings };
+  return { design, name: typeof f.name === 'string' && f.name ? f.name : 'Imported layout', warnings, results: readResults(f.results) };
 }

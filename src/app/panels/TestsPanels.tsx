@@ -32,6 +32,8 @@ import { EstimatedNote } from './SetupWizard';
 import { VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META } from '../../core/optimize/vehicle';
 import { Local, Val } from './UnitText';
 import { SHAPE_LABEL } from '../../core/tests/plan';
+import { setResultsSource } from '../fileActions';
+import { saveResult, type SavedResult } from '../savedResults';
 
 const parse = (text: string, q: Quantity, prev: Field): Field => {
   const r = parseValue(text, q);
@@ -45,6 +47,8 @@ interface RunEntry {
   from: DesignRef;
   /** The test as it was run (its playback frames are reused only for the same test). */
   test?: TestDesign;
+  /** When it ran (ISO). */
+  ranAt?: string;
 }
 interface RunStore {
   running: boolean;
@@ -64,6 +68,18 @@ export const useRun = create<RunStore>(() => ({ running: false, testId: null, re
 /** What a result depends on: when any of these change, the result is stale. */
 type DesignRef = { geom: unknown; corners: unknown; settings: unknown; steer: unknown; vehicle: unknown };
 const designRef = (s: ReturnType<typeof useApp.getState>): DesignRef => ({ geom: s.geom, corners: s.corners, settings: s.settings, steer: s.steer, vehicle: s.vehicle });
+const sameDesign = (a: DesignRef, b: DesignRef) => a.geom === b.geom && a.corners === b.corners && a.settings === b.settings && a.steer === b.steer && a.vehicle === b.vehicle;
+// A model-and-tests file saves the results run on the design and the tests as they are now (scores only).
+setResultsSource(() => {
+  const s = useApp.getState(), now = designRef(s), results = useRun.getState().results;
+  const out: Record<string, SavedResult> = {};
+  for (const t of s.tests) {
+    const e = results[t.id];
+    if (!e || !sameDesign(e.from, now) || (e.test && e.test !== t)) continue;
+    out[t.id] = saveResult(t.name, e.result, e.ranAt);
+  }
+  return out;
+});
 /** True when the design changed since `from`. */
 export function useStale(from: DesignRef | undefined): boolean {
   const geom = useApp((s) => s.geom);
@@ -108,7 +124,7 @@ export function startTestRun(test: TestDesign) {
   useRun.setState({ running: true, testId: test.id, runningIds: [test.id], error: null, cancel: job.cancel });
   return job.done
     .then((result) => {
-      useRun.setState((r) => ({ running: false, cancel: null, runningIds: [], results: { ...r.results, [test.id]: { result, from, test } } }));
+      useRun.setState((r) => ({ running: false, cancel: null, runningIds: [], results: { ...r.results, [test.id]: { result, from, test, ranAt: new Date().toISOString() } } }));
       useApp.getState().set('testView', null);
       return result;
     })
@@ -137,7 +153,7 @@ export async function runTestsTogether(tests: TestDesign[]): Promise<(TestRun | 
     stops.add(stop);
     try {
       const result = await Promise.race([job.done, cancelled]);
-      if (result) useRun.setState((r) => ({ results: { ...r.results, [test.id]: { result, from, test } } }));
+      if (result) useRun.setState((r) => ({ results: { ...r.results, [test.id]: { result, from, test, ranAt: new Date().toISOString() } } }));
       return result;
     } catch (e) {
       useRun.setState({ error: e instanceof Error ? e.message : String(e) });

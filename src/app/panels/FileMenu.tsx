@@ -8,6 +8,7 @@ import { openWizard } from './SetupWizard';
 import { CAR_PROFILES } from '../carProfiles';
 import { importAeroFile } from './AeroPanel';
 import { Local, Val } from './UnitText';
+import { takeSnapshot, importSnapshot, useSnapshots } from '../snapshots';
 
 const when = (iso: string) => {
   const d = new Date(iso);
@@ -26,6 +27,8 @@ export function FileMenu() {
   const settingsInput = useRef<HTMLInputElement>(null);
   const tireInput = useRef<HTMLInputElement>(null);
   const aeroInput = useRef<HTMLInputElement>(null);
+  const snapshotInput = useRef<HTMLInputElement>(null);
+  const snapshots = useSnapshots((st) => st.list.length);
   const importPart = useRef<Part>('all');
   const pickImport = (part: Part) => { importPart.current = part; importInput.current?.click(); };
   const root = useRef<HTMLDivElement>(null);
@@ -95,6 +98,10 @@ export function FileMenu() {
           <button role="menuitem" onClick={run(() => tireInput.current?.click())} title="Use a fitted Magic Formula tire model (.tir file) for all four tires. Front and rear can differ: Optimize → Tire grip model">Tire (.tir)</button>
           <button role="menuitem" onClick={run(() => aeroInput.current?.click())} title="Aerodynamic characteristics: constant coefficients or a ride-height map (JSON or CSV, e.g. from a CFD tool)">Aero data</button>
           <div className="menu-sep" />
+          <div className="menu-head">Snapshots (to compare){snapshots ? <span className="muted"> · {snapshots} this session</span> : null}</div>
+          <button role="menuitem" onClick={run(() => { takeSnapshot(); })} title="Save the current design (model, tests and their up-to-date results — scores only) as a file, and add it to the snapshots to compare with (Compare tab)">Take snapshot</button>
+          <button role="menuitem" onClick={run(() => snapshotInput.current?.click())} title="Any project file as a snapshot to compare with (the current design stays as it is)">Import snapshot…</button>
+          <div className="menu-sep" />
           <div className="menu-head">Settings (units, view, pass-rule profiles)</div>
           <button role="menuitem" onClick={run(exportSettings)}>Export settings</button>
           <button role="menuitem" onClick={run(() => settingsInput.current?.click())}>Import settings</button>
@@ -103,6 +110,10 @@ export function FileMenu() {
       <input
         ref={importInput} type="file" accept=".json,application/json" hidden
         onChange={(e) => { const f = e.target.files?.[0]; if (f) usePendingImport.setState({ file: f, part: importPart.current }); e.target.value = ''; }}
+      />
+      <input
+        ref={snapshotInput} type="file" accept=".json,application/json" hidden
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) void importSnapshot(f); e.target.value = ''; }}
       />
       <input
         ref={settingsInput} type="file" accept=".json,application/json" hidden

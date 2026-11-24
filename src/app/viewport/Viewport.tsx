@@ -7,7 +7,7 @@ import { useApp, type FocusKey, type ViewName } from '../store';
 import type { Model } from '../useModel';
 import type { Vec3 } from '../../core/math/vec3';
 import { Scene } from './Scene';
-import { cornerFrame, lastCamera, recallView, rememberView, sameFrame } from './cameraMemory';
+import { cornerFrame, lastCamera, placeFor, recallView, rememberView, sameFrame, viewHeight, type CamPose } from './cameraMemory';
 import { Local } from '../panels/UnitText';
 
 /** Camera azimuth (about +Y, from +Z toward +X) and polar (from +Y) for each standard view. */
@@ -112,6 +112,13 @@ export function CameraRig({ target, memoryKey, fallbackKey, frame = sameFrame, a
   const tmp = useMemo(() => new THREE.Vector3(), []);
   const pose = useMemo(() => ({ pos: new THREE.Vector3(), target: new THREE.Vector3() }), []);
   const from = useRef<ReturnType<typeof lastCamera>>(null);
+  const size = useThree((s) => s.size);
+  // Show a remembered camera with this camera: its direction, and its scale as a zoom (orthographic) or a distance.
+  const put = (c: NonNullable<typeof controls.current>, p: CamPose, animate: boolean) => {
+    const at = placeFor(p, camera, size.height, 6000);
+    void c.setLookAt(at.pos.x, at.pos.y, at.pos.z, p.target.x, p.target.y, p.target.z, animate);
+    if (at.zoom) void c.zoomTo(at.zoom, animate);
+  };
   useFrame((_, delta) => {
     const c = controls.current;
     const t = targetRef.current;
@@ -121,8 +128,7 @@ export function CameraRig({ target, memoryKey, fallbackKey, frame = sameFrame, a
       from.current = lastCamera(frameRef.current.fromVehicle);
       const f = from.current;
       if (f) {
-        void c.setLookAt(f.pos.x, f.pos.y, f.pos.z, f.target.x, f.target.y, f.target.z, false);
-        if (ortho && f.zoom) void c.zoomTo(f.zoom, false);
+        put(c, f, false);
         c.update(0);
         phase.current = 'settle';
         settle.current = { smooth: 0, waited: 0 };
@@ -140,10 +146,8 @@ export function CameraRig({ target, memoryKey, fallbackKey, frame = sameFrame, a
     if (phase.current === 'sweep' && t) {
       const animate = !!from.current;
       const to = recallView(memoryKey) ?? (fallbackKey ? recallView(fallbackKey) : null);
-      if (to) {
-        void c.setLookAt(to.pos.x, to.pos.y, to.pos.z, to.target.x, to.target.y, to.target.z, animate);
-        if (ortho && to.zoom) void c.zoomTo(to.zoom, animate);
-      } else {
+      if (to) put(c, to, animate);
+      else {
         const v = VIEWS[useApp.getState().cameraRequest.view ?? 'iso'];
         void c.rotateTo(v.azimuth, v.polar, animate);
         fit(c, t, animate);
@@ -155,7 +159,7 @@ export function CameraRig({ target, memoryKey, fallbackKey, frame = sameFrame, a
     if (phase.current === 'on') {
       c.getPosition(pose.pos, true);
       c.getTarget(pose.target, true);
-      rememberView(memoryKey, { ...pose, zoom: ortho ? camera.zoom : undefined }, frameRef.current.toVehicle);
+      rememberView(memoryKey, { ...pose, height: viewHeight(camera, pose.pos, pose.target, size.height) }, frameRef.current.toVehicle);
     }
     if (!follow || !t) return;
     c.getTarget(tmp);

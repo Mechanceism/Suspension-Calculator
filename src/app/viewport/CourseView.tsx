@@ -32,9 +32,11 @@ interface TestViewState {
   follow: CourseFollow;
   /** Road width as a share of the car's overall width (where a segment has no track width of its own). */
   widthFactor: number;
+  /** This view's own projection (the other views share the app's): perspective by default. */
+  projection: 'perspective' | 'orthographic';
 }
 const load = (): Partial<TestViewState> => { try { return JSON.parse(localStorage.getItem('susp.testView') ?? '{}') as Partial<TestViewState>; } catch { return {}; } };
-export const useTestView = create<TestViewState>(() => ({ mode: 'static', camera: 'chase', follow: 'vehicle', widthFactor: 1.5, ...load() }));
+export const useTestView = create<TestViewState>(() => ({ mode: 'static', camera: 'chase', follow: 'vehicle', widthFactor: 1.5, projection: 'perspective', ...load() }));
 export function setTestView(patch: Partial<TestViewState>) {
   useTestView.setState(patch);
   try { localStorage.setItem('susp.testView', JSON.stringify(useTestView.getState())); } catch { /* private mode */ }
@@ -204,7 +206,7 @@ let freeAt: number | null = null;
  * - **Free** unlocks the camera from the car where it is: it then orbits a pivot on the track's center line
  *   (where the car was), and right-drag (or Shift + drag) slides that pivot along the track like grabbing
  *   the ground, so the view "scrolls" along the course, turning with it as chase does.
- * Perspective or orthographic like the other views (the app's projection). Every change of camera sweeps
+ * Perspective (by default) or orthographic: this view's own setting, apart from the other views'. Every change of camera sweeps
  * smoothly (orbiting round the target, not cutting through it, the scale eased); each camera remembers
  * where it was left; on opening, the camera starts where the last view's was around the car, at the same
  * scale (cameraMemory.ts), and sweeps from there. The car and the camera read the same pose each frame.
@@ -465,8 +467,8 @@ export function CourseViewport({ model, test, ghosts = [], active = true }: {
     return pieces.filter((p) => p.pts.length > 1);
   }, [frames, points, segStart]);
   const size = Math.max(2500, (model?.wheelbase ?? 1550) * 1.6);
-  // Perspective or orthographic, like the other views; an orthographic camera stands this far back (clear of the course).
-  const projection = useApp((st) => st.projection);
+  // Perspective (default) or orthographic, this view's own setting; an orthographic camera stands this far back (clear of the course).
+  const projection = tv.projection === 'orthographic' ? 'orthographic' : 'perspective';
   const reach = extent.span * 1.5 + 100000;
   return (
     <div className="viewport">
@@ -490,7 +492,7 @@ export function CourseViewport({ model, test, ghosts = [], active = true }: {
       </Canvas>
       <div className="course-camera">
         <div className="cam-row">
-          <button className="toggle" onClick={() => useApp.getState().set('projection', projection === 'orthographic' ? 'perspective' : 'orthographic')} title="Toggle projection (all views)">
+          <button className="toggle" onClick={() => setTestView({ projection: projection === 'orthographic' ? 'perspective' : 'orthographic' })} title="Toggle projection (this view only; the other views have their own)">
             {projection === 'orthographic' ? 'Ortho' : 'Persp'}
           </button>
         </div>

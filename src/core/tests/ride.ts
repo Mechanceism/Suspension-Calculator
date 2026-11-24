@@ -263,6 +263,20 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     return sign / Math.max(sg.radius, 0.1);
   };
   const kappas = segments.map(kappaOf);
+  // The road's height along the test (m; each segment a straight slope, as the course is drawn), and the grade
+  // the car is at: the slope from where its rear axle is to where its front axle is (s is the front axle's
+  // distance). Over a change of grade the car pitches as the wheelbase passes it — not in a fixed time — so it
+  // sits on the road with both axles (before, the grade eased over 0.3 s from when the front reached it, and
+  // the rear sank into the road past a crest).
+  const zStart: number[] = [];
+  segments.reduce((z, sg) => { zStart.push(z); return z + sg.distance * Math.sin(sg.grade); }, 0);
+  const zAt = (S: number) => {
+    if (S <= 0 || !segments.length) return S * Math.sin(segments[0]?.grade ?? 0);
+    let j = 0;
+    while (j < segments.length - 1 && S >= starts[j + 1]!) j++;
+    return zStart[j]! + (S - starts[j]!) * Math.sin(segments[j]!.grade);
+  };
+  const gradeAt = (S: number) => (wb > 0 ? Math.asin(Math.max(-1, Math.min(1, (zAt(S) - zAt(S - wb)) / wb))) : segments[0]?.grade ?? 0);
   const kappaAt = (S: number) => {
     let j = 0;
     while (j < segments.length - 1 && S >= starts[j + 1]!) j++;
@@ -289,6 +303,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       const u = smooth(tt / ramp);
       k = { ay: prev.ay + (k.ay - prev.ay) * u, ax: prev.ax + (k.ax - prev.ax) * u, grade: prev.grade + (k.grade - prev.grade) * u, bank: prev.bank + (k.bank - prev.bank) * u };
     }
+    k = { ...k, grade: gradeAt(starts[i]! + s) };
     const wh = sg.road ? wheelHeights(sg.road, s, wb, ht) : { FL: 0, FR: 0, RL: 0, RR: 0 };
     const ground = {} as Record<CornerId, number>;
     for (const id of CORNER_IDS) ground[id] = (sg.bumps?.[id] ?? 0) + wh[id];

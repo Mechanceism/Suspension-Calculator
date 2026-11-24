@@ -248,6 +248,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         gravityScale: road.gravityScale, groundOffset: wheelBumps, tireGrip: tireGripFor({ tireGrip: gripFields, tireFile, tireFileRear }, 'front'),
         diff: { front: s.settings.FL.diff, rear: s.settings.RL.diff },
         ...(aeroOf({ aero: aeroSettings }) && speed > 0 ? { aero: { ...aeroOf({ aero: aeroSettings })!, speed } } : {}),
+        ...(speed > 0 && v.rollingResistance.value > 0 ? { rollingResistance: v.rollingResistance.value } : {}),
         ...(brk ? { brakeLimit: { front: brk.capacity.axleForce.front, rear: brk.capacity.axleForce.rear, maxPedal: brk.system.maxPedalForce } } : {}),
         ...(trailerOf({ tow: towSettings }) ? { trailer: trailerOf({ tow: towSettings })! } : {}),
       };

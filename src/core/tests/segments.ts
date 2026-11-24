@@ -33,6 +33,8 @@ export interface SegmentSpec {
   latG?: number | null;
   /** Longitudinal acceleration override, g (+ accelerating, − braking). */
   longG?: number | null;
+  /** Coast: no throttle and no brakes; with the driver working the pedals the speed follows the forces (drag, grade, rolling resistance, bumps). */
+  coast?: boolean;
   /** Road grade, rad (+ = uphill). */
   grade: number;
   /** Road bank, rad (+ = left side lower). */

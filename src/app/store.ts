@@ -848,7 +848,7 @@ export function rootOf(id: CornerId, links: CornerLinks): CornerId {
 export const CORNER_NAMES: Record<CornerId, string> = { FL: 'Front left', FR: 'Front right', RL: 'Rear left', RR: 'Rear right' };
 
 /** Vehicle inputs (L6). */
-export const VEHICLE_KEYS = ['mass', 'cgX', 'cgY', 'cgZ', 'wheelbase', 'brakeBias', 'driveSplit', 'rollInertia', 'pitchInertia', 'yawInertia', 'tireDamping', 'relaxation'] as const;
+export const VEHICLE_KEYS = ['mass', 'cgX', 'cgY', 'cgZ', 'wheelbase', 'brakeBias', 'driveSplit', 'rollInertia', 'pitchInertia', 'yawInertia', 'tireDamping', 'relaxation', 'rollingResistance'] as const;
 /** Vehicle inputs only the ride over time (Phase B) and handling (Phase C) use. */
 export const RIDE_KEYS = ['rollInertia', 'pitchInertia', 'yawInertia', 'tireDamping', 'relaxation'] as const;
 export type VehicleKey = (typeof VEHICLE_KEYS)[number];
@@ -865,6 +865,7 @@ export const VEHICLE_META: Record<VehicleKey, { label: string; quantity: Quantit
   yawInertia: { label: 'Yaw inertia (whole car)', quantity: 'ratio', unit: 'kg·m²', hint: 'About the CG, around the vertical axis (handling over time). About total mass × (0.45 × wheelbase)².' },
   tireDamping: { label: 'Tire damping', quantity: 'damping', unit: 'N·s/m', hint: 'Vertical damping of each tire (ride over time). Small: rubber and air damp little.' },
   relaxation: { label: 'Tire relaxation length', quantity: 'length', unit: 'mm', hint: 'Handling over time: a tire\'s side force builds up over this distance rolled after its slip angle changes (≈ 0.5–1 × the tire radius for cars; 0 = at once). Slows the car\'s response to quick steering.' },
+  rollingResistance: { label: 'Rolling resistance (coefficient)', quantity: 'ratio', unit: '', hint: 'The tires\u2019 own drag ÷ their load while rolling (≈ 0.008–0.015 for road tires, 0.02–0.03 off-road; 0 = none). The powered wheels push against it like the air; with the driver working the pedals a coasting car slows by it.' },
 };
 
 export type Workspace = 'corner' | 'vehicle' | 'tests';
@@ -1290,7 +1291,7 @@ export const defaultVehicle = (): Record<VehicleKey, Field> => ({
   rollInertia: field(35, 'ratio'),
   pitchInertia: field(100, 'ratio'),
   yawInertia: field(140, 'ratio'),
-  tireDamping: field(100, 'damping'), relaxation: field(0),
+  tireDamping: field(100, 'damping'), relaxation: field(0), rollingResistance: field(0.012, 'ratio'),
 });
 
 export function defaultDesign(presetId = 'C'): DesignState {

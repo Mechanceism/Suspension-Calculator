@@ -155,6 +155,10 @@ export interface VehicleProblem {
   brakeLimit?: { front: number; rear: number; maxPedal: number };
   /** Brake fade (with brakeLimit): the rotors heat through a test and the pads lose grip when hot. */
   brakeThermal?: BrakeThermal;
+  /** Rolling resistance coefficient (force ÷ load, ≈ 0.012); 0 / omitted = none. */
+  rollingResistance?: number;
+  /** Pneumatic trail of the front tires, mm (steering kickback over time). */
+  pneumaticTrail?: number;
   /** Detailed brake hydraulics (with brakeLimit): the system and its fluid volumes, for pedal travel in tests. */
   brakeDetail?: { system: BrakeSystem; detail: BrakeDetail };
   /** Towing a trailer (static). */
@@ -370,6 +374,7 @@ export const vehicleInputOf = (p: VehicleProblem, asm: AssembledVehicle, c: Omit
   gravityScale: c.gravityScale, groundOffset: c.groundOffset, tireGrip: p.tireGrip ?? DEFAULT_MF, diff: p.diff,
   ...(p.brakeLimit ? { brakeLimit: p.brakeLimit } : {}),
   ...(p.trailer ? { trailer: p.trailer } : {}),
+  ...(p.rollingResistance && (c.speed ?? c.state?.speed ?? 0) > 0 ? { rollingResistance: p.rollingResistance } : {}),
 });
 
 /** Solve one load case on an assembled car. null = didn't converge. */

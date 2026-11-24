@@ -334,6 +334,7 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string } =
     ...(goals.some((g) => VEHICLE_GOAL_META[g.kind].limit) ? { effort: effortByDesign(s) } : {}),
     ride: { rollInertia: Math.max(0.1, v.rollInertia.value), pitchInertia: Math.max(0.1, v.pitchInertia.value), yawInertia: Math.max(0.1, v.yawInertia.value), tireDamping: Math.max(0, v.tireDamping.value), relaxation: Math.max(0, v.relaxation.value) },
     mass: v.mass.value, cg: { x: v.cgX.value, height: v.cgY.value, z: v.cgZ.value }, wheelbase: v.wheelbase.value,
+    rollingResistance: Math.max(0, v.rollingResistance.value), pneumaticTrail: s.steer.pneumaticTrail.value,
     brakeBias: brk?.useBias ?? v.brakeBias.value / 100, driveSplit: v.driveSplit.value / 100, autoPreload: s.autoPreload,
     ...(brk ? { brakeLimit: brk.limit } : {}),
     ...(brakes?.thermal ? { brakeThermal: brakes.thermal } : {}),

@@ -38,6 +38,8 @@ export interface TestSegment {
   rough: { on: boolean; seed: number; maxHeight: Field; scale: Field; coverage: Field };
   /** Placed bumps / potholes along the segment. */
   features: RoadFeatureDesign[];
+  /** Coast: no throttle, no brakes (with the driver working the pedals the speed follows the forces). */
+  coast?: boolean;
   /** Priority rank within its test (1 = most important; equal ranks = equal priority). Not the run order. */
   rank: number;
   /** Check override for this segment (null = the test's checks). */
@@ -261,6 +263,7 @@ export function segmentSpec(s: TestSegment, test?: TestDesign): TestSegmentSpec 
     bumps: Object.fromEntries(CORNER_IDS.filter((id) => s.bumps[id].value !== 0).map((id) => [id, s.bumps[id].value])),
     samples: 3,
     road: roadSpecOf(s),
+    ...(s.coast ? { coast: true } : {}),
   };
 }
 

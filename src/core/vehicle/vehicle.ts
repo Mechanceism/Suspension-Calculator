@@ -202,6 +202,8 @@ export interface VehicleInput {
   brakeLimit?: { front: number; rear: number; maxPedal: number };
   /** Towing a trailer (static: it follows the car's accelerations; forces at the hitch). Omit = none. */
   trailer?: TrailerSpec;
+  /** Rolling resistance coefficient (rolling only): the tires' drag, force ÷ load. Omit = none. */
+  rollingResistance?: number;
   /** Aerodynamics at the car's speed (drag on the body, lift / downforce at each axle). Omit = none. */
   aero?: AeroInput;
   /** Differential per axle for chassis-driven corners (default open). */
@@ -646,7 +648,9 @@ export function forceSetup(input: VehicleInput): ForceSetup {
   const hitch = input.trailer
     ? { point: hitchPoint(input.trailer, input.groundY, input.wheelbase), force: hitchForce(input.trailer, input.lateralG, kinematicZ / G, gs) }
     : undefined;
-  const tireNet = (input.accelG ?? 0) - (input.brakingG ?? 0) + drag / (input.totalMass * G) - (hitch ? hitch.force.z / (input.totalMass * G) : 0);
+  // Rolling resistance: the tires' own drag (load × coefficient), pushed against like the air's.
+  const rolling = Math.max(0, input.rollingResistance ?? 0) * gs;
+  const tireNet = (input.accelG ?? 0) - (input.brakingG ?? 0) + drag / (input.totalMass * G) + rolling - (hitch ? hitch.force.z / (input.totalMass * G) : 0);
   let brakingG = Math.max(0, -tireNet);
   const powered = input.corners.filter((c) => (c.drive ?? 'none') !== 'none');
   const braked = input.corners.filter((c) => (c.brake ?? 'outboard') !== 'none');
@@ -665,7 +669,7 @@ export function forceSetup(input: VehicleInput): ForceSetup {
   const brakeTotal = input.totalMass * brakingG * G; // magnitude; acts rearward (−Z) on the tires
   const driveTotal = input.totalMass * accelG * G; // acts forward (+Z) on the powered tires
   // Inertia follows the car's acceleration (what the tires can't deliver is flagged as unmet).
-  const aZ = unmet.accel || unmet.brake ? (accelG - brakingG) * G - drag / input.totalMass : kinematicZ;
+  const aZ = unmet.accel || unmet.brake ? (accelG - brakingG - rolling) * G - drag / input.totalMass : kinematicZ;
   // Drive shares: front/rear by the split (or all to the only powered axle), equal per powered
   // wheel within an axle (open differential).
   const driveShares: Record<CornerId, number> = { FL: 0, FR: 0, RL: 0, RR: 0 };

@@ -60,7 +60,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 39;
+export const FORMAT_VERSION = 40;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -384,6 +384,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   37: (f) => ({ ...f, formatVersion: 38, ...(isObj(f.steering) ? { steering: { ...f.steering, effortG: { text: '0.5', value: 0.5 } } } : {}) }),
   // 38 → 39: disc brakes, the simple hydraulics (drums, wheel room, detailed hydraulics and the ladder take defaults).
   38: (f) => ({ ...f, formatVersion: 39 }),
+  // 39 → 40: no rolling resistance (results stay as they were); segments don't coast.
+  39: (f) => ({ ...f, formatVersion: 40, ...(isObj(f.vehicle) && isObj(f.vehicle.fields) ? { vehicle: { ...f.vehicle, fields: { ...f.vehicle.fields, rollingResistance: { text: '0', value: 0 } } } } : {}) }),
   // 34 → 35: aero side force, roll sensitivity and balance shift off.
   34: (f) => ({ ...f, formatVersion: 35, ...(isObj(f.aero) && isObj(f.aero.fields) ? { aero: { ...f.aero, fields: { ...f.aero.fields, CsA: { text: '0', value: 0 }, sideCp: { text: '900', value: 900 }, rollSensF: { text: '0', value: 0 }, rollSensR: { text: '0', value: 0 }, yawBalance: { text: '0', value: 0 } } } } : {}) }),
 };
@@ -444,6 +446,7 @@ function readTests(raw: unknown, warnings: string[]): TestDesign[] {
         bank: fieldOr(sr.bank, 'angle', d.bank, where('bank')),
         bumps: Object.fromEntries(CORNER_IDS.map((id) => [id, fieldOr(bumpsRaw[id], 'length', d.bumps[id], where(`bump ${id}`))])) as TestSegment['bumps'],
         lumpy: sr.lumpy === true,
+        ...(sr.coast === true ? { coast: true } : {}),
         rough: (() => {
           const r = isObj(sr.rough) ? sr.rough : null;
           // Format 8 "lumpy" becomes a rough surface.

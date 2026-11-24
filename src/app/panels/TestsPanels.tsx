@@ -316,6 +316,10 @@ function SegmentEditor({ test, seg, index, wheelbase }: { test: TestDesign; seg:
             <td><ValueInput field={seg.speedEnd} unit="m/s" width={56} onCommit={(t) => upd((s) => ({ ...s, speedEnd: parse(t, 'speed', s.speedEnd) }))} /></td>
             <td className="unit">{disp.conv('m/s').unit}</td>
           </tr>
+          <tr title="No throttle, no brakes: with the test's driver working the pedals (Handling options), the car's speed follows the forces only: drag, grade, rolling resistance and the bumps' push. The end speed is then only shown, not aimed for.">
+            <td>Coast</td>
+            <td colSpan={3}><label className="check-label"><input type="checkbox" checked={!!seg.coast} onChange={(e) => upd((s) => ({ ...s, coast: e.target.checked || undefined }))} /> no throttle or brakes (with the driver working the pedals)</label></td>
+          </tr>
           <tr>
             <td>Distance</td>
             <td><ValueInput field={seg.distance} unit="m" width={56} onCommit={(t) => upd((s) => ({ ...s, distance: parse(t, 'distance', s.distance) }))} /></td>

@@ -181,11 +181,20 @@ export function useModel(): Model {
     ...(bumpStop ? { bumpStopLength: damper.bumpStopLength.value, bumpStopRate: damper.bumpStopRate.value } : {}),
   }), [spring, damper, bumpStop]);
 
+  // Plays (see the held sweeps below): a search over the travel range at each rack step is held while steering plays.
+  const playingTravel = useDesignApp((s) => !!s.playing);
+  const playingSteer = useDesignApp((s) => !!s.playingSteer);
+  const lastLimits = useRef<{ key: unknown[]; value: TravelLimits | null } | null>(null);
   const damperLimits = useMemo(() => {
     const corner = built.corner;
     if (!corner?.geometry.damper) return null;
-    return damperTravelLimits(corner, damper.minLength.value, damper.maxLength.value, rack);
-  }, [built, damper, rack]);
+    const key = [built, damper];
+    const held = lastLimits.current;
+    if (playingSteer && held && held.key.every((k, i) => k === key[i])) return held.value;
+    const value = damperTravelLimits(corner, damper.minLength.value, damper.maxLength.value, rack);
+    lastLimits.current = { key, value };
+    return value;
+  }, [built, damper, rack, playingSteer]); // eslint-disable-line react-hooks/exhaustive-deps
   const ws = sprungLoad(spring, factor);
 
   const tireSetup = useMemo(() => {
@@ -203,16 +212,25 @@ export function useModel(): Model {
   // While dragging, slow extras reuse their last values so the drag stays responsive.
   const lastSlow = useRef<{ wheelRate: number; tireRate: number; steering: SteeringInfo | null; compliance?: Current['compliance'] }>({ wheelRate: NaN, tireRate: Infinity, steering: null });
   const lastSteerSweep = useRef<SteerSample[]>([]);
+  // While a play runs, the curves through travel / steering are held and redone when it stops: each is a whole
+  // sweep of solves, and redoing them every frame (the travel curves at each rack step while steering plays,
+  // the steering curves at each travel step while travel plays) made the plays a slide show (user, round 4).
+  const lastKinematic = useRef<{ key: unknown[]; value: { travel: number; state: CornerState; chars: Characteristics }[] } | null>(null);
 
   const kinematicSweep = useMemo(() => {
     const corner = built.corner;
     if (!corner) return [];
+    const key = [built, driver, droop, bump];
+    const held = lastKinematic.current;
+    if (playingSteer && held && held.key.every((k, i) => k === key[i])) return held.value;
     const lo = -Math.abs(droop);
     const hi = Math.abs(bump);
     const travels = Array.from({ length: SWEEP_STEPS }, (_, i) => lo + ((hi - lo) * i) / (SWEEP_STEPS - 1));
     const states = corner.sweep(travels, (t) => ({ travel: t, rack, driver }));
-    return states.map((state, i) => ({ travel: travels[i]!, state, chars: characteristics(state) }));
-  }, [built, rack, driver, droop, bump]);
+    const value = states.map((state, i) => ({ travel: travels[i]!, state, chars: characteristics(state) }));
+    lastKinematic.current = { key, value };
+    return value;
+  }, [built, rack, driver, droop, bump, playingSteer]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const sweep = useMemo<Sample[]>(() => {
     const lengths = kinematicSweep.map((s) => springLength(s.state));
@@ -379,7 +397,7 @@ export function useModel(): Model {
   const steerSweep = useMemo<SteerSample[]>(() => {
     const corner = built.corner;
     if (!corner || !current || (corner.solidAxle && !corner.geometry.steeredAxle) || corner.twistBeam) return [];
-    if (interacting) return lastSteerSweep.current;
+    if (interacting || ((playingTravel || playingSteer) && lastSteerSweep.current.length)) return lastSteerSweep.current;
     const armAngle = armKey / 1e5;
     const n = 25;
     const racks = Array.from({ length: n }, (_, i) => -rackLimit + (2 * rackLimit * i) / (n - 1));
@@ -402,7 +420,7 @@ export function useModel(): Model {
         ackermann: ackermann(yaw[i]!, -yaw[n - 1 - i]!, wheelbase, steerTrack).percent,
       };
     });
-  }, [built, armKey, heightDriver, rackLimit, cFactor, ratioSpec.cFactorLock, curTireLoad, interacting, wheelbase]);
+  }, [built, armKey, heightDriver, rackLimit, cFactor, ratioSpec.cFactorLock, curTireLoad, interacting, wheelbase, playingTravel, playingSteer]);
   if (!interacting) lastSteerSweep.current = steerSweep;
 
   return { error: live.error, corner: live.corner, sweep, current, steerSweep, damperLimits };

@@ -112,6 +112,9 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
   // The test playback's pose (ride over time) belongs to the Tests workspace only: elsewhere the car is solved.
   // The playback's pose (Tests, and Compare's test views).
   const rideView = useDesignApp((st) => (st.workspace === 'tests' || st.workspace === 'compare' ? st.rideView : null));
+  // Steering playing in the Vehicle view: the rack moves every frame, so the tables are made the playback way
+  // (rounded rack, 21 points, the shared cache) — a 41-point table per frame made ▶ Steer lag (round 4).
+  const steerPlay = useDesignApp((st) => !!st.playingSteer);
   const tireFile = useDesignApp((st) => st.tireFile);
   const tireFileRear = useDesignApp((st) => st.tireFileRear);
   const aeroSettings = useDesignApp((st) => st.aero);
@@ -160,7 +163,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
     if (rideView && out && !out.error) frameCache.set(rideView, out);
     return out;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, rack, lateralG, brakingG, accelG, road.gravityScale, wheelBumps, gripFields, rideView, tireFile, tireFileRear, aeroSettings, brakeSettings, towSettings, speed, frameCache]);
+  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, rack, lateralG, brakingG, accelG, road.gravityScale, wheelBumps, gripFields, rideView, tireFile, tireFileRear, aeroSettings, brakeSettings, towSettings, speed, frameCache, steerPlay]);
 
   function computeModel(): VehicleModel | null {
     if (!enabled || !setup) return null;
@@ -190,7 +193,8 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         // one cache for every view of the same design (the current car, a snapshot's ghost and its results). In a
         // turn the rack moves every frame, and a table per frame (41 solves per steered corner, per view) made
         // playback lag in turns; the corners drawn are still solved at the exact rack.
-        const tableRack = rideView ? Math.round(cornerRack) : cornerRack;
+        const quick = !!rideView || steerPlay;
+        const tableRack = quick ? Math.round(cornerRack) : cornerRack;
         let byRack = tableCache.current.get(b.corner);
         if (!byRack) { byRack = new Map(); tableCache.current.set(b.corner, byRack); }
         const axleShared = s.shared[isFront(id) ? 'front' : 'rear'];
@@ -207,7 +211,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         const coupled = b.corner.solidAxle ?? b.corner.twistBeam;
         if (coupled) {
           const axRack0 = b.corner.geometry.steeredAxle && s.settings[id].steered ? rack : 0;
-          const axRack = rideView ? Math.round(axRack0) : axRack0;
+          const axRack = quick ? Math.round(axRack0) : axRack0;
           // A drop-link anti-roll bar: the table tracks its mount on the axle (or on each twist-beam arm).
           const akey = `axle|${range[0]}|${range[1]}|${axRack}|${dl ? `${dl.x},${dl.y},${dl.z}` : '-'}`;
           let at = axleCache.current.get(b.corner)?.get(akey);
@@ -224,10 +228,10 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
           const s0 = at.at(side, 0, 0), mr = -(s0.dL + s0.dLX);
           if (s.autoPreload && Number.isFinite(s0.L) && mr > 1e-6) freeLength = s0.L + Math.max(0, staticLoads[id] - mu * G) / mr / d.spring.springRate.value;
         } else {
-          const shared = rideView ? `${b.key}|${key}` : null;
+          const shared = quick ? `${b.key}|${key}` : null;
           let t = shared ? PLAYBACK_TABLES.get(shared) : byRack.get(key);
           if (!t) {
-            t = new CornerTable(b.corner, tableRack, range, rideView ? 21 : 41, dl ? { body: dlOn, point: dl } : undefined);
+            t = new CornerTable(b.corner, tableRack, range, quick ? 21 : 41, dl ? { body: dlOn, point: dl } : undefined);
             if (shared) {
               PLAYBACK_TABLES.set(shared, t);
               if (PLAYBACK_TABLES.size > 160) PLAYBACK_TABLES.delete(PLAYBACK_TABLES.keys().next().value!);

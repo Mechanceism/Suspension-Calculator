@@ -189,7 +189,7 @@ describe('priority ranks', () => {
     const back = importProject(old);
     expect(back.warnings).toEqual(Array.from({ length: FORMAT_VERSION - 9 }, (_, i) => `Upgraded from file format ${i + 9} to ${i + 10}.`));
     expect(back.design.vehicle.rollInertia.value).toBe(35);
-  });
+  }, 240_000); // about 100 s alone; more when the whole suite runs at once
 
   it('rate tuning: which rates (locks respected, two-stage high-speed rates), and applying them to the designs', async () => {
     const { useApp } = await import('../src/app/store');

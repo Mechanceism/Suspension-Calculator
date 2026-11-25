@@ -47,6 +47,28 @@ export interface PlanCar {
   brakeForce?: { front: number; rear: number };
   mass: number;
   rollingResistance?: number;
+  /**
+   * Side grip ÷ load per axle measured in turns of these radii (m, ascending) at the planned push — e.g. a
+   * locked axle scrubs more in a tight turn. Between them by curvature, beyond them the nearest; none: the
+   * constant `muFront` / `muRear`.
+   */
+  lateralAt?: { radius: number; front: number; rear: number }[];
+}
+
+/** Each axle's side grip ÷ load in a turn of curvature `kappa` (1/m; 0 = straight). */
+export function lateralMu(car: PlanCar, kappa = 0): { front: number; rear: number } {
+  const t = car.lateralAt;
+  const k = Math.abs(kappa);
+  if (!t?.length || k < 1e-9) return { front: car.muFront, rear: car.muRear };
+  // By curvature: the widest turn (smallest 1/R) last.
+  const pts = t.map((x) => ({ k: 1 / x.radius, front: x.front, rear: x.rear })).sort((a, b) => a.k - b.k);
+  if (k <= pts[0]!.k) return { front: pts[0]!.front, rear: pts[0]!.rear };
+  const last = pts[pts.length - 1]!;
+  if (k >= last.k) return { front: last.front, rear: last.rear };
+  let i = 0;
+  while (i + 1 < pts.length && pts[i + 1]!.k < k) i++;
+  const a = pts[i]!, b = pts[i + 1]!, u = (k - a.k) / (b.k - a.k);
+  return { front: a.front + (b.front - a.front) * u, rear: a.rear + (b.rear - a.rear) * u };
 }
 
 export type PlanShape = 'plan' | 'brakeIn' | 'coastIn' | 'hold' | 'accelIn';
@@ -59,7 +81,7 @@ export const SHAPE_LABEL: Record<PlanShape, string> = {
 export interface SegmentPlan { s: number[]; v: number[] }
 
 /** The most braking and driving (in g, before cornering takes its share) at a grip target. */
-export function longLimits(car: PlanCar, target: number): { brake: number; drive: number; lateral: number } {
+export function longLimits(car: PlanCar, target: number, kappa = 0): { brake: number; drive: number; lateral: number } {
   const f = car.frontShare, r = 1 - f, hL = car.cgHeight / Math.max(car.wheelbase, 1);
   const mf = target * (car.muLongFront ?? car.muFront), mr = target * (car.muLongRear ?? car.muRear);
   const top = Math.max(mf, mr);
@@ -84,7 +106,8 @@ export function longLimits(car: PlanCar, target: number): { brake: number; drive
     if (d > 0) drive = Math.min(drive, (mf * f) / (d + mf * hL));
     if (d < 1) { const den = (1 - d) - mr * hL; if (den > 1e-9) drive = Math.min(drive, (mr * r) / den); }
   }
-  return { brake: Math.max(0, brake), drive: Math.max(0, drive), lateral: target * Math.min(car.muFront, car.muRear) };
+  const lat = lateralMu(car, kappa);
+  return { brake: Math.max(0, brake), drive: Math.max(0, drive), lateral: target * Math.min(lat.front, lat.rear) };
 }
 
 /**
@@ -93,7 +116,7 @@ export function longLimits(car: PlanCar, target: number): { brake: number; drive
  * split by the static loads (F_y = share · a_y) and the braking / driving by the bias / split; within the
  * brake system's force. Solved by bisection (the use grows with x).
  */
-export function combinedLimit(car: PlanCar, target: number, ay: number, kind: 'brake' | 'drive'): number {
+export function combinedLimit(car: PlanCar, target: number, ay: number, kind: 'brake' | 'drive', kappa = 0): number {
   const f = car.frontShare, r = 1 - f, hL = car.cgHeight / Math.max(car.wheelbase, 1);
   const mxF = car.muLongFront ?? car.muFront, mxR = car.muLongRear ?? car.muRear;
   const brake = kind === 'brake';
@@ -104,6 +127,7 @@ export function combinedLimit(car: PlanCar, target: number, ay: number, kind: 'b
   // Each axle's lighter (inside) wheel: half the axle's braking / driving (shared equally between its wheels)
   // on its load after the sideways transfer (a_y · h / track, split by the axle's static share).
   const hT = car.track && car.track > 0 ? car.cgHeight / car.track : 0;
+  const lat = lateralMu(car, kappa);
   const wheelUse = (fx: number, axleLoad: number, axleShare: number, mx: number, my: number) => {
     const inside = Math.max(1e-6, axleLoad / 2 - axleShare * ay * hT);
     const lat = (axleShare * ay) / (my * Math.max(axleLoad, 1e-6)); // the axle's cornering use (each wheel's force ∝ its load)
@@ -111,8 +135,8 @@ export function combinedLimit(car: PlanCar, target: number, ay: number, kind: 'b
   };
   const use = (x: number) => {
     const wf = Math.max(1e-6, brake ? f + x * hL : f - x * hL), wr = Math.max(1e-6, brake ? r - x * hL : r + x * hL);
-    const uf = wheelUse(share * x, wf, f, mxF, car.muFront);
-    const ur = wheelUse((1 - share) * x, wr, r, mxR, car.muRear);
+    const uf = wheelUse(share * x, wf, f, mxF, lat.front);
+    const ur = wheelUse((1 - share) * x, wr, r, mxR, lat.rear);
     let u = Math.max(uf, ur) / target;
     if (brake && car.brakeForce) {
       if (share > 0 && car.brakeForce.front > 0) u = Math.max(u, (share * x * W) / car.brakeForce.front);
@@ -142,7 +166,7 @@ export function planSpeeds(segments: SegmentSpec[], car: PlanCar, target: number
   segments.forEach((sg, i) => {
     const n = Math.max(2, Math.ceil(sg.distance / 1));
     const k0 = Math.abs(kappaOf(sg));
-    const lim = longLimits(car, target[i] ?? 0.95);
+    const lim = longLimits(car, target[i] ?? 0.95, k0);
     const vLat = k0 > 1e-9 ? Math.sqrt(Math.max(0.01, (G * (lim.lateral + Math.sign(kappaOf(sg)) * Math.sin(sg.bank))) / (k0 * Math.max(Math.cos(sg.bank), 0.2)))) : Infinity;
     for (let k = 0; k <= n; k++) {
       const s = (sg.distance * k) / n;
@@ -170,14 +194,14 @@ export function planSpeeds(segments: SegmentSpec[], car: PlanCar, target: number
     const resist = Math.sin(p.grade) + crr;
     if (p.coast || ((sh === 'brakeIn' || sh === 'coastIn') && firstHalf(p))) return -G * resist; // no throttle
     const ay = (v * v * Math.abs(p.kappa)) / G;
-    return G * (combinedLimit(car, tOf(p), ay, 'drive') - resist);
+    return G * (combinedLimit(car, tOf(p), ay, 'drive', p.kappa) - resist);
   };
   const decel = (p: P, v: number, t = tOf(p)) => {
     const sh = shape[p.seg] ?? 'plan';
     const resist = Math.sin(p.grade) + crr;
     if (p.coast || (sh === 'coastIn' && firstHalf(p))) return Math.max(0, G * resist); // no brakes
     const ay = (v * v * Math.abs(p.kappa)) / G;
-    return Math.max(0, G * (combinedLimit(car, t, ay, 'brake') + resist));
+    return Math.max(0, G * (combinedLimit(car, t, ay, 'brake', p.kappa) + resist));
   };
   const pass = (cap: number[]) => {
     const caps0 = cap;

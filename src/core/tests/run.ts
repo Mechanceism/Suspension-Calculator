@@ -192,10 +192,11 @@ function speedLimitOf(p: VehicleProblem, asm: AssembledVehicle, seg: TestSegment
 }
 
 /**
- * Speeds as maximums: the car's limits for the planner, from its static grip (each axle's peak side and
- * braking / driving force over its load, at rest on the level).
+ * Speeds as maximums: the car's limits for the planner — braking / driving from its static grip (each axle's
+ * peak force over its load, at rest on the level), cornering from turns of the test's radii at the push the
+ * driver plans to (`target`).
  */
-function planCarOf(p: VehicleProblem, asm: AssembledVehicle): PlanCar | null {
+function planCarOf(p: VehicleProblem, asm: AssembledVehicle, target = 0.95, radii: number[] = []): PlanCar | null {
   const st: RoadState = { name: 'rest', segment: 0, speed: 10, ay: 0, ax: 0, lateralG: 0, brakingG: 0, accelG: 0, gravityScale: 1, groundOffset: {}, grade: 0, bank: 0 };
   const r = evalState(p, asm, st, PROFILES.default.checks);
   if (!r.grip || !r.corners) return null;
@@ -204,20 +205,58 @@ function planCarOf(p: VehicleProblem, asm: AssembledVehicle): PlanCar | null {
     return { y: ids.reduce((a, id) => a + r.grip!.corners[id].capY, 0) / load, x: ids.reduce((a, id) => a + r.grip!.corners[id].capX, 0) / load, load };
   };
   const fr = axle(['FL', 'FR']), rr = axle(['RL', 'RR']);
-  // Cornering as the car really does it (load moving to the outside wheels, the tires' load sensitivity, a
-  // locked axle's drag): solve a turn at about 60 % of the static grip and read each axle's side-grip use.
-  let muF = fr.y, muR = rr.y;
-  const ay = 0.6 * Math.min(fr.y, rr.y);
-  const v = 12, radius = (v * v) / (ay * G);
-  const turn: RoadState = { name: 'turn', segment: 0, speed: v, ay, ax: 0, ...roadEffective(ay, 0, 0, 0), groundOffset: {}, grade: 0, bank: 0 };
-  const rt = evalState(p, asm, turn, PROFILES.default.checks, undefined, { path: 'left', radius });
-  if (rt.grip && rt.grip.axles.front > 0.05 && rt.grip.axles.rear > 0.05) {
-    muF = Math.min(muF, ay / rt.grip.axles.front);
-    muR = Math.min(muR, ay / rt.grip.axles.rear);
+  // Cornering as the car really does it (load moving to the outside wheels, the tires' load sensitivity, the
+  // wheels' lean, a locked axle's scrub, aero at that speed), at the push the driver plans to: in a turn of each
+  // of the test's radii, find the lateral g at which the harder-working axle uses `target` of its grip, and
+  // read each axle's grip there (round 4: it was read in one turn at 60 % of the static grip at 12 m/s, where
+  // the geometry's effect near the limit hardly shows, and a kart's tight turns scrub more than that one).
+  const t = Math.min(0.99, Math.max(0.3, target));
+  const turnAt = (ay: number, radius: number) => {
+    const v = Math.sqrt(ay * G * radius);
+    const turn: RoadState = { name: 'turn', segment: 0, speed: v, ay, ax: 0, ...roadEffective(ay, 0, 0, 0), groundOffset: {}, grade: 0, bank: 0 };
+    const rt = evalState(p, asm, turn, PROFILES.default.checks, undefined, { path: 'left', radius });
+    const a = rt.grip?.axles;
+    return a && a.front > 0.05 && a.rear > 0.05 ? a : null;
+  };
+  /** Secant on the worst axle's grip use (a few whole-car solves); null = no turn could be solved. */
+  const atTarget = (radius: number, g0: number) => {
+    let a0 = turnAt(g0, radius);
+    if (!a0) return null;
+    let best = { g: g0, a: a0 };
+    const miss = (a: { front: number; rear: number }) => Math.abs(Math.max(a.front, a.rear) - t);
+    let g1 = Math.max(0.05, (g0 * t) / Math.max(a0.front, a0.rear));
+    for (let k = 0; k < 6 && miss(best.a) >= 0.002; k++) {
+      const a1 = turnAt(g1, radius);
+      if (!a1) break;
+      if (miss(a1) <= miss(best.a)) best = { g: g1, a: a1 };
+      const u0 = Math.max(a0.front, a0.rear), u1 = Math.max(a1.front, a1.rear);
+      const slope = (u1 - u0) / (g1 - g0);
+      const g2 = slope > 1e-6 ? g1 + (t - u1) / slope : g1 * Math.sqrt(t / u1);
+      g0 = g1; a0 = a1; g1 = Math.min(3 * g1, Math.max(0.5 * g1, g2));
+    }
+    // No speed brings it down to the target (e.g. a locked axle's scrub in a tight turn uses the grip at any
+    // speed): slowing down doesn't help, so this radius isn't planned from (the checks report it).
+    if (miss(best.a) > 0.02) return null;
+    return { front: Math.min(fr.y, best.g / best.a.front), rear: Math.min(rr.y, best.g / best.a.rear) };
+  };
+  // The radii: the test's turns (at most five, spread from the tightest to the widest), else one 20 m turn.
+  const all = [...new Set(radii.filter((r) => r > 0.5 && Number.isFinite(r)).map((r) => Math.round(r * 2) / 2))].sort((a, b) => a - b);
+  const pick = all.length <= 5 ? all : [0, 1, 2, 3, 4].map((k) => all[Math.round((k * (all.length - 1)) / 4)]!);
+  const lateralAt: { radius: number; front: number; rear: number }[] = [];
+  let warm = t * Math.min(fr.y, rr.y);
+  for (const radius of pick.length ? [...new Set(pick)] : [20]) {
+    const m = atTarget(radius, 0.8 * warm);
+    if (!m) continue;
+    lateralAt.push({ radius, ...m });
+    warm = t * Math.min(m.front, m.rear);
   }
+  if (!lateralAt.length && pick.length) { const m = atTarget(20, 0.8 * warm); if (m) lateralAt.push({ radius: 20, ...m }); }
+  // Straights and fixed-g turns: the widest measured turn.
+  const wide = lateralAt[lateralAt.length - 1];
+  const muF = wide ? wide.front : fr.y, muR = wide ? wide.rear : rr.y;
   const set = p.settings;
   return {
-    muFront: muF, muRear: muR, muLongFront: fr.x, muLongRear: rr.x,
+    muFront: muF, muRear: muR, muLongFront: fr.x, muLongRear: rr.x, ...(lateralAt.length > 1 ? { lateralAt } : {}),
     frontShare: fr.load / (fr.load + rr.load), cgHeight: p.cg.height, wheelbase: p.wheelbase, track: 2 * dimsOf(p, asm).halfTrack,
     brakeBias: p.brakeBias, driveSplit: p.driveSplit,
     brakesFront: set.FL.brake !== 'none' || set.FR.brake !== 'none', brakesRear: set.RL.brake !== 'none' || set.RR.brake !== 'none',
@@ -328,7 +367,7 @@ export function runTest(
     return rs;
   };
   if (opts.plan) {
-    const car = planCarOf(p, asm);
+    const car = planCarOf(p, asm, gripTarget, segments.filter((sg) => sg.path !== 'straight' && !(sg.latG !== null && sg.latG !== undefined && Number.isFinite(sg.latG))).map((sg) => sg.radius));
     if (car) {
       const base = segments;
       tries = base.map(() => ({ shape: -1, target: gripTarget }));

@@ -74,14 +74,14 @@ describe('powertrain', () => {
     expect(buildVehicleProblem(defaultDesign() as unknown as AppState).problem.powertrain).toBeUndefined();
     const file = JSON.parse(JSON.stringify(serializeProject(d, 'K')));
     expect(file.formatVersion).toBe(FORMAT_VERSION);
-    expect(FORMAT_VERSION).toBe(45);
+    expect(FORMAT_VERSION).toBeGreaterThanOrEqual(45);
     const back = importProject(file).design;
     expect(back.powertrain).toEqual(d.powertrain);
     delete file.powertrain;
     file.formatVersion = 44;
     const old = importProject(file);
     expect(old.design.powertrain.kind).toBe('none');
-    expect(old.warnings).toEqual(['Upgraded from file format 44 to 45.']);
+    expect(old.warnings).toEqual(['Upgraded from file format 44 to 45.', 'Upgraded from file format 45 to 46.']);
   });
 
   it('the kart on Balanced, grip only: never past its redline speed, and its gearing limits the straights', () => {

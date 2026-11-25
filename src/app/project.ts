@@ -47,7 +47,7 @@ import { parseValue, type Quantity } from '../core/units/units';
 import { CORNER_IDS, type CornerId } from '../core/vehicle/vehicle';
 import { DIM_MEASURES } from '../core/suspension/dimensions';
 import { newSegment, newTestId, newFeature, OFF, defaultChecks, type TestDesign, type TestSegment } from './tests';
-import { CHECK_IDS, CHECK_META, type CheckProfile } from '../core/tests/checks';
+import { CHECK_IDS, CHECK_META, laneShare, type CheckProfile } from '../core/tests/checks';
 import type { TirModel } from '../core/tire/tir';
 import { parseAero, type AeroModel } from '../core/vehicle/aero';
 import {
@@ -61,7 +61,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 45;
+export const FORMAT_VERSION = 46;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -405,6 +405,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   43: (f) => ({ ...f, formatVersion: 44 }),
   // 44 → 45: a powertrain (none in older files: only the tires limit the drive, as before).
   44: (f) => ({ ...f, formatVersion: 45 }),
+  // 45 → 46: the off-the-line limit is a lane as a share of the car's width (was metres; read as such below 30).
+  45: (f) => ({ ...f, formatVersion: 46 }),
   39: (f) => ({ ...f, formatVersion: 40, ...(isObj(f.vehicle) && isObj(f.vehicle.fields) ? { vehicle: { ...f.vehicle, fields: { ...f.vehicle.fields, rollingResistance: { text: '0', value: 0 } } } } : {}) }),
   // 34 → 35: aero side force, roll sensitivity and balance shift off.
   34: (f) => ({ ...f, formatVersion: 35, ...(isObj(f.aero) && isObj(f.aero.fields) ? { aero: { ...f.aero, fields: { ...f.aero.fields, CsA: { text: '0', value: 0 }, sideCp: { text: '900', value: 900 }, rollSensF: { text: '0', value: 0 }, rollSensR: { text: '0', value: 0 }, yawBalance: { text: '0', value: 0 } } } } : {}) }),
@@ -419,7 +421,7 @@ function readChecks(raw: Json): CheckProfile {
     const sev = c.severity === 'pass' || c.severity === 'warn' || c.severity === 'fail' ? c.severity : out[id].severity;
     out[id] = {
       severity: CHECK_META[id].fixed ? out[id].severity : sev,
-      ...(typeof c.threshold === 'number' ? { threshold: c.threshold } : out[id].threshold !== undefined ? { threshold: out[id].threshold } : {}),
+      ...(typeof c.threshold === 'number' ? { threshold: id === 'pathError' ? Math.round(laneShare(c.threshold) * 100) : c.threshold } : out[id].threshold !== undefined ? { threshold: out[id].threshold } : {}),
       ...(typeof c.threshold2 === 'number' ? { threshold2: c.threshold2 } : out[id].threshold2 !== undefined ? { threshold2: out[id].threshold2 } : {}),
     };
   }

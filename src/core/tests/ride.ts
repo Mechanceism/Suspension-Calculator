@@ -249,6 +249,8 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
   const ramp = Math.max(0, o.ramp ?? 0.3);
   const ride = p.ride ?? DEFAULT_RIDE;
   const dims = dimsOf(p, asm);
+  // The car's width (track + tire width), m: the off-the-line lane is a share of it.
+  const carWidth = (2 * dims.halfTrack + Math.max(0, ...asm.corners.map((c) => c.tire.profile.width))) / 1000;
   const wb = dims.wheelbase / 1000, ht = dims.halfTrack / 1000;
   // Corners with tabulated tire forces (one table per tire design).
   const tables = new Map<object, (h0: number, tilt: number) => number>();
@@ -633,15 +635,29 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
         // Within the tires as they are now (round 4): each driven / braked tire's grip along the road at its load
         // this step, after the side force it carries — a tire going light over a bump or loaded up in a turn
         // gives less — not one grip estimate for the whole car; and within the powertrain.
+        // Per axle, as the car shares it out: an open differential gives both driven wheels the same push (the
+        // lighter one sets it: 2 × its grip), a limited-slip one up to 2.5 × more to the loaded side (the vehicle solve's bias), a locked
+        // one / hub motors each wheel its own; braking, with ABS each wheel its own, without, 2 × the lighter.
+        // Across the axles the drive split / brake bias shares it, so the axle that runs out first sets the limit.
         const along = (which: 'drive' | 'brake') => {
           if (!caps) return mass * axMax;
-          let sum = 0;
-          for (const c of corners) {
-            if ((which === 'drive' ? c.drive : c.brake) === 'none') continue;
-            const k = caps[c.id], fy = lastFy?.[c.id] ?? 0;
-            sum += k.x * Math.sqrt(Math.max(0, 1 - (fy / Math.max(k.y, 1e-6)) ** 2));
-          }
-          return sum;
+          const axle = (front: boolean) => {
+            const ids = (front ? (['FL', 'FR'] as CornerId[]) : (['RL', 'RR'] as CornerId[])).filter((id) => (which === 'drive' ? byId[id].drive : byId[id].brake) !== 'none');
+            if (!ids.length) return null;
+            const each = ids.map((id) => caps![id].x * Math.sqrt(Math.max(0, 1 - ((lastFy?.[id] ?? 0) / Math.max(caps![id].y, 1e-6)) ** 2)));
+            const sum = each.reduce((x, y) => x + y, 0), least = Math.min(...each);
+            if (ids.length < 2) return sum;
+            if (which === 'brake') return ids.every((id) => byId[id].abs !== false) ? sum : 2 * least;
+            if (ids.every((id) => byId[id].drive === 'hub')) return sum;
+            const diff = (front ? p.diff?.front : p.diff?.rear) ?? 'open';
+            return diff === 'open' ? 2 * least : diff === 'lsd' ? Math.min(sum, (1 + 2.5) * least) : sum;
+          };
+          const f = axle(true), r = axle(false);
+          if (f === null && r === null) return 0;
+          if (f === null) return r!;
+          if (r === null) return f;
+          const share = Math.min(0.999, Math.max(0.001, which === 'drive' ? p.driveSplit : p.brakeBias));
+          return Math.min(f / share, r / (1 - share));
         };
         const driveMax = canDrive ? (ptForce ? Math.min(along('drive'), ptForce(uDrv)) : along('drive')) : 0;
         const brakeMax = canBrake ? along('brake') : 0;
@@ -769,7 +785,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       st.rack = steer?.rackUsed ?? 0;
       const sw = TS ? swayOf(TS) : null;
       if (sw) maxSway = Math.max(maxSway, sw.sway * DEG);
-      const hd = H ? { pathError: H.eY, sideslip: kin.v >= KINEMATIC_SPEED ? beta : 0, atLock: H.atLock, ...(sw && TS ? { sway: sw.sway * DEG, jackknife: sw.jackknife, articulation: TS.phi * DEG } : {}) } : undefined;
+      const hd = H ? { pathError: H.eY, sideslip: kin.v >= KINEMATIC_SPEED ? beta : 0, atLock: H.atLock, carWidth, ...(sw && TS ? { sway: sw.sway * DEG, jackknife: sw.jackknife, articulation: TS.phi * DEG } : {}) } : undefined;
       const fnd = classifyState({ ...stateFacts(p, asm, st, result, steer), handling: hd }, checks).filter((x) => x.check !== 'beyondGrip');
       // What being over the limit costs now: the longitudinal part of the force the tires can't deliver, m/s².
       const lostAcc = lostAcceleration(result, p.mass);

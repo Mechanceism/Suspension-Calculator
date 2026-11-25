@@ -59,3 +59,17 @@ describe('the driven time', () => {
     expect(testScore(run(50), 'pass', { weight: 1, ref: 50 }) - testScore(run(49.5), 'pass', { weight: 1, ref: 50 })).toBeCloseTo(1, 9);
   });
 });
+
+describe('off the line: a lane as a share of the car width', () => {
+  it('200 % by default: half the car width either side; older metre settings read as lane %', async () => {
+    const { laneShare, PROFILES, classifyState } = await import('../src/core/tests/checks');
+    expect(PROFILES.default.checks.pathError.threshold).toBe(200);
+    expect(laneShare(200)).toBe(2);
+    expect(laneShare(1)).toBe(2); // the old 1 m
+    expect(laneShare(2)).toBe(3);
+    const facts = (pathError: number) => ({ result: null, lateralG: 0, rolloverG: 9, weight: 3000, brakeForce: 0, requiredG: 0, availableG: 1, handling: { pathError, sideslip: 0, atLock: false, carWidth: 1.4 } });
+    const off = (e: number) => classifyState(facts(e) as never, PROFILES.default.checks).some((f) => f.check === 'pathError');
+    expect(off(0.69)).toBe(false);
+    expect(off(0.71)).toBe(true);
+  });
+});

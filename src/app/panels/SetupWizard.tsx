@@ -5,6 +5,7 @@
  * calculator, the unsprung-weight sum, the spring-rate-from-a-weight tool and the inertia estimate.
  */
 import { USE_CASES, applyUseCase } from '../useCases';
+import { RideHeightPanel, setRideHeight } from './RideHeightPanel';
 import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { create } from 'zustand';
 import { parseValue, type Quantity } from '../../core/units/units';
@@ -89,6 +90,15 @@ const UseStep: StepView = ({ apply }) => {
     </>
   );
 };
+
+/** Static ride height front / rear (round 4, F21): an input, not locked (the optimizers don't change it). */
+const RideStep: StepView = ({ apply }) => (
+  <>
+    <p className="hint">How high the chassis sits at rest, front and rear (the chassis reference above the ground at each axle). The springs&apos; preload is fitted so it rests there; the suspension sits at some travel. Skip it (Use an estimate) to rest at the design position.</p>
+    <RideHeightPanel />
+    <div className="modal-actions"><button className="primary" onClick={() => apply(() => { if (!useApp.getState().rideHeight.on) setRideHeight({ on: true }); return []; })}>Apply and next</button></div>
+  </>
+);
 
 const TypeStep: StepView = ({ apply }) => {
   const links = useApp((s) => s.links);
@@ -693,7 +703,7 @@ const InertiaStep: StepView = ({ apply }) => {
 };
 
 const VIEWS: Record<SetupStep, StepView> = {
-  use: UseStep, type: TypeStep, drive: DriveStep, tires: TiresStep, size: SizeStep, weight: WeightStep, unsprung: UnsprungStep,
+  use: UseStep, ride: RideStep, type: TypeStep, drive: DriveStep, tires: TiresStep, size: SizeStep, weight: WeightStep, unsprung: UnsprungStep,
   points: PointsStep, springs: SpringsStep, dampers: DampersStep, steering: SteeringStep, grip: GripStep, inertia: InertiaStep,
 };
 

@@ -456,6 +456,10 @@ Tests → Optimize → *Tires (choose a size)*: candidate sizes (ticked from a c
 - *Re-optimize geometry for each*: the vehicle optimizer (its goals and free coordinates, 20 iterations) runs on each candidate before its tests.
 - Tested: load ratio 1 for the same size and monotone in width; a scaled .tir keeps PDY1, gets the new size and FNOMIN, grips more at the same load wider, and is relabeled (not stacked); the mass estimate; a candidate's sizes, unsprung mass and grip model (the generic Fz0 rescaled for both axles; a .tir on the front only leaves the rear its own); the fit rules.
 
+## Static ride height ✅ (round 4, F21; `vehicle.ts` § staticTravelFor)
+
+The ride height is the chassis reference's height above the ground at an axle (the Vehicle results' *Ride height*); at the design position it is −y_ground (the ground under the tires at their static loads). Set front / rear, each axle rests at travel q = (design − target) (+ bump), kept 2 mm inside the droop / bump limits (else a warning); the spring preload is fitted at that travel (a corner: free length = spring length at q + sprung load ÷ motion ratio ÷ rate; a solid axle / twist beam: from its axle table at q on both wheels), so the solved car rests there. An input: the optimizers don't change it. Not set: q = 0 (as before). Tested: the default car with its front 15 mm lower and its rear 10 mm higher rests 15 mm into bump and 10 mm into droop; out-of-reach targets clamp; saved (format 48).
+
 ## Powertrain ✅ (round 4, F5; `src/core/vehicle/powertrain.ts`)
 
 One gear from the motor / engine to the driven wheels; none = only the tires limit the drive (as before).

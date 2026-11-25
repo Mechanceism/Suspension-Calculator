@@ -6,6 +6,7 @@ import { Num, UnitLabel } from './UnitText';
 import { openWizard, EstimatedNote } from './SetupWizard';
 import { AeroPanel } from './AeroPanel';
 import { PowertrainPanel, PowertrainBadge } from './PowertrainPanel';
+import { RideHeightPanel } from './RideHeightPanel';
 import { brakesOf, buildVehicleProblem } from '../optimizer';
 import { shimmyReport, shimmyKicks } from '../../core/optimize/shimmyOf';
 import type { ShimmyScan } from '../../core/vehicle/shimmy';
@@ -185,6 +186,9 @@ export function VehicleInputs({ model }: { model: VehicleModel | null }) {
       </Section>
       <Section title="Aerodynamics" open={false} extra={<AeroBadge />}>
         <AeroPanel />
+      </Section>
+      <Section title="Static ride height" open={false} extra={<span className="muted small-text">{useApp.getState().rideHeight.on ? 'set' : 'design'}</span>}>
+        <RideHeightPanel />
       </Section>
       <Section title="Powertrain" open={false} extra={<PowertrainBadge />}>
         <PowertrainPanel />

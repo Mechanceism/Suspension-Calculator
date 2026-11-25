@@ -1094,11 +1094,11 @@ export const defaultAero = (): AeroSettings => ({
 });
 
 /** Setup wizard steps, easy to hard. */
-export const SETUP_STEPS = ['use', 'type', 'drive', 'tires', 'size', 'weight', 'unsprung', 'points', 'springs', 'dampers', 'steering', 'grip', 'inertia'] as const;
+export const SETUP_STEPS = ['use', 'type', 'drive', 'tires', 'size', 'weight', 'unsprung', 'points', 'springs', 'ride', 'dampers', 'steering', 'grip', 'inertia'] as const;
 export type SetupStep = (typeof SETUP_STEPS)[number];
 export const SETUP_LABELS: Record<SetupStep, string> = {
   use: 'What the car is for', type: 'Suspension type', drive: 'Steering, drive and brakes', tires: 'Wheels and tires', size: 'Track and wheelbase', weight: 'Weight and CG', unsprung: 'Unsprung weight',
-  points: 'Suspension points', springs: 'Springs', dampers: 'Dampers and anti-roll bars', steering: 'Steering', grip: 'Tire grip', inertia: 'Body inertia',
+  points: 'Suspension points', springs: 'Springs', ride: 'Ride height', dampers: 'Dampers and anti-roll bars', steering: 'Steering', grip: 'Tire grip', inertia: 'Body inertia',
 };
 
 /** Which axle a tire setting is for. */
@@ -1260,6 +1260,8 @@ export interface DesignState {
   aero: AeroSettings;
   /** Motor / engine through one gear (none = only the tires limit the drive). */
   powertrain: PowertrainSettings;
+  /** Static ride height front / rear (mm, the chassis reference above the ground at each axle); off = at the design position. */
+  rideHeight: { on: boolean; front: Field; rear: Field };
   /** Brake hydraulics (off = the brakes are always strong enough). */
   brakes: BrakeSettings;
   /** Shimmy / death wobble inputs. */
@@ -1323,7 +1325,7 @@ export const pickDesign = (s: DesignState): DesignState => ({
   droop: s.droop, bump: s.bump, driver: s.driver,
   corners: s.corners, links: s.links, settings: s.settings, activeCorner: s.activeCorner,
   vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode, shared: s.shared, locks: s.locks, wizardLocks: s.wizardLocks, useCase: s.useCase,
-  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, tireGrip: s.tireGrip, tireFile: s.tireFile, tireFileRear: s.tireFileRear, setupStatus: s.setupStatus, aero: s.aero, powertrain: s.powertrain, brakes: s.brakes, shimmy: s.shimmy, tow: s.tow, dimensions: s.dimensions, tests: s.tests,
+  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, tireGrip: s.tireGrip, tireFile: s.tireFile, tireFileRear: s.tireFileRear, setupStatus: s.setupStatus, aero: s.aero, powertrain: s.powertrain, rideHeight: s.rideHeight, brakes: s.brakes, shimmy: s.shimmy, tow: s.tow, dimensions: s.dimensions, tests: s.tests,
 });
 
 /** The default layout (File → New). */
@@ -1410,6 +1412,7 @@ export function defaultDesign(presetId = 'C'): DesignState {
     setupStatus: {},
     aero: defaultAero(),
     powertrain: defaultPowertrain(),
+    rideHeight: { on: false, front: field(100), rear: field(100) },
     brakes: defaultBrakes(),
     shimmy: defaultShimmy(),
     tow: defaultTow(),

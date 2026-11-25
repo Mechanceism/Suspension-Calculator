@@ -61,7 +61,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 47;
+export const FORMAT_VERSION = 48;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -134,6 +134,8 @@ export interface ProjectFile {
   tireFile?: { name: string; fittyp: number; version: '6.1' | '5.2'; fnomin: number; nompres: number; p: Record<string, number> } | null;
   /** Aerodynamics (format 16). */
   aero?: { on: boolean; fields: Record<string, FieldJson>; file: AeroModel | null };
+  /** Static ride height (format 48): set or not, front / rear (mm). */
+  rideHeight?: { on: boolean; front: FieldJson; rear: FieldJson };
   /** Powertrain (format 45): none / electric / gas and its values. */
   powertrain?: { kind: 'none' | 'electric' | 'gas'; fields: Record<string, FieldJson> };
   brakes?: {
@@ -244,6 +246,7 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
     ...(d.useCase ? { useCase: d.useCase } : {}),
     aero: { on: d.aero.on, fields: mapFields(AERO_KEYS, d.aero), file: d.aero.file ? JSON.parse(JSON.stringify(d.aero.file)) as AeroModel : null },
     powertrain: { kind: d.powertrain.kind, fields: mapFields(PT_KEYS, d.powertrain) },
+    rideHeight: { on: d.rideHeight.on, front: { ...d.rideHeight.front }, rear: { ...d.rideHeight.rear } },
     brakes: { on: d.brakes.on, dualMc: d.brakes.dualMc, useBias: d.brakes.useBias, fields: mapFields(BRAKE_KEYS, d.brakes), fade: { on: d.brakes.fade, fields: mapFields(FADE_KEYS, d.brakes) },
       more: { drumF: d.brakes.drumF, drumR: d.brakes.drumR, detail: d.brakes.detail, allowDiscF: d.brakes.allowDiscF, allowDiscR: d.brakes.allowDiscR, fields: mapFields(BRAKE_MORE_KEYS, d.brakes) } },
     tow: { on: d.tow.on, fields: mapFields(TOW_KEYS, d.tow) },
@@ -412,6 +415,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   45: (f) => ({ ...f, formatVersion: 46 }),
   // 46 → 47: what the car is for (none in older files: the tests and goals as they are).
   46: (f) => ({ ...f, formatVersion: 47 }),
+  // 47 → 48: a set static ride height (off in older files: the car rests at the design position).
+  47: (f) => ({ ...f, formatVersion: 48 }),
   39: (f) => ({ ...f, formatVersion: 40, ...(isObj(f.vehicle) && isObj(f.vehicle.fields) ? { vehicle: { ...f.vehicle, fields: { ...f.vehicle.fields, rollingResistance: { text: '0', value: 0 } } } } : {}) }),
   // 34 → 35: aero side force, roll sensitivity and balance shift off.
   34: (f) => ({ ...f, formatVersion: 35, ...(isObj(f.aero) && isObj(f.aero.fields) ? { aero: { ...f.aero, fields: { ...f.aero.fields, CsA: { text: '0', value: 0 }, sideCp: { text: '900', value: 900 }, rollSensF: { text: '0', value: 0 }, rollSensR: { text: '0', value: 0 }, yawBalance: { text: '0', value: 0 } } } } : {}) }),
@@ -920,6 +925,12 @@ export function importProject(data: unknown): ImportResult {
       // A saved aero file goes through the importer again (checks it).
       const file = isObj(a.file) ? parseAero(JSON.stringify(a.file), typeof a.file.name === 'string' ? a.file.name : 'aero').model : null;
       return { ...fields, on: a.on === true, file };
+    })(),
+    // A set ride height came with format 48: older files rest at the design position.
+    rideHeight: (() => {
+      const r = isObj(f.rideHeight) ? f.rideHeight : {};
+      const num = (x: unknown, dflt: number) => (isObj(x) && typeof x.value === 'number' && Number.isFinite(x.value) ? { text: typeof x.text === 'string' ? x.text : String(x.value), value: x.value } : { text: String(dflt), value: dflt });
+      return { on: r.on === true, front: num(r.front, 100), rear: num(r.rear, 100) };
     })(),
     // The powertrain came with format 45: older files have none (only the tires limit the drive), quietly.
     powertrain: (() => {

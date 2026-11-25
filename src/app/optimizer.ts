@@ -377,7 +377,8 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string; pl
     },
     states: o.caseSource && (o.caseSource === 'all' || s.tests.some((x) => x.id === o.caseSource))
       ? statesForTests(s.tests, o.caseSource, { wheelbase: v.wheelbase.value, halfTrack: Math.abs(toGeometry(all[rootOf('FL', s.links)].geom).wheel.center.x) }, over.plans) : undefined,
-    goals, variables, holds, aero: aeroOf(s), ...(powertrainOf(s) ? { powertrain: powertrainOf(s) } : {}), grip: gripModelOf(s.grip), tireGrip: tireGripFor(s, 'front'), ...(s.tireFileRear ? { tireGripRear: tireGripFor(s, 'rear') } : {}), keepClose: Math.max(0, o.keepClose.value), starts: o.starts ?? 1,
+    goals, variables, holds, aero: aeroOf(s), ...(powertrainOf(s) ? { powertrain: powertrainOf(s) } : {}),
+    ...(s.rideHeight?.on ? { rideHeight: { front: s.rideHeight.front.value, rear: s.rideHeight.rear.value } } : {}), grip: gripModelOf(s.grip), tireGrip: tireGripFor(s, 'front'), ...(s.tireFileRear ? { tireGripRear: tireGripFor(s, 'rear') } : {}), keepClose: Math.max(0, o.keepClose.value), starts: o.starts ?? 1,
   };
   const blockers: string[] = [];
   if (!goals.length) blockers.push('Turn on at least one goal.');

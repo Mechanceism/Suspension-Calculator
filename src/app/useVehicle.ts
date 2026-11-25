@@ -19,6 +19,7 @@ import type { TireForceModel } from '../core/tire/model';
 import { CornerTable } from '../core/vehicle/cornerTable';
 import { AxleTable, AxleCornerTable } from '../core/vehicle/axleTable';
 import type { CornerTableLike } from '../core/vehicle/vehicle';
+import { staticTravelFor } from '../core/optimize/vehicle';
 import {
   CORNER_IDS, isLeft, isFront, placement, poseFns, solveVehicle, vehicleAt, designGroundY, axleRollCenter,
   type CornerId, type VehicleResult, type ChassisPose, type VehicleCorner, type AxleShared,
@@ -121,6 +122,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
   const tireFile = useDesignApp((st) => st.tireFile);
   const tireFileRear = useDesignApp((st) => st.tireFileRear);
   const aeroSettings = useDesignApp((st) => st.aero);
+  const rideSettings = useDesignApp((st) => st.rideHeight);
   const brakeSettings = useDesignApp((st) => st.brakes);
   const towSettings = useDesignApp((st) => st.tow);
   const speed = useDesignApp((st) => st.vehicleSpeed);
@@ -159,7 +161,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
   // Playback: each frame's pose object is stable, so a frame shown once is shown again from here (until
   // anything else about the car changes).
   const frameCache = useMemo(() => new WeakMap<object, VehicleModel | null>(),
-    [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, gripFields, tireFile, tireFileRear, aeroSettings, brakeSettings, towSettings, speed]);
+    [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, gripFields, tireFile, tireFileRear, aeroSettings, brakeSettings, towSettings, speed, rideSettings]);
   const result = useMemo<VehicleModel | null>(() => {
     if (rideView && frameCache.has(rideView)) return frameCache.get(rideView)!;
     // The motion plays step through the same positions every cycle (playLoop.ts): each step's car is kept
@@ -176,7 +178,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
     }
     return out;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, rack, lateralG, brakingG, accelG, road.gravityScale, wheelBumps, gripFields, rideView, tireFile, tireFileRear, aeroSettings, brakeSettings, towSettings, speed, frameCache, steerPlay, vehiclePlay]);
+  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, rack, lateralG, brakingG, accelG, road.gravityScale, wheelBumps, gripFields, rideView, tireFile, tireFileRear, aeroSettings, brakeSettings, towSettings, speed, frameCache, steerPlay, vehiclePlay, rideSettings]);
 
   function computeModel(): VehicleModel | null {
     if (!enabled || !setup) return null;
@@ -196,7 +198,16 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
       const range: [number, number] = [-Math.abs(s.droop), Math.abs(s.bump)];
       const corners: VehicleCorner[] = [];
       const racks = {} as Record<CornerId, number>;
-      const groundInputs: Parameters<typeof designGroundY>[0] = [];
+      // The ground at the design position first (the design and the static loads only): a set ride height
+      // puts each axle at some travel at rest, and the springs' preload is fitted there (round 4, F21).
+      const groundY = designGroundY(CORNER_IDS.map((id) => {
+        const d = all[rootOf(id, s.links)];
+        const b = setup.built.get(d)!;
+        const design = b.corner.design();
+        return { contactY: design.points.contact.y, profile: b.profile, model: b.model, staticLoad: staticLoads[id], tilt: design.spinAxis.y };
+      }));
+      const rideSet = rideSettings;
+      const restTravel = (id: CornerId) => staticTravelFor(groundY, rideSet?.on ? (isFront(id) ? rideSet.front.value : rideSet.rear.value) : undefined, s.droop, s.bump).travel;
       for (const id of CORNER_IDS) {
         const d = all[rootOf(id, s.links)];
         const b = setup.built.get(d)!;
@@ -238,7 +249,8 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
           const side = isLeft(id) ? 'L' : 'R';
           axleRef = { table: at, side };
           table = new AxleCornerTable(at, side);
-          const s0 = at.at(side, 0, 0), mr = -(s0.dL + s0.dLX);
+          const tr = restTravel(id);
+          const s0 = at.at(side, tr, tr), mr = -(s0.dL + s0.dLX);
           if (s.autoPreload && Number.isFinite(s0.L) && mr > 1e-6) freeLength = s0.L + Math.max(0, staticLoads[id] - mu * G) / mr / d.spring.springRate.value;
         } else {
           const shared = quick ? `${b.key}|${key}` : null;
@@ -254,7 +266,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
             }
           }
           table = t;
-          if (s.autoPreload && !rigid) freeLength = fitFreeLength(b.corner, d.spring.springRate.value, Math.max(0, staticLoads[id] - mu * G));
+          if (s.autoPreload && !rigid) freeLength = fitFreeLength(b.corner, d.spring.springRate.value, Math.max(0, staticLoads[id] - mu * G), restTravel(id));
         }
         corners.push({
           id, table: table!, ...(axleRef ? { axle: axleRef } : {}), unsprungMass: mu, ...(rigid ? { rigid: true } : {}), tire: { profile: b.profile, model: b.model, ...(tireFileRear && !isFront(id) ? { grip: tireGripFor({ tireGrip: gripFields, tireFile, tireFileRear }, 'rear') } : {}) }, brake: s.settings[id].brake, abs: s.settings[id].abs,
@@ -264,10 +276,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
             ...(d.bumpStop ? { bumpStopLength: d.damper.bumpStopLength.value, bumpStopRate: d.damper.bumpStopRate.value } : {}),
           },
         });
-        const design = b.corner.design();
-        groundInputs.push({ contactY: design.points.contact.y, profile: b.profile, model: b.model, staticLoad: staticLoads[id], tilt: design.spinAxis.y });
       }
-      const groundY = designGroundY(groundInputs);
       const cg = vec3(v.cgX.value, groundY + v.cgY.value, v.cgZ.value);
       const toAxle = (a: SharedDesign): AxleShared => ({
         antiRollBar: a.antiRollBar === 'wheelRate' ? { kind: 'wheelRate', rate: a.arbRate.value }

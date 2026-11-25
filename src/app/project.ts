@@ -901,7 +901,7 @@ export function importProject(data: unknown): ImportResult {
     shared: { front: readShared(f.shared, 'front', older ? [] : warnings), rear: readShared(f.shared, 'rear', older ? [] : warnings) },
     locks: Object.fromEntries((Array.isArray(f.locks) ? f.locks : []).filter((k): k is string => typeof k === 'string').map((k) => [k, true as const])),
     wizardLocks: Object.fromEntries(Object.entries(isObj(f.wizardLocks) ? f.wizardLocks : {})
-      .filter(([k, v]) => Array.isArray(f.locks) && f.locks.includes(k) && (SETUP_STEPS as readonly string[]).includes(v as string))) as DesignState['wizardLocks'],
+      .filter(([k, v]) => Array.isArray(f.locks) && f.locks.includes(k) && (v === 'profile' || (SETUP_STEPS as readonly string[]).includes(v as string)))) as DesignState['wizardLocks'],
     optimizer: readOptimizer(f.optimizer, warnings),
     vehicleOptimizer: readVehicleOptimizer(f.vehicleOptimizer, warnings),
     grip: isObj(f.grip) ? readRecord(f.grip, GRIP_KEYS, (k) => GRIP_META[k].quantity, defaultGrip(), 'grip', warnings) : defaultGrip(),

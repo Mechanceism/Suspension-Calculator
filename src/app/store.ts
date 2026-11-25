@@ -1240,7 +1240,8 @@ export interface DesignState {
   /** Locked values (see locks.ts for the key format). The optimizer must work around them. */
   locks: Record<string, true>;
   /** Locks set by the setup wizard: lock key → the step that set it (a subset of `locks`). */
-  wizardLocks: Record<string, SetupStep>;
+  /** Where a lock came from: a setup-wizard step, or a car profile (its track and wheelbase). */
+  wizardLocks: Record<string, SetupStep | 'profile'>;
   /** Optimizer setup per corner design (keyed by root corner). */
   optimizer: Partial<Record<CornerId, OptimizerSetup>>;
   /** Whole-vehicle optimizer setup. */

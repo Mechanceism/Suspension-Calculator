@@ -7,7 +7,7 @@
  */
 import type { CornerId } from '../vehicle/vehicle';
 import type { VehicleProblem } from './vehicle';
-import { runTest, type TestRun, type TestSegmentSpec } from '../tests/run';
+import { runTest, type TestRun, type TestSegmentSpec, type PlanStart } from '../tests/run';
 import { testScore } from '../tests/score';
 import { BayesOpt } from './search';
 import { runStepsSync, type Steps } from './leastSquares';
@@ -26,7 +26,7 @@ export interface RateVar {
   label: string;
 }
 
-export interface RateTest { segments: TestSegmentSpec[]; weight: number; onFail: 'report' | 'lift'; /** Driver steering over time (Phase C). */ handling?: boolean; /** The driver also works the pedals. */ driverSpeed?: boolean; /** Speeds as maximums (planned once at the grip target). */ plan?: { gripTarget: number; gripOnly?: { topSpeed: number } };
+export interface RateTest { segments: TestSegmentSpec[]; weight: number; onFail: 'report' | 'lift'; /** Driver steering over time (Phase C). */ handling?: boolean; /** The driver also works the pedals. */ driverSpeed?: boolean; /** Speeds as maximums (planned once at the grip target; `start`: from the last run's ladder choices). */ plan?: { gripTarget: number; gripOnly?: { topSpeed: number }; start?: (PlanStart | null)[] };
   /** Lap tests: scored on their driven time too (F9) — its weight and the reference (its last run's time). */ time?: { weight: number; ref: number } }
 
 /** The problem with these rates. */

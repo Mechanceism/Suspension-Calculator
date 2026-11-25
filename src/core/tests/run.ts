@@ -89,8 +89,24 @@ export interface TestRunOptions {
    * this share of the tires' grip (0–1), and a segment that still fails over time is tried other ways and
    * then at lower grip targets. Omitted: the set speeds are held exactly (with `onFail`).
    */
-  plan?: { gripTarget: number; /** Try other ways / lower targets when a segment fails (default on; optimizers plan once). */ ladder?: boolean; /** Grip only: no set-speed caps (plan.ts § PlanOptions). */ gripOnly?: { topSpeed: number } };
+  plan?: {
+    gripTarget: number; /** Try other ways / lower targets when a segment fails (default on; optimizers plan once). */ ladder?: boolean; /** Grip only: no set-speed caps (plan.ts § PlanOptions). */ gripOnly?: { topSpeed: number };
+    /**
+     * Where each segment's ladder starts (null: the plan at the test's target): a run's choices — how it was taken,
+     * the driver's push, driven at its set speeds — so a run without the ladder drives what an earlier run with it
+     * settled on (round 4: the springs and dampers tuner, which plans once, scored segments the ladder would have
+     * slowed as failing, so its scores didn't match the optimize loop's).
+     */
+    start?: (PlanStart | null)[];
+  };
 }
+
+/** A segment's place on the ladder (TestRunOptions.plan.start): from a run's segment results. */
+export interface PlanStart { shape: PlanShape; target: number; capped?: boolean }
+
+/** Each segment's ladder choices in a run (for TestRunOptions.plan.start). */
+export const planStartOf = (r: TestRun | undefined): (PlanStart | null)[] | undefined =>
+  r?.segments.map((s) => (s.gripTarget !== undefined ? { shape: s.approach ?? 'plan', target: s.gripTarget, ...(s.capped ? { capped: true } : {}) } : null));
 
 export interface TestRun {
   severity: Severity;
@@ -412,7 +428,12 @@ export function runTest(
     const car = planCar = planCarOf(p, asm, gripTarget, segments.filter((sg) => sg.path !== 'straight' && !(sg.latG !== null && sg.latG !== undefined && Number.isFinite(sg.latG))).map((sg) => sg.radius));
     if (car) {
       const base = segments;
-      tries = base.map(() => ({ shape: -1, target: gripTarget }));
+      tries = base.map((_, i) => {
+        const s0 = opts.plan?.start?.[i];
+        if (!s0 || !(s0.target > 0)) return { shape: -1, target: gripTarget };
+        const target = Math.min(gripTarget, Math.max(0.2, s0.target));
+        return { shape: s0.shape === 'plan' ? -1 : Math.max(-1, PLAN_SHAPES.indexOf(s0.shape)), target, ...(target < gripTarget - 1e-9 ? { lowered: true } : {}), ...(s0.capped ? { capped: true, capTried: true } : {}) };
+      });
       const build = () => {
         const pl = planSpeeds(base, car, base.map((_, i) => tryOf(i).target), base.map((_, i) => tryOf(i).shape),
           opts.plan?.gripOnly ? { gripOnly: { ...opts.plan.gripOnly, capped: tries.map((t) => !!t?.capped) } } : {});

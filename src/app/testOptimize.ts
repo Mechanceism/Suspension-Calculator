@@ -12,7 +12,7 @@
  *    tested without applying it and shown for the user to accept or reject.
  */
 import { create } from 'zustand';
-import type { TestRun } from '../core/tests/run';
+import { planStartOf, type TestRun } from '../core/tests/run';
 import type { Severity } from '../core/tests/checks';
 import type { DoubleWishboneGeometry } from '../core/suspension/doubleWishbone';
 import { variableValue } from '../core/optimize/corner';
@@ -153,6 +153,28 @@ export const testScore = (r: TestRun, mode: 'pass' | 'improve' | 'explore', test
   if (w > 0 && testId && r.time && !timeRefs.has(testId)) timeRefs.set(testId, r.time);
   return coreTestScore(r, mode, w > 0 ? { weight: w, ref: testId ? timeRefs.get(testId) : undefined } : undefined);
 };
+/** A set of runs' score as the optimize loop counts it: each test's score, priority-weighted when several. */
+const scoreOfRuns = (tests: TestDesign[], runs: TestRun[], mode: 'pass' | 'improve' | 'explore') => {
+  const w = (t: TestDesign) => (tests.length > 1 ? rankWeight(t.rank, tests.length) : 1);
+  const tw = tests.reduce((a, t) => a + w(t), 0) || 1;
+  return tests.reduce((a, t, i) => a + w(t) * testScore(runs[i]!, mode, t.id), 0) / tw;
+};
+/** The same from stored results (null when one is missing). */
+const scoreOfResults = (tests: TestDesign[], results: ReturnType<typeof resultsOf>, mode: 'pass' | 'improve' | 'explore') => {
+  const runs = tests.map((t) => results[t.id]?.result);
+  return runs.every(Boolean) ? scoreOfRuns(tests, runs as TestRun[], mode) : null;
+};
+/** The last applied rates tuning: the springs, dampers and bars it replaced and the tests' results then (to put back). */
+let lastRates: (Pick<AppState, 'corners' | 'spring' | 'damper' | 'shared' | 'presetId'> & { results: ReturnType<typeof resultsOf> }) | null = null;
+/** Put the rates (and the results) back as they were before the last tuning. */
+function revertRates() {
+  if (!lastRates) return;
+  const { results, ...design } = lastRates;
+  useApp.setState(design);
+  restoreResults(results);
+  lastRates = null;
+}
+
 /** The planned speeds of the tests' last runs (speeds as maximums), for the geometry optimizer's states. */
 const lastPlans = () => Object.fromEntries(Object.entries(useRun.getState().results).map(([id, e]) => [id, e.result.segments.map((s) => s.plan)]));
 
@@ -218,6 +240,7 @@ const fmtRate = (v: RateVar, x: number) => (v.kind === 'spring' ? `${x.toFixed(1
  */
 export async function tuneSpringsDampers(scope: Scope, active: TestDesign | null, mode: 'pass' | 'improve' = 'pass', inLoop?: { setCancel: (fn: (() => void) | null) => void }): Promise<{ improved: boolean; before: number; after: number } | null> {
   if (!inLoop && useLoop.getState().running) return null;
+  lastRates = null;
   const tests = testsInScope(scope, active);
   const s = useApp.getState();
   const settings = useLoop.getState().rates;
@@ -227,7 +250,14 @@ export async function tuneSpringsDampers(scope: Scope, active: TestDesign | null
     return null;
   }
   const rateTests: RateTest[] = tests.map((t) => ({
-    segments: t.segments.map((sg) => segmentSpec(sg, t)), weight: tests.length > 1 ? rankWeight(t.rank, tests.length) : 1, onFail: t.onFail, handling: t.handling !== false, driverSpeed: driverSpeedOf(t), ...planOption(t, false),
+    segments: t.segments.map((sg) => segmentSpec(sg, t)), weight: tests.length > 1 ? rankWeight(t.rank, tests.length) : 1, onFail: t.onFail, handling: t.handling !== false, driverSpeed: driverSpeedOf(t),
+    // Planned once (no ladder: 30 tries), from where the last run's ladder left each segment, so a segment it
+    // slowed isn't scored as failing at the full push (its scores then match the loop's, round 4).
+    ...((): { plan?: ReturnType<typeof planOption>['plan'] } => {
+      const po = planOption(t, false);
+      const start = planStartOf(useRun.getState().results[t.id]?.result);
+      return po.plan ? { plan: { ...po.plan, ...(start ? { start } : {}) } } : {};
+    })(),
     // Lap tests: the springs and dampers are judged on the driven time too, against the last run's.
     ...((): { time?: { weight: number; ref: number } } => {
       const ref = useRun.getState().results[t.id]?.result.time;
@@ -255,8 +285,11 @@ export async function tuneSpringsDampers(scope: Scope, active: TestDesign | null
       x = l.bestX; after = l.best; before = Infinity;
       log('Springs & dampers: stopped; using the best rates found so far.');
     }
-    const improved = after < before * 0.999 || (before === Infinity && x.some((v, i) => Math.abs(v - vars[i]!.value) > 1e-6));
+    let improved = after < before * 0.999 || (before === Infinity && x.some((v, i) => Math.abs(v - vars[i]!.value) > 1e-6));
     if (improved) {
+      // (What it replaces, to put back exactly if the tests as driven turn out worse.)
+      const s1 = useApp.getState();
+      lastRates = { corners: s1.corners, spring: s1.spring, damper: s1.damper, shared: s1.shared, presetId: s1.presetId, results: resultsOf(tests.map((t) => t.id)) };
       useApp.getState().applyRateValues(rateUpdates(useApp.getState(), vars, x));
       const changes = vars.map((v, i) => `${v.label} ${fmtRate(v, v.value)} → ${fmtRate(v, x[i]!)}`).filter((_, i) => Math.abs(x[i]! - vars[i]!.value) / Math.max(vars[i]!.value, 1e-9) > 0.01);
       log(`Springs & dampers: score ${Number.isFinite(before) ? before.toFixed(2) : '…'} → ${after.toFixed(2)}. ${changes.join('; ')}`);
@@ -264,7 +297,13 @@ export async function tuneSpringsDampers(scope: Scope, active: TestDesign | null
       log(`Springs & dampers: no better rates found (score ${before.toFixed(2)}); kept yours.`);
     }
     if (!inLoop) {
-      await runTestsTogether(tests.map((t) => useApp.getState().tests.find((q) => q.id === t.id)).filter((t): t is TestDesign => !!t));
+      // On its own: the tests as driven (with the ladder) decide, as in the loop — worse, the rates are put back.
+      const base = lastRates ? scoreOfResults(tests, lastRates.results, mode) : null;
+      const runs = await runTestsTogether(tests.map((t) => useApp.getState().tests.find((q) => q.id === t.id)).filter((t): t is TestDesign => !!t));
+      if (improved && base !== null && runs.every(Boolean)) {
+        const now = scoreOfRuns(tests, runs as TestRun[], mode);
+        if (now > base * 1.0005 + 1e-6) { revertRates(); improved = false; log(`Springs & dampers: worse on the tests as driven (score ${base.toFixed(2)} → ${now.toFixed(2)}): put back.`); }
+      }
       useLoop.setState({ outcome: stopped ? 'stopped' : improved ? 'improved' : 'stuck', explanation: improved ? [] : ['Your current springs and dampers already scored best among the rates tried. Widen the search range or try more tests.'] });
     }
     return { improved, before, after };
@@ -359,9 +398,7 @@ async function runSet(tests: TestDesign[], mode: 'pass' | 'improve' | 'explore',
     if (!run) throw new Error(useRun.getState().error ?? `Test “${fresh[i]!.name}” could not run`);
     runs.push({ test: fresh[i]!, run });
   }
-  const w = (t: TestDesign) => (tests.length > 1 ? rankWeight(t.rank, tests.length) : 1);
-  const tw = runs.reduce((a, r) => a + w(r.test), 0) || 1;
-  return { runs, passed: runs.every((r) => r.run.passed), score: runs.reduce((a, r) => a + w(r.test) * testScore(r.run, mode, r.test.id), 0) / tw };
+  return { runs, passed: runs.every((r) => r.run.passed), score: scoreOfRuns(runs.map((r) => r.test), runs.map((r) => r.run), mode) };
 }
 
 const describe = (set: SetRun) => {
@@ -530,6 +567,12 @@ async function optimizeTestsOnly(scope: Scope, active: TestDesign | null, mode: 
       if (stopped || !r?.improved) return false;
       const next = await runSet(tests, mode, isStopped);
       if (!next) return false;
+      // The tests as driven decide, as for a geometry round: worse, the rates are put back (round 4: kept before).
+      if (next.score > set.score * 1.0005 + 1e-6) {
+        revertRates();
+        log(`After springs & dampers: ${describe(next)} · score ${set.score.toFixed(2)} → ${next.score.toFixed(2)}: worse, put back`);
+        return false;
+      }
       log(`After springs & dampers: ${describe(next)} · score ${set.score.toFixed(2)} → ${next.score.toFixed(2)}`);
       set = next;
       return true;

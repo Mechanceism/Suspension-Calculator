@@ -27,7 +27,7 @@ import { RoadEditor } from './RoadEditor';
 import { PlaybackBar, SegmentMap } from './Playback';
 import { Section, fmt, FieldRows } from './FieldRows';
 import { fromDisplay, localNow, toDisplay, useDisplay } from '../units';
-import { useLoop, optimizeTests, exploreRanges, acceptExploration, setMaxWiden, isUnfixable, WIDEN_CHOICES, widenLabel, tuneSpringsDampers, setRateSettings, rateVars, setSizeBrakes, sizeBrakesFrom, testsInScope } from '../testOptimize';
+import { useLoop, optimizeTests, exploreRanges, acceptExploration, acceptSplit, setMaxWiden, isUnfixable, WIDEN_CHOICES, widenLabel, tuneSpringsDampers, setRateSettings, rateVars, setSizeBrakes, sizeBrakesFrom, testsInScope } from '../testOptimize';
 import { SearchSelect, SensitivityReport } from './SearchTools';
 import { EstimatedNote } from './SetupWizard';
 import { VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META } from '../../core/optimize/vehicle';
@@ -936,6 +936,15 @@ function OptimizeSection({ test, onOpenOptimizer }: { test: TestDesign; onOpenOp
         <button className={`chip${!many ? ' on' : ''}`} onClick={() => useLoop.setState({ scope: 'test' })} disabled={loop.running}>This test</button>
         <button className={`chip${many ? ' on' : ''}`} onClick={() => useLoop.setState({ scope: 'all' })} disabled={loop.running} title="Every ticked test together, weighted by test priority (A, B…)">All enabled tests ({enabled.length})</button>
       </div>
+      {loop.splitOffer && !loop.running && (
+        <div className="hint" style={{ borderLeft: '3px solid var(--accent)', paddingLeft: 8 }}>
+          <b>Separate the front and rear designs?</b> One round with the rear free{loop.splitOffer.from === 'snapshot' ? `, starting from the snapshot “${loop.splitOffer.snapshotName}”'s rear,` : ', starting from the current design,'} made {many ? 'the tests' : 'the test'} faster: {fmt(loop.splitOffer.before, 2)} → <b>{fmt(loop.splitOffer.after, 2)} s</b>. The rear then has its own points (and optimizer ranges); undo puts it back.
+          <div className="jm-row">
+            <button className="chip on" onClick={() => acceptSplit()}>Separate them</button>
+            <button className="chip" onClick={() => useLoop.setState({ splitOffer: null })}>Keep as is</button>
+          </div>
+        </div>
+      )}
       <div className="jm-row" title="What the car is for: sets the tests (adds missing ones, turns the others off), their pass rules and what the optimizer counts. Also the setup wizard's first step.">
         <span className="muted">Use case</span>
         <select value={useCase ?? ''} disabled={loop.running} onChange={(e) => {

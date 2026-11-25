@@ -18,7 +18,9 @@ import type { DoubleWishboneGeometry } from '../core/suspension/doubleWishbone';
 import { variableValue } from '../core/optimize/corner';
 import type { VehicleProblem } from '../core/optimize/vehicle';
 import type { CornerId } from '../core/vehicle/vehicle';
-import { layoutOf, useApp, mergedCorners, OPT_DEFAULT_RANGE, POINT_KEYS, CORNER_NAMES, type Field, type RateUpdate, type AppState, type DamperKey } from './store';
+import { layoutOf, useApp, mergedCorners, rootOf, pickDesign, OPT_DEFAULT_RANGE, POINT_KEYS, CORNER_NAMES, type Field, type RateUpdate, type AppState, type DamperKey, type DesignState } from './store';
+import { useSnapshots } from './snapshots';
+import { isOneAxle } from '../core/suspension/doubleWishbone';
 import { buildVehicleProblem, runVehicleOptimizer, runTestJob, runRatesJob, designRoots, vehVarKey, pointKeyOf } from './optimizer';
 import { testScore as coreTestScore, isUnfixable as coreUnfixable } from '../core/tests/score';
 import type { RateVar, RateTest, RateProgress } from '../core/optimize/rates';
@@ -83,6 +85,11 @@ interface LoopState {
   sizeBrakes: boolean;
   /** Drum axles whose drums ran out at the last sizing (the user may allow discs). */
   askDisc: ('front' | 'rear')[];
+  /**
+   * After a run (round 4, F23): separating the front and rear designs was tried and helped — the design it
+   * found (applied only if the user accepts), where the rear started from, and the times.
+   */
+  splitOffer?: { state: DesignState; from: 'current' | 'snapshot'; before: number; after: number; snapshotName?: string } | null;
 }
 
 const loadWiden = (): number => {
@@ -369,7 +376,102 @@ const describe = (set: SetRun) => {
 
 const MAX_ROUNDS = 40;
 
+/**
+ * Optimize, then — when the rear copies the front's design — try separating them (offerSplit) and offer it if
+ * it helps.
+ */
 export async function optimizeTests(scope: Scope, active: TestDesign | null, mode: 'pass' | 'improve'): Promise<void> {
+  useLoop.setState({ splitOffer: null });
+  await optimizeTestsOnly(scope, active, mode);
+  const o = useLoop.getState().outcome;
+  if (o === 'passed' || o === 'improved' || o === 'stuck') await offerSplit(scope, active, mode);
+}
+
+/** Separate the front and rear designs (the rear's own copy, its optimizer ranges copied from the front's). */
+export function separateRear(rear?: DesignState['corners'][CornerId]) {
+  const s = useApp.getState();
+  s.setLink('rearFromFront', false);
+  const t = useApp.getState();
+  if (rear) useApp.setState({ corners: { ...t.corners, RL: rear } });
+  t.updateVehicleOptimizer((o) => ({
+    ...o,
+    ranges: { ...o.ranges, ...Object.fromEntries(Object.entries(o.ranges).filter(([k]) => k.startsWith('FL.')).map(([k, v]) => [`RL${k.slice(2)}`, v])) },
+  }));
+}
+
+/**
+ * Round 4, F23: with the rear copying the front, try separating them — one round with the rear free, from the
+ * current design and (with a snapshot) from the snapshot's rear — then put the design back and offer the
+ * faster one if it beats the current by ≥ 0.3 %.
+ */
+export async function offerSplit(scope: Scope, active: TestDesign | null, mode: 'pass' | 'improve') {
+  const s0 = useApp.getState();
+  if (!s0.links.rearFromFront || isOneAxle(mergedCorners(s0)[rootOf('RL', s0.links)].geom.kind)) return;
+  const tests = testsInScope(scope, active);
+  if (!tests.length) return;
+  const before = pickDesign(s0);
+  const results = useRun.getState().results;
+  let stopped = false;
+  let currentCancel: (() => void) | null = null;
+  useLoop.setState({ running: true, cancel: () => { stopped = true; currentCancel?.(); useRun.getState().cancel?.(); } });
+  const isStopped = () => stopped;
+  const restore = () => { useApp.setState(before); useRun.setState({ results }); };
+  try {
+    log('Trying separate front and rear designs (one round with the rear free)…');
+    const base = await runSet(tests, mode, isStopped);
+    if (!base) return;
+    const tried: { state: DesignState; from: 'current' | 'snapshot'; score: number; time: number }[] = [];
+    const snaps = useSnapshots.getState().list;
+    const snap = snaps.find((x) => x.id === useSnapshots.getState().activeId) ?? snaps[snaps.length - 1];
+    const starts: { from: 'current' | 'snapshot'; rear?: DesignState['corners'][CornerId] }[] = [{ from: 'current' }];
+    if (snap) starts.push({ from: 'snapshot', rear: mergedCorners(snap.design)[rootOf('RL', snap.design.links)] });
+    for (const st of starts) {
+      if (stopped) break;
+      separateRear(st.rear);
+      const built = buildVehicleProblem(useApp.getState(), { caseSource: scope === 'all' ? 'all' : tests[0]!.id, plans: lastPlans() });
+      if (built.blockers.length || !built.problem.variables.length) log(`Separate front and rear: couldn't try (${built.blockers.join(' ') || 'nothing free to move'}).`);
+      else {
+        const h = runVehicleOptimizer({ ...built.problem, maxIterations: 25 }, () => {});
+        currentCancel = h.stop;
+        const { result } = await h.done;
+        currentCancel = null;
+        if (!stopped) {
+          useApp.getState().applyVehicleOptimized(result.variables.map((v) => ({ root: v.root!, key: pointKeyOf(v.point), axis: v.axis, value: v.after })));
+          const next = await runSet(tests, mode, isStopped);
+          if (next) {
+            const time = next.runs.reduce((a, r) => a + (r.run.time ?? 0), 0);
+            tried.push({ state: pickDesign(useApp.getState()), from: st.from, score: next.score, time });
+            log(`Separate, the rear from ${st.from === 'current' ? 'the current design' : `the snapshot “${snap!.name}”`}: score ${base.score.toFixed(2)} → ${next.score.toFixed(2)}${time ? ` · time ${time.toFixed(2)} s` : ''}`);
+          }
+        }
+      }
+      restore();
+    }
+    if (stopped) { log('Stopped trying separate front and rear.'); return; }
+    const best = tried.sort((a, b) => a.score - b.score)[0];
+    const baseTime = base.runs.reduce((a, r) => a + (r.run.time ?? 0), 0);
+    if (best && best.score < base.score * (1 - 0.003)) {
+      useLoop.setState({ splitOffer: { state: best.state, from: best.from, before: baseTime, after: best.time, ...(best.from === 'snapshot' ? { snapshotName: snap!.name } : {}) } });
+      log('Separating the front and rear designs helps: see the offer below.');
+    } else log('Separate front and rear designs didn\'t help: kept them shared.');
+  } catch (e) {
+    restore();
+    log(`Trying separate front and rear failed: ${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    useLoop.setState({ running: false, cancel: null });
+  }
+}
+
+/** Accept the offer: the separated design it found. */
+export function acceptSplit() {
+  const o = useLoop.getState().splitOffer;
+  if (!o) return;
+  useApp.setState(o.state);
+  useLoop.setState({ splitOffer: null });
+  void runTestsTogether(useApp.getState().tests.filter((t) => t.enabled !== false));
+}
+
+async function optimizeTestsOnly(scope: Scope, active: TestDesign | null, mode: 'pass' | 'improve'): Promise<void> {
   if (useLoop.getState().running) return;
   const tests = testsInScope(scope, active);
   if (!tests.length) { useLoop.setState({ outcome: 'error', explanation: [scope === 'all' ? 'No enabled tests: tick at least one test.' : 'No test selected.'], log: [] }); return; }

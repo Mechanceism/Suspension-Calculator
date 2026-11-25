@@ -170,6 +170,17 @@ export async function runTestsTogether(tests: TestDesign[]): Promise<(TestRun | 
   return out.map((r) => r ?? null);
 }
 
+/** The latest results of these tests, as stored (to put back later with `restoreResults`). */
+export const resultsOf = (ids: string[]) => Object.fromEntries(ids.map((id) => [id, useRun.getState().results[id]]).filter(([, e]) => e)) as Record<string, NonNullable<ReturnType<typeof useRun.getState>['results'][string]>>;
+/**
+ * Put back results run earlier on the design as it is again now (the optimizer's step trials, round 4 F24: the
+ * step kept was driven already, so it isn't driven again; runs are deterministic for a design).
+ */
+export function restoreResults(saved: ReturnType<typeof resultsOf>) {
+  const from = designRef(useApp.getState());
+  useRun.setState((r) => ({ results: { ...r.results, ...Object.fromEntries(Object.entries(saved).map(([id, e]) => [id, { ...e, from }])) } }));
+}
+
 /** Run every enabled test (several at once). */
 export async function runAllTests() {
   await runTestsTogether(useApp.getState().tests.filter((t) => t.enabled !== false));

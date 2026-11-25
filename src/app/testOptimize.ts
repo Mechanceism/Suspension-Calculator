@@ -2,8 +2,8 @@
  * Optimize from the Tests workspace, for the selected test or for every enabled test together
  * (weighted by their priorities).
  *  - Until it passes: run the tests; while a Fail remains, run the vehicle optimizer with the tests as its
- *    load cases (Test passes goal on, the user's other goals kept), apply the result (one undo step per
- *    round), re-run. When two rounds improve < 1 % (or nothing moves), the free ranges are widened step by
+ *    load cases (Test passes goal on, the user's other goals kept), try its move at the full step, ½ and ¼ on
+ *    the tests as driven and keep the best (round 4, F24; one undo step per round). When two rounds improve < 1 % (or nothing moves), the free ranges are widened step by
  *    step (×2, ×3, ×4, ×5, ×10, …) up to the user's maximum widening, and it keeps going. Stops when it
  *    passes, when it's stuck at the maximum widening, or when the remaining failures can't be fixed by
  *    moving points; explains what blocks it.
@@ -27,7 +27,7 @@ import type { RateVar, RateTest, RateProgress } from '../core/optimize/rates';
 import { lockKeys } from './locks';
 import { planOption, rankWeight, segmentSpec, driverSpeedOf, plannedSpeeds, type TestDesign } from './tests';
 import { pointAxisLocked } from './locks';
-import { startTestRun, runTestsTogether, useRun } from './panels/TestsPanels';
+import { startTestRun, runTestsTogether, useRun, resultsOf, restoreResults } from './panels/TestsPanels';
 import { POOL_SIZE, runLimited } from './workerPool';
 import { sizeBrakes, hardestUse, type BrakeSizing } from './brakeLadder';
 
@@ -377,6 +377,14 @@ const describe = (set: SetRun) => {
 const MAX_ROUNDS = 40;
 
 /**
+ * Round 4 (F24): the share of each round's move tried on the tests as driven — the round's own goal (less grip
+ * use at the planned states) doesn't always point toward a faster driven lap (F12: every full move made the
+ * default car's lap slower), a smaller step of it may. The best is kept (when better than not moving).
+ * Last the smallest: a design ends up as it was tried last least often.
+ */
+export const ROUND_STEPS = [1, 0.5, 0.25];
+
+/**
  * Optimize, then — when the rear copies the front's design — try separating them (offerSplit) and offer it if
  * it helps.
  */
@@ -415,7 +423,9 @@ export async function offerSplit(scope: Scope, active: TestDesign | null, mode: 
   let currentCancel: (() => void) | null = null;
   useLoop.setState({ running: true, cancel: () => { stopped = true; currentCancel?.(); useRun.getState().cancel?.(); } });
   const isStopped = () => stopped;
-  const restore = () => { useApp.setState(before); useRun.setState({ results }); };
+  // (The undo step too: the tries apply moves, and Undo must still go back to before the optimize run.)
+  const undo0 = s0.vehOptUndo;
+  const restore = () => { useApp.setState({ ...before, vehOptUndo: undo0 }); useRun.setState({ results }); };
   try {
     log('Trying separate front and rear designs (one round with the rear free)…');
     const base = await runSet(tests, mode, isStopped);
@@ -552,25 +562,43 @@ async function optimizeTestsOnly(scope: Scope, active: TestDesign | null, mode: 
       let gain = 0;
       let undone = false;
       if (moved >= 0.05) {
-        const updates = result.variables.map((v) => ({ root: v.root!, key: pointKeyOf(v.point), axis: v.axis, value: v.after }));
-        useApp.getState().applyVehicleOptimized(updates);
-        if (k > 1) growRanges(updates.map((u) => ({ key: vehVarKey(u.root, u.key, u.axis), value: u.value })));
-        const next = await runSet(tests, mode, isStopped);
-        if (!next) { useLoop.setState({ outcome: 'stopped' }); return; }
-        gain = set.score > 0 ? (set.score - next.score) / set.score : 0;
-        if (next.score > set.score * 1.0005 + 1e-6) {
-          // Worse on the tests (the round's steady states improved, the runs didn't): undo it, run again so
-          // the results shown are the kept design's, and go on as if nothing moved (wider ranges next).
-          log(`Round ${round}: ${describe(next)} · score ${set.score.toFixed(2)} → ${next.score.toFixed(2)}: worse, undone`);
-          useApp.getState().applyVehicleOptimized(result.variables.map((v) => ({ root: v.root!, key: pointKeyOf(v.point), axis: v.axis, value: v.before })));
-          const back = await runSet(tests, mode, isStopped);
-          if (!back) { useLoop.setState({ outcome: 'stopped' }); return; }
-          set = back;
+        // F24: the move at the full step, ½ and ¼, each driven; the best kept (if better than not moving).
+        const at = (f: number) => result.variables.map((v) => ({ root: v.root!, key: pointKeyOf(v.point), axis: v.axis, value: v.before + f * (v.after - v.before) }));
+        const ids = tests.map((t) => t.id);
+        const kept = resultsOf(ids);
+        const undoBefore = useApp.getState().vehOptUndo;
+        let roundUndo: typeof undoBefore = null;
+        let best: { f: number; set: SetRun; results: ReturnType<typeof resultsOf> } | null = null;
+        const tried: string[] = [];
+        for (const f of ROUND_STEPS) {
+          useApp.getState().applyVehicleOptimized(at(f));
+          roundUndo ??= useApp.getState().vehOptUndo;
+          const next = await runSet(tests, mode, isStopped);
+          if (!next) { useLoop.setState({ outcome: 'stopped' }); return; }
+          tried.push(`${f === 1 ? 'full' : f === 0.5 ? '½' : '¼'} ${next.score.toFixed(2)}${next.runs.some((r) => r.run.time) ? ` (${next.runs.filter((r) => r.run.time).map((r) => `${r.run.time!.toFixed(2)} s`).join(' + ')})` : ''}`);
+          if (!best || next.score < best.set.score) best = { f, set: next, results: resultsOf(ids) };
+        }
+        const steps = `steps tried: ${tried.join(', ')}`;
+        if (!best || best.set.score > set.score * 1.0005 + 1e-6) {
+          // Worse at every step (the round's steady states improved, the runs didn't): undo it, the results
+          // shown back to the kept design's, and go on as if nothing moved (wider ranges next).
+          log(`Round ${round}: no step better · score ${set.score.toFixed(2)} → best ${best ? best.set.score.toFixed(2) : '—'}: undone (${steps})`);
+          // (Exactly the geometry from before the round: the trials' first apply kept it for its undo.)
+          useApp.setState({ vehOptUndo: roundUndo });
+          useApp.getState().undoVehicleOptimized();
+          useApp.setState({ vehOptUndo: undoBefore });
+          restoreResults(kept);
           gain = 0;
           undone = true;
         } else {
-          log(`Round ${round}: ${describe(next)} · score ${set.score.toFixed(2)} → ${next.score.toFixed(2)} (${(gain * 100).toFixed(1)}% better) · largest move ${moved.toFixed(1)} mm`);
-          set = next;
+          const last = ROUND_STEPS[ROUND_STEPS.length - 1]!;
+          if (best.f !== last) { useApp.getState().applyVehicleOptimized(at(best.f)); restoreResults(best.results); }
+          useApp.setState({ vehOptUndo: roundUndo });
+          if (k > 1) growRanges(at(best.f).map((u) => ({ key: vehVarKey(u.root, u.key, u.axis), value: u.value })));
+          gain = set.score > 0 ? (set.score - best.set.score) / set.score : 0;
+          const step = best.f === 1 ? 'the full step' : best.f === 0.5 ? 'half the step' : 'a quarter of the step';
+          log(`Round ${round}: ${describe(best.set)} · score ${set.score.toFixed(2)} → ${best.set.score.toFixed(2)} (${(gain * 100).toFixed(1)}% better) with ${step} · largest move ${(moved * best.f).toFixed(1)} mm (${steps})`);
+          set = best.set;
           await sizeAndRerun();
         }
       } else {

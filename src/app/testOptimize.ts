@@ -241,6 +241,8 @@ const fmtRate = (v: RateVar, x: number) => (v.kind === 'spring' ? `${x.toFixed(1
 export async function tuneSpringsDampers(scope: Scope, active: TestDesign | null, mode: 'pass' | 'improve' = 'pass', inLoop?: { setCancel: (fn: (() => void) | null) => void }): Promise<{ improved: boolean; before: number; after: number } | null> {
   if (!inLoop && useLoop.getState().running) return null;
   lastRates = null;
+  // On its own, times count against the current results (an earlier optimize run's references are stale).
+  if (!inLoop) timeRefs.clear();
   const tests = testsInScope(scope, active);
   const s = useApp.getState();
   const settings = useLoop.getState().rates;
@@ -260,7 +262,8 @@ export async function tuneSpringsDampers(scope: Scope, active: TestDesign | null
     })(),
     // Lap tests: the springs and dampers are judged on the driven time too, against the last run's.
     ...((): { time?: { weight: number; ref: number } } => {
-      const ref = useRun.getState().results[t.id]?.result.time;
+      // (Against the same time as the loop counts from — where this optimizing began — else the last run's.)
+      const ref = timeRefs.get(t.id) ?? useRun.getState().results[t.id]?.result.time;
       return plannedSpeeds(t) && ref && ref > 0 && timeWeight() > 0 ? { time: { weight: timeWeight(), ref } } : {};
     })(),
   }));

@@ -98,6 +98,8 @@ const pickVehicleInputs = (s: DesignState) => ({
 
 /** Playback's corner tables, shared by every view of the same corner design (keyed by its design, rack and range). */
 const PLAYBACK_TABLES = new Map<string, CornerTable>();
+/** The motion plays' kept cars, per frame cache (so they go when anything else about the car changes). */
+const playStore = new WeakMap<object, Map<string, VehicleModel | null>>();
 
 export function useVehicle(enabled: boolean): VehicleModel | null {
   const s = useDesignApp(useShallow(pickVehicleInputs));
@@ -115,6 +117,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
   // Steering playing in the Vehicle view: the rack moves every frame, so the tables are made the playback way
   // (rounded rack, 21 points, the shared cache) — a 41-point table per frame made ▶ Steer lag (round 4).
   const steerPlay = useDesignApp((st) => !!st.playingSteer);
+  const vehiclePlay = useDesignApp((st) => !!(st.playingSteer || st.playingLateral || st.playingLongitudinal));
   const tireFile = useDesignApp((st) => st.tireFile);
   const tireFileRear = useDesignApp((st) => st.tireFileRear);
   const aeroSettings = useDesignApp((st) => st.aero);
@@ -159,11 +162,21 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
     [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, gripFields, tireFile, tireFileRear, aeroSettings, brakeSettings, towSettings, speed]);
   const result = useMemo<VehicleModel | null>(() => {
     if (rideView && frameCache.has(rideView)) return frameCache.get(rideView)!;
+    // The motion plays step through the same positions every cycle (playLoop.ts): each step's car is kept
+    // (with everything else about the car the same; frameCache is remade when it changes).
+    const key = vehiclePlay ? `play|${rack}|${lateralG}|${brakingG}|${accelG}` : null;
+    let plays = playStore.get(frameCache);
+    if (key && plays?.has(key)) return plays.get(key)!;
     const out = computeModel();
     if (rideView && out && !out.error) frameCache.set(rideView, out);
+    if (key && out && !out.error) {
+      if (!plays) { plays = new Map(); playStore.set(frameCache, plays); }
+      plays.set(key, out);
+      if (plays.size > 600) plays.delete(plays.keys().next().value!);
+    }
     return out;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, rack, lateralG, brakingG, accelG, road.gravityScale, wheelBumps, gripFields, rideView, tireFile, tireFileRear, aeroSettings, brakeSettings, towSettings, speed, frameCache, steerPlay]);
+  }, [enabled, setup, s.vehicle, s.links, s.settings, s.autoPreload, s.droop, s.bump, s.shared, rack, lateralG, brakingG, accelG, road.gravityScale, wheelBumps, gripFields, rideView, tireFile, tireFileRear, aeroSettings, brakeSettings, towSettings, speed, frameCache, steerPlay, vehiclePlay]);
 
   function computeModel(): VehicleModel | null {
     if (!enabled || !setup) return null;

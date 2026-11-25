@@ -1,3 +1,4 @@
+import { usePlayLoop } from '../playLoop';
 import { vehicleResultRows } from '../resultRows';
 import { steeringWheelAngle, inputForWheelAngle } from '../../core/tests/steer';
 import { useEffect, useMemo, useRef } from 'react';
@@ -335,18 +336,7 @@ export function VehicleResults({ model }: { model: VehicleModel | null }) {
   );
 }
 
-function usePlay(active: boolean, period: number, onPhase: (s: number) => void) {
-  const cb = useRef(onPhase);
-  cb.current = onPhase;
-  useEffect(() => {
-    if (!active) return;
-    let raf = 0;
-    const t0 = performance.now();
-    const tick = (now: number) => { cb.current(Math.sin(((now - t0) / period) * Math.PI * 2)); raf = requestAnimationFrame(tick); };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [active, period]);
-}
+const usePlay = usePlayLoop;
 
 export function VehicleMotionBar() {
   const lateralG = useApp((s) => s.lateralG);

@@ -4,28 +4,13 @@
  * dragging load settles the corner on its spring (and the travel slider follows). Steering has its
  * own slider and Play so it can be animated together with either.
  */
+import { usePlayLoop } from '../playLoop';
 import { steeringWheelAngle, inputForWheelAngle } from '../../core/tests/steer';
 import { useConversion, toDisplay, fromDisplay } from '../units';
 import { Num } from './UnitText';
 import { useEffect, useRef } from 'react';
 import { angleInput, ratioSpecOf, useApp } from '../store';
 import type { Model } from '../useModel';
-
-function usePlayLoop(active: boolean, period: number, onPhase: (s: number) => void) {
-  const cb = useRef(onPhase);
-  cb.current = onPhase;
-  useEffect(() => {
-    if (!active) return;
-    let raf = 0;
-    const t0 = performance.now();
-    const tick = (now: number) => {
-      cb.current(Math.sin(((now - t0) / period) * Math.PI * 2));
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [active, period]);
-}
 
 export function MotionBar({ model }: { model: Model }) {
   const travel = useApp((s) => s.travel);

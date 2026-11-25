@@ -31,6 +31,16 @@ describe('grip only', () => {
     expect(free.time).toBeLessThan(capped.time - 5);
   });
 
+  it('a segment the ladder drives at its set speeds keeps them as caps; the others stay at their grip (F11)', () => {
+    const segs = [seg({ v0: 0, distance: 200 }), seg({ distance: 60, path: 'left', radius: 30 }), seg({ distance: 200 }), seg({ distance: 40, v1: 0 })];
+    const free = planSpeeds(segs, car, [0.95, 0.95, 0.95, 0.95], [], { gripOnly: { topSpeed: 30 } });
+    const capped = planSpeeds(segs, car, [0.95, 0.95, 0.95, 0.95], [], { gripOnly: { topSpeed: 30, capped: [false, true, false, false] } });
+    for (const v of capped.plans[1]!.v) expect(v).toBeLessThanOrEqual(10 + 1e-6);
+    expect(Math.max(...free.plans[1]!.v)).toBeGreaterThan(15);
+    expect(Math.max(...capped.plans[2]!.v)).toBeCloseTo(30, 6); // the straight after it is still free
+    expect(capped.time).toBeGreaterThan(free.time);
+  });
+
   it('the lap presets are grip only; the top speed defaults to the highest set speed; saved and read back (format 44)', () => {
     for (const label of ['Autocross (simple)', 'Autocross (complex)', 'Balanced']) expect(TEST_PRESETS.find((x) => x.label.startsWith(label))!.make().speedMode).toBe('grip');
     expect(TEST_PRESETS.find((x) => x.label.startsWith('Pothole'))!.make().speedMode).toBe('max');

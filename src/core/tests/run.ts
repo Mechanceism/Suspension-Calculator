@@ -64,6 +64,8 @@ export interface SegmentResult {
   brakeTemp?: { start: AxleTemps; end: AxleTemps };
   /** Planned speeds: what it asks of the powertrain (F7). */
   power?: PowerUse;
+  /** Grip only: the ladder drove it at its own set speeds (they passed at the full push where its grip didn't). */
+  capped?: boolean;
 }
 
 export interface TestRunOptions {
@@ -375,6 +377,8 @@ export function runTest(
    */
   let tries: {
     shape: number; target: number; lowered?: boolean; failAt?: number; passAt?: number; ups?: number;
+    /** Grip only: driven at its own set speeds (tried before the push is lowered), and whether that was tried. */
+    capped?: boolean; capTried?: boolean;
     /** Lowering: what it fails for (the checks), since which target, how many lowerings in a row it stayed the same; done: slowing doesn't cure it. */
     why?: string; whySince?: number; same?: number; done?: boolean; lowerings?: number; lowest?: number;
   }[] = [];
@@ -398,7 +402,8 @@ export function runTest(
       const base = segments;
       tries = base.map(() => ({ shape: -1, target: gripTarget }));
       const build = () => {
-        const pl = planSpeeds(base, car, base.map((_, i) => tryOf(i).target), base.map((_, i) => tryOf(i).shape), opts.plan?.gripOnly ? { gripOnly: opts.plan.gripOnly } : {});
+        const pl = planSpeeds(base, car, base.map((_, i) => tryOf(i).target), base.map((_, i) => tryOf(i).shape),
+          opts.plan?.gripOnly ? { gripOnly: { ...opts.plan.gripOnly, capped: tries.map((t) => !!t?.capped) } } : {});
         return base.map((sg, i) => ({ ...sg, plan: pl.plans[i]! }));
       };
       const fails = (fs: Finding[]) => fs.some((f) => f.severity === 'fail' && PLAN_HELPS.has(f.check));
@@ -412,6 +417,15 @@ export function runTest(
         // The other ways first (at the test's own grip target only), skipping any that plans the same speeds
         // here (e.g. coasting in when the segment is held at its set speed anyway).
         if (!t.lowered) {
+          // Grip only: when its own plan fails, first its set speeds at the full push (round 4, F11: the ladder
+          // took the first way that passed — e.g. a kart's sweeper held at 44 km/h where its set 56 km/h passes —
+          // and ended slower than with the set speeds as caps); if those fail too, the other ways at its grip.
+          if (opts.plan?.gripOnly && !t.capTried) {
+            const now = planKey(i, sg);
+            t.capTried = true; t.capped = true; t.shape = -1;
+            if (planKey(i, build()[i]!) !== now) return true;
+            t.capped = false;
+          } else if (t.capped) { t.capped = false; t.shape = -1; }
           const now = planKey(i, sg);
           while (t.shape < PLAN_SHAPES.length - 1) {
             t.shape++;
@@ -597,6 +611,7 @@ export function runTest(
     segs.forEach((sr, i) => {
       const sg = segments[i]!, t = tryOf(i);
       sr.plan = sg.plan; sr.approach = t.shape; sr.gripTarget = t.target;
+      if (tries[i]?.capped) sr.capped = true;
       sr.time = planDuration(sg.plan!);
       time! += sr.time;
       // (The grip target is shown as the driver's push: how much of the tires' grip the driver plans to use.)

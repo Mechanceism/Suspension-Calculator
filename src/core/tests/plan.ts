@@ -83,7 +83,7 @@ export interface PlanOptions {
    * limited by the grip alone, the straights by `topSpeed` (m/s; until a powertrain limits them). The test
    * still starts at its first segment's start speed and ends at most at its last segment's end speed.
    */
-  gripOnly?: { topSpeed: number };
+  gripOnly?: { topSpeed: number; /** Segments the ladder drives at their own set speeds after all (round 4, F11). */ capped?: boolean[] };
 }
 export const SHAPE_LABEL: Record<PlanShape, string> = {
   plan: 'brake before, accelerate out', brakeIn: 'brake in, accelerate out', coastIn: 'coast in, accelerate out',
@@ -189,8 +189,9 @@ export function planSpeeds(segments: SegmentSpec[], car: PlanCar, target: number
     for (let k = 0; k <= n; k++) {
       const s = (sg.distance * k) / n;
       // Grip only: no set speeds but the top speed — and the test's end speed (e.g. a stop box) at its end.
-      const vSet = free
-        ? (i === last && k === n ? Math.min(free.topSpeed, sg.v1) : free.topSpeed)
+      const capped = !free || !!opts.gripOnly?.capped?.[i];
+      const vSet = !capped
+        ? (i === last && k === n ? Math.min(free!.topSpeed, sg.v1) : free!.topSpeed)
         : Math.sqrt(Math.max(0, sg.v0 * sg.v0 + ((sg.v1 * sg.v1 - sg.v0 * sg.v0) * k) / n));
       const p: P = { seg: i, s, cap: Math.min(vSet, vLat), capT: target[i] ?? 0.95, kappa: kappaOf(sg), grade: sg.grade, bank: sg.bank, coast: !!sg.coast };
       if (k === 0 && pts.length) {

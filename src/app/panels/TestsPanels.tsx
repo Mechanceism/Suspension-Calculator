@@ -761,6 +761,7 @@ export function TestResults() {
                   <td className="small-text nowrap" title={s.approach && s.approach !== 'plan' ? `Taken: ${SHAPE_LABEL[s.approach]}` : undefined}>
                     {s.plan ? <Local text={`${Math.round(Math.min(...s.plan.v) * 3.6)}–${Math.round(Math.max(...s.plan.v) * 3.6)} km/h`} /> : '—'}
                     {s.time !== undefined ? ` · ${fmt(s.time, 1)} s` : ''}
+                    {s.capped && <span className="muted" title="Grip only: at its grip this segment failed every way; its own set speeds passed at the full push, so it was driven at them"> (set speeds)</span>}
                   </td>
                 )}
                 <td>{Number.isFinite(s.maxUtilization) ? `${fmt(s.maxUtilization * 100, 0)} %` : '—'}</td>

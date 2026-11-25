@@ -81,7 +81,7 @@ describe('powertrain', () => {
     file.formatVersion = 44;
     const old = importProject(file);
     expect(old.design.powertrain.kind).toBe('none');
-    expect(old.warnings).toEqual(['Upgraded from file format 44 to 45.', 'Upgraded from file format 45 to 46.']);
+    expect(old.warnings).toEqual(['Upgraded from file format 44 to 45.', 'Upgraded from file format 45 to 46.', 'Upgraded from file format 46 to 47.']);
   });
 
   it('the kart on Balanced, grip only: never past its redline speed, and its gearing limits the straights', () => {

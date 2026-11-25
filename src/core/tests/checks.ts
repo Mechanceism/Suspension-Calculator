@@ -99,13 +99,15 @@ const base: CheckProfile = {
   gripTarget: { severity: 'warn' },
 };
 
-export type BuiltinProfile = 'default' | 'street' | 'track' | 'drift' | 'offroad';
+export type BuiltinProfile = 'default' | 'street' | 'track' | 'drift' | 'offroad' | 'drag';
 export const PROFILES: Record<BuiltinProfile, { label: string; checks: CheckProfile }> = {
   default: { label: 'Default', checks: base },
   street: { label: 'Street (strict)', checks: { ...base, absActive: { severity: 'fail', threshold: 0 }, bumpStop: { severity: 'fail' } } },
   track: { label: 'Track', checks: { ...base, nearLimit: { severity: 'pass', threshold: 0 }, wheelLift: { severity: 'warn' } } },
   drift: { label: 'Drift', checks: { ...base, oversteer: { severity: 'warn', threshold: 30, threshold2: 10 }, wheelspin: { severity: 'warn', threshold: 30 }, nearLimit: { severity: 'pass', threshold: 0 }, spin: { severity: 'warn', threshold: 45 }, pathError: { severity: 'warn', threshold: 300 } } },
   offroad: { label: 'Off-road', checks: { ...base, wheelLift: { severity: 'pass' }, bumpStop: { severity: 'pass' } } },
+  // Drag (round 4): the front lifting off the line is fine; the rear stepping out (sideslip) or leaving the lane is not.
+  drag: { label: 'Drag', checks: { ...base, wheelLift: { severity: 'pass' }, nearLimit: { severity: 'pass', threshold: 0 }, spin: { severity: 'fail', threshold: 6 } } },
 };
 /** A copy, with any check missing (profiles saved before it existed) taken from the default. */
 export const cloneProfile = (p: CheckProfile): CheckProfile => ({ ...(JSON.parse(JSON.stringify(base)) as CheckProfile), ...(JSON.parse(JSON.stringify(p)) as CheckProfile) });

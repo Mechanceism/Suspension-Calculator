@@ -61,7 +61,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 46;
+export const FORMAT_VERSION = 47;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -146,6 +146,8 @@ export interface ProjectFile {
   shimmy?: { check: boolean; handsOn: boolean; fields: Record<string, FieldJson> };
   /** Setup wizard status per step (format 14). */
   setupStatus?: Record<string, 'entered' | 'estimated'>;
+  /** What the car is for (format 47). */
+  useCase?: string;
   /** Rear tires (format 13): null = same as the front, 'simple', or their own .tir model. */
   tireFileRear?: { name: string; fittyp: number; version: '6.1' | '5.2'; fnomin: number; nompres: number; p: Record<string, number> } | 'simple' | null;
   /** Tests (chains of segments). */
@@ -239,6 +241,7 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
     tireFile: d.tireFile ? tirJson(d.tireFile) : null,
     tireFileRear: d.tireFileRear === 'simple' ? 'simple' : d.tireFileRear ? tirJson(d.tireFileRear) : null,
     setupStatus: { ...d.setupStatus },
+    ...(d.useCase ? { useCase: d.useCase } : {}),
     aero: { on: d.aero.on, fields: mapFields(AERO_KEYS, d.aero), file: d.aero.file ? JSON.parse(JSON.stringify(d.aero.file)) as AeroModel : null },
     powertrain: { kind: d.powertrain.kind, fields: mapFields(PT_KEYS, d.powertrain) },
     brakes: { on: d.brakes.on, dualMc: d.brakes.dualMc, useBias: d.brakes.useBias, fields: mapFields(BRAKE_KEYS, d.brakes), fade: { on: d.brakes.fade, fields: mapFields(FADE_KEYS, d.brakes) },
@@ -407,6 +410,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   44: (f) => ({ ...f, formatVersion: 45 }),
   // 45 → 46: the off-the-line limit is a lane as a share of the car's width (was metres; read as such below 30).
   45: (f) => ({ ...f, formatVersion: 46 }),
+  // 46 → 47: what the car is for (none in older files: the tests and goals as they are).
+  46: (f) => ({ ...f, formatVersion: 47 }),
   39: (f) => ({ ...f, formatVersion: 40, ...(isObj(f.vehicle) && isObj(f.vehicle.fields) ? { vehicle: { ...f.vehicle, fields: { ...f.vehicle.fields, rollingResistance: { text: '0', value: 0 } } } } : {}) }),
   // 34 → 35: aero side force, roll sensitivity and balance shift off.
   34: (f) => ({ ...f, formatVersion: 35, ...(isObj(f.aero) && isObj(f.aero.fields) ? { aero: { ...f.aero, fields: { ...f.aero.fields, CsA: { text: '0', value: 0 }, sideCp: { text: '900', value: 900 }, rollSensF: { text: '0', value: 0 }, rollSensR: { text: '0', value: 0 }, yawBalance: { text: '0', value: 0 } } } } : {}) }),
@@ -947,6 +952,7 @@ export function importProject(data: unknown): ImportResult {
       const t = isObj(f.tow) ? f.tow : {};
       return { ...readRecord(t.fields, TOW_KEYS, (k) => TOW_META[k].quantity, defaultTow(), 'tow', isObj(f.tow) ? warnings : []), on: t.on === true };
     })(),
+    ...(['track', 'road', 'offroad', 'drift', 'towing', 'drag'].includes(f.useCase as string) ? { useCase: f.useCase as DesignState['useCase'] } : {}),
     setupStatus: Object.fromEntries(Object.entries(isObj(f.setupStatus) ? f.setupStatus : {})
       .filter(([k, v]) => (SETUP_STEPS as readonly string[]).includes(k) && (v === 'entered' || v === 'estimated'))) as DesignState['setupStatus'],
     dimensions: readDimensions(f.dimensions, warnings),

@@ -241,6 +241,33 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
     }),
   },
   {
+    label: 'Drag strip: a quarter mile from standing',
+    make: () => ({
+      name: 'Drag strip', checks: cloneProfile(PROFILES.drag.checks), profile: 'drag', rank: 1, onFail: 'report', ...GRIP_ONLY, enabled: true, ride: true, handling: true,
+      // Grip only: the set speeds don't cap it (the powertrain, drag and rolling resistance do; without a
+      // powertrain the 250 km/h top speed).
+      segments: [newSegment({ name: 'Quarter mile', distance: f(402.3, 'distance'), speedStart: f(0, 'speed'), speedEnd: f(250 / 3.6, 'speed') })],
+    }),
+  },
+  {
+    label: 'Rally stage: turns on a rough surface, a crest',
+    make: () => {
+      const rough = (seed: number, h = 30) => ({ on: true, seed, maxHeight: f(h, 'length'), scale: f(2, 'distance'), coverage: f(70, 'percent') });
+      return {
+        name: 'Rally stage', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', ...GRIP_ONLY, enabled: true, ride: true, handling: true,
+        segments: [
+          newSegment({ name: 'Launch', distance: f(80, 'distance'), speedStart: f(0, 'speed'), speedEnd: f(70 / 3.6, 'speed'), rough: rough(11, 20) }),
+          newSegment({ name: 'Fast left', path: 'left', radius: f(60, 'distance'), distance: f(70, 'distance'), speedStart: f(70 / 3.6, 'speed'), speedEnd: f(70 / 3.6, 'speed'), rough: rough(12) }),
+          newSegment({ name: 'Crest', grade: f(8, 'percent'), distance: f(40, 'distance'), speedStart: f(80 / 3.6, 'speed'), speedEnd: f(80 / 3.6, 'speed'), rough: rough(13, 20) }),
+          newSegment({ name: 'Downhill', grade: f(-8, 'percent'), distance: f(40, 'distance'), speedStart: f(80 / 3.6, 'speed'), speedEnd: f(40 / 3.6, 'speed'), rough: rough(14) }),
+          newSegment({ name: 'Tight right', path: 'right', radius: f(25, 'distance'), distance: f(40, 'distance'), speedStart: f(40 / 3.6, 'speed'), speedEnd: f(40 / 3.6, 'speed'), rough: rough(15, 40) }),
+          newSegment({ name: 'Straight', distance: f(100, 'distance'), speedStart: f(40 / 3.6, 'speed'), speedEnd: f(80 / 3.6, 'speed'), rough: rough(16) }),
+          newSegment({ name: 'Medium left', path: 'left', radius: f(40, 'distance'), distance: f(60, 'distance'), speedStart: f(55 / 3.6, 'speed'), speedEnd: f(55 / 3.6, 'speed'), rough: rough(17, 35) }),
+        ],
+      };
+    },
+  },
+  {
     label: 'Oval: banked turns (short NASCAR-style track)',
     make: () => {
       // A half-mile-style oval: two 180° left turns banked 24° (R 75 m), straights banked 5°, counter-clockwise.

@@ -1094,10 +1094,10 @@ export const defaultAero = (): AeroSettings => ({
 });
 
 /** Setup wizard steps, easy to hard. */
-export const SETUP_STEPS = ['type', 'drive', 'tires', 'size', 'weight', 'unsprung', 'points', 'springs', 'dampers', 'steering', 'grip', 'inertia'] as const;
+export const SETUP_STEPS = ['use', 'type', 'drive', 'tires', 'size', 'weight', 'unsprung', 'points', 'springs', 'dampers', 'steering', 'grip', 'inertia'] as const;
 export type SetupStep = (typeof SETUP_STEPS)[number];
 export const SETUP_LABELS: Record<SetupStep, string> = {
-  type: 'Suspension type', drive: 'Steering, drive and brakes', tires: 'Wheels and tires', size: 'Track and wheelbase', weight: 'Weight and CG', unsprung: 'Unsprung weight',
+  use: 'What the car is for', type: 'Suspension type', drive: 'Steering, drive and brakes', tires: 'Wheels and tires', size: 'Track and wheelbase', weight: 'Weight and CG', unsprung: 'Unsprung weight',
   points: 'Suspension points', springs: 'Springs', dampers: 'Dampers and anti-roll bars', steering: 'Steering', grip: 'Tire grip', inertia: 'Body inertia',
 };
 
@@ -1242,6 +1242,8 @@ export interface DesignState {
   /** Locks set by the setup wizard: lock key → the step that set it (a subset of `locks`). */
   /** Where a lock came from: a setup-wizard step, or a car profile (its track and wheelbase). */
   wizardLocks: Record<string, SetupStep | 'profile'>;
+  /** What the car is for (useCases.ts): sets the tests, pass rules and optimizer goals when chosen. */
+  useCase?: 'track' | 'road' | 'offroad' | 'drift' | 'towing' | 'drag';
   /** Optimizer setup per corner design (keyed by root corner). */
   optimizer: Partial<Record<CornerId, OptimizerSetup>>;
   /** Whole-vehicle optimizer setup. */
@@ -1320,7 +1322,7 @@ export const pickDesign = (s: DesignState): DesignState => ({
   tireModel: s.tireModel, tire: s.tire, volumeChange: s.volumeChange, tireSizeText: s.tireSizeText,
   droop: s.droop, bump: s.bump, driver: s.driver,
   corners: s.corners, links: s.links, settings: s.settings, activeCorner: s.activeCorner,
-  vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode, shared: s.shared, locks: s.locks, wizardLocks: s.wizardLocks,
+  vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode, shared: s.shared, locks: s.locks, wizardLocks: s.wizardLocks, useCase: s.useCase,
   optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, tireGrip: s.tireGrip, tireFile: s.tireFile, tireFileRear: s.tireFileRear, setupStatus: s.setupStatus, aero: s.aero, powertrain: s.powertrain, brakes: s.brakes, shimmy: s.shimmy, tow: s.tow, dimensions: s.dimensions, tests: s.tests,
 });
 

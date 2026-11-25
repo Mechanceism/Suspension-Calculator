@@ -173,6 +173,9 @@ describe('priority ranks', () => {
     const geoms = Object.fromEntries(Object.entries(problem.designs).map(([k, v]) => [k, v!.geometry]));
     for (const preset of TEST_PRESETS) {
       const t = { ...preset.make(), id: 'p' };
+      // The drag strip's set speeds (0 → 250 km/h in a quarter mile) are only a ceiling for Grip only, not
+      // meant to be driven as set (its planned run is tested in useCases.test.ts).
+      if (t.name === 'Drag strip') continue;
       expect(t.ride).toBe(true);
       expect(t.handling).toBe(true);
       const r = runTest(problem, geoms, t.segments.map((sg) => segmentSpec(sg, t)), { onFail: 'report', ride: true, handling: true });

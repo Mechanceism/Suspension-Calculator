@@ -4,6 +4,7 @@
  * as estimates, so results can say what they rest on). Measurement helpers: the corner-scale CG
  * calculator, the unsprung-weight sum, the spring-rate-from-a-weight tool and the inertia estimate.
  */
+import { USE_CASES, applyUseCase } from '../useCases';
 import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { create } from 'zustand';
 import { parseValue, type Quantity } from '../../core/units/units';
@@ -70,6 +71,24 @@ interface StepProps { apply: (fn: () => string[] | void) => void }
 /** Every design the front and rear axles use (one when all four corners share a design). */
 const allRoots = () => { const l = useApp.getState().links; return [...new Set([...axleRoots(l, 'front'), ...axleRoots(l, 'rear')])]; };
 type StepView = (p: StepProps) => ReactNode;
+
+/** What the car is for (round 4, F20): sets the tests, their pass rules and what the optimizer counts. */
+const UseStep: StepView = ({ apply }) => {
+  const current = useApp((s) => s.useCase);
+  return (
+    <>
+      <p className="hint">What should the optimizer make this car best at? This picks the tests, their pass rules and what the optimizer counts (it adds the tests you don&apos;t have and turns the others off, without deleting any). You can change it later in Tests → Optimize.</p>
+      <div className="use-cases">
+        {USE_CASES.map((u) => (
+          <button key={u.id} className={`use-case${current === u.id ? ' on' : ''}`} onClick={() => apply(() => { applyUseCase(u.id); return []; })}>
+            <b>{u.label}</b>
+            <span className="small-text muted">{u.hint}</span>
+          </button>
+        ))}
+      </div>
+    </>
+  );
+};
 
 const TypeStep: StepView = ({ apply }) => {
   const links = useApp((s) => s.links);
@@ -674,7 +693,7 @@ const InertiaStep: StepView = ({ apply }) => {
 };
 
 const VIEWS: Record<SetupStep, StepView> = {
-  type: TypeStep, drive: DriveStep, tires: TiresStep, size: SizeStep, weight: WeightStep, unsprung: UnsprungStep,
+  use: UseStep, type: TypeStep, drive: DriveStep, tires: TiresStep, size: SizeStep, weight: WeightStep, unsprung: UnsprungStep,
   points: PointsStep, springs: SpringsStep, dampers: DampersStep, steering: SteeringStep, grip: GripStep, inertia: InertiaStep,
 };
 

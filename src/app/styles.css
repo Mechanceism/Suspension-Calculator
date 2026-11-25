@@ -691,3 +691,11 @@ tr.clickable:hover { background: var(--panel-2); }
 .compare-who { margin: -4px 0 8px; }
 .compare-table tr.picked td { background: rgba(77, 163, 255, 0.08); }
 .compare-table tr.playing td { background: rgba(255, 183, 3, 0.14); }
+
+/* Setup wizard: what the car is for (round 4) */
+.use-cases { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; margin: 8px 0; }
+.use-case { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; text-align: left; padding: 10px; border-radius: 6px; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); cursor: pointer; }
+.use-case:hover { border-color: var(--accent); }
+.use-case b { color: var(--text); }
+.use-case .muted { color: var(--muted); }
+.use-case.on { outline: 2px solid var(--accent); }

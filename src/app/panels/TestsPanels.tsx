@@ -1,3 +1,4 @@
+import { USE_CASES, applyUseCase, useCaseSpec, type UseCase } from '../useCases';
 import { racingLineRadius } from '../../core/tests/segments';
 /**
  * Tests workspace (Phase A, quasi-static): build a test from segments (speed change over a distance,
@@ -913,6 +914,7 @@ function OptimizeSection({ test, onOpenOptimizer }: { test: TestDesign; onOpenOp
   const tests = useApp((s) => s.tests);
   const results = useRun((s) => s.results);
   const free = Object.keys(vo.ranges).length;
+  const useCase = useApp((s) => s.useCase);
   const goals = VEHICLE_GOAL_KINDS.filter((k) => vo.goals[k].on && k !== 'testPass' && k !== 'testReserve' && k !== 'testTime').map((k) => VEHICLE_GOAL_META[k].short);
   // Speeds as maximums: score on time too (the Test time goal; its weight: how much time counts).
   const timeGoal = vo.goals.testTime;
@@ -933,6 +935,16 @@ function OptimizeSection({ test, onOpenOptimizer }: { test: TestDesign; onOpenOp
         <span className="muted">For</span>
         <button className={`chip${!many ? ' on' : ''}`} onClick={() => useLoop.setState({ scope: 'test' })} disabled={loop.running}>This test</button>
         <button className={`chip${many ? ' on' : ''}`} onClick={() => useLoop.setState({ scope: 'all' })} disabled={loop.running} title="Every ticked test together, weighted by test priority (A, B…)">All enabled tests ({enabled.length})</button>
+      </div>
+      <div className="jm-row" title="What the car is for: sets the tests (adds missing ones, turns the others off), their pass rules and what the optimizer counts. Also the setup wizard's first step.">
+        <span className="muted">Use case</span>
+        <select value={useCase ?? ''} disabled={loop.running} onChange={(e) => {
+          const id = e.target.value as UseCase;
+          if (id && window.confirm(`Set up for ${useCaseSpec(id)!.label}? ${useCaseSpec(id)!.hint}\n\nIts tests are added (if missing) and turned on, the other tests turned off (not deleted), and the optimizer's goals set.`)) applyUseCase(id);
+        }}>
+          <option value="" disabled>Choose…</option>
+          {USE_CASES.map((u) => <option key={u.id} value={u.id}>{u.label}</option>)}
+        </select>
       </div>
       <div className="jm-row" title="When the optimizer stops making progress inside your ranges, it widens them step by step (×2, ×3, ×4, ×5, ×10…) up to this, and keeps trying. Points it moves outside your ranges widen those ranges.">
         <span className="muted">Max widening</span>

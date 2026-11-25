@@ -858,7 +858,44 @@ export function vehicleAt(input: VehicleInput, pose: ChassisPose, travel: Record
 export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions = {}): VehicleResult {
   const r = solveVehicleOnce(input, options);
   const acc = Math.abs(input.lateralG) + Math.abs(input.brakingG ?? 0) + Math.abs(input.accelG ?? 0);
-  if (acc < 1e-9 || (r.converged && !liftedUnexpectedly(input, r))) return r;
+  if (r.converged && !liftedUnexpectedly(input, r)) return r;
+  const viaAcc = acc < 1e-9 ? null : rampAccelerations(input, options, r);
+  if (viaAcc) return viaAcc;
+  // (Also when it settled with an axle or a side off the ground that a rigid car would keep loaded.)
+  const viaGround = rampGround(input, options);
+  if (viaGround) return viaGround;
+  return r;
+}
+
+/**
+ * Ground continuation (round 4, F26): on uneven ground (a rough patch under the wheels) the solve can start
+ * with wheels hanging past their droop — nothing then holds the body's pitch or roll and the steps run away
+ * (the riding lawnmower, 10 mm of droop on a patch 16 mm lower in front, ended 800 mm up and pitched 40°:
+ * "can't settle" on every rough sample). The ground is brought in from level in steps, each from the last
+ * pose. Only when the direct solve failed (or found such a far balance); null when the ramp doesn't settle
+ * either, or settles there too.
+ */
+function rampGround(input: VehicleInput, options: VehicleSolveOptions): VehicleResult | null {
+  const go = input.groundOffset;
+  if (!go || !CORNER_IDS.some((id) => Math.abs(go[id] ?? 0) > 1e-9)) return null;
+  let pose: ChassisPose | undefined = undefined;
+  let cornerGuess: Partial<Record<CornerId, number>> | undefined;
+  let last: VehicleResult | null = null;
+  const n = 8;
+  for (let k = 1; k <= n; k++) {
+    const f = k / n;
+    const groundOffset = Object.fromEntries(CORNER_IDS.filter((id) => go[id] !== undefined).map((id) => [id, go[id]! * f])) as Partial<Record<CornerId, number>>;
+    const step = { ...input, groundOffset, lateralG: input.lateralG * f, brakingG: (input.brakingG ?? 0) * f, accelG: (input.accelG ?? 0) * f };
+    last = solveVehicleOnce(step, { ...options, guess: pose ?? { heave: 0, roll: 0, pitch: 0 }, ...(cornerGuess ? { cornerGuess } : {}) });
+    if (!last.converged) return null;
+    pose = last.pose;
+    cornerGuess = Object.fromEntries(CORNER_IDS.map((id) => [id, last!.corners[id]?.travel]));
+  }
+  return last && last.converged && !liftedUnexpectedly(input, last) ? last : null;
+}
+
+/** Load continuation (see solveVehicle); null when it does no better than the direct answer `r`. */
+function rampAccelerations(input: VehicleInput, options: VehicleSolveOptions, r: VehicleResult): VehicleResult | null {
   // Load continuation: ramp the accelerations up from rest, each step starting from the last. From rest
   // the solver can otherwise land on the far, unstable balance (e.g. a "stoppie" on the front wheels)
   // or stall. The direct answer is kept when the ramp does no better.
@@ -875,7 +912,7 @@ export function solveVehicle(input: VehicleInput, options: VehicleSolveOptions =
     cornerGuess = Object.fromEntries(CORNER_IDS.map((id) => [id, last!.corners[id]?.travel]));
   }
   if (last && last.converged && (!r.converged || !liftedUnexpectedly(input, last))) return last;
-  return r;
+  return null;
 }
 
 /**

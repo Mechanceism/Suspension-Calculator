@@ -17,7 +17,7 @@ import { brakeStep, padFactors, type AxleTemps } from '../vehicle/brakeThermal';
 import { pedalTravel } from '../vehicle/brakes';
 import { shimmyKicks } from '../optimize/shimmyOf';
 import { aeroForces } from '../vehicle/aero';
-import { wheelDrive } from '../vehicle/powertrain';
+import { wheelDrive, rpmTopSpeed } from '../vehicle/powertrain';
 import { powerUse, type PowerUse } from './powerUse';
 
 export interface StateResult {
@@ -285,7 +285,7 @@ function planCarOf(p: VehicleProblem, asm: AssembledVehicle, target = 0.95, radi
     drivenFront: set.FL.drive !== 'none' || set.FR.drive !== 'none', drivenRear: set.RL.drive !== 'none' || set.RR.drive !== 'none',
     ...(p.brakeLimit ? { brakeForce: { front: p.brakeLimit.front, rear: p.brakeLimit.rear } } : {}),
     mass: p.mass, rollingResistance: p.rollingResistance ?? 0,
-    ...(drive ? { drive } : {}),
+    ...(drive ? { drive, ...(p.powertrain ? { gearTop: rpmTopSpeed(p.powertrain, drivenRadius(p, asm)) } : {}) } : {}),
     ...(p.aero ? { dragArea: aeroForces({ model: p.aero.model, rho: p.aero.rho, speed: 10 }, { front: -asm.groundY, rear: -asm.groundY }, { front: -asm.groundY, rear: -asm.groundY }).drag / 100 } : {}),
   };
 }

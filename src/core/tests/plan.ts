@@ -49,6 +49,12 @@ export interface PlanCar {
   rollingResistance?: number;
   /** Powertrain (F5): the most force it pushes the car with at speed v (m/s), N. None: only the tires limit the drive. */
   drive?: (v: number) => number;
+  /**
+   * Powertrain: the most speed its one gear allows (m/s, the most rpm). The plan never goes faster: down a hill
+   * the driver brakes to hold it (round 4, F26 — the riding lawnmower, governed to 9 km/h, was planned to roll
+   * down the Rally stage's 8 % downhill to 28 km/h and spun in the next turn).
+   */
+  gearTop?: number;
   /** Aero drag ÷ speed², N/(m/s)² (½ ρ CdA; 0 / none = no drag). */
   dragArea?: number;
   /**
@@ -193,7 +199,7 @@ export function planSpeeds(segments: SegmentSpec[], car: PlanCar, target: number
       const vSet = !capped
         ? (i === last && k === n ? Math.min(free!.topSpeed, sg.v1) : free!.topSpeed)
         : Math.sqrt(Math.max(0, sg.v0 * sg.v0 + ((sg.v1 * sg.v1 - sg.v0 * sg.v0) * k) / n));
-      const p: P = { seg: i, s, cap: Math.min(vSet, vLat), capT: target[i] ?? 0.95, kappa: kappaOf(sg), grade: sg.grade, bank: sg.bank, coast: !!sg.coast };
+      const p: P = { seg: i, s, cap: Math.min(vSet, vLat, car.gearTop ?? Infinity), capT: target[i] ?? 0.95, kappa: kappaOf(sg), grade: sg.grade, bank: sg.bank, coast: !!sg.coast };
       if (k === 0 && pts.length) {
         // The boundary: the lower of both sides' limits.
         const prev = pts[pts.length - 1]!;

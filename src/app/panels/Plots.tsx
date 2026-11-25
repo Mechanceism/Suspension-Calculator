@@ -72,8 +72,9 @@ type Getter = (s: Sample) => number;
 
 /** `other` (Compare): the snapshot's corner, its curves drawn dashed over the current design's. */
 export function Plots({ model, other }: { model: Model; other?: Model }) {
-  const travel = useApp((s) => s.travel);
+  // The current travel from the model given (during a play, its snapshot), not the store: the plots needn't redraw every step.
   const cur = model.current;
+  const travel = cur?.travel ?? 0;
   const base = model.sweep.reduce<Sample | null>((b, q) => (!b || Math.abs(q.travel) < Math.abs(b.travel) ? q : b), null);
   const baseTrack = base?.chars.halfTrack ?? 0;
   const otherBase = other?.sweep.reduce<Sample | null>((b, q) => (!b || Math.abs(q.travel) < Math.abs(b.travel) ? q : b), null);

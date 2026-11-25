@@ -1,9 +1,12 @@
+import { usePlayLoop } from '../playLoop';
 import { vehicleResultRows } from '../resultRows';
 import { steeringWheelAngle, inputForWheelAngle } from '../../core/tests/steer';
 import { useEffect, useMemo, useRef } from 'react';
 import { Num, UnitLabel } from './UnitText';
 import { openWizard, EstimatedNote } from './SetupWizard';
 import { AeroPanel } from './AeroPanel';
+import { PowertrainPanel, PowertrainBadge } from './PowertrainPanel';
+import { RideHeightPanel } from './RideHeightPanel';
 import { brakesOf, buildVehicleProblem } from '../optimizer';
 import { shimmyReport, shimmyKicks } from '../../core/optimize/shimmyOf';
 import type { ShimmyScan } from '../../core/vehicle/shimmy';
@@ -184,6 +187,12 @@ export function VehicleInputs({ model }: { model: VehicleModel | null }) {
       <Section title="Aerodynamics" open={false} extra={<AeroBadge />}>
         <AeroPanel />
       </Section>
+      <Section title="Static ride height" open={false} extra={<span className="muted small-text">{useApp.getState().rideHeight.on ? 'set' : 'design'}</span>}>
+        <RideHeightPanel />
+      </Section>
+      <Section title="Powertrain" open={false} extra={<PowertrainBadge />}>
+        <PowertrainPanel />
+      </Section>
       <Section title="Towing" open={false} extra={<span className="muted small-text">{useApp.getState().tow.on ? 'trailer' : 'off'}</span>}>
         <TowPanel />
       </Section>
@@ -331,18 +340,7 @@ export function VehicleResults({ model }: { model: VehicleModel | null }) {
   );
 }
 
-function usePlay(active: boolean, period: number, onPhase: (s: number) => void) {
-  const cb = useRef(onPhase);
-  cb.current = onPhase;
-  useEffect(() => {
-    if (!active) return;
-    let raf = 0;
-    const t0 = performance.now();
-    const tick = (now: number) => { cb.current(Math.sin(((now - t0) / period) * Math.PI * 2)); raf = requestAnimationFrame(tick); };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [active, period]);
-}
+const usePlay = usePlayLoop;
 
 export function VehicleMotionBar() {
   const lateralG = useApp((s) => s.lateralG);

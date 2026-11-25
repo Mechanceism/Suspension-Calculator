@@ -1,3 +1,4 @@
+import { USE_CASES, applyUseCase, useCaseSpec, type UseCase } from '../useCases';
 import { racingLineRadius } from '../../core/tests/segments';
 /**
  * Tests workspace (Phase A, quasi-static): build a test from segments (speed change over a distance,
@@ -15,8 +16,8 @@ import { segmentLongG, segmentLatG, segmentDuration, type PathKind } from '../..
 import type { TestRun, StateResult } from '../../core/tests/run';
 import { CHECK_IDS, CHECK_META, PROFILES, cloneProfile, type CheckProfile, type Severity, type BuiltinProfile, type Finding } from '../../core/tests/checks';
 import { useApp, BRAKE_MORE_META, type Field } from '../store';
-import { SEGMENT_PRESETS, TEST_PRESETS, newSegment, newTestId, planOption, segmentSpec, isOff, OFF, type TestDesign, type TestSegment } from '../tests';
-import { buildVehicleProblem, runTestJob } from '../optimizer';
+import { SEGMENT_PRESETS, TEST_PRESETS, newSegment, newTestId, planOption, plannedSpeeds, driverSpeedOf, topSpeedOf, segmentSpec, isOff, OFF, type TestDesign, type TestSegment } from '../tests';
+import { buildVehicleProblem, runTestJob, isCancelled } from '../optimizer';
 import { POOL_SIZE, runLimited } from '../workerPool';
 import { useTireChoice, TIRE_CATALOG, rankTires, applyTire, currentTire, type TireAxleChoice } from '../tireChoice';
 import { useProfiles } from '../settings';
@@ -26,7 +27,7 @@ import { RoadEditor } from './RoadEditor';
 import { PlaybackBar, SegmentMap } from './Playback';
 import { Section, fmt, FieldRows } from './FieldRows';
 import { fromDisplay, localNow, toDisplay, useDisplay } from '../units';
-import { useLoop, optimizeTests, exploreRanges, acceptExploration, setMaxWiden, isUnfixable, WIDEN_CHOICES, widenLabel, tuneSpringsDampers, setRateSettings, rateVars, setSizeBrakes, sizeBrakesFrom, testsInScope } from '../testOptimize';
+import { useLoop, optimizeTests, exploreRanges, acceptExploration, acceptSplit, setMaxWiden, isUnfixable, WIDEN_CHOICES, widenLabel, tuneSpringsDampers, setRateSettings, rateVars, setSizeBrakes, sizeBrakesFrom, testsInScope } from '../testOptimize';
 import { SearchSelect, SensitivityReport } from './SearchTools';
 import { EstimatedNote } from './SetupWizard';
 import { VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META } from '../../core/optimize/vehicle';
@@ -119,7 +120,7 @@ export function startTestRun(test: TestDesign) {
   run.cancel?.();
   const s = useApp.getState();
   const { problem } = buildVehicleProblem(s);
-  const job = runTestJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), { onFail: test.onFail, speedLimits: true, ride: test.ride !== false, handling: test.ride !== false && test.handling !== false, driverSpeed: !!test.driverSpeed, ...planOption(test) });
+  const job = runTestJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), { onFail: test.onFail, speedLimits: true, ride: test.ride !== false, handling: test.ride !== false && test.handling !== false, driverSpeed: driverSpeedOf(test), ...planOption(test) });
   const from = designRef(s);
   useRun.setState({ running: true, testId: test.id, runningIds: [test.id], error: null, cancel: job.cancel });
   return job.done
@@ -128,7 +129,7 @@ export function startTestRun(test: TestDesign) {
       useApp.getState().set('testView', null);
       return result;
     })
-    .catch((e: unknown) => { useRun.setState({ running: false, runningIds: [], error: e instanceof Error ? e.message : String(e), cancel: null }); return null; });
+    .catch((e: unknown) => { useRun.setState({ running: false, runningIds: [], error: isCancelled(e) ? null : e instanceof Error ? e.message : String(e), cancel: null }); return null; });
 }
 
 /**
@@ -145,7 +146,7 @@ export async function runTestsTogether(tests: TestDesign[]): Promise<(TestRun | 
   let stopped = false, done = 0;
   useRun.setState({ running: true, testId: tests[0]?.id ?? null, runningIds: [], error: null, batch: { index: 0, total: tests.length }, cancel: () => { stopped = true; for (const f of [...stops]) f(); } });
   const out = await runLimited(tests, POOL_SIZE, async (test) => {
-    const job = runTestJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), { onFail: test.onFail, speedLimits: true, ride: test.ride !== false, handling: test.ride !== false && test.handling !== false, driverSpeed: !!test.driverSpeed, ...planOption(test) });
+    const job = runTestJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), { onFail: test.onFail, speedLimits: true, ride: test.ride !== false, handling: test.ride !== false && test.handling !== false, driverSpeed: driverSpeedOf(test), ...planOption(test) });
     useRun.setState((r) => ({ runningIds: [...r.runningIds, test.id] }));
     // Stopping ends the wait too (a terminated worker never answers).
     let stop = () => {};
@@ -156,7 +157,7 @@ export async function runTestsTogether(tests: TestDesign[]): Promise<(TestRun | 
       if (result) useRun.setState((r) => ({ results: { ...r.results, [test.id]: { result, from, test, ranAt: new Date().toISOString() } } }));
       return result;
     } catch (e) {
-      useRun.setState({ error: e instanceof Error ? e.message : String(e) });
+      if (!isCancelled(e)) useRun.setState({ error: e instanceof Error ? e.message : String(e) });
       return null;
     } finally {
       stops.delete(stop);
@@ -167,6 +168,17 @@ export async function runTestsTogether(tests: TestDesign[]): Promise<(TestRun | 
   useRun.setState({ running: false, cancel: null, batch: null, runningIds: [] });
   useApp.getState().set('testView', null);
   return out.map((r) => r ?? null);
+}
+
+/** The latest results of these tests, as stored (to put back later with `restoreResults`). */
+export const resultsOf = (ids: string[]) => Object.fromEntries(ids.map((id) => [id, useRun.getState().results[id]]).filter(([, e]) => e)) as Record<string, NonNullable<ReturnType<typeof useRun.getState>['results'][string]>>;
+/**
+ * Put back results run earlier on the design as it is again now (the optimizer's step trials, round 4 F24: the
+ * step kept was driven already, so it isn't driven again; runs are deterministic for a design).
+ */
+export function restoreResults(saved: ReturnType<typeof resultsOf>) {
+  const from = designRef(useApp.getState());
+  useRun.setState((r) => ({ results: { ...r.results, ...Object.fromEntries(Object.entries(saved).map(([id, e]) => [id, { ...e, from }])) } }));
 }
 
 /** Run every enabled test (several at once). */
@@ -509,6 +521,8 @@ function TestList({ tests, activeId }: { tests: TestDesign[]; activeId: string |
 
 export function TestsSidebar() {
   const tests = useApp((s) => s.tests);
+  const disp = useDisplay();
+  const ptKind = useApp((s) => s.powertrain.kind);
   const test = useActiveTest();
   const set = useApp((s) => s.set);
   const run = useRun();
@@ -575,18 +589,35 @@ export function TestsSidebar() {
                     <input type="checkbox" checked={!!test.racingLine} onChange={(e) => updateTest(test.id, (t) => ({ ...t, racingLine: e.target.checked }))} /> racing line (with track widths)
                   </label>
                   <label className="check-label" title="The driver also works the throttle and brakes: the segments' speeds become targets; the driver brakes ahead of bends the tires can't take at the set speed, lifts when the car runs wide, and accelerates within the grip left. Ending a segment well short of its speed is reported (Speed not reached).">
-                    <input type="checkbox" disabled={test.ride === false || test.handling === false} checked={test.ride !== false && test.handling !== false && !!test.driverSpeed} onChange={(e) => updateTest(test.id, (t) => ({ ...t, driverSpeed: e.target.checked }))} /> driver works the pedals
+                    <input type="checkbox" disabled={test.ride === false || test.handling === false || plannedSpeeds(test)} checked={driverSpeedOf(test)} onChange={(e) => updateTest(test.id, (t) => ({ ...t, driverSpeed: e.target.checked }))} /> driver works the pedals{plannedSpeeds(test) && test.ride !== false && test.handling !== false ? ' (always with planned speeds: the time is how long it took)' : ''}
                   </label>
                 </td>
               </tr>
               <tr title="Maximums: the set speeds are the most the driver may go; the driver plans the speed to its push — how much of the tires' grip it uses — (braking earlier before turns, accelerating out), tries other ways of taking a failing segment (brake in, coast in, hold the speed, speed up in) and then pushes less there (with a finding saying so); the test is scored on time. Hold exactly: the set speeds are driven as they are (to check a car can do a given speed).">
                 <td>Speeds</td>
                 <td>
+                  <button className={`chip${test.speedMode === 'grip' ? ' on' : ''}`} title="No speed caps: the turns, braking and accelerating are limited by the grip alone, the straights by the top speed (until a powertrain limits them); the test starts at its first speed and ends at most at its last" onClick={() => updateTest(test.id, (t) => ({ ...t, speedMode: 'grip', gripTarget: t.gripTarget ?? 0.95 }))}>Grip only</button>
                   <button className={`chip${test.speedMode === 'max' ? ' on' : ''}`} onClick={() => updateTest(test.id, (t) => ({ ...t, speedMode: 'max', gripTarget: t.gripTarget ?? 0.95 }))}>Maximums</button>
-                  <button className={`chip${test.speedMode !== 'max' ? ' on' : ''}`} onClick={() => updateTest(test.id, (t) => ({ ...t, speedMode: 'hold' }))}>Hold exactly</button>
+                  <button className={`chip${!plannedSpeeds(test) ? ' on' : ''}`} onClick={() => updateTest(test.id, (t) => ({ ...t, speedMode: 'hold' }))}>Hold exactly</button>
                 </td>
               </tr>
-              {test.speedMode === 'max' ? (
+              {test.speedMode === 'grip' && ptKind !== 'none' && (
+                <tr title="With a powertrain, Grip only has no top-speed cap">
+                  <td>Top speed</td>
+                  <td className="small-text muted">No cap: the powertrain ({ptKind}), its most rpm, aero drag and rolling resistance limit the straights (Vehicle → Inputs → Powertrain).</td>
+                </tr>
+              )}
+              {test.speedMode === 'grip' && ptKind === 'none' && (
+                <tr title="Grip only: the most the car goes on the straights, until a powertrain limits it (blank: the test's highest set speed)">
+                  <td>Top speed</td>
+                  <td>
+                    <ValueInput field={test.topSpeed ?? OFF} unit="m/s" width={64}
+                      onCommit={(t) => updateTest(test.id, (x) => ({ ...x, topSpeed: t.trim() === '' ? undefined : parse(t, 'speed', x.topSpeed ?? OFF) }))} />
+                    {!test.topSpeed && <span className="muted small-text"> blank: {disp.format(topSpeedOf(test), 'm/s', 0)} (the highest set speed)</span>}
+                  </td>
+                </tr>
+              )}
+              {plannedSpeeds(test) ? (
                 <tr title="The share of the tires' grip the driver plans to (in turns, braking and accelerating). Lower is steadier; 100 % is at the limit, where transients often tip it over.">
                   <td title="How much of the tires' grip the driver plans to use (not the grip itself): lower leaves a reserve for what the plan doesn't see — the weight shifting, the car taking time to turn in, corrections, bumps">Driver push</td>
                   <td>
@@ -723,11 +754,17 @@ export function TestResults() {
       <AllTests />
       <EstimatedNote />
       {stale && <p className="hint warn-text">The design changed since this run: run again.</p>}
-      {r.time !== undefined && r.time > 0 && (
-        <p className="small-text" title="Speeds as maximums: the planned time over the whole test and its average speed (faster is better, within the pass rules)">
-          Time <b>{fmt(r.time, 1)} s</b> · average <b>{disp.format((r.distance ?? 0) / r.time, 'm/s', 0)}</b> over {disp.format(r.distance ?? 0, 'm', 0)} · driver pushing to {fmt((test.gripTarget ?? 0.95) * 100, 0)} % of the grip
+      {r.ended && (
+        <p className="small-text warn-text" title="Over time the car went more than twice its width off the line, or turned more than 90° from the path: the run ends there (the model and the driver mean nothing past it). Slower, or a car that holds the line better.">
+          <b>Did not finish</b>: {r.ended.text} in segment {r.ended.segment + 1} ({test.segments[r.ended.segment]?.name ?? ''}); the run ended at {fmt(r.ended.t, 1)} s. The segments after it weren't driven.
         </p>
       )}
+      {!r.ended && r.time !== undefined && r.time > 0 && (
+        <p className="small-text" title="How long the car took down the track as driven (the driver working the pedals within the tires and the powertrain each moment), and its average speed (faster is better, within the pass rules); the plan's time beside it">
+          Time <b>{fmt(r.time, 2)} s</b>{r.driven && r.plannedTime ? <span className="muted"> as driven (planned {fmt(r.plannedTime, 2)} s)</span> : null} · average <b>{disp.format((r.distance ?? 0) / r.time, 'm/s', 0)}</b> over {disp.format(r.distance ?? 0, 'm', 0)} · driver pushing to {fmt((test.gripTarget ?? 0.95) * 100, 0)} % of the grip
+        </p>
+      )}
+      {r.power && <PowerSummary r={r} test={test} />}
       <table className="corner-table test-table">
         <thead><tr><th>#</th><th>Segment</th>{r.time !== undefined && <th title="Planned speed through the segment (lowest – highest) and its time">Speed</th>}<th title="Worst tire grip use">Grip</th>{r.segments.some((s) => s.brakeTemp) && <th title="Brake fade: rotor temperature at the end of the segment, front / rear">Brakes</th>}<th /></tr></thead>
         <tbody>
@@ -740,12 +777,13 @@ export function TestResults() {
                 {r.time !== undefined && (
                   <td className="small-text nowrap" title={s.approach && s.approach !== 'plan' ? `Taken: ${SHAPE_LABEL[s.approach]}` : undefined}>
                     {s.plan ? <Local text={`${Math.round(Math.min(...s.plan.v) * 3.6)}–${Math.round(Math.max(...s.plan.v) * 3.6)} km/h`} /> : '—'}
-                    {s.time !== undefined ? ` · ${fmt(s.time, 1)} s` : ''}
+                    {s.notReached ? <span className="muted"> · not reached</span> : s.time !== undefined ? ` · ${fmt(s.time, 1)} s` : ''}
+                    {s.capped && <span className="muted" title="Grip only: at its grip this segment failed every way; its own set speeds passed at the full push, so it was driven at them"> (set speeds)</span>}
                   </td>
                 )}
                 <td>{Number.isFinite(s.maxUtilization) ? `${fmt(s.maxUtilization * 100, 0)} %` : '—'}</td>
                 {s.brakeTemp && <td className="small-text">{disp.format(s.brakeTemp.end.front, '°C', 0)} / {disp.format(s.brakeTemp.end.rear, '°C', 0)}</td>}
-                <td>{SEV_ICON[s.severity]}</td>
+                <td>{s.notReached ? <span className="muted small-text nowrap" title="The car went off course or spun before it got here: not driven over time (only its steady states were checked)">not reached</span> : SEV_ICON[s.severity]}</td>
               </tr>
             );
           })}
@@ -892,6 +930,7 @@ function OptimizeSection({ test, onOpenOptimizer }: { test: TestDesign; onOpenOp
   const tests = useApp((s) => s.tests);
   const results = useRun((s) => s.results);
   const free = Object.keys(vo.ranges).length;
+  const useCase = useApp((s) => s.useCase);
   const goals = VEHICLE_GOAL_KINDS.filter((k) => vo.goals[k].on && k !== 'testPass' && k !== 'testReserve' && k !== 'testTime').map((k) => VEHICLE_GOAL_META[k].short);
   // Speeds as maximums: score on time too (the Test time goal; its weight: how much time counts).
   const timeGoal = vo.goals.testTime;
@@ -913,19 +952,37 @@ function OptimizeSection({ test, onOpenOptimizer }: { test: TestDesign; onOpenOp
         <button className={`chip${!many ? ' on' : ''}`} onClick={() => useLoop.setState({ scope: 'test' })} disabled={loop.running}>This test</button>
         <button className={`chip${many ? ' on' : ''}`} onClick={() => useLoop.setState({ scope: 'all' })} disabled={loop.running} title="Every ticked test together, weighted by test priority (A, B…)">All enabled tests ({enabled.length})</button>
       </div>
+      {loop.splitOffer && !loop.running && (
+        <div className="hint" style={{ borderLeft: '3px solid var(--accent)', paddingLeft: 8 }}>
+          <b>Separate the front and rear designs?</b> One round with the rear free{loop.splitOffer.from === 'snapshot' ? `, starting from the snapshot “${loop.splitOffer.snapshotName}”'s rear,` : ', starting from the current design,'} made {many ? 'the tests' : 'the test'} faster: {fmt(loop.splitOffer.before, 2)} → <b>{fmt(loop.splitOffer.after, 2)} s</b>. The rear then has its own points (and optimizer ranges); undo puts it back.
+          <div className="jm-row">
+            <button className="chip on" onClick={() => acceptSplit()}>Separate them</button>
+            <button className="chip" onClick={() => useLoop.setState({ splitOffer: null })}>Keep as is</button>
+          </div>
+        </div>
+      )}
+      <div className="jm-row" title="What the car is for: sets the tests (adds missing ones, turns the others off), their pass rules and what the optimizer counts. Also the setup wizard's first step.">
+        <span className="muted">Use case</span>
+        <select value={useCase ?? ''} disabled={loop.running} onChange={(e) => {
+          const id = e.target.value as UseCase;
+          if (id && window.confirm(`Set up for ${useCaseSpec(id)!.label}? ${useCaseSpec(id)!.hint}\n\nIts tests are added (if missing) and turned on, the other tests turned off (not deleted), and the optimizer's goals set.`)) applyUseCase(id);
+        }}>
+          <option value="" disabled>Choose…</option>
+          {USE_CASES.map((u) => <option key={u.id} value={u.id}>{u.label}</option>)}
+        </select>
+      </div>
       <div className="jm-row" title="When the optimizer stops making progress inside your ranges, it widens them step by step (×2, ×3, ×4, ×5, ×10…) up to this, and keeps trying. Points it moves outside your ranges widen those ranges.">
         <span className="muted">Max widening</span>
         <select value={loop.maxWiden} onChange={(e) => setMaxWiden(Number(e.target.value))} disabled={loop.running}>
           {WIDEN_CHOICES.map((v) => <option key={v} value={v}>{widenLabel(v)}</option>)}
         </select>
       </div>
-      {inScope.some((t) => t.speedMode === 'max') && (
-        <div className="jm-row" title="Speeds as maximums: score the tests on their time too. The weight is how much time counts against the grip reserve and the ride — 0: safest (time ignored); 1: 1 % faster ≈ 1 point; higher: fastest. A Fail still rules a setup out (100 points); warnings cost nothing. (The Test time goal in Vehicle → Optimize.)">
-          <label className="check"><input type="checkbox" checked={timeGoal.on} disabled={loop.running} onChange={() => setTimeGoal({ on: !timeGoal.on })} /> Score on time</label>
-          {timeGoal.on && <><span className="muted">weight</span>
-            <input className="value-input small" type="number" min={0} step={0.5} value={timeGoal.weight.value} disabled={loop.running}
-              onChange={(e) => { const v = Number(e.target.value); if (Number.isFinite(v) && v >= 0) setTimeGoal({ weight: { ...timeGoal.weight, text: String(v), value: v } }); }} />
-            <span className="muted small-text">safest 0 … fastest</span></>}
+      {inScope.some(plannedSpeeds) && (
+        <div className="jm-row" title="Lap tests (planned speeds) are scored on how long the car took as driven. The weight is how much time counts against the grip reserve — 0: time ignored; 1: 1 % faster ≈ 1 point; higher: time counts more. A Fail still rules a setup out (100 points); warnings cost nothing; of the ride only bump-stop time counts a little (bouncing and sliding show in the time).">
+          <span className="muted">Time weight</span>
+          <input className="value-input small" type="number" min={0} step={0.5} value={timeGoal.on ? timeGoal.weight.value : 1} disabled={loop.running}
+            onChange={(e) => { const v = Number(e.target.value); if (Number.isFinite(v) && v >= 0) setTimeGoal({ on: true, weight: { ...timeGoal.weight, text: String(v), value: v } }); }} />
+          <span className="muted small-text">0 = time ignored · 1: 1 % faster = 1 point</span>
         </div>
       )}
       <div className="jm-row" title="Geometry rounds: local from your design, or wide (several starts from a design of experiments, keeping the best)">
@@ -1145,5 +1202,52 @@ function RateTuning({ test, busy }: { test: TestDesign; busy: boolean }) {
       )}
       {rideOff && <p className="hint">Turn on Ride over time for this test to tune on it.</p>}
     </details>
+  );
+}
+
+/** What the planned test asks of the powertrain (round 4, F7): a summary line and, per segment, a table. */
+function PowerSummary({ r, test }: { r: TestRun; test: TestDesign }) {
+  const disp = useDisplay();
+  const have = useApp((s) => s.powertrain);
+  const P = r.power!;
+  const flat = P.powerLimited + P.gripLimited;
+  const pct = (x: number) => `${fmt(P.time > 0 ? (100 * x) / P.time : 0, 0)} %`;
+  const havePower = have.kind !== 'none' ? have.peakPower.value : null;
+  return (
+    <>
+      <p className="small-text" title="Where the car accelerates flat out, what limits it: the powertrain or the tires (share of the whole test's time). Peaks: all driven wheels together.">
+        {havePower !== null
+          ? <>Flat out <b>{pct(flat)}</b> of the time: the powertrain limits it {pct(P.powerLimited)}, the tires {pct(P.gripLimited)}. </>
+          : <>Flat out <b>{pct(flat)}</b> of the time, the tires the limit (no powertrain set: Vehicle → Inputs → Powertrain). </>}
+        Peak at the wheels {disp.format(P.wheelPower, 'kW', 1)}, {disp.format(P.wheelTorque, 'N·m', 0)}
+        {P.rpm !== undefined ? <> · engine / motor up to {fmt(P.rpm, 0)} rpm, {disp.format(P.motorTorque ?? 0, 'N·m', 0)}</> : null}.
+        {' '}<span title="The power at the motor for the tires to be the limit everywhere the car accelerated flat out, at the speeds it drove (more would let it go faster on the straights, so this is a least)">
+          For the tires to be the limit everywhere: <b>{disp.format(P.powerNeeded, 'kW', 0)}</b>{havePower !== null ? <> (it has {disp.format(havePower, 'kW', 0)})</> : null}.
+        </span>
+      </p>
+      <Section title="Powertrain use by segment" open={false}>
+        <table className="corner-table test-table small-text">
+          <thead><tr><th>#</th><th>Segment</th><th title="Most rpm">rpm</th><th title="Most power at the wheels">Wheel power</th><th title="Most wheel torque (driven wheels together)">Wheel torque</th><th title="Share of the segment's time accelerating flat out with the powertrain the limit / the tires the limit">Power / tires</th><th title="Power at the motor for the tires to be the limit here">Needed</th></tr></thead>
+          <tbody>
+            {r.segments.map((s) => {
+              const u = s.power;
+              if (!u) return null;
+              const sp = (x: number) => (u.time > 0 ? `${fmt((100 * x) / u.time, 0)} %` : '—');
+              return (
+                <tr key={s.index}>
+                  <td>{s.index + 1}</td>
+                  <td>{test.segments[s.index]?.name ?? ''}</td>
+                  <td className="num">{u.rpm !== undefined ? fmt(u.rpm, 0) : '—'}</td>
+                  <td className="num">{u.wheelPower > 0 ? disp.format(u.wheelPower, 'kW', 1) : '—'}</td>
+                  <td className="num">{u.wheelTorque > 0 ? disp.format(u.wheelTorque, 'N·m', 0) : '—'}</td>
+                  <td className="num">{u.powerLimited + u.gripLimited > 0 ? `${sp(u.powerLimited)} / ${sp(u.gripLimited)}` : '—'}</td>
+                  <td className="num">{u.powerNeeded > 0 ? disp.format(u.powerNeeded, 'kW', 0) : '—'}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </Section>
+    </>
   );
 }

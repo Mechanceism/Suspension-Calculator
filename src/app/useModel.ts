@@ -130,8 +130,13 @@ export function useModel(): Model {
   const geom = useDesignApp((s) => s.geom);
   const sliderTravel = useDesignApp((s) => s.travel);
   // The corner model is shown only in the Corner workspace: elsewhere (the Vehicle view's steering, test
-  // playback moving the rack every frame) it doesn't follow the rack, so it isn't re-solved for nothing.
-  const rawRack = useDesignApp((s) => (s.workspace === 'corner' ? s.rack : 0));
+  // playback moving the rack every frame) it doesn't follow the rack, so it isn't re-solved for nothing. It
+  // keeps the rack it last had there (not straight ahead): the Corner view is still drawn while it fades out,
+  // and its wheel snapped straight on leaving with the steering turned (user, round 4).
+  const cornerRack = useDesignApp((s) => (s.workspace === 'corner' ? s.rack : null));
+  const heldRack = useRef(0);
+  if (cornerRack !== null) heldRack.current = cornerRack;
+  const rawRack = cornerRack ?? heldRack.current;
   // Corners that don't steer keep the rack (toe link) fixed.
   const steered = useDesignApp((s) => s.settings[s.activeCorner].steered);
   const rack = steered ? rawRack : 0;
@@ -181,11 +186,20 @@ export function useModel(): Model {
     ...(bumpStop ? { bumpStopLength: damper.bumpStopLength.value, bumpStopRate: damper.bumpStopRate.value } : {}),
   }), [spring, damper, bumpStop]);
 
+  // Plays (see the held sweeps below): a search over the travel range at each rack step is held while steering plays.
+  const playingTravel = useDesignApp((s) => !!s.playing);
+  const playingSteer = useDesignApp((s) => !!s.playingSteer);
+  const lastLimits = useRef<{ key: unknown[]; value: TravelLimits | null } | null>(null);
   const damperLimits = useMemo(() => {
     const corner = built.corner;
     if (!corner?.geometry.damper) return null;
-    return damperTravelLimits(corner, damper.minLength.value, damper.maxLength.value, rack);
-  }, [built, damper, rack]);
+    const key = [built, damper];
+    const held = lastLimits.current;
+    if (playingSteer && held && held.key.every((k, i) => k === key[i])) return held.value;
+    const value = damperTravelLimits(corner, damper.minLength.value, damper.maxLength.value, rack);
+    lastLimits.current = { key, value };
+    return value;
+  }, [built, damper, rack, playingSteer]); // eslint-disable-line react-hooks/exhaustive-deps
   const ws = sprungLoad(spring, factor);
 
   const tireSetup = useMemo(() => {
@@ -203,16 +217,25 @@ export function useModel(): Model {
   // While dragging, slow extras reuse their last values so the drag stays responsive.
   const lastSlow = useRef<{ wheelRate: number; tireRate: number; steering: SteeringInfo | null; compliance?: Current['compliance'] }>({ wheelRate: NaN, tireRate: Infinity, steering: null });
   const lastSteerSweep = useRef<SteerSample[]>([]);
+  // While a play runs, the curves through travel / steering are held and redone when it stops: each is a whole
+  // sweep of solves, and redoing them every frame (the travel curves at each rack step while steering plays,
+  // the steering curves at each travel step while travel plays) made the plays a slide show (user, round 4).
+  const lastKinematic = useRef<{ key: unknown[]; value: { travel: number; state: CornerState; chars: Characteristics }[] } | null>(null);
 
   const kinematicSweep = useMemo(() => {
     const corner = built.corner;
     if (!corner) return [];
+    const key = [built, driver, droop, bump];
+    const held = lastKinematic.current;
+    if (playingSteer && held && held.key.every((k, i) => k === key[i])) return held.value;
     const lo = -Math.abs(droop);
     const hi = Math.abs(bump);
     const travels = Array.from({ length: SWEEP_STEPS }, (_, i) => lo + ((hi - lo) * i) / (SWEEP_STEPS - 1));
     const states = corner.sweep(travels, (t) => ({ travel: t, rack, driver }));
-    return states.map((state, i) => ({ travel: travels[i]!, state, chars: characteristics(state) }));
-  }, [built, rack, driver, droop, bump]);
+    const value = states.map((state, i) => ({ travel: travels[i]!, state, chars: characteristics(state) }));
+    lastKinematic.current = { key, value };
+    return value;
+  }, [built, rack, driver, droop, bump, playingSteer]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const sweep = useMemo<Sample[]>(() => {
     const lengths = kinematicSweep.map((s) => springLength(s.state));
@@ -238,7 +261,7 @@ export function useModel(): Model {
     return kinematicSweep.map((s, i) => ({ ...s, loaded: sweepLoader ? sweepLoader(s.state, s.chars) : null, spring: springs[i] ?? null }));
   }, [kinematicSweep, sweepLoader, spec]);
 
-  const current = useMemo<Current | null>(() => {
+  const computeCurrent = (): Current | null => {
     const corner = live.corner;
     if (!corner) return null;
     const hasSpring = Boolean(corner.geometry.damper);
@@ -367,7 +390,26 @@ export function useModel(): Model {
         try { const r = corner.compliance(state, { radial: b?.radial.value ?? 5000, axial: b?.axial.value ?? 1500 }); lastSlow.current.compliance = r; return r; } catch { return null; }
       })(),
     };
-  }, [live, sweep, sliderTravel, rack, driver, mode, factor, spec, ws, droop, bump, tireSetup, spring, steer, cFactor, damperLimits, interacting]);
+  };
+  // While a play runs each step's result is kept (the plays step through the same positions every cycle,
+  // playLoop.ts), so after the first cycle a play only shows results already worked out; the store is dropped
+  // when anything else about the corner changes.
+  const playCache = useRef<{ deps: unknown[]; map: Map<string, Current | null> }>({ deps: [], map: new Map() });
+  const current = useMemo<Current | null>(() => {
+    const deps = [live, sweep, driver, mode, spec, droop, bump, tireSetup, spring, steer, cFactor, damperLimits, interacting];
+    const pc = playCache.current;
+    if (deps.length !== pc.deps.length || deps.some((d, i) => d !== pc.deps[i])) { pc.deps = deps; pc.map.clear(); }
+    const playing = playingTravel || playingSteer;
+    const key = `${sliderTravel}|${rack}|${factor}`;
+    if (playing && pc.map.has(key)) return pc.map.get(key)!;
+    const value = computeCurrent();
+    if (playing) {
+      pc.map.set(key, value);
+      if (pc.map.size > 600) pc.map.delete(pc.map.keys().next().value!);
+    }
+    return value;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live, sweep, sliderTravel, rack, driver, mode, factor, spec, ws, droop, bump, tireSetup, spring, steer, cFactor, damperLimits, interacting, playingTravel, playingSteer]);
 
   // Steering sweep across the rack range at the current arm position.
   // The current height: the lower arm's angle, or a solid axle's travel (its links have no arm axis).
@@ -379,7 +421,7 @@ export function useModel(): Model {
   const steerSweep = useMemo<SteerSample[]>(() => {
     const corner = built.corner;
     if (!corner || !current || (corner.solidAxle && !corner.geometry.steeredAxle) || corner.twistBeam) return [];
-    if (interacting) return lastSteerSweep.current;
+    if (interacting || ((playingTravel || playingSteer) && lastSteerSweep.current.length)) return lastSteerSweep.current;
     const armAngle = armKey / 1e5;
     const n = 25;
     const racks = Array.from({ length: n }, (_, i) => -rackLimit + (2 * rackLimit * i) / (n - 1));
@@ -402,7 +444,7 @@ export function useModel(): Model {
         ackermann: ackermann(yaw[i]!, -yaw[n - 1 - i]!, wheelbase, steerTrack).percent,
       };
     });
-  }, [built, armKey, heightDriver, rackLimit, cFactor, ratioSpec.cFactorLock, curTireLoad, interacting, wheelbase]);
+  }, [built, armKey, heightDriver, rackLimit, cFactor, ratioSpec.cFactorLock, curTireLoad, interacting, wheelbase, playingTravel, playingSteer]);
   if (!interacting) lastSteerSweep.current = steerSweep;
 
   return { error: live.error, corner: live.corner, sweep, current, steerSweep, damperLimits };

@@ -10,7 +10,7 @@ export type Severity = 'pass' | 'warn' | 'fail';
 
 export type CheckId =
   | 'nearLimit' | 'understeer' | 'oversteer' | 'wheelspin' | 'absActive' | 'lockup' | 'speedNotReached'
-  | 'bumpStop' | 'bottoming' | 'wheelLift' | 'rollover' | 'noSolution' | 'beyondGrip' | 'steerLimit' | 'pathError' | 'spin' | 'brakeLimit' | 'brakeFade' | 'longPedal' | 'mcStroke' | 'kickback' | 'shimmy' | 'trailerSway' | 'hitchLoad' | 'lightTongue' | 'gripTarget';
+  | 'bumpStop' | 'bottoming' | 'wheelLift' | 'rollover' | 'noSolution' | 'beyondGrip' | 'steerLimit' | 'pathError' | 'spin' | 'offCourse' | 'brakeLimit' | 'brakeFade' | 'longPedal' | 'mcStroke' | 'kickback' | 'shimmy' | 'trailerSway' | 'hitchLoad' | 'lightTongue' | 'gripTarget';
 
 export interface CheckSetting {
   severity: Severity;
@@ -52,13 +52,23 @@ export const CHECK_META: Record<CheckId, CheckMeta> = {
   shimmy: { label: 'Shimmy / death wobble', hint: 'With the shimmy check on (Vehicle → Inputs → Shimmy): the front wheels, knocked by a one-sided bump at the test’s fastest speeds, keep oscillating about their steering axes instead of settling, with worn parts (free play, softer steering, weaker damper, wheel imbalance) or even new ones. More trail, a stiffer steering system, a steering damper, less free play help.' },
   mcStroke: { label: 'Master cylinder runs out', hint: 'Detailed brake hydraulics: the master cylinder would need more than its stroke to make this stop (the pedal hits the floor). A larger bore or a longer stroke, less piston area or stiffer hoses help.' },
   brakeFade: { label: 'Brake fade', hint: 'With brake fade modeled: the rotors are hot enough that the pads have lost more than this share of their grip. If the faded brakes can no longer make the braking asked, it counts as Brakes too weak. Heavier rotors, more cooling, or pads that fade hotter help.', threshold: { label: 'allowed pad grip loss', unit: '%' } },
-  pathError: { label: 'Off the line', hint: 'Driving over time with the driver steering: the car is further than this from the path (runs wide or cuts in).', threshold: { label: 'allowed', unit: 'm' } },
+  pathError: { label: 'Off the line', hint: 'Driving over time with the driver steering: the car leaves a lane this wide (as a share of its own width, track + tire width) centered on the path — runs wide or cuts in. 200 %: half its width either side (the road is drawn at 150 %).', threshold: { label: 'lane', unit: '% of car width' } },
   spin: { label: 'Spin / slide', hint: 'Driving over time with the driver steering: the car\'s sideslip angle (how far it points away from where it travels) is beyond this.', threshold: { label: 'allowed', unit: '°' } },
   steerLimit: { label: 'Steering lock', hint: 'The turn is tighter than the steering allows: its road-wheel angle (atan(wheelbase ÷ radius), plus the front − rear tire slip angle at speed) needs more rack travel than the rack limit, or no wheel steers.' },
   gripTarget: { label: 'Driver push lowered', hint: 'Speeds as maximums: every way of taking the segment with the driver pushing to the test’s share of the tires’ grip (brake before, brake in, coast in, hold the speed, speed up in) failed over time, so the driver pushes less there (slower, a reserve for what the plan doesn’t see). The finding says to what; it also says when slowing down didn’t cure it.' },
   beyondGrip: { label: 'Beyond the tires', hint: 'The state asks for more total force than all four tires can give: no suspension can pass it. Lower the speed, enlarge the radius, or improve the tires.', fixed: true },
+  offCourse: { label: 'Off course / spun', hint: 'Driving over time with the driver steering: the car went more than twice its width off the line (and at least one width past the lane), or turned more than 90° from the path (across it or backwards). The run ends there: the test did not finish.', fixed: true },
 };
 export const CHECK_IDS = Object.keys(CHECK_META) as CheckId[];
+
+/**
+ * The off-the-line lane as a share of the car's width (2 = 200 %). Before round 4 the setting was metres off the
+ * line (1 m by default): a value under 30 is read that way (lane % ≈ 100 + 100 · m).
+ */
+export const laneShare = (threshold: number | undefined) => {
+  const t = threshold ?? 200;
+  return (t < 30 ? 100 + 100 * t : t) / 100;
+};
 
 const base: CheckProfile = {
   nearLimit: { severity: 'warn', threshold: 10 },
@@ -75,7 +85,7 @@ const base: CheckProfile = {
   noSolution: { severity: 'fail' },
   beyondGrip: { severity: 'fail' },
   steerLimit: { severity: 'fail' },
-  pathError: { severity: 'fail', threshold: 1 },
+  pathError: { severity: 'fail', threshold: 200 },
   brakeLimit: { severity: 'fail' },
   brakeFade: { severity: 'warn', threshold: 10 },
   longPedal: { severity: 'warn' },
@@ -85,17 +95,22 @@ const base: CheckProfile = {
   trailerSway: { severity: 'fail', threshold: 5 },
   hitchLoad: { severity: 'fail' },
   lightTongue: { severity: 'warn', threshold: 10 },
-  spin: { severity: 'fail', threshold: 12 },
+  // A slide is a Warning (round 4, F10): drifting can be fast; a spin-out also runs off the line, which fails.
+  spin: { severity: 'warn', threshold: 12 },
+  // Off course / spun (round 4, F25): the run ends there, always a Fail.
+  offCourse: { severity: 'fail' },
   gripTarget: { severity: 'warn' },
 };
 
-export type BuiltinProfile = 'default' | 'street' | 'track' | 'drift' | 'offroad';
+export type BuiltinProfile = 'default' | 'street' | 'track' | 'drift' | 'offroad' | 'drag';
 export const PROFILES: Record<BuiltinProfile, { label: string; checks: CheckProfile }> = {
   default: { label: 'Default', checks: base },
   street: { label: 'Street (strict)', checks: { ...base, absActive: { severity: 'fail', threshold: 0 }, bumpStop: { severity: 'fail' } } },
   track: { label: 'Track', checks: { ...base, nearLimit: { severity: 'pass', threshold: 0 }, wheelLift: { severity: 'warn' } } },
-  drift: { label: 'Drift', checks: { ...base, oversteer: { severity: 'warn', threshold: 30, threshold2: 10 }, wheelspin: { severity: 'warn', threshold: 30 }, nearLimit: { severity: 'pass', threshold: 0 }, spin: { severity: 'warn', threshold: 45 }, pathError: { severity: 'warn', threshold: 2 } } },
+  drift: { label: 'Drift', checks: { ...base, oversteer: { severity: 'warn', threshold: 30, threshold2: 10 }, wheelspin: { severity: 'warn', threshold: 30 }, nearLimit: { severity: 'pass', threshold: 0 }, spin: { severity: 'warn', threshold: 45 }, pathError: { severity: 'warn', threshold: 300 } } },
   offroad: { label: 'Off-road', checks: { ...base, wheelLift: { severity: 'pass' }, bumpStop: { severity: 'pass' } } },
+  // Drag (round 4): the front lifting off the line is fine; the rear stepping out (sideslip) or leaving the lane is not.
+  drag: { label: 'Drag', checks: { ...base, wheelLift: { severity: 'pass' }, nearLimit: { severity: 'pass', threshold: 0 }, spin: { severity: 'fail', threshold: 6 } } },
 };
 /** A copy, with any check missing (profiles saved before it existed) taken from the default. */
 export const cloneProfile = (p: CheckProfile): CheckProfile => ({ ...(JSON.parse(JSON.stringify(base)) as CheckProfile), ...(JSON.parse(JSON.stringify(p)) as CheckProfile) });
@@ -126,7 +141,7 @@ export interface StateFacts {
   /** Steering the turn needs (turns only). */
   steer?: SteerNeed | null;
   /** Handling over time (driver steering): distance off the path (m, + = left), sideslip (deg), steering at full lock. */
-  handling?: { pathError: number; sideslip: number; atLock: boolean; sway?: number; jackknife?: boolean; articulation?: number };
+  handling?: { pathError: number; sideslip: number; atLock: boolean; sway?: number; jackknife?: boolean; articulation?: number; /** The car's width (track + tire width), m. */ carWidth?: number };
   /** Towing: the load on the hitch ball now (N), the hitch's rating (N, 0 = none) and the static tongue share (0–1). */
   hitch?: { load: number; limit: number; share: number };
 }
@@ -156,8 +171,11 @@ export function classifyState(f: StateFacts, profile: CheckProfile): Finding[] {
   }
   const hd = f.handling;
   if (hd) {
-    const allowed = profile.pathError?.threshold ?? 1;
-    if (Math.abs(hd.pathError) > allowed) add('pathError', `${Math.abs(hd.pathError).toFixed(2)} m off the line (${hd.pathError > 0 ? 'left' : 'right'} of the path)${hd.atLock ? ', steering at full lock' : ''}`);
+    // A lane as a share of the car's width (round 4): the car's center may stray (lane − 1) / 2 of its width.
+    const lane = laneShare(profile.pathError?.threshold);
+    const width = hd.carWidth && hd.carWidth > 0 ? hd.carWidth : 1.4;
+    const allowed = ((lane - 1) / 2) * width;
+    if (Math.abs(hd.pathError) > allowed) add('pathError', `${Math.abs(hd.pathError).toFixed(2)} m off the line (${hd.pathError > 0 ? 'left' : 'right'} of the path; allowed ${allowed.toFixed(2)} m: a lane ${Math.round(lane * 100)} % of the car's width)${hd.atLock ? ', steering at full lock' : ''}`);
     if (Math.abs(hd.sideslip) > (profile.spin?.threshold ?? 12)) add('spin', `Sideslip ${Math.abs(hd.sideslip).toFixed(1)}°: the car slides sideways / spins`);
     if (hd.jackknife) add('trailerSway', `The trailer jackknifes (articulation ${Math.abs(hd.articulation ?? 0).toFixed(0)}°)`);
     else if (hd.sway !== undefined && hd.sway > (profile.trailerSway?.threshold ?? 5)) add('trailerSway', `Trailer sway ±${hd.sway.toFixed(1)}°`);
@@ -260,7 +278,8 @@ export function checkResiduals(r: VehicleResult | null, profile: CheckProfile): 
     }
     if (w('bumpStop') && c.onBumpStop) out.push(w('bumpStop') * 5);
     if (w('bottoming') && c.status !== 'ok') out.push(w('bottoming') * 20);
-    if (w('wheelLift')) out.push(w('wheelLift') * Math.max(0, 25 - c.tireLoad) / 2.5);
+    // Wheel lift is noted, not fought (round 4): only when the rules make it a Fail.
+    if (profile.wheelLift.severity === 'fail') out.push(w('wheelLift') * Math.max(0, 25 - c.tireLoad) / 2.5);
   }
   return out;
 }

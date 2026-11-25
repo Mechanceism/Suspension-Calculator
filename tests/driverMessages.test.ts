@@ -6,7 +6,8 @@ import { buildVehicleProblem } from '../src/app/optimizer';
 import { TEST_PRESETS, segmentSpec } from '../src/app/tests';
 
 // The kart on Balanced: its rear-only brakes lock in "Brake 50–30", it enters the first turn sliding and
-// spends the next straight at full lock getting back to the line (user review 4).
+// ends up at full lock getting back to the line (user review 4). Since round 4 (F25) the run ends there, off
+// course (2.6 m off the line: twice its width) — before, it weaved on up to 9 m off the line at full lock.
 describe('driver messages say what the driver is doing', () => {
   const p = buildVehicleProblem(carProfileDesign('kart') as unknown as AppState).problem;
   const t = { ...TEST_PRESETS.find((x) => x.label.startsWith('Balanced'))!.make(), id: 'x' };
@@ -14,13 +15,18 @@ describe('driver messages say what the driver is doing', () => {
   const specs = t.segments.map((s) => segmentSpec(s, t as never));
   const idx = (name: string) => t.segments.findIndex((s) => s.name === name);
 
-  it('full lock on a straight while recovering is reported as getting back to the line, not a too-tight turn', () => {
+  it('full lock while recovering is reported as getting back to the line, not a too-tight turn; far off, the run ends', () => {
     const run = runTest(p, geoms, specs, { onFail: 'report', ride: true, handling: true });
-    const straight = run.segments[idx('Accelerate 30–45')]!.findings.filter((f) => f.check === 'steerLimit');
-    expect(straight.length).toBeGreaterThan(0);
-    expect(straight[0]!.text).toMatch(/^Steering at full lock to get back to the line \(\d+\.\d\d m (left|right) of it\)/);
-    expect(straight[0]!.text).toContain('on a straight');
-    expect(straight[0]!.text).not.toContain('Too tight');
+    const turn = run.segments[idx('Left turn 1')]!.findings;
+    const lock = turn.filter((f) => f.check === 'steerLimit');
+    expect(lock.length).toBeGreaterThan(0);
+    expect(lock[0]!.text).toMatch(/^Steering at full lock to get back to the line \(\d+\.\d\d m (left|right) of it\)/);
+    expect(lock[0]!.text).toContain('the turn itself');
+    expect(lock[0]!.text).not.toContain('Too tight');
+    // Off course there: the run ends, the straight after it isn't driven.
+    expect(run.ended?.segment).toBe(idx('Left turn 1'));
+    expect(turn.some((f) => f.check === 'offCourse' && f.severity === 'fail')).toBe(true);
+    expect(run.segments[idx('Accelerate 30–45')]!.notReached).toBe(true);
   }, 120000);
 
   it('the pedal driver "slows down to stay on the line" and the lowest speed is given', () => {

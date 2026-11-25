@@ -247,8 +247,8 @@ function PairTable({ title, pairs }: { title: string; pairs: Pair[] }) {
   const delta = (p: Pair) => {
     const x = p.a?.value, y = p.b?.value;
     if (x === undefined || y === undefined || !Number.isFinite(x) || !Number.isFinite(y) || !differs(p)) return '';
-    const t = d.text(fmt(y - x, p.digits), p.unit).text;
-    return y - x > 0 ? `+${t}` : t;
+    const t = d.text(fmt(x - y, p.digits), p.unit).text;
+    return x - y > 0 ? `+${t}` : t;
   };
   const Row = ({ p }: { p: Pair }) => (
     <tr className={differs(p) ? 'differs' : ''} title={p.hint}>
@@ -260,7 +260,7 @@ function PairTable({ title, pairs }: { title: string; pairs: Pair[] }) {
       <td className="unit">{d.conv(p.unit).unit}</td>
     </tr>
   );
-  const head = <thead><tr><th /><th /><th>Current</th><th>Snapshot</th><th title="Snapshot − current">Δ</th><th /></tr></thead>;
+  const head = <thead><tr><th /><th /><th>Current</th><th>Snapshot</th><th title="Current − snapshot: negative = the current one is lower">Δ</th><th /></tr></thead>;
   return (
     <Section title={title} extra={<label className="small-text muted" title="Hide the rows that are the same in both"><input type="checkbox" checked={onlyDiff} onChange={() => useCompareView.setState({ onlyDiff: !onlyDiff })} /> only differences</label>}>
       {pinned.length > 0 && (
@@ -311,10 +311,12 @@ function TestScores({ snap }: { snap: Snapshot }) {
   useEffect(() => { if (allIn) { const row = pickedRow(); if (row) pickRow(row); } }, [allIn, cmp.runs]); // eslint-disable-line react-hooks/exhaustive-deps
   const rows = fresh ? cmp.rows : [];
   const order = [...rows].sort((x, y) => Number(pins.includes(`test|${y.name}`)) - Number(pins.includes(`test|${x.name}`)));
-  const score = (r: TestRun | SavedResult | undefined) => (r ? <span className={`sev-text-${r.severity}`}>{SEV_ICON[r.severity]}{typeof r.time === 'number' ? ` ${r.time.toFixed(2)} s` : ''}</span> : <span className="muted">—</span>);
+  // A run that went off course / spun didn't finish: no time (round 4, F25).
+  const dnf = (r: TestRun | SavedResult) => r.segments.some((s) => s.findings.some((f) => f.check === 'offCourse'));
+  const score = (r: TestRun | SavedResult | undefined) => (r ? <span className={`sev-text-${r.severity}`}>{SEV_ICON[r.severity]}{dnf(r) ? ' did not finish' : typeof r.time === 'number' ? ` ${r.time.toFixed(2)} s` : ''}</span> : <span className="muted">—</span>);
   const dt = (x?: number, y?: number) => {
     if (typeof x !== 'number' || typeof y !== 'number') return '';
-    const d = Math.abs(y - x) < 0.005 ? 0 : y - x;
+    const d = Math.abs(x - y) < 0.005 ? 0 : x - y;
     return `${d > 0 ? '+' : ''}${d.toFixed(2)} s`;
   };
   return (
@@ -322,7 +324,7 @@ function TestScores({ snap }: { snap: Snapshot }) {
       {!rows.length && <p className="muted small-text">{cmp.running ? 'Running…' : 'Run both on both sets of tests (left) to compare their scores.'}</p>}
       {rows.length > 0 && (
         <table className="compare-table">
-          <thead><tr><th /><th>Test</th><th>Current</th><th>Snapshot</th><th title="Snapshot − current">Δ time</th><th title="The snapshot's own results, saved with it (its last run)">Last run</th></tr></thead>
+          <thead><tr><th /><th>Test</th><th>Current</th><th>Snapshot</th><th title="Current − snapshot: negative = the current one is lower">Δ time</th><th title="The snapshot's own results, saved with it (its last run)">Last run</th></tr></thead>
           <tbody>
             {order.map((row: CompareTest) => {
               const ra = cmp.runs[runKey(row, 'A')], rb = cmp.runs[runKey(row, 'B')];
@@ -335,7 +337,7 @@ function TestScores({ snap }: { snap: Snapshot }) {
                     <td><button className="link-btn" onClick={() => { setOpen(open === row.key ? null : row.key); pickRow(row); }} title={`${row.from === 'both' ? 'A track both designs have' : row.from === 'A' ? 'The current design’s test' : 'The snapshot’s test'} — click for its segments; it is shown and played in the 3D views (the snapshot as the ghost)`}>{row.name}</button> <span className="muted small-text">{row.from === 'both' ? 'both' : row.from === 'A' ? 'current' : 'snapshot'}</span></td>
                     <td className="num">{score(ra)}</td>
                     <td className="num">{score(rb)}</td>
-                    <td className="num delta">{dt(ra?.time, rb?.time)}</td>
+                    <td className="num delta">{dt(ra && !dnf(ra) ? ra.time : undefined, rb && !dnf(rb) ? rb.time : undefined)}</td>
                     <td className="num">{score(saved)}</td>
                   </tr>
                   {(open === row.key || (open === null && picked === row.key)) && ra && rb && (

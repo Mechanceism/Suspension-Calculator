@@ -33,7 +33,8 @@ describe('driver working the throttle and brakes', () => {
     const drv = rideRun(base(), { FL: geom }, segs, { handling: true, driverSpeed: true });
     expect(drv.metrics.maxPathError!).toBeLessThan(held.metrics.maxPathError!);
     expect(drv.frames.filter((f) => f.segment === 1).at(-1)!.speed).toBeLessThan(16);
-    expect(drv.findings[1]!.some((f) => f.check === 'speedNotReached' && f.text.startsWith('The driver'))).toBe(true);
+    // Reported: the driver slowing, or (round 4, F25) the car still going off course, which ends the run.
+    expect(drv.findings[1]!.some((f) => (f.check === 'speedNotReached' && f.text.startsWith('The driver')) || f.check === 'offCourse')).toBe(true);
   });
   it('without powered wheels the driver can\'t speed up', () => {
     const p = { ...base(), settings: { FL: { brake: 'outboard', drive: 'none' }, FR: { brake: 'outboard', drive: 'none' }, RL: { brake: 'outboard', drive: 'none' }, RR: { brake: 'outboard', drive: 'none' } } } as VehicleProblem;

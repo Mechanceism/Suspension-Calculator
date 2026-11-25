@@ -9,7 +9,7 @@
 import { create } from 'zustand';
 import { useApp, mergedCorners, rootOf, type AppState, type CornerDesign, type Field } from './store';
 import { buildVehicleProblem, runVehicleOptimizer, runTestJob } from './optimizer';
-import { planOption, segmentSpec, rankWeight, type TestDesign } from './tests';
+import { planOption, segmentSpec, rankWeight, driverSpeedOf, type TestDesign } from './tests';
 import { POOL_SIZE, runLimited } from './workerPool';
 import { parseTireSize, type TireSize } from '../core/tire/size';
 import { scaleTir, loadCapacityRatio, sizeChange, tireWheelMass, type TireDims } from '../core/tire/scale';
@@ -180,7 +180,7 @@ export async function rankTires(tests: TestDesign[], texts: string[]): Promise<v
   // Speeds as maximums with the Test time goal on: the time counts too (grippier tires plan faster), each
   // test's against one reference time (the same for every candidate, so the ranking is fair).
   const tg = useApp.getState().vehicleOptimizer.goals.testTime;
-  const timeWeight = tg?.on ? Math.max(0, tg.weight.value) : 0;
+  const timeWeight = tg?.on ? Math.max(0, tg.weight.value) : 1; // lap tests: always on time unless set to 0 (F9)
   const refs = new Map<string, number>();
   const scoreOf = (t: TestDesign, run: TestRun) => {
     if (timeWeight > 0 && run.time && !refs.has(t.id)) refs.set(t.id, run.time);
@@ -201,7 +201,7 @@ export async function rankTires(tests: TestDesign[], texts: string[]): Promise<v
           problem = { ...problem, designs: Object.fromEntries(Object.entries(problem.designs).map(([k, d]) => [k, { ...d!, geometry: g[k as CornerId] ?? d!.geometry }])) };
         }
         const runs = await runLimited(tests, tests.length, async (t) => {
-          const job = runTestJob(problem, t.segments.map((sg) => segmentSpec(sg, t)), { onFail: t.onFail, speedLimits: false, ride: t.ride !== false, handling: t.ride !== false && t.handling !== false, driverSpeed: !!t.driverSpeed, ...planOption(t, false) });
+          const job = runTestJob(problem, t.segments.map((sg) => segmentSpec(sg, t)), { onFail: t.onFail, speedLimits: false, ride: t.ride !== false, handling: t.ride !== false && t.handling !== false, driverSpeed: driverSpeedOf(t), ...planOption(t, false) });
           let stop = () => {};
           const cancelled = new Promise<null>((res) => { stop = () => { job.cancel(); res(null); }; });
           cancels.add(stop);

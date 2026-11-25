@@ -11,7 +11,7 @@
 import { create } from 'zustand';
 
 export type UnitSystem = 'metric' | 'imperial' | 'custom';
-export type DisplayQuantity = 'length' | 'distance' | 'speed' | 'mass' | 'force' | 'pressure' | 'torque' | 'damping' | 'temperature' | 'angle' | 'area';
+export type DisplayQuantity = 'length' | 'distance' | 'speed' | 'mass' | 'force' | 'pressure' | 'torque' | 'power' | 'damping' | 'temperature' | 'angle' | 'area';
 
 interface UnitDef { label: string; /** Size of one unit in base units. */ factor: number; offset?: number }
 
@@ -28,16 +28,17 @@ export const DISPLAY_UNITS: Record<DisplayQuantity, Record<string, UnitDef>> = {
   speed: { 'm/s': { label: 'm/s', factor: 1 }, mph: { label: 'mph', factor: 0.44704 }, 'km/h': { label: 'km/h', factor: 1 / 3.6 }, 'ft/s': { label: 'ft/s', factor: 0.3048 } },
   damping: { 'N·s/m': { label: 'N·s/m', factor: 1 }, 'N·s/mm': { label: 'N·s/mm', factor: 1000 }, 'lbf·s/in': { label: 'lbf·s/in', factor: 175.126835 } },
   area: { 'mm²': { label: 'mm²', factor: 1 }, 'cm²': { label: 'cm²', factor: 100 }, 'in²': { label: 'in²', factor: 645.16 } },
+  power: { kW: { label: 'kW', factor: 1 }, hp: { label: 'hp', factor: 0.745699872 }, PS: { label: 'PS', factor: 0.73549875 } },
 };
 
 export const QUANTITY_LABELS: Record<DisplayQuantity, string> = {
   length: 'Length', mass: 'Mass', force: 'Force', pressure: 'Pressure', torque: 'Torque', temperature: 'Temperature',
-  angle: 'Angle', distance: 'Distance / altitude', speed: 'Speed', damping: 'Damping', area: 'Area',
+  angle: 'Angle', distance: 'Distance / altitude', speed: 'Speed', damping: 'Damping', area: 'Area', power: 'Power',
 };
 
 export const PRESETS: Record<'metric' | 'imperial', Record<DisplayQuantity, string>> = {
-  metric: { length: 'mm', distance: 'm', speed: 'km/h', mass: 'kg', force: 'N', pressure: 'kPa', torque: 'N·m', damping: 'N·s/m', temperature: '°C', angle: '°', area: 'cm²' },
-  imperial: { length: 'in', distance: 'ft', speed: 'mph', mass: 'lb', force: 'lbf', pressure: 'psi', torque: 'lbf·ft', damping: 'lbf·s/in', temperature: '°F', angle: '°', area: 'in²' },
+  metric: { length: 'mm', distance: 'm', speed: 'km/h', mass: 'kg', force: 'N', pressure: 'kPa', torque: 'N·m', power: 'kW', damping: 'N·s/m', temperature: '°C', angle: '°', area: 'cm²' },
+  imperial: { length: 'in', distance: 'ft', speed: 'mph', mass: 'lb', force: 'lbf', pressure: 'psi', torque: 'lbf·ft', power: 'hp', damping: 'lbf·s/in', temperature: '°F', angle: '°', area: 'in²' },
 };
 
 /** Base unit strings used in the UI → quantity and size in that quantity's base unit. */
@@ -49,6 +50,7 @@ const BASE: Record<string, { q: DisplayQuantity; size: number }> = {
   N: { q: 'force', size: 1 },
   kPa: { q: 'pressure', size: 1 },
   'N·m': { q: 'torque', size: 1 },
+  kW: { q: 'power', size: 1 },
   '°C': { q: 'temperature', size: 1 },
   '°': { q: 'angle', size: 1 },
   deg: { q: 'angle', size: 1 },
@@ -145,7 +147,7 @@ export const isPlainNumber = (text: string) => /^[\s\d.+\-eE]+$/.test(text) && /
  * unit the converter knows and the factor to it. Longest first, so "mm²" wins over "mm" and "km/h" over "m".
  */
 const TEXT_UNITS: [string, string, number][] = [
-  ['mm²', 'mm²', 1], ['cm²', 'cm²', 1], ['km/h', 'm/s', 1 / 3.6], ['m/s', 'm/s', 1], ['N·s/m', 'N·s/m', 1], ['N·m', 'N·m', 1],
+  ['mm²', 'mm²', 1], ['cm²', 'cm²', 1], ['kW', 'kW', 1], ['km/h', 'm/s', 1 / 3.6], ['m/s', 'm/s', 1], ['N·s/m', 'N·s/m', 1], ['N·m', 'N·m', 1],
   ['N/mm', 'N/mm', 1], ['kN', 'N', 1000], ['kPa', 'kPa', 1], ['bar', 'kPa', 100], ['°C', '°C', 1], ['mm', 'mm', 1], ['kg', 'kg', 1],
   ['N', 'N', 1], ['m', 'm', 1],
 ];

@@ -84,14 +84,15 @@ import { initHistory, undo, redo, useHistory } from './history';
 import { initHeldDimensions } from './heldDimensions';
 import { save, useDirty } from './fileActions';
 import { Viewport } from './viewport/Viewport';
-import { LeftSidebar } from './panels/LeftSidebar';
+import { LeftSidebar as LeftSidebarLive } from './panels/LeftSidebar';
 import { MotionBar } from './panels/MotionBar';
-import { Readout } from './panels/Readout';
-import { Plots } from './panels/Plots';
+import { Readout as ReadoutLive } from './panels/Readout';
+import { Plots as PlotsLive } from './panels/Plots';
+import { useCalm } from './playLoop';
 import { useVehicle } from './useVehicle';
 import { VehicleViewport } from './viewport/VehicleView';
 import { switchWorkspace } from './viewport/SafeHtml';
-import { VehicleSidebar, VehicleResults, VehicleMotionBar } from './panels/VehiclePanels';
+import { VehicleSidebar as VehicleSidebarLive, VehicleResults as VehicleResultsLive, VehicleMotionBar } from './panels/VehiclePanels';
 import { CompareSidebar, CompareResults, WithGhost, useCompareView, pickedRow, ghostFrames } from './panels/ComparePanels';
 import { useSnapshots } from './snapshots';
 import { useCompare } from './compare';
@@ -99,11 +100,23 @@ import { PlaybackBar } from './panels/Playback';
 import type { TestDesign } from './tests';
 import type { PlaybackFrame } from '../core/tests/run';
 
+// The side panels redraw only when the model they're given changes: during a motion play App hands them a
+// snapshot about four times a second (useCalm) while the 3D view and the motion bar get every step.
+const LeftSidebar = memo(LeftSidebarLive);
+const Readout = memo(ReadoutLive);
+const Plots = memo(PlotsLive);
+const VehicleSidebar = memo(VehicleSidebarLive);
+const VehicleResults = memo(VehicleResultsLive);
+
 export function App() {
-  const model = useModel();
+  const liveModel = useModel();
   const workspace = useApp((s) => s.workspace);
   const setWorkspace = switchWorkspace;
-  const vehicle = useVehicle(workspace !== 'corner');
+  const liveVehicle = useVehicle(workspace !== 'corner');
+  const playing = useApp((s) => s.playing || s.playingSteer || s.playingLateral || s.playingLongitudinal);
+  const panelModel = useCalm(liveModel, playing);
+  const panelVehicle = useCalm(liveVehicle, playing);
+  const model = liveModel, vehicle = liveVehicle;
   // The whole car isn't worked out in the Corner workspace; its 3D views keep the last one meanwhile, so the
   // view fading out on entering Corner still shows the car (it went blank: the black flash).
   const lastVehicle = useRef(vehicle);
@@ -205,7 +218,7 @@ export function App() {
       {workspace === 'corner' ? (
         <>
           <aside className="left">
-            <LeftSidebar model={model} />
+            <LeftSidebar model={panelModel} />
           </aside>
           <Splitter area="lsplit" width={leftW} setWidth={setLeftW} sign={1} />
           <main className="center">
@@ -214,8 +227,8 @@ export function App() {
           </main>
           <Splitter area="rsplit" width={rightW} setWidth={setRightW} sign={-1} />
           <aside className="right">
-            <Readout model={model} />
-            <Plots model={model} />
+            <Readout model={panelModel} />
+            <Plots model={panelModel} />
           </aside>
         </>
       ) : workspace === 'compare' ? (
@@ -243,14 +256,14 @@ export function App() {
         </>
       ) : (
         <>
-          <aside className="left"><VehicleSidebar model={vehicle} /></aside>
+          <aside className="left"><VehicleSidebar model={panelVehicle} /></aside>
           <Splitter area="lsplit" width={leftW} setWidth={setLeftW} sign={1} />
           <main className="center">
             <ViewStack corner={model} vehicle={vehicleShown} active={activeView} />
             <VehicleMotionBar />
           </main>
           <Splitter area="rsplit" width={rightW} setWidth={setRightW} sign={-1} />
-          <aside className="right"><VehicleResults model={vehicle} /></aside>
+          <aside className="right"><VehicleResults model={panelVehicle} /></aside>
         </>
       )}
     </div>

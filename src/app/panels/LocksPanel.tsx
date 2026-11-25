@@ -148,7 +148,9 @@ export function LocksPanel({ compact = false }: { compact?: boolean }) {
               <li key={it.key}>
                 <button className="lock-item" title="Show in the design and the inspector" onClick={() => goToLock(it)}>
                   <span className="lock-icon">🔒</span>
-                  <span className="lock-label">{it.label}{wizardLocks[it.key] && <span className="muted" title="Entered in the setup wizard: locked so the optimizers keep your value. Unlock it to let them change it."> · setup wizard</span>}</span>
+                  <span className="lock-label">{it.label}{wizardLocks[it.key] === 'profile'
+                    ? <span className="muted" title="Set by the car profile (its track and wheelbase): locked so the optimizers keep the car's size. Unlock it to let them change it."> · car profile</span>
+                    : wizardLocks[it.key] && <span className="muted" title="Entered in the setup wizard: locked so the optimizers keep your value. Unlock it to let them change it."> · setup wizard</span>}</span>
                   <span className="lock-val mono">{showValue(lockValue(state, it.key))}</span>
                 </button>
                 <button className="icon-btn lock-x" title="Unlock" onClick={() => setLocks([it.key], false)}>✕</button>

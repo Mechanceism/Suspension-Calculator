@@ -661,6 +661,8 @@ export interface AppState extends DesignState {
   setSetupStatus(step: SetupStep, status: 'entered' | 'estimated' | null): void;
   setAeroField(key: AeroKey, text: string): void;
   setAero(patch: Partial<Pick<AeroSettings, 'on' | 'file'>>): void;
+  setPowertrainField(key: PtKey, text: string): void;
+  setPowertrain(patch: Partial<PowertrainSettings>): void;
   setBrakeField(key: BrakeKey, text: string): void;
   setBrakes(patch: Partial<BrakeSettings>): void;
   setFadeField(key: FadeKey, text: string): void;
@@ -1053,6 +1055,33 @@ export const AERO_META: Record<AeroKey, { label: string; quantity: Quantity; uni
   rollSensR: { label: 'Downforce lost per ° of roll, rear', quantity: 'ratio', unit: 'm²/°', hint: 'As for the front.' },
   yawBalance: { label: 'Balance shift per ° of sideslip', quantity: 'ratio', unit: '/°', hint: 'Front share of the downforce moved per degree of sideslip (+ = forward: the center of pressure moves forward in a slide).' },
 };
+/** Powertrain (round 4, F5): one gear; none = only the tires limit the drive (as before). */
+export const PT_KEYS = ['peakTorque', 'peakPower', 'maxRpm', 'torqueRpm', 'powerRpm', 'idleRpm', 'clutchRpm', 'ratio', 'efficiency'] as const;
+export type PtKey = (typeof PT_KEYS)[number];
+/** The keys a gas engine uses that an electric motor doesn't. */
+export const PT_GAS_ONLY: PtKey[] = ['torqueRpm', 'powerRpm', 'idleRpm', 'clutchRpm'];
+export const PT_META: Record<PtKey, { label: string; quantity: Quantity; unit: string; hint: string }> = {
+  peakTorque: { label: 'Peak torque', quantity: 'torque', unit: 'N·m', hint: 'At the motor / crankshaft (before the gear).' },
+  peakPower: { label: 'Peak power', quantity: 'power', unit: 'kW', hint: 'At the motor / crankshaft.' },
+  maxRpm: { label: 'Most rpm (redline)', quantity: 'ratio', unit: 'rpm', hint: 'Electric: the motor\u2019s most speed; gas: the redline (the limiter cuts the power above it). With the gear it sets the top speed.' },
+  torqueRpm: { label: 'Peak torque at', quantity: 'ratio', unit: 'rpm', hint: 'Gas: the rpm of the peak torque (the torque rises to it from idle).' },
+  powerRpm: { label: 'Peak power at', quantity: 'ratio', unit: 'rpm', hint: 'Gas: the rpm of the peak power (the power eases to 95 % of it at the redline).' },
+  idleRpm: { label: 'Idle', quantity: 'ratio', unit: 'rpm', hint: 'Gas: the lowest the engine runs (70 % of the peak torque there).' },
+  clutchRpm: { label: 'Clutch engages at', quantity: 'ratio', unit: 'rpm', hint: 'Gas: below this the clutch slips and holds the engine here (a centrifugal clutch, as on a kart, or a launch), so the car pulls from standstill.' },
+  ratio: { label: 'Gear ratio (overall)', quantity: 'ratio', unit: ':1', hint: 'Motor / crank turns per wheel turn, all reductions together (one gear for now). Higher pulls harder and tops out sooner.' },
+  efficiency: { label: 'Drivetrain efficiency', quantity: 'percent', unit: '%', hint: 'Share of the torque that reaches the wheels (≈ 90 % for gas, 93–95 % for electric).' },
+};
+export interface PowertrainSettings extends Record<PtKey, Field> {
+  kind: 'none' | 'electric' | 'gas';
+}
+export const defaultPowertrain = (): PowertrainSettings => ({
+  kind: 'none',
+  peakTorque: field(160, 'torque'), peakPower: field(90, 'power'), maxRpm: field(6500, 'ratio'), torqueRpm: field(4000, 'ratio'), powerRpm: field(6000, 'ratio'),
+  idleRpm: field(800, 'ratio'), clutchRpm: field(2000, 'ratio'), ratio: field(7.5, 'ratio'), efficiency: field(90, 'percent'),
+});
+/** Typical electric values (offered when switching to electric from the gas defaults). */
+export const ELECTRIC_DEFAULTS: Partial<Record<PtKey, number>> = { peakTorque: 300, peakPower: 150, maxRpm: 14000, ratio: 9, efficiency: 94 };
+
 export interface AeroSettings extends Record<AeroKey, Field> {
   on: boolean;
   /** Characteristics imported from a file (replace the generic values while set). */
@@ -1065,11 +1094,11 @@ export const defaultAero = (): AeroSettings => ({
 });
 
 /** Setup wizard steps, easy to hard. */
-export const SETUP_STEPS = ['type', 'drive', 'tires', 'size', 'weight', 'unsprung', 'points', 'springs', 'dampers', 'steering', 'grip', 'inertia'] as const;
+export const SETUP_STEPS = ['use', 'type', 'drive', 'tires', 'size', 'weight', 'unsprung', 'points', 'springs', 'ride', 'dampers', 'steering', 'grip', 'inertia'] as const;
 export type SetupStep = (typeof SETUP_STEPS)[number];
 export const SETUP_LABELS: Record<SetupStep, string> = {
-  type: 'Suspension type', drive: 'Steering, drive and brakes', tires: 'Wheels and tires', size: 'Track and wheelbase', weight: 'Weight and CG', unsprung: 'Unsprung weight',
-  points: 'Suspension points', springs: 'Springs', dampers: 'Dampers and anti-roll bars', steering: 'Steering', grip: 'Tire grip', inertia: 'Body inertia',
+  use: 'What the car is for', type: 'Suspension type', drive: 'Steering, drive and brakes', tires: 'Wheels and tires', size: 'Track and wheelbase', weight: 'Weight and CG', unsprung: 'Unsprung weight',
+  points: 'Suspension points', springs: 'Springs', ride: 'Ride height', dampers: 'Dampers and anti-roll bars', steering: 'Steering', grip: 'Tire grip', inertia: 'Body inertia',
 };
 
 /** Which axle a tire setting is for. */
@@ -1211,7 +1240,10 @@ export interface DesignState {
   /** Locked values (see locks.ts for the key format). The optimizer must work around them. */
   locks: Record<string, true>;
   /** Locks set by the setup wizard: lock key → the step that set it (a subset of `locks`). */
-  wizardLocks: Record<string, SetupStep>;
+  /** Where a lock came from: a setup-wizard step, or a car profile (its track and wheelbase). */
+  wizardLocks: Record<string, SetupStep | 'profile'>;
+  /** What the car is for (useCases.ts): sets the tests, pass rules and optimizer goals when chosen. */
+  useCase?: 'track' | 'road' | 'offroad' | 'drift' | 'towing' | 'drag';
   /** Optimizer setup per corner design (keyed by root corner). */
   optimizer: Partial<Record<CornerId, OptimizerSetup>>;
   /** Whole-vehicle optimizer setup. */
@@ -1226,6 +1258,10 @@ export interface DesignState {
   tireFileRear: TirModel | 'simple' | null;
   /** Aerodynamics (off = negligible). Generic values, or characteristics imported from a file (e.g. CFD). */
   aero: AeroSettings;
+  /** Motor / engine through one gear (none = only the tires limit the drive). */
+  powertrain: PowertrainSettings;
+  /** Static ride height front / rear (mm, the chassis reference above the ground at each axle); off = at the design position. */
+  rideHeight: { on: boolean; front: Field; rear: Field };
   /** Brake hydraulics (off = the brakes are always strong enough). */
   brakes: BrakeSettings;
   /** Shimmy / death wobble inputs. */
@@ -1288,8 +1324,8 @@ export const pickDesign = (s: DesignState): DesignState => ({
   tireModel: s.tireModel, tire: s.tire, volumeChange: s.volumeChange, tireSizeText: s.tireSizeText,
   droop: s.droop, bump: s.bump, driver: s.driver,
   corners: s.corners, links: s.links, settings: s.settings, activeCorner: s.activeCorner,
-  vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode, shared: s.shared, locks: s.locks, wizardLocks: s.wizardLocks,
-  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, tireGrip: s.tireGrip, tireFile: s.tireFile, tireFileRear: s.tireFileRear, setupStatus: s.setupStatus, aero: s.aero, brakes: s.brakes, shimmy: s.shimmy, tow: s.tow, dimensions: s.dimensions, tests: s.tests,
+  vehicle: s.vehicle, autoPreload: s.autoPreload, cornerLoadMode: s.cornerLoadMode, shared: s.shared, locks: s.locks, wizardLocks: s.wizardLocks, useCase: s.useCase,
+  optimizer: s.optimizer, vehicleOptimizer: s.vehicleOptimizer, grip: s.grip, tireGrip: s.tireGrip, tireFile: s.tireFile, tireFileRear: s.tireFileRear, setupStatus: s.setupStatus, aero: s.aero, powertrain: s.powertrain, rideHeight: s.rideHeight, brakes: s.brakes, shimmy: s.shimmy, tow: s.tow, dimensions: s.dimensions, tests: s.tests,
 });
 
 /** The default layout (File → New). */
@@ -1375,6 +1411,8 @@ export function defaultDesign(presetId = 'C'): DesignState {
     tireFileRear: null,
     setupStatus: {},
     aero: defaultAero(),
+    powertrain: defaultPowertrain(),
+    rideHeight: { on: false, front: field(100), rear: field(100) },
     brakes: defaultBrakes(),
     shimmy: defaultShimmy(),
     tow: defaultTow(),
@@ -1574,6 +1612,11 @@ export const useApp = create<AppState>((set, get) => ({
     set({ aero: { ...a, [key]: parseField(text, AERO_META[key].quantity, a[key]) } });
   },
   setAero: (patch) => set({ aero: { ...get().aero, ...patch } }),
+  setPowertrainField: (key, text) => {
+    const a = get().powertrain;
+    set({ powertrain: { ...a, [key]: parseField(text, PT_META[key].quantity, a[key]) } });
+  },
+  setPowertrain: (patch) => set({ powertrain: { ...get().powertrain, ...patch } }),
   setBrakeField: (key, text) => {
     const b = get().brakes;
     set({ brakes: { ...b, [key]: parseField(text, BRAKE_META[key].quantity, b[key]) } });

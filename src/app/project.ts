@@ -47,21 +47,21 @@ import { parseValue, type Quantity } from '../core/units/units';
 import { CORNER_IDS, type CornerId } from '../core/vehicle/vehicle';
 import { DIM_MEASURES } from '../core/suspension/dimensions';
 import { newSegment, newTestId, newFeature, OFF, defaultChecks, type TestDesign, type TestSegment } from './tests';
-import { CHECK_IDS, CHECK_META, type CheckProfile } from '../core/tests/checks';
+import { CHECK_IDS, CHECK_META, laneShare, type CheckProfile } from '../core/tests/checks';
 import type { TirModel } from '../core/tire/tir';
 import { parseAero, type AeroModel } from '../core/vehicle/aero';
 import {
   defaultDesign, mergedCorners, layoutOf, rootOf, POINT_KEYS, POINT_NAMES, SCALAR_KEYS, SCALAR_META, SPRING_KEYS, SPRING_META,
   DAMPER_KEYS, DAMPER_META, STEER_KEYS, STEER_META, MECH_STEER_KEYS, TIRE_KEYS, TIRE_META, VEHICLE_KEYS, VEHICLE_META,
   DEFAULT_LINKS, DEFAULT_SETTINGS, SHARED_META, defaultShared, defaultOptimizerSetup, defaultVehicleOptimizerSetup, defaultGrip, GRIP_KEYS, GRIP_META,
-  defaultTireGrip, MF_KEYS, MF_META, RIDE_KEYS, DAMPER_TWO_STAGE_KEYS, SETUP_STEPS, AERO_KEYS, AERO_META, defaultAero, BRAKE_KEYS, BRAKE_META, FADE_KEYS, FADE_META, BRAKE_MORE_KEYS, BRAKE_MORE_META, SHIMMY_KEYS, SHIMMY_META, defaultShimmy, defaultBrakes, TOW_KEYS, TOW_META, defaultTow,
+  defaultTireGrip, MF_KEYS, MF_META, RIDE_KEYS, DAMPER_TWO_STAGE_KEYS, SETUP_STEPS, AERO_KEYS, AERO_META, defaultAero, PT_KEYS, PT_META, defaultPowertrain, type PowertrainSettings, BRAKE_KEYS, BRAKE_META, FADE_KEYS, FADE_META, BRAKE_MORE_KEYS, BRAKE_MORE_META, SHIMMY_KEYS, SHIMMY_META, defaultShimmy, defaultBrakes, TOW_KEYS, TOW_META, defaultTow,
   type VehicleOptimizerSetup, type HeldDimension, newDimId,
   type OptimizerSetup,
   type DesignState, type CornerDesign, type Field, type CornerLinks, type CornerSettings, type SharedDesign, type Axle, centerLinkDefaults, type DamperCurveText,
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 43;
+export const FORMAT_VERSION = 48;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -134,6 +134,10 @@ export interface ProjectFile {
   tireFile?: { name: string; fittyp: number; version: '6.1' | '5.2'; fnomin: number; nompres: number; p: Record<string, number> } | null;
   /** Aerodynamics (format 16). */
   aero?: { on: boolean; fields: Record<string, FieldJson>; file: AeroModel | null };
+  /** Static ride height (format 48): set or not, front / rear (mm). */
+  rideHeight?: { on: boolean; front: FieldJson; rear: FieldJson };
+  /** Powertrain (format 45): none / electric / gas and its values. */
+  powertrain?: { kind: 'none' | 'electric' | 'gas'; fields: Record<string, FieldJson> };
   brakes?: {
     on: boolean; dualMc: boolean; useBias: boolean; fields: Record<string, FieldJson>; fade?: { on: boolean; fields: Record<string, FieldJson> };
     /** Format 39: drums, wheel room, detailed hydraulics, the ladder's reserve and permissions. */
@@ -144,6 +148,8 @@ export interface ProjectFile {
   shimmy?: { check: boolean; handsOn: boolean; fields: Record<string, FieldJson> };
   /** Setup wizard status per step (format 14). */
   setupStatus?: Record<string, 'entered' | 'estimated'>;
+  /** What the car is for (format 47). */
+  useCase?: string;
   /** Rear tires (format 13): null = same as the front, 'simple', or their own .tir model. */
   tireFileRear?: { name: string; fittyp: number; version: '6.1' | '5.2'; fnomin: number; nompres: number; p: Record<string, number> } | 'simple' | null;
   /** Tests (chains of segments). */
@@ -237,7 +243,10 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
     tireFile: d.tireFile ? tirJson(d.tireFile) : null,
     tireFileRear: d.tireFileRear === 'simple' ? 'simple' : d.tireFileRear ? tirJson(d.tireFileRear) : null,
     setupStatus: { ...d.setupStatus },
+    ...(d.useCase ? { useCase: d.useCase } : {}),
     aero: { on: d.aero.on, fields: mapFields(AERO_KEYS, d.aero), file: d.aero.file ? JSON.parse(JSON.stringify(d.aero.file)) as AeroModel : null },
+    powertrain: { kind: d.powertrain.kind, fields: mapFields(PT_KEYS, d.powertrain) },
+    rideHeight: { on: d.rideHeight.on, front: { ...d.rideHeight.front }, rear: { ...d.rideHeight.rear } },
     brakes: { on: d.brakes.on, dualMc: d.brakes.dualMc, useBias: d.brakes.useBias, fields: mapFields(BRAKE_KEYS, d.brakes), fade: { on: d.brakes.fade, fields: mapFields(FADE_KEYS, d.brakes) },
       more: { drumF: d.brakes.drumF, drumR: d.brakes.drumR, detail: d.brakes.detail, allowDiscF: d.brakes.allowDiscF, allowDiscR: d.brakes.allowDiscR, fields: mapFields(BRAKE_MORE_KEYS, d.brakes) } },
     tow: { on: d.tow.on, fields: mapFields(TOW_KEYS, d.tow) },
@@ -398,6 +407,16 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   41: (f) => ({ ...f, formatVersion: 42 }),
   // 42 → 43: an optional results section (a model-and-tests file's test scores; R9 snapshots).
   42: (f) => ({ ...f, formatVersion: 43 }),
+  // 43 → 44: a test's speeds can be grip only (with an optional top speed); wheel lift is noted, not scored.
+  43: (f) => ({ ...f, formatVersion: 44 }),
+  // 44 → 45: a powertrain (none in older files: only the tires limit the drive, as before).
+  44: (f) => ({ ...f, formatVersion: 45 }),
+  // 45 → 46: the off-the-line limit is a lane as a share of the car's width (was metres; read as such below 30).
+  45: (f) => ({ ...f, formatVersion: 46 }),
+  // 46 → 47: what the car is for (none in older files: the tests and goals as they are).
+  46: (f) => ({ ...f, formatVersion: 47 }),
+  // 47 → 48: a set static ride height (off in older files: the car rests at the design position).
+  47: (f) => ({ ...f, formatVersion: 48 }),
   39: (f) => ({ ...f, formatVersion: 40, ...(isObj(f.vehicle) && isObj(f.vehicle.fields) ? { vehicle: { ...f.vehicle, fields: { ...f.vehicle.fields, rollingResistance: { text: '0', value: 0 } } } } : {}) }),
   // 34 → 35: aero side force, roll sensitivity and balance shift off.
   34: (f) => ({ ...f, formatVersion: 35, ...(isObj(f.aero) && isObj(f.aero.fields) ? { aero: { ...f.aero, fields: { ...f.aero.fields, CsA: { text: '0', value: 0 }, sideCp: { text: '900', value: 900 }, rollSensF: { text: '0', value: 0 }, rollSensR: { text: '0', value: 0 }, yawBalance: { text: '0', value: 0 } } } } : {}) }),
@@ -412,7 +431,7 @@ function readChecks(raw: Json): CheckProfile {
     const sev = c.severity === 'pass' || c.severity === 'warn' || c.severity === 'fail' ? c.severity : out[id].severity;
     out[id] = {
       severity: CHECK_META[id].fixed ? out[id].severity : sev,
-      ...(typeof c.threshold === 'number' ? { threshold: c.threshold } : out[id].threshold !== undefined ? { threshold: out[id].threshold } : {}),
+      ...(typeof c.threshold === 'number' ? { threshold: id === 'pathError' ? Math.round(laneShare(c.threshold) * 100) : c.threshold } : out[id].threshold !== undefined ? { threshold: out[id].threshold } : {}),
       ...(typeof c.threshold2 === 'number' ? { threshold2: c.threshold2 } : out[id].threshold2 !== undefined ? { threshold2: out[id].threshold2 } : {}),
     };
   }
@@ -500,8 +519,10 @@ function readTests(raw: unknown, warnings: string[]): TestDesign[] {
       handling: t.handling !== false,
       ...(t.driverSpeed === true ? { driverSpeed: true } : {}),
       ...(t.racingLine === true ? { racingLine: true } : {}),
-      speedMode: t.speedMode === 'max' ? 'max' : 'hold',
-      ...(t.speedMode === 'max' ? { gripTarget: typeof t.gripTarget === 'number' && t.gripTarget > 0.2 && t.gripTarget <= 1 ? t.gripTarget : 0.95 } : {}),
+      speedMode: t.speedMode === 'max' || t.speedMode === 'grip' ? t.speedMode : 'hold',
+      ...(t.speedMode === 'grip' && isObj(t.topSpeed) && typeof t.topSpeed.value === 'number' && t.topSpeed.value > 0
+        ? { topSpeed: { text: typeof t.topSpeed.text === 'string' ? t.topSpeed.text : String(t.topSpeed.value), value: t.topSpeed.value } } : {}),
+      ...(t.speedMode === 'max' || t.speedMode === 'grip' ? { gripTarget: typeof t.gripTarget === 'number' && t.gripTarget > 0.2 && t.gripTarget <= 1 ? t.gripTarget : 0.95 } : {}),
     });
   }
   return out;
@@ -890,7 +911,7 @@ export function importProject(data: unknown): ImportResult {
     shared: { front: readShared(f.shared, 'front', older ? [] : warnings), rear: readShared(f.shared, 'rear', older ? [] : warnings) },
     locks: Object.fromEntries((Array.isArray(f.locks) ? f.locks : []).filter((k): k is string => typeof k === 'string').map((k) => [k, true as const])),
     wizardLocks: Object.fromEntries(Object.entries(isObj(f.wizardLocks) ? f.wizardLocks : {})
-      .filter(([k, v]) => Array.isArray(f.locks) && f.locks.includes(k) && (SETUP_STEPS as readonly string[]).includes(v as string))) as DesignState['wizardLocks'],
+      .filter(([k, v]) => Array.isArray(f.locks) && f.locks.includes(k) && (v === 'profile' || (SETUP_STEPS as readonly string[]).includes(v as string)))) as DesignState['wizardLocks'],
     optimizer: readOptimizer(f.optimizer, warnings),
     vehicleOptimizer: readVehicleOptimizer(f.vehicleOptimizer, warnings),
     grip: isObj(f.grip) ? readRecord(f.grip, GRIP_KEYS, (k) => GRIP_META[k].quantity, defaultGrip(), 'grip', warnings) : defaultGrip(),
@@ -904,6 +925,18 @@ export function importProject(data: unknown): ImportResult {
       // A saved aero file goes through the importer again (checks it).
       const file = isObj(a.file) ? parseAero(JSON.stringify(a.file), typeof a.file.name === 'string' ? a.file.name : 'aero').model : null;
       return { ...fields, on: a.on === true, file };
+    })(),
+    // A set ride height came with format 48: older files rest at the design position.
+    rideHeight: (() => {
+      const r = isObj(f.rideHeight) ? f.rideHeight : {};
+      const num = (x: unknown, dflt: number) => (isObj(x) && typeof x.value === 'number' && Number.isFinite(x.value) ? { text: typeof x.text === 'string' ? x.text : String(x.value), value: x.value } : { text: String(dflt), value: dflt });
+      return { on: r.on === true, front: num(r.front, 100), rear: num(r.rear, 100) };
+    })(),
+    // The powertrain came with format 45: older files have none (only the tires limit the drive), quietly.
+    powertrain: (() => {
+      const a = isObj(f.powertrain) ? f.powertrain : {};
+      const fields = readRecord(a.fields, PT_KEYS, (k) => PT_META[k].quantity, defaultPowertrain(), 'powertrain', isObj(f.powertrain) ? warnings : []);
+      return { ...fields, kind: a.kind === 'electric' || a.kind === 'gas' ? a.kind : 'none' } as PowertrainSettings;
     })(),
     // Brake hydraulics came with format 21: older files have them off, quietly.
     brakes: (() => {
@@ -930,6 +963,7 @@ export function importProject(data: unknown): ImportResult {
       const t = isObj(f.tow) ? f.tow : {};
       return { ...readRecord(t.fields, TOW_KEYS, (k) => TOW_META[k].quantity, defaultTow(), 'tow', isObj(f.tow) ? warnings : []), on: t.on === true };
     })(),
+    ...(['track', 'road', 'offroad', 'drift', 'towing', 'drag'].includes(f.useCase as string) ? { useCase: f.useCase as DesignState['useCase'] } : {}),
     setupStatus: Object.fromEntries(Object.entries(isObj(f.setupStatus) ? f.setupStatus : {})
       .filter(([k, v]) => (SETUP_STEPS as readonly string[]).includes(k) && (v === 'entered' || v === 'estimated'))) as DesignState['setupStatus'],
     dimensions: readDimensions(f.dimensions, warnings),

@@ -173,6 +173,9 @@ describe('priority ranks', () => {
     const geoms = Object.fromEntries(Object.entries(problem.designs).map(([k, v]) => [k, v!.geometry]));
     for (const preset of TEST_PRESETS) {
       const t = { ...preset.make(), id: 'p' };
+      // The drag strip's set speeds (0 → 250 km/h in a quarter mile) are only a ceiling for Grip only, not
+      // meant to be driven as set (its planned run is tested in useCases.test.ts).
+      if (t.name === 'Drag strip') continue;
       expect(t.ride).toBe(true);
       expect(t.handling).toBe(true);
       const r = runTest(problem, geoms, t.segments.map((sg) => segmentSpec(sg, t)), { onFail: 'report', ride: true, handling: true });
@@ -189,7 +192,7 @@ describe('priority ranks', () => {
     const back = importProject(old);
     expect(back.warnings).toEqual(Array.from({ length: FORMAT_VERSION - 9 }, (_, i) => `Upgraded from file format ${i + 9} to ${i + 10}.`));
     expect(back.design.vehicle.rollInertia.value).toBe(35);
-  });
+  }, 240_000); // about 100 s alone; more when the whole suite runs at once
 
   it('rate tuning: which rates (locks respected, two-stage high-speed rates), and applying them to the designs', async () => {
     const { useApp } = await import('../src/app/store');

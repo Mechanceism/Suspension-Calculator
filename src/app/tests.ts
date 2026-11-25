@@ -82,8 +82,12 @@ export interface TestDesign {
    * Speeds: **max** — the set speeds are maximums; the driver plans the speed to the grip target (brakes earlier,
    * accelerates out) and tries other ways (then lower targets) before a segment fails; scored on time.
    * **hold** — the set speeds are held exactly (as before; `onFail` applies). Missing = hold (files from before).
+   * **grip** — grip only (round 4): planned like *max* but the set speeds aren't caps; the turns, braking and
+   * accelerating are limited by the grip alone, the straights by `topSpeed` (until a powertrain limits them).
    */
-  speedMode?: 'max' | 'hold';
+  speedMode?: 'max' | 'hold' | 'grip';
+  /** Grip only: the top speed on the straights (m/s); none = the test's highest set speed. */
+  topSpeed?: Field;
   /** Speeds as maximums: the share of the tires' grip the driver plans to (0–1, default 0.95). */
   gripTarget?: number;
   /** Included in Run all / Optimize all (unchecked = skipped). */
@@ -102,9 +106,29 @@ export const defaultChecks = () => cloneProfile(PROFILES.default.checks);
 
 /** New and preset tests: speeds as maximums at a 95 % grip target. */
 const MAXIMUMS = { speedMode: 'max' as const, gripTarget: 0.95 };
+/** Lap-style presets (round 4): grip only, at a 95 % grip target. */
+const GRIP_ONLY = { speedMode: 'grip' as const, gripTarget: 0.95 };
+
+/** The speeds are planned by the driver (speeds as maximums or grip only). */
+export const plannedSpeeds = (t: Pick<TestDesign, 'speedMode'>) => t.speedMode === 'max' || t.speedMode === 'grip';
+/**
+ * The driver works the pedals: always with planned speeds (round 4: the test's time is how long the car took as
+ * driven, within its tires and powertrain each moment, not the plan's), else when ticked. Needs the driver
+ * steering over time.
+ */
+export const driverSpeedOf = (t: Pick<TestDesign, 'speedMode' | 'driverSpeed' | 'ride' | 'handling'>) =>
+  t.ride !== false && t.handling !== false && (plannedSpeeds(t) || !!t.driverSpeed);
+/** Grip only: the straights' top speed (m/s) — the test's own, else its highest set speed. */
+export function topSpeedOf(t: Pick<TestDesign, 'topSpeed' | 'segments'>): number {
+  if (t.topSpeed && Number.isFinite(t.topSpeed.value) && t.topSpeed.value > 0) return t.topSpeed.value;
+  return Math.max(1, ...t.segments.map((s) => Math.max(s.speedStart.value, s.speedEnd.value)));
+}
 /** The run options a test's speed mode adds (`ladder: false` for optimizers: plan once, no retries). */
-export const planOption = (t: Pick<TestDesign, 'speedMode' | 'gripTarget'>, ladder = true) =>
-  (t.speedMode === 'max' ? { plan: { gripTarget: t.gripTarget ?? 0.95, ...(ladder ? {} : { ladder: false }) } } : {});
+export const planOption = (t: Pick<TestDesign, 'speedMode' | 'gripTarget'> & Partial<Pick<TestDesign, 'topSpeed' | 'segments'>>, ladder = true) =>
+  (plannedSpeeds(t) ? { plan: {
+    gripTarget: t.gripTarget ?? 0.95, ...(ladder ? {} : { ladder: false }),
+    ...(t.speedMode === 'grip' && t.segments ? { gripOnly: { topSpeed: topSpeedOf({ topSpeed: t.topSpeed, segments: t.segments }) } } : {}),
+  } } : {});
 
 const f = (value: number, q: Quantity): Field => ({ text: formatValue(value, q), value });
 export const OFF: Field = { text: '', value: NaN };
@@ -155,7 +179,7 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
   {
     label: 'Autocross (simple)',
     make: () => ({
-      name: 'Autocross (simple)', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', ...MAXIMUMS, enabled: true, ride: true, handling: true,
+      name: 'Autocross (simple)', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', ...GRIP_ONLY, enabled: true, ride: true, handling: true,
       segments: [
         newSegment({ name: 'Launch 0–40', distance: f(50, 'distance'), speedStart: f(0, 'speed'), speedEnd: f(40 * MPH, 'speed') }),
         newSegment({ name: 'Brake 40–30', distance: f(15, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(30 * MPH, 'speed') }),
@@ -177,7 +201,7 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
       const seg = (name: string, d: number, v0: number, v1: number) => newSegment({ name, distance: f(d, 'distance'), speedStart: f(v0 * MPH, 'speed'), speedEnd: f(v1 * MPH, 'speed') });
       const sweep = (Math.PI / 2) * 40;
       return {
-        name: 'Autocross (complex)', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', ...MAXIMUMS, enabled: true, ride: true, handling: true,
+        name: 'Autocross (complex)', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', ...GRIP_ONLY, enabled: true, ride: true, handling: true,
         segments: [
           seg('Launch 0–30', 40, 0, 30),
           // Slalom: half, full, full… half arcs, alternating; three left and three right, net heading 0.
@@ -217,6 +241,33 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
     }),
   },
   {
+    label: 'Drag strip: a quarter mile from standing',
+    make: () => ({
+      name: 'Drag strip', checks: cloneProfile(PROFILES.drag.checks), profile: 'drag', rank: 1, onFail: 'report', ...GRIP_ONLY, enabled: true, ride: true, handling: true,
+      // Grip only: the set speeds don't cap it (the powertrain, drag and rolling resistance do; without a
+      // powertrain the 250 km/h top speed).
+      segments: [newSegment({ name: 'Quarter mile', distance: f(402.3, 'distance'), speedStart: f(0, 'speed'), speedEnd: f(250 / 3.6, 'speed') })],
+    }),
+  },
+  {
+    label: 'Rally stage: turns on a rough surface, a crest',
+    make: () => {
+      const rough = (seed: number, h = 30) => ({ on: true, seed, maxHeight: f(h, 'length'), scale: f(2, 'distance'), coverage: f(70, 'percent') });
+      return {
+        name: 'Rally stage', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', ...GRIP_ONLY, enabled: true, ride: true, handling: true,
+        segments: [
+          newSegment({ name: 'Launch', distance: f(80, 'distance'), speedStart: f(0, 'speed'), speedEnd: f(70 / 3.6, 'speed'), rough: rough(11, 20) }),
+          newSegment({ name: 'Fast left', path: 'left', radius: f(60, 'distance'), distance: f(70, 'distance'), speedStart: f(70 / 3.6, 'speed'), speedEnd: f(70 / 3.6, 'speed'), rough: rough(12) }),
+          newSegment({ name: 'Crest', grade: f(8, 'percent'), distance: f(40, 'distance'), speedStart: f(80 / 3.6, 'speed'), speedEnd: f(80 / 3.6, 'speed'), rough: rough(13, 20) }),
+          newSegment({ name: 'Downhill', grade: f(-8, 'percent'), distance: f(40, 'distance'), speedStart: f(80 / 3.6, 'speed'), speedEnd: f(40 / 3.6, 'speed'), rough: rough(14) }),
+          newSegment({ name: 'Tight right', path: 'right', radius: f(25, 'distance'), distance: f(40, 'distance'), speedStart: f(40 / 3.6, 'speed'), speedEnd: f(40 / 3.6, 'speed'), rough: rough(15, 40) }),
+          newSegment({ name: 'Straight', distance: f(100, 'distance'), speedStart: f(40 / 3.6, 'speed'), speedEnd: f(80 / 3.6, 'speed'), rough: rough(16) }),
+          newSegment({ name: 'Medium left', path: 'left', radius: f(40, 'distance'), distance: f(60, 'distance'), speedStart: f(55 / 3.6, 'speed'), speedEnd: f(55 / 3.6, 'speed'), rough: rough(17, 35) }),
+        ],
+      };
+    },
+  },
+  {
     label: 'Oval: banked turns (short NASCAR-style track)',
     make: () => {
       // A half-mile-style oval: two 180° left turns banked 24° (R 75 m), straights banked 5°, counter-clockwise.
@@ -237,7 +288,7 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
       const turn = (name: string, path: 'left' | 'right') => newSegment({ name, path, radius: f(30, 'distance'), distance: f((Math.PI / 2) * 30, 'distance'), speedStart: f(30 * MPH, 'speed'), speedEnd: f(30 * MPH, 'speed') });
       const seg = (name: string, d: number, v0: number, v1: number, grade = 0) => newSegment({ name, distance: f(d, 'distance'), speedStart: f(v0 * MPH, 'speed'), speedEnd: f(v1 * MPH, 'speed'), grade: f(grade, 'percent') });
       return {
-        name: 'Balanced', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', ...MAXIMUMS, enabled: true, ride: true, handling: true,
+        name: 'Balanced', checks: defaultChecks(), profile: 'default', rank: 1, onFail: 'report', ...GRIP_ONLY, enabled: true, ride: true, handling: true,
         segments: [
           seg('Launch 0–50', 80, 0, 50), seg('Brake 50–30', 25, 50, 30), turn('Left turn 1', 'left'),
           seg('Accelerate 30–45', 50, 30, 45), seg('Brake 45–30', 20, 45, 30), turn('Right turn 1', 'right'),
@@ -305,7 +356,7 @@ export function statesForTests(tests: TestDesign[], source: string, dims?: CarDi
   const out: RoadState[] = [];
   for (const t of chosen) {
     const tp = tw(t) / totalPriority;
-    const planned = t.speedMode === 'max' ? plans?.[t.id] : undefined;
+    const planned = plannedSpeeds(t) ? plans?.[t.id] : undefined;
     const specs = t.segments.map((sg, i) => { const sp = segmentSpec(sg, t); const pl = planned?.[i]; return pl && pl.s.length > 1 ? { ...sp, plan: pl } : sp; });
     const segTotal = specs.reduce((a, sp) => a + (sp.weight ?? 1), 0) || 1;
     specs.forEach((sp, i) => {

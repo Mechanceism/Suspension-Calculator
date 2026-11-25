@@ -11,6 +11,7 @@
 import { vec3, Y_AXIS, type Vec3 } from '../math/vec3';
 import type { SteeringSpec } from '../tests/steer';
 import type { AeroModel } from '../vehicle/aero';
+import type { Powertrain } from '../vehicle/powertrain';
 import { DoubleWishbone, isBeam, solidAxleOf, twistBeamOf, type DoubleWishboneGeometry, type MountBody } from '../suspension/doubleWishbone';
 import type { TrailerSpec } from '../vehicle/towing';
 import { characteristics, deg, type Characteristics } from '../suspension/characteristics';
@@ -127,6 +128,14 @@ export interface VehicleProblem {
   ride?: RideSpec;
   /** Aerodynamics (applied at each test state's speed). Omit = none. */
   aero?: { model: AeroModel; rho: number };
+  /** Motor / engine through one gear (round 4, F5): limits the drive at each speed. Omit = none (only the tires limit it). */
+  powertrain?: Powertrain;
+  /**
+   * Static ride height (round 4, F21), mm: the chassis reference's height above the ground at the front / rear
+   * axle at rest. The spring preload is fitted so the car rests there (the suspension at some travel). Omit = at
+   * the design position.
+   */
+  rideHeight?: { front?: number; rear?: number };
   mass: number;
   /** CG: x (+ left), height above ground, z (from the front axle, + forward). */
   cg: { x: number; height: number; z: number };
@@ -300,6 +309,19 @@ export function assembleVehicle(p: VehicleProblem, geometries: Partial<Record<Co
   }
   const cgRel = vec3(p.cg.x, p.cg.height, p.cg.z);
   const loads = staticCornerLoads(p.mass, cgRel, p.wheelbase, contactX);
+  // The ground at the design position (it depends only on the design and the static loads), and each axle's
+  // travel at rest for a set ride height.
+  const groundY = designGroundY(CORNER_IDS.map((id) => {
+    const d = p.designs[p.roots[id]]!;
+    const ax = axles[isFront(id) ? 'front' : 'rear'];
+    if (ax) {
+      const w = isLeft(id) ? ax.design.left : ax.design.right;
+      return { contactY: w.contact.y, profile: d.profile, model: d.model, staticLoad: loads[id], tilt: w.spinAxis.y };
+    }
+    const ds = designState.get(p.roots[id])!;
+    return { contactY: ds.points.contact.y, profile: d.profile, model: d.model, staticLoad: loads[id], tilt: ds.spinAxis.y };
+  }));
+  const restTravel = (id: CornerId) => staticTravelFor(groundY, isFront(id) ? p.rideHeight?.front : p.rideHeight?.rear, p.droop, p.bump).travel;
   const tables = new Map<string, CornerTable>();
   const corners: VehicleCorner[] = [];
   for (const id of CORNER_IDS) {
@@ -309,7 +331,8 @@ export function assembleVehicle(p: VehicleProblem, geometries: Partial<Record<Co
     if (ax) {
       // A wheel of a solid axle: preload from the axle's heave motion ratio (both sides move together).
       const side = isLeft(id) ? 'L' : 'R';
-      const s0 = ax.table.at(side, 0, 0);
+      const tr = restTravel(id);
+      const s0 = ax.table.at(side, tr, tr);
       const mr = -(s0.dL + s0.dLX);
       const freeLength = p.autoPreload && Number.isFinite(s0.L) && mr > 1e-6 ? s0.L + Math.max(0, loads[id] - d.unsprungMass * G) / mr / d.springRate : d.freeLength;
       corners.push({
@@ -329,7 +352,7 @@ export function assembleVehicle(p: VehicleProblem, geometries: Partial<Record<Co
       try { table = new CornerTable(built.get(root)!, 0, range, n, dl ? { body: dlOn, point: dl } : undefined); } catch { return null; }
       tables.set(key, table);
     }
-    const freeLength = p.autoPreload && d.geometry.kind !== 'rigid' ? fitFreeLength(built.get(root)!, d.springRate, Math.max(0, loads[id] - d.unsprungMass * G)) : d.freeLength;
+    const freeLength = p.autoPreload && d.geometry.kind !== 'rigid' ? fitFreeLength(built.get(root)!, d.springRate, Math.max(0, loads[id] - d.unsprungMass * G), restTravel(id)) : d.freeLength;
     corners.push({
       id, table, unsprungMass: d.unsprungMass, ...(d.geometry.kind === 'rigid' ? { rigid: true } : {}), tire: { profile: d.profile, model: d.model, ...(p.tireGripRear && !isFront(id) ? { grip: p.tireGripRear } : {}) },
       brake: p.settings[id].brake, drive: p.settings[id].drive, abs: p.settings[id].abs ?? true,
@@ -337,17 +360,21 @@ export function assembleVehicle(p: VehicleProblem, geometries: Partial<Record<Co
       ...(d.damping ? { damper: d.damping } : {}),
     });
   }
-  const groundY = designGroundY(CORNER_IDS.map((id) => {
-    const d = p.designs[p.roots[id]]!;
-    const ax = axles[isFront(id) ? 'front' : 'rear'];
-    if (ax) {
-      const w = isLeft(id) ? ax.design.left : ax.design.right;
-      return { contactY: w.contact.y, profile: d.profile, model: d.model, staticLoad: loads[id], tilt: w.spinAxis.y };
-    }
-    const ds = designState.get(p.roots[id])!;
-    return { contactY: ds.points.contact.y, profile: d.profile, model: d.model, staticLoad: loads[id], tilt: ds.spinAxis.y };
-  }));
   return { corners, groundY, cg: vec3(p.cg.x, groundY + p.cg.height, p.cg.z), chars, built, designState };
+}
+
+/**
+ * The suspension's travel at rest (mm, + bump) for a set ride height (the chassis reference above the ground at
+ * that axle): the design ride height is −groundY, so the car sits (design − target) into its travel; kept
+ * 2 mm inside the droop / bump limits (`clamped` says so). No target: 0 (the design position).
+ */
+export function staticTravelFor(groundY: number, target: number | undefined, droop: number, bump: number): { travel: number; clamped: boolean; design: number } {
+  const design = -groundY;
+  if (target === undefined || !Number.isFinite(target)) return { travel: 0, clamped: false, design };
+  const want = design - target;
+  const lo = -Math.abs(droop) + 2, hi = Math.abs(bump) - 2;
+  const travel = Math.min(hi, Math.max(lo, want));
+  return { travel, clamped: travel !== want, design };
 }
 
 export interface CaseSpec {
@@ -575,6 +602,13 @@ const BAD = 1e3;
 
 function vehicleResiduals(goal: VehicleGoal, p: VehicleProblem, e: VehicleEval, ref: number | null | undefined): number[] {
   const meta = VEHICLE_GOAL_META[goal.kind];
+  if (goal.kind === 'testReserve' || goal.kind === 'testTime') {
+    // Lower grip use everywhere; squares make the worst states count most. (Test time: at the planned speeds,
+    // less grip use lets the same push plan them faster — the time itself is scored on the test runs.)
+    // Before the generic "maximize" goals: as one ratio to the start (ref / value) a 1 % gain weighed less
+    // than the keep-close term for a few mm, so rounds stalled after one tiny step.
+    return e.cases.map((c) => (Math.sqrt(c.weight) * (c.result.grip?.maxUtilization ?? 1)) / 0.05);
+  }
   if (meta.maximize) {
     const v = vehicleGoalValue(goal.kind, p, e);
     return [v === null || !(v > 0) || !ref ? BAD : (ref / v) / Math.sqrt(meta.tolerance)];
@@ -591,11 +625,6 @@ function vehicleResiduals(goal: VehicleGoal, p: VehicleProblem, e: VehicleEval, 
       const limit = goal.target / 100;
       return CORNER_IDS.map((id) => (Math.sqrt(c.weight) * Math.max(0, (c.result.grip?.corners[id].utilization ?? 0) - limit)) / (meta.tolerance / 100));
     });
-  }
-  if (goal.kind === 'testReserve' || goal.kind === 'testTime') {
-    // Lower grip use everywhere; squares make the worst states count most. (Test time: at the planned speeds,
-    // less grip use lets the same push plan them faster — the time itself is scored on the test runs.)
-    return e.cases.map((c) => (Math.sqrt(c.weight) * (c.result.grip?.maxUtilization ?? 1)) / 0.05);
   }
   if (meta.limit && (goal.kind === 'steeringEffort' || goal.kind === 'parkingEffort' || goal.kind === 'scrubLimit')) {
     // Every steered design under the limit; only the excess counts.

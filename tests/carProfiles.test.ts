@@ -61,6 +61,18 @@ describe('car profiles', () => {
     });
   }
 
+  it('a profile locks its track and wheelbase ("car profile"), not its ride height; ten profiles', async () => {
+    const { wizardKeys, lockKeys } = await import('../src/app/locks');
+    expect(CAR_PROFILES.map((p) => p.id)).toEqual(['road', 'fsae', 'kart', 'trophy', 'supercar', 'mower', 'ev', 'pickup', 'utv', 'formula']);
+    const d = carProfileDesign('supercar');
+    for (const k of wizardKeys.size(['FL', 'RL'])) { expect(d.locks[k]).toBe(true); expect(d.wizardLocks[k]).toBe('profile'); }
+    expect(d.locks[lockKeys.point('FL', 'wheelCenter', 1)]).toBeUndefined(); // ride height stays free
+    expect(d.powertrain.kind).toBe('gas');
+    expect(d.aero.on).toBe(true);
+    expect(carProfileDesign('ev').powertrain.kind).toBe('electric');
+    expect(carProfileDesign('pickup').tow.tongueLimit.value).toBe(450);
+  });
+
   it('round-trips through a project file', () => {
     const d = carProfileDesign('trophy');
     const r = importProject(JSON.parse(JSON.stringify(serializeProject(d, 'Truck'))));

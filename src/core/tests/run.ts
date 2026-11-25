@@ -18,6 +18,7 @@ import { pedalTravel } from '../vehicle/brakes';
 import { shimmyKicks } from '../optimize/shimmyOf';
 import { aeroForces } from '../vehicle/aero';
 import { wheelDrive } from '../vehicle/powertrain';
+import { powerUse, type PowerUse } from './powerUse';
 
 export interface StateResult {
   state: RoadState;
@@ -61,6 +62,8 @@ export interface SegmentResult {
   time?: number;
   /** Brake fade modeled: rotor temperatures at the start and end of the segment, °C. */
   brakeTemp?: { start: AxleTemps; end: AxleTemps };
+  /** Planned speeds: what it asks of the powertrain (F7). */
+  power?: PowerUse;
 }
 
 export interface TestRunOptions {
@@ -102,6 +105,8 @@ export interface TestRun {
   /** Speeds as maximums: the planned time over the whole test (s) and its distance (m). */
   time?: number;
   distance?: number;
+  /** Planned speeds: what the test asks of the powertrain over the whole test (F7; each segment's is on it). */
+  power?: PowerUse;
 }
 
 /** Segment physics plus the checks that decide its pass / fail. */
@@ -386,8 +391,9 @@ export function runTest(
     if (!rs) { rs = segmentStates(sg, i, 1, dimsOf(p, asm)).map((st) => evalState(p, asm, st, sg.checks ?? PROFILES.default.checks, undefined, sg)); steadyCache.set(key, rs); }
     return rs;
   };
+  let planCar: PlanCar | null = null;
   if (opts.plan) {
-    const car = planCarOf(p, asm, gripTarget, segments.filter((sg) => sg.path !== 'straight' && !(sg.latG !== null && sg.latG !== undefined && Number.isFinite(sg.latG))).map((sg) => sg.radius));
+    const car = planCar = planCarOf(p, asm, gripTarget, segments.filter((sg) => sg.path !== 'straight' && !(sg.latG !== null && sg.latG !== undefined && Number.isFinite(sg.latG))).map((sg) => sg.radius));
     if (car) {
       const base = segments;
       tries = base.map(() => ({ shape: -1, target: gripTarget }));
@@ -610,8 +616,16 @@ export function runTest(
       }
     });
   }
+  // What it asks of the powertrain (and what the tires alone would want).
+  let power: PowerUse | undefined;
+  if (time !== undefined && planCar) {
+    const use = powerUse(segments.map((sg) => sg.plan!), segments, planCar, segs.map((sr) => sr.gripTarget ?? gripTarget), drivenRadius(p, asm), p.powertrain);
+    use.segments.forEach((u, i) => { segs[i]!.power = u; });
+    power = use.total;
+  }
   const severity = worstSeverity(segs.flatMap((s) => s.findings));
   return {
+    ...(power ? { power } : {}),
     severity, passed: severity !== 'fail', states, segments: segs, ...(ride ? { ride } : {}), ...(brakeUse ? { brakeUse } : {}), ...(shimmy ? { shimmy } : {}),
     ...(time !== undefined ? { time, distance: segments.reduce((a, sg) => a + sg.distance, 0) } : {}),
   };

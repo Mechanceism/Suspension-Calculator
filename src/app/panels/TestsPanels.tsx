@@ -510,6 +510,7 @@ function TestList({ tests, activeId }: { tests: TestDesign[]; activeId: string |
 export function TestsSidebar() {
   const tests = useApp((s) => s.tests);
   const disp = useDisplay();
+  const ptKind = useApp((s) => s.powertrain.kind);
   const test = useActiveTest();
   const set = useApp((s) => s.set);
   const run = useRun();
@@ -588,7 +589,13 @@ export function TestsSidebar() {
                   <button className={`chip${!plannedSpeeds(test) ? ' on' : ''}`} onClick={() => updateTest(test.id, (t) => ({ ...t, speedMode: 'hold' }))}>Hold exactly</button>
                 </td>
               </tr>
-              {test.speedMode === 'grip' && (
+              {test.speedMode === 'grip' && ptKind !== 'none' && (
+                <tr title="With a powertrain, Grip only has no top-speed cap">
+                  <td>Top speed</td>
+                  <td className="small-text muted">No cap: the powertrain ({ptKind}), its most rpm, aero drag and rolling resistance limit the straights (Vehicle → Inputs → Powertrain).</td>
+                </tr>
+              )}
+              {test.speedMode === 'grip' && ptKind === 'none' && (
                 <tr title="Grip only: the most the car goes on the straights, until a powertrain limits it (blank: the test's highest set speed)">
                   <td>Top speed</td>
                   <td>
@@ -740,6 +747,7 @@ export function TestResults() {
           Time <b>{fmt(r.time, 1)} s</b> · average <b>{disp.format((r.distance ?? 0) / r.time, 'm/s', 0)}</b> over {disp.format(r.distance ?? 0, 'm', 0)} · driver pushing to {fmt((test.gripTarget ?? 0.95) * 100, 0)} % of the grip
         </p>
       )}
+      {r.power && <PowerSummary r={r} test={test} />}
       <table className="corner-table test-table">
         <thead><tr><th>#</th><th>Segment</th>{r.time !== undefined && <th title="Planned speed through the segment (lowest – highest) and its time">Speed</th>}<th title="Worst tire grip use">Grip</th>{r.segments.some((s) => s.brakeTemp) && <th title="Brake fade: rotor temperature at the end of the segment, front / rear">Brakes</th>}<th /></tr></thead>
         <tbody>
@@ -1157,5 +1165,52 @@ function RateTuning({ test, busy }: { test: TestDesign; busy: boolean }) {
       )}
       {rideOff && <p className="hint">Turn on Ride over time for this test to tune on it.</p>}
     </details>
+  );
+}
+
+/** What the planned test asks of the powertrain (round 4, F7): a summary line and, per segment, a table. */
+function PowerSummary({ r, test }: { r: TestRun; test: TestDesign }) {
+  const disp = useDisplay();
+  const have = useApp((s) => s.powertrain);
+  const P = r.power!;
+  const flat = P.powerLimited + P.gripLimited;
+  const pct = (x: number) => `${fmt(P.time > 0 ? (100 * x) / P.time : 0, 0)} %`;
+  const havePower = have.kind !== 'none' ? have.peakPower.value : null;
+  return (
+    <>
+      <p className="small-text" title="Where the car accelerates flat out, what limits it: the powertrain or the tires (share of the whole test's time). Peaks: all driven wheels together.">
+        {havePower !== null
+          ? <>Flat out <b>{pct(flat)}</b> of the time: the powertrain limits it {pct(P.powerLimited)}, the tires {pct(P.gripLimited)}. </>
+          : <>Flat out <b>{pct(flat)}</b> of the time, the tires the limit (no powertrain set: Vehicle → Inputs → Powertrain). </>}
+        Peak at the wheels {disp.format(P.wheelPower, 'kW', 1)}, {disp.format(P.wheelTorque, 'N·m', 0)}
+        {P.rpm !== undefined ? <> · engine / motor up to {fmt(P.rpm, 0)} rpm, {disp.format(P.motorTorque ?? 0, 'N·m', 0)}</> : null}.
+        {' '}<span title="The power at the motor for the tires to be the limit everywhere the car accelerated flat out, at the speeds it drove (more would let it go faster on the straights, so this is a least)">
+          For the tires to be the limit everywhere: <b>{disp.format(P.powerNeeded, 'kW', 0)}</b>{havePower !== null ? <> (it has {disp.format(havePower, 'kW', 0)})</> : null}.
+        </span>
+      </p>
+      <Section title="Powertrain use by segment" open={false}>
+        <table className="corner-table test-table small-text">
+          <thead><tr><th>#</th><th>Segment</th><th title="Most rpm">rpm</th><th title="Most power at the wheels">Wheel power</th><th title="Most wheel torque (driven wheels together)">Wheel torque</th><th title="Share of the segment's time accelerating flat out with the powertrain the limit / the tires the limit">Power / tires</th><th title="Power at the motor for the tires to be the limit here">Needed</th></tr></thead>
+          <tbody>
+            {r.segments.map((s) => {
+              const u = s.power;
+              if (!u) return null;
+              const sp = (x: number) => (u.time > 0 ? `${fmt((100 * x) / u.time, 0)} %` : '—');
+              return (
+                <tr key={s.index}>
+                  <td>{s.index + 1}</td>
+                  <td>{test.segments[s.index]?.name ?? ''}</td>
+                  <td className="num">{u.rpm !== undefined ? fmt(u.rpm, 0) : '—'}</td>
+                  <td className="num">{u.wheelPower > 0 ? disp.format(u.wheelPower, 'kW', 1) : '—'}</td>
+                  <td className="num">{u.wheelTorque > 0 ? disp.format(u.wheelTorque, 'N·m', 0) : '—'}</td>
+                  <td className="num">{u.powerLimited + u.gripLimited > 0 ? `${sp(u.powerLimited)} / ${sp(u.gripLimited)}` : '—'}</td>
+                  <td className="num">{u.powerNeeded > 0 ? disp.format(u.powerNeeded, 'kW', 0) : '—'}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </Section>
+    </>
   );
 }

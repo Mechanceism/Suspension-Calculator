@@ -130,8 +130,13 @@ export function useModel(): Model {
   const geom = useDesignApp((s) => s.geom);
   const sliderTravel = useDesignApp((s) => s.travel);
   // The corner model is shown only in the Corner workspace: elsewhere (the Vehicle view's steering, test
-  // playback moving the rack every frame) it doesn't follow the rack, so it isn't re-solved for nothing.
-  const rawRack = useDesignApp((s) => (s.workspace === 'corner' ? s.rack : 0));
+  // playback moving the rack every frame) it doesn't follow the rack, so it isn't re-solved for nothing. It
+  // keeps the rack it last had there (not straight ahead): the Corner view is still drawn while it fades out,
+  // and its wheel snapped straight on leaving with the steering turned (user, round 4).
+  const cornerRack = useDesignApp((s) => (s.workspace === 'corner' ? s.rack : null));
+  const heldRack = useRef(0);
+  if (cornerRack !== null) heldRack.current = cornerRack;
+  const rawRack = cornerRack ?? heldRack.current;
   // Corners that don't steer keep the rack (toe link) fixed.
   const steered = useDesignApp((s) => s.settings[s.activeCorner].steered);
   const rack = steered ? rawRack : 0;

@@ -442,6 +442,7 @@ export async function optimizeTests(scope: Scope, active: TestDesign | null, mod
       lastAtLimit = result.variables.filter((v) => v.atLimit).map((v) => `${v.root} ${v.point} ${'XYZ'[v.axis]}`);
       const moved = Math.max(0, ...result.variables.map((v) => Math.abs(v.after - v.before)));
       let gain = 0;
+      let undone = false;
       if (moved >= 0.05) {
         const updates = result.variables.map((v) => ({ root: v.root!, key: pointKeyOf(v.point), axis: v.axis, value: v.after }));
         useApp.getState().applyVehicleOptimized(updates);
@@ -458,6 +459,7 @@ export async function optimizeTests(scope: Scope, active: TestDesign | null, mod
           if (!back) { useLoop.setState({ outcome: 'stopped' }); return; }
           set = back;
           gain = 0;
+          undone = true;
         } else {
           log(`Round ${round}: ${describe(next)} · score ${set.score.toFixed(2)} → ${next.score.toFixed(2)} (${(gain * 100).toFixed(1)}% better) · largest move ${moved.toFixed(1)} mm`);
           set = next;
@@ -466,7 +468,8 @@ export async function optimizeTests(scope: Scope, active: TestDesign | null, mod
       } else {
         log(`Round ${round}: nothing moved${k > 1 ? ` at ×${k}` : ' within your ranges'}.`);
       }
-      slow = moved < 0.05 ? 2 : gain < 0.01 ? slow + 1 : 0;
+      // Nothing moved, or undone (the same design again would repeat the same round exactly): wider ranges next.
+      slow = moved < 0.05 || undone ? 2 : gain < 0.01 ? slow + 1 : 0;
       if (mode === 'pass' && set.passed) continue; // reported at the top of the next round
       if (slow >= 2) {
         if (wi + 1 < steps.length) {

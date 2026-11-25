@@ -575,6 +575,13 @@ const BAD = 1e3;
 
 function vehicleResiduals(goal: VehicleGoal, p: VehicleProblem, e: VehicleEval, ref: number | null | undefined): number[] {
   const meta = VEHICLE_GOAL_META[goal.kind];
+  if (goal.kind === 'testReserve' || goal.kind === 'testTime') {
+    // Lower grip use everywhere; squares make the worst states count most. (Test time: at the planned speeds,
+    // less grip use lets the same push plan them faster — the time itself is scored on the test runs.)
+    // Before the generic "maximize" goals: as one ratio to the start (ref / value) a 1 % gain weighed less
+    // than the keep-close term for a few mm, so rounds stalled after one tiny step.
+    return e.cases.map((c) => (Math.sqrt(c.weight) * (c.result.grip?.maxUtilization ?? 1)) / 0.05);
+  }
   if (meta.maximize) {
     const v = vehicleGoalValue(goal.kind, p, e);
     return [v === null || !(v > 0) || !ref ? BAD : (ref / v) / Math.sqrt(meta.tolerance)];
@@ -591,11 +598,6 @@ function vehicleResiduals(goal: VehicleGoal, p: VehicleProblem, e: VehicleEval, 
       const limit = goal.target / 100;
       return CORNER_IDS.map((id) => (Math.sqrt(c.weight) * Math.max(0, (c.result.grip?.corners[id].utilization ?? 0) - limit)) / (meta.tolerance / 100));
     });
-  }
-  if (goal.kind === 'testReserve' || goal.kind === 'testTime') {
-    // Lower grip use everywhere; squares make the worst states count most. (Test time: at the planned speeds,
-    // less grip use lets the same push plan them faster — the time itself is scored on the test runs.)
-    return e.cases.map((c) => (Math.sqrt(c.weight) * (c.result.grip?.maxUtilization ?? 1)) / 0.05);
   }
   if (meta.limit && (goal.kind === 'steeringEffort' || goal.kind === 'parkingEffort' || goal.kind === 'scrubLimit')) {
     // Every steered design under the limit; only the excess counts.

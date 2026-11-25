@@ -756,7 +756,10 @@ export function VehicleViewport({ model, memoryKey = 'vehicle', active = true, g
         <FadeRoot viewKey={memoryKey} />
         <DevProjectBridge />
         {model && <VehicleScene model={model} arrows={arrows} />}
-        {ghost?.result && <GhostScene model={ghost} />}
+        {/* Compare: the snapshot's car stands on the same ground as this one (each car's frame has its ground at its own
+            groundY: a car whose tires sit lower or higher in its frame — e.g. moved wheel centers — would otherwise
+            sink into the ground or float; round 4). */}
+        {ghost?.result && <group position={[0, (model?.groundY ?? ghost.groundY) - ghost.groundY, 0]}><GhostScene model={ghost} /></group>}
         <LabelSync labels={labels} layer={layer} />
       </Canvas>
       <div className="label-layer" ref={layer}>

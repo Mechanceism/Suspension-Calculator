@@ -47,6 +47,10 @@ export interface PlanCar {
   brakeForce?: { front: number; rear: number };
   mass: number;
   rollingResistance?: number;
+  /** Powertrain (F5): the most force it pushes the car with at speed v (m/s), N. None: only the tires limit the drive. */
+  drive?: (v: number) => number;
+  /** Aero drag ÷ speed², N/(m/s)² (½ ρ CdA; 0 / none = no drag). */
+  dragArea?: number;
   /**
    * Side grip ÷ load per axle measured in turns of these radii (m, ascending) at the planned push — e.g. a
    * locked axle scrubs more in a tight turn. Between them by curvature, beyond them the nearest; none: the
@@ -167,7 +171,10 @@ const kappaOf = (sg: SegmentSpec) => (sg.path === 'straight' || (sg.latG !== nul
  * it); the result has each segment's planned speeds and the whole test's time.
  */
 export function planSpeeds(segments: SegmentSpec[], car: PlanCar, target: number[], shape: PlanShape[] = [], opts: PlanOptions = {}): { plans: SegmentPlan[]; time: number } {
-  const free = opts.gripOnly;
+  // Grip only: with a powertrain nothing caps the straights (it, the drag and the rolling resistance limit
+  // them); without one, the top speed stands in for it.
+  const free = opts.gripOnly ? { topSpeed: car.drive ? Infinity : opts.gripOnly.topSpeed } : undefined;
+  const dragA = Math.max(0, car.dragArea ?? 0), mass = Math.max(car.mass, 1e-6);
   const last = segments.length - 1;
   // The grid: each segment from 0 to its distance in ≈ 1 m steps (shared boundary points).
   /** capT: the grip target of the segment whose limit `cap` is (at a boundary, the stricter side's). */
@@ -206,16 +213,21 @@ export function planSpeeds(segments: SegmentSpec[], car: PlanCar, target: number
   const accel = (p: P, v: number) => {
     const sh = shape[p.seg] ?? 'plan';
     const resist = Math.sin(p.grade) + crr;
-    if (p.coast || ((sh === 'brakeIn' || sh === 'coastIn') && firstHalf(p))) return -G * resist; // no throttle
+    const drag = (dragA * v * v) / mass;
+    if (p.coast || ((sh === 'brakeIn' || sh === 'coastIn') && firstHalf(p))) return -G * resist - drag; // no throttle
     const ay = (v * v * Math.abs(p.kappa)) / G;
-    return G * (combinedLimit(car, tOf(p), ay, 'drive', p.kappa) - resist);
+    // The tires' drive at the push, within what the powertrain gives at this speed.
+    let push = G * combinedLimit(car, tOf(p), ay, 'drive', p.kappa);
+    if (car.drive) push = Math.min(push, Math.max(0, car.drive(v)) / mass);
+    return push - G * resist - drag;
   };
   const decel = (p: P, v: number, t = tOf(p)) => {
     const sh = shape[p.seg] ?? 'plan';
     const resist = Math.sin(p.grade) + crr;
-    if (p.coast || (sh === 'coastIn' && firstHalf(p))) return Math.max(0, G * resist); // no brakes
+    const drag = (dragA * v * v) / mass;
+    if (p.coast || (sh === 'coastIn' && firstHalf(p))) return Math.max(0, G * resist + drag); // no brakes
     const ay = (v * v * Math.abs(p.kappa)) / G;
-    return Math.max(0, G * (combinedLimit(car, t, ay, 'brake', p.kappa) + resist));
+    return Math.max(0, G * (combinedLimit(car, t, ay, 'brake', p.kappa) + resist) + drag);
   };
   const pass = (cap: number[]) => {
     const caps0 = cap;

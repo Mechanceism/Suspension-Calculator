@@ -11,6 +11,7 @@
 import { vec3, Y_AXIS, type Vec3 } from '../math/vec3';
 import type { SteeringSpec } from '../tests/steer';
 import type { AeroModel } from '../vehicle/aero';
+import type { Powertrain } from '../vehicle/powertrain';
 import { DoubleWishbone, isBeam, solidAxleOf, twistBeamOf, type DoubleWishboneGeometry, type MountBody } from '../suspension/doubleWishbone';
 import type { TrailerSpec } from '../vehicle/towing';
 import { characteristics, deg, type Characteristics } from '../suspension/characteristics';
@@ -127,6 +128,8 @@ export interface VehicleProblem {
   ride?: RideSpec;
   /** Aerodynamics (applied at each test state's speed). Omit = none. */
   aero?: { model: AeroModel; rho: number };
+  /** Motor / engine through one gear (round 4, F5): limits the drive at each speed. Omit = none (only the tires limit it). */
+  powertrain?: Powertrain;
   mass: number;
   /** CG: x (+ left), height above ground, z (from the front axle, + forward). */
   cg: { x: number; height: number; z: number };

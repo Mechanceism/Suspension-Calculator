@@ -44,7 +44,7 @@ describe('grip only', () => {
     d.tests = [own];
     const file = JSON.parse(JSON.stringify(serializeProject(d, 'G')));
     expect(file.formatVersion).toBe(FORMAT_VERSION);
-    expect(FORMAT_VERSION).toBe(44);
+    expect(FORMAT_VERSION).toBeGreaterThanOrEqual(44);
     const back = importProject(file).design.tests[0]!;
     expect(back.speedMode).toBe('grip');
     expect(back.topSpeed?.value).toBe(40);

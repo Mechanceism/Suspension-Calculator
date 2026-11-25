@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import { Num, UnitLabel } from './UnitText';
 import { openWizard, EstimatedNote } from './SetupWizard';
 import { AeroPanel } from './AeroPanel';
+import { PowertrainPanel, PowertrainBadge } from './PowertrainPanel';
 import { brakesOf, buildVehicleProblem } from '../optimizer';
 import { shimmyReport, shimmyKicks } from '../../core/optimize/shimmyOf';
 import type { ShimmyScan } from '../../core/vehicle/shimmy';
@@ -183,6 +184,9 @@ export function VehicleInputs({ model }: { model: VehicleModel | null }) {
       </Section>
       <Section title="Aerodynamics" open={false} extra={<AeroBadge />}>
         <AeroPanel />
+      </Section>
+      <Section title="Powertrain" open={false} extra={<PowertrainBadge />}>
+        <PowertrainPanel />
       </Section>
       <Section title="Towing" open={false} extra={<span className="muted small-text">{useApp.getState().tow.on ? 'trailer' : 'off'}</span>}>
         <TowPanel />

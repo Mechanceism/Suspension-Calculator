@@ -16,6 +16,8 @@ import { classifyState, fadeFindings, pedalFindings, worstSeverity, PROFILES, ty
 import { brakeStep, padFactors, type AxleTemps } from '../vehicle/brakeThermal';
 import { pedalTravel } from '../vehicle/brakes';
 import { shimmyKicks } from '../optimize/shimmyOf';
+import { aeroForces } from '../vehicle/aero';
+import { wheelDrive } from '../vehicle/powertrain';
 
 export interface StateResult {
   state: RoadState;
@@ -255,6 +257,7 @@ function planCarOf(p: VehicleProblem, asm: AssembledVehicle, target = 0.95, radi
   const wide = lateralAt[lateralAt.length - 1];
   const muF = wide ? wide.front : fr.y, muR = wide ? wide.rear : rr.y;
   const set = p.settings;
+  const drive = powertrainForce(p, asm);
   return {
     muFront: muF, muRear: muR, muLongFront: fr.x, muLongRear: rr.x, ...(lateralAt.length > 1 ? { lateralAt } : {}),
     frontShare: fr.load / (fr.load + rr.load), cgHeight: p.cg.height, wheelbase: p.wheelbase, track: 2 * dimsOf(p, asm).halfTrack,
@@ -263,7 +266,24 @@ function planCarOf(p: VehicleProblem, asm: AssembledVehicle, target = 0.95, radi
     drivenFront: set.FL.drive !== 'none' || set.FR.drive !== 'none', drivenRear: set.RL.drive !== 'none' || set.RR.drive !== 'none',
     ...(p.brakeLimit ? { brakeForce: { front: p.brakeLimit.front, rear: p.brakeLimit.rear } } : {}),
     mass: p.mass, rollingResistance: p.rollingResistance ?? 0,
+    ...(drive ? { drive } : {}),
+    ...(p.aero ? { dragArea: aeroForces({ model: p.aero.model, rho: p.aero.rho, speed: 10 }, { front: -asm.groundY, rear: -asm.groundY }, { front: -asm.groundY, rear: -asm.groundY }).drag / 100 } : {}),
   };
+}
+
+/** The driven wheels' loaded radius, m (wheel center above the contact point, averaged). */
+export function drivenRadius(p: VehicleProblem, asm: AssembledVehicle): number {
+  const ids = CORNER_IDS.filter((id) => p.settings[id].drive !== 'none');
+  const use = ids.length ? ids : CORNER_IDS;
+  return use.reduce((a, id) => a + (asm.chars[id].wheelCenter.y - asm.chars[id].contactPoint.y), 0) / use.length / 1000;
+}
+
+/** The powertrain's push at speed v (m/s), N — null without a powertrain or powered wheels. */
+export function powertrainForce(p: VehicleProblem, asm: AssembledVehicle): ((v: number) => number) | null {
+  const pt = p.powertrain;
+  if (!pt || !CORNER_IDS.some((id) => p.settings[id].drive !== 'none')) return null;
+  const r = drivenRadius(p, asm);
+  return (v: number) => wheelDrive(pt, v, r).force;
 }
 
 /**

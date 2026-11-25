@@ -85,7 +85,8 @@ const base: CheckProfile = {
   trailerSway: { severity: 'fail', threshold: 5 },
   hitchLoad: { severity: 'fail' },
   lightTongue: { severity: 'warn', threshold: 10 },
-  spin: { severity: 'fail', threshold: 12 },
+  // A slide is a Warning (round 4, F10): drifting can be fast; a spin-out also runs off the line, which fails.
+  spin: { severity: 'warn', threshold: 12 },
   gripTarget: { severity: 'warn' },
 };
 

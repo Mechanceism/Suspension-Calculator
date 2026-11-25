@@ -84,7 +84,8 @@ describe('handling over time (Phase C)', () => {
   it('a rear with much less grip than the front slides out (oversteer / spin)', () => {
     const slick = { ...DEFAULT_MF, pDy1: 0.55, pDx1: 0.6 };
     const r = rideRun(base({ tireGripRear: slick }), { FL: geom }, [seg('straight', 0, 20, 14), seg('left', 30, 60, 14)], { handling: true });
-    const checks = r.findings.flat().filter((f) => f.severity === 'fail').map((f) => f.check);
+    // Reported (since round 4, F10, a slide is noted; it fails only by what it costs or running off the line).
+    const checks = r.findings.flat().map((f) => f.check);
     expect(checks.some((c) => c === 'spin' || c === 'oversteer')).toBe(true);
     expect(r.metrics.maxSideslip!).toBeGreaterThan(3);
   });

@@ -74,6 +74,8 @@ export interface CarProfileSpec {
   rack: [number, number];
   /** Anti-roll bars at the wheel, N/mm (0 = none). */
   bars: [number, number];
+  /** Powertrain (F5): gas, one gear — peak torque (N·m) @ rpm, peak power (kW) @ rpm, redline, idle, clutch (rpm), overall ratio, efficiency (%). */
+  engine: { torque: number; torqueRpm: number; power: number; powerRpm: number; redline: number; idle: number; clutch: number; ratio: number; efficiency: number };
 }
 
 const FSAE_TIRE = { diameter: 457, width: 190, rim: 254, text: '18x7.5-10', pressure: 83 };
@@ -86,6 +88,8 @@ export const CAR_PROFILES: CarProfileSpec[] = [
     rear: { layout: SAMPLE_MULTILINK, halfTrack: 750, tire: { diameter: 632, width: 205, rim: 406.4, text: '205/55R16', pressure: 220 }, unsprung: 35, rideHz: 1.5, zeta: 0.3, camber: -1.2 },
     mass: 1300, cgHeight: 540, frontShare: 0.61, wheelbase: 2600, brakeBias: 0.7, driveSplit: 1, drive: 'front', brakes: 'all', abs: true, diff: 'open',
     inertia: [450, 1800, 2000], droop: 80, bump: 80, rack: [50, 75], bars: [30, 12],
+    // A 1.6 l four; one gear at about second's overall ratio (≈ 100 km/h at the redline).
+    engine: { torque: 160, torqueRpm: 4000, power: 90, powerRpm: 6000, redline: 6500, idle: 800, clutch: 2000, ratio: 7.5, efficiency: 90 },
   },
   {
     id: 'fsae', label: 'FSAE car',
@@ -94,6 +98,8 @@ export const CAR_PROFILES: CarProfileSpec[] = [
     rear: { layout: SAMPLE_LAYOUTS.find((l) => l.id === 'C')!.geometry, halfTrack: 590, tire: FSAE_TIRE, unsprung: 13, rideHz: 3.2, zeta: 0.6, camber: -1 },
     mass: 300, cgHeight: 280, frontShare: 0.47, wheelbase: 1550, brakeBias: 0.62, driveSplit: 0, drive: 'rear', brakes: 'all', abs: false, diff: 'lsd',
     inertia: [35, 100, 140], droop: 30, bump: 30, rack: [75, 30], bars: [15, 10],
+    // A 600 cc motorcycle engine in one gear (≈ second: ≈ 100 km/h at the redline).
+    engine: { torque: 55, torqueRpm: 9500, power: 60, powerRpm: 11500, redline: 13000, idle: 1500, clutch: 5000, ratio: 11, efficiency: 88 },
   },
   {
     id: 'kart', label: 'Kart',
@@ -102,6 +108,8 @@ export const CAR_PROFILES: CarProfileSpec[] = [
     rear: { layout: SAMPLE_BEAM4, halfTrack: 600, tire: { diameter: 279, width: 180, rim: 127, text: '11x7.10-5', pressure: 75 }, unsprung: 6, rideHz: 9, zeta: 0.2, camber: 0 },
     mass: 165, cgHeight: 260, frontShare: 0.42, wheelbase: 1040, brakeBias: 0, driveSplit: 0, drive: 'rear', brakes: 'rear', abs: false, diff: 'locked',
     inertia: [8, 14, 18], droop: 10, bump: 10, rack: [60, 25], bars: [0, 0],
+    // A 206 cc four-stroke kart engine (≈ 9 hp), a centrifugal clutch, 18 : 60 chain drive.
+    engine: { torque: 12.5, torqueRpm: 3800, power: 6.7, powerRpm: 5600, redline: 6100, idle: 1800, clutch: 2400, ratio: 60 / 18, efficiency: 92 },
   },
   {
     id: 'trophy', label: 'Trophy truck (long travel)',
@@ -110,6 +118,8 @@ export const CAR_PROFILES: CarProfileSpec[] = [
     rear: { layout: SAMPLE_BEAM4, halfTrack: 1080, tire: { diameter: 1016, width: 343, rim: 431.8, text: '40x13.50R17', pressure: 140 }, unsprung: 200, rideHz: 1.1, zeta: 0.35, camber: 0 },
     mass: 2700, cgHeight: 800, frontShare: 0.5, wheelbase: 3050, brakeBias: 0.72, driveSplit: 0, drive: 'rear', brakes: 'all', abs: false, diff: 'locked',
     inertia: [1500, 5500, 6000], droop: 200, bump: 250, rack: [60, 70], bars: [25, 0],
+    // A big V8 (≈ 870 hp) in one gear (≈ third: ≈ 215 km/h at the redline).
+    engine: { torque: 1000, torqueRpm: 4800, power: 650, powerRpm: 6500, redline: 7000, idle: 900, clutch: 2500, ratio: 6, efficiency: 88 },
   },
 ];
 
@@ -208,6 +218,12 @@ export function carProfileDesign(id: string): DesignState {
     droop: p.droop, bump: p.bump,
     corners: { FL: front, FR: front, RL: rear, RR: rear },
     links, settings, vehicle, tireGrip,
+    powertrain: {
+      ...d.powertrain, kind: 'gas',
+      peakTorque: field(p.engine.torque, 'torque'), torqueRpm: field(p.engine.torqueRpm, 'ratio'), peakPower: field(p.engine.power, 'power'), powerRpm: field(p.engine.powerRpm, 'ratio'),
+      maxRpm: field(p.engine.redline, 'ratio'), idleRpm: field(p.engine.idle, 'ratio'), clutchRpm: field(p.engine.clutch, 'ratio'),
+      ratio: field(round(p.engine.ratio, 0.01), 'ratio'), efficiency: field(p.engine.efficiency, 'percent'),
+    },
     shared: { front: { ...d.shared.front, ...bar(p.bars[0]) }, rear: { ...d.shared.rear, ...bar(p.bars[1]) } },
   };
 }

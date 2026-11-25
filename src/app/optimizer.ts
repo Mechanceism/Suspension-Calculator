@@ -18,6 +18,7 @@ import type { GripModel } from '../core/tire/grip';
 import type { MFCoeffs, TireGrip } from '../core/tire/magicFormula';
 import type { TirModel } from '../core/tire/tir';
 import { airDensity, type AeroModel } from '../core/vehicle/aero';
+import type { Powertrain } from '../core/vehicle/powertrain';
 import type { TireSample, TireFitResult } from '../core/tire/fit';
 import type { TireForceModel } from '../core/tire/model';
 import { CORNER_IDS, tirePressure, type AxleShared, type CornerId, type DamperSpec } from '../core/vehicle/vehicle';
@@ -132,6 +133,18 @@ export function trailerOf(s: Pick<AppState, 'tow'>): TrailerSpec | undefined {
     mass: t.trailerMass.value, tongueShare: t.tongueShare.value / 100, hitchHeight: t.hitchHeight.value, hitchBehindRear: t.hitchBehindRear.value,
     hitchToAxle: t.hitchToAxle.value, cgHeight: t.trailerCgHeight.value, brakeShare: t.trailerBrakes.value / 100, yawRadius: t.trailerYawRadius.value,
     ...(t.tongueLimit.value > 0 ? { tongueLimit: t.tongueLimit.value * 9.80665 } : {}),
+  };
+}
+
+/** The powertrain for the core (none: only the tires limit the drive). */
+export function powertrainOf(s: Pick<AppState, 'powertrain'>): Powertrain | undefined {
+  const a = s.powertrain;
+  if (!a || a.kind === 'none') return undefined;
+  const v = (k: keyof typeof a) => (a[k] as { value: number }).value;
+  return {
+    kind: a.kind, peakTorque: Math.max(0, v('peakTorque')), peakPower: Math.max(0, v('peakPower')), maxRpm: Math.max(1, v('maxRpm')),
+    ...(a.kind === 'gas' ? { torqueRpm: v('torqueRpm'), powerRpm: v('powerRpm'), idleRpm: v('idleRpm'), clutchRpm: v('clutchRpm') } : {}),
+    ratio: Math.max(1e-3, v('ratio')), efficiency: Math.min(1, Math.max(0, v('efficiency') / 100)),
   };
 }
 
@@ -364,7 +377,7 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string; pl
     },
     states: o.caseSource && (o.caseSource === 'all' || s.tests.some((x) => x.id === o.caseSource))
       ? statesForTests(s.tests, o.caseSource, { wheelbase: v.wheelbase.value, halfTrack: Math.abs(toGeometry(all[rootOf('FL', s.links)].geom).wheel.center.x) }, over.plans) : undefined,
-    goals, variables, holds, aero: aeroOf(s), grip: gripModelOf(s.grip), tireGrip: tireGripFor(s, 'front'), ...(s.tireFileRear ? { tireGripRear: tireGripFor(s, 'rear') } : {}), keepClose: Math.max(0, o.keepClose.value), starts: o.starts ?? 1,
+    goals, variables, holds, aero: aeroOf(s), ...(powertrainOf(s) ? { powertrain: powertrainOf(s) } : {}), grip: gripModelOf(s.grip), tireGrip: tireGripFor(s, 'front'), ...(s.tireFileRear ? { tireGripRear: tireGripFor(s, 'rear') } : {}), keepClose: Math.max(0, o.keepClose.value), starts: o.starts ?? 1,
   };
   const blockers: string[] = [];
   if (!goals.length) blockers.push('Turn on at least one goal.');

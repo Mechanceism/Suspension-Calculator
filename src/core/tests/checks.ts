@@ -10,7 +10,7 @@ export type Severity = 'pass' | 'warn' | 'fail';
 
 export type CheckId =
   | 'nearLimit' | 'understeer' | 'oversteer' | 'wheelspin' | 'absActive' | 'lockup' | 'speedNotReached'
-  | 'bumpStop' | 'bottoming' | 'wheelLift' | 'rollover' | 'noSolution' | 'beyondGrip' | 'steerLimit' | 'pathError' | 'spin' | 'brakeLimit' | 'brakeFade' | 'longPedal' | 'mcStroke' | 'kickback' | 'shimmy' | 'trailerSway' | 'hitchLoad' | 'lightTongue' | 'gripTarget';
+  | 'bumpStop' | 'bottoming' | 'wheelLift' | 'rollover' | 'noSolution' | 'beyondGrip' | 'steerLimit' | 'pathError' | 'spin' | 'offCourse' | 'brakeLimit' | 'brakeFade' | 'longPedal' | 'mcStroke' | 'kickback' | 'shimmy' | 'trailerSway' | 'hitchLoad' | 'lightTongue' | 'gripTarget';
 
 export interface CheckSetting {
   severity: Severity;
@@ -57,6 +57,7 @@ export const CHECK_META: Record<CheckId, CheckMeta> = {
   steerLimit: { label: 'Steering lock', hint: 'The turn is tighter than the steering allows: its road-wheel angle (atan(wheelbase ÷ radius), plus the front − rear tire slip angle at speed) needs more rack travel than the rack limit, or no wheel steers.' },
   gripTarget: { label: 'Driver push lowered', hint: 'Speeds as maximums: every way of taking the segment with the driver pushing to the test’s share of the tires’ grip (brake before, brake in, coast in, hold the speed, speed up in) failed over time, so the driver pushes less there (slower, a reserve for what the plan doesn’t see). The finding says to what; it also says when slowing down didn’t cure it.' },
   beyondGrip: { label: 'Beyond the tires', hint: 'The state asks for more total force than all four tires can give: no suspension can pass it. Lower the speed, enlarge the radius, or improve the tires.', fixed: true },
+  offCourse: { label: 'Off course / spun', hint: 'Driving over time with the driver steering: the car went more than twice its width off the line (and at least one width past the lane), or turned more than 90° from the path (across it or backwards). The run ends there: the test did not finish.', fixed: true },
 };
 export const CHECK_IDS = Object.keys(CHECK_META) as CheckId[];
 
@@ -96,6 +97,8 @@ const base: CheckProfile = {
   lightTongue: { severity: 'warn', threshold: 10 },
   // A slide is a Warning (round 4, F10): drifting can be fast; a spin-out also runs off the line, which fails.
   spin: { severity: 'warn', threshold: 12 },
+  // Off course / spun (round 4, F25): the run ends there, always a Fail.
+  offCourse: { severity: 'fail' },
   gripTarget: { severity: 'warn' },
 };
 

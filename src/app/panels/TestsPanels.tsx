@@ -743,7 +743,12 @@ export function TestResults() {
       <AllTests />
       <EstimatedNote />
       {stale && <p className="hint warn-text">The design changed since this run: run again.</p>}
-      {r.time !== undefined && r.time > 0 && (
+      {r.ended && (
+        <p className="small-text warn-text" title="Over time the car went more than twice its width off the line, or turned more than 90° from the path: the run ends there (the model and the driver mean nothing past it). Slower, or a car that holds the line better.">
+          <b>Did not finish</b>: {r.ended.text} in segment {r.ended.segment + 1} ({test.segments[r.ended.segment]?.name ?? ''}); the run ended at {fmt(r.ended.t, 1)} s. The segments after it weren't driven.
+        </p>
+      )}
+      {!r.ended && r.time !== undefined && r.time > 0 && (
         <p className="small-text" title="How long the car took down the track as driven (the driver working the pedals within the tires and the powertrain each moment), and its average speed (faster is better, within the pass rules); the plan's time beside it">
           Time <b>{fmt(r.time, 2)} s</b>{r.driven && r.plannedTime ? <span className="muted"> as driven (planned {fmt(r.plannedTime, 2)} s)</span> : null} · average <b>{disp.format((r.distance ?? 0) / r.time, 'm/s', 0)}</b> over {disp.format(r.distance ?? 0, 'm', 0)} · driver pushing to {fmt((test.gripTarget ?? 0.95) * 100, 0)} % of the grip
         </p>
@@ -761,13 +766,13 @@ export function TestResults() {
                 {r.time !== undefined && (
                   <td className="small-text nowrap" title={s.approach && s.approach !== 'plan' ? `Taken: ${SHAPE_LABEL[s.approach]}` : undefined}>
                     {s.plan ? <Local text={`${Math.round(Math.min(...s.plan.v) * 3.6)}–${Math.round(Math.max(...s.plan.v) * 3.6)} km/h`} /> : '—'}
-                    {s.time !== undefined ? ` · ${fmt(s.time, 1)} s` : ''}
+                    {s.notReached ? <span className="muted"> · not reached</span> : s.time !== undefined ? ` · ${fmt(s.time, 1)} s` : ''}
                     {s.capped && <span className="muted" title="Grip only: at its grip this segment failed every way; its own set speeds passed at the full push, so it was driven at them"> (set speeds)</span>}
                   </td>
                 )}
                 <td>{Number.isFinite(s.maxUtilization) ? `${fmt(s.maxUtilization * 100, 0)} %` : '—'}</td>
                 {s.brakeTemp && <td className="small-text">{disp.format(s.brakeTemp.end.front, '°C', 0)} / {disp.format(s.brakeTemp.end.rear, '°C', 0)}</td>}
-                <td>{SEV_ICON[s.severity]}</td>
+                <td>{s.notReached ? <span className="muted small-text nowrap" title="The car went off course or spun before it got here: not driven over time (only its steady states were checked)">not reached</span> : SEV_ICON[s.severity]}</td>
               </tr>
             );
           })}

@@ -36,7 +36,7 @@ import { segmentLatG, roadEffective, G, type RoadState } from './segments';
 import { wheelHeights } from './road';
 import { aeroForces } from '../vehicle/aero';
 import { swayTrailer, newSwayState, coupleTrailer, stepTrailer, followTrailer, swayOf, type SwayState } from './trailerSway';
-import { classifyState, worstSeverity, PROFILES, type Finding } from './checks';
+import { classifyState, worstSeverity, PROFILES, laneShare, type Finding } from './checks';
 import { steerForTurn, steeringWheelAngle, type SteerNeed } from './steer';
 import {
   handlingCar, handlingForces, stepHandling, driverCommand, wheelAngles, rackFor, effAt, kinematicForces, slipUse, handlingGrip,
@@ -112,6 +112,32 @@ export interface RideRun {
   last?: number;
   /** How long each segment took as driven, s (with the pedal driver: until its distance was covered). */
   times?: (number | undefined)[];
+  /** The run ended early: the car went off course or spun (round 4, F25) — in this segment, at this time. */
+  ended?: RideEnd;
+}
+
+/** Where and why a run ended before the end of the test (did not finish). */
+export interface RideEnd { segment: number; t: number; why: 'offCourse' | 'spun'; text: string }
+
+/**
+ * Off course / spun (round 4, F25): with the driver steering, the run ends — did not finish — when the car's
+ * center is more than OFF_COURSE_WIDTHS of its own width off the line (and at least one width past the pass
+ * rules' lane), or it points more than SPUN_ANGLE away from the path (across it or back). Past that the planar
+ * model (made for moderate sliding, its sideslip held at ≈ 40°) and a driver steering at full lock toward a
+ * line metres away mean nothing: the run used to go on, the car weaving or crawling backwards far from the course.
+ */
+export const OFF_COURSE_WIDTHS = 2;
+export const SPUN_ANGLE = Math.PI / 2;
+
+/** How far off the line (m) the car may go before it is off course, for a lane (share of its width, 2 = 200 %). */
+export const offCourseLimit = (carWidth: number, lane: number) => Math.max(OFF_COURSE_WIDTHS * carWidth, ((lane - 1) / 2) * carWidth + carWidth);
+
+/** Off course or spun now (null: still on it). `ePsi`: the car's heading from the path's (rad). */
+export function offCourseOf(eY: number, ePsi: number, limit: number): { why: 'offCourse' | 'spun'; text: string } | null {
+  const turned = Math.abs(ePsi);
+  if (turned > SPUN_ANGLE) return { why: 'spun', text: `Spun: the car turned ${(turned * DEG).toFixed(0)}° from the path${turned > Math.PI ? ' (around)' : ' (across it / backwards)'}, ${Math.abs(eY).toFixed(1)} m off the line` };
+  if (Math.abs(eY) > limit) return { why: 'offCourse', text: `Off course: ${Math.abs(eY).toFixed(1)} m ${eY > 0 ? 'left' : 'right'} of the line (more than ${limit.toFixed(1)} m), turned ${(turned * DEG).toFixed(0)}° from the path` };
+  return null;
 }
 
 /**
@@ -133,6 +159,8 @@ export function joinRide(prev: RideRun, next: RideRun, from: number): RideRun {
     times: Array.from({ length: n }, (_, i) => (i < from ? prev.times?.[i] : next.times?.[i])),
     ...(next.frameDt ?? prev.frameDt ? { frameDt: next.frameDt ?? prev.frameDt } : {}),
     ...(next.last !== undefined ? { last: next.last } : {}),
+    // (A run that ended before `from` isn't resumed; the new part's end, if any, is the one that counts.)
+    ...(prev.ended && prev.ended.segment < from ? { ended: prev.ended } : next.ended ? { ended: next.ended } : {}),
   };
 }
 
@@ -586,12 +614,15 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     liftTime = st.liftTime; bumpStopTime = st.bumpStopTime; loadVarSum = st.loadVarSum; accSum = st.accSum; metricCount = st.metricCount; lastMetricT = st.lastMetricT;
     lastFy = st.lastFy;
   }
+  let ended: RideEnd | undefined;
   segments.forEach((sg, i) => {
-    if (i < from || i > stop) return;
+    if (i < from || i > stop || ended) return;
     checkpoints[i] = save(i);
     const T = durations[i]!;
     if (!(T > 0)) return;
     const checks = sg.checks ?? PROFILES.default.checks;
+    const offLimit = offCourseLimit(carWidth, laneShare(checks.pathError?.threshold));
+    let gone: ReturnType<typeof offCourseOf> = null;
     /** Per check: when the current spell began, whether it was reported, how many spells counted. */
     const spells = new Map<string, { since: number; first: Finding; reported: boolean; count: number; countedThis?: boolean; firstT?: number; lost: number; worst: number }>();
     let nextCheck = t0;
@@ -745,6 +776,9 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       const t = t0 + tt;
       const beta = H ? Math.atan2(H.v, Math.max(kin.v, 0.5)) * DEG : 0;
       if (H) { maxPathError = Math.max(maxPathError, Math.abs(H.eY)); if (kin.v >= KINEMATIC_SPEED) maxSideslip = Math.max(maxSideslip, Math.abs(beta)); }
+      // Off course or spun: this moment is checked and drawn, then the run ends (did not finish).
+      if (H) gone = offCourseOf(H.eY, H.ePsi, offLimit);
+      if (gone) { tEnd = tt; segEnd = true; }
       const isFrame = !(t + 1e-9 < nextFrame && !segEnd);
       const isCheck = isFrame || t + 1e-9 >= nextCheck;
       if (!isCheck) continue;
@@ -828,6 +862,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
           tireLoad: Object.fromEntries(CORNER_IDS.map((id) => [id, now.res[id].tireLoad])) as Record<CornerId, number>,
         },
       });
+      if (gone) break;
     }
     // One finding per check: when it first happened and how often.
     for (const sp2 of spells.values()) {
@@ -848,6 +883,14 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       const kc = checks.kickback ?? PROFILES.default.checks.kickback;
       if (kc && kc.severity !== 'pass' && kickSeg > (kc.threshold ?? 5)) findings[i]!.push({ check: 'kickback', severity: kc.severity, text: `Kickback: a ${kickSeg.toFixed(1)} N·m jolt at the steering wheel (bump / braking forces through the scrub radius and the kingpin offset) at ${kickT.toFixed(1)} s`, t: kickT });
     }
+    if (gone) {
+      ended = { segment: i, t: t0 + tEnd, why: gone.why, text: gone.text };
+      findings[i]!.push({ check: 'offCourse', severity: 'fail', t: ended.t, text: `${gone.text}: the run ended at ${ended.t.toFixed(1)} s (did not finish)` });
+      times[i] = tEnd;
+      t0 += tEnd;
+      stop = i;
+      return;
+    }
     // The driver lifted, or the tires / pedals couldn't hold the speed, and the car ended well short of it: say so.
     const vEnd = sg.plan && sg.plan.v.length ? sg.plan.v[sg.plan.v.length - 1]! : sg.v1;
     if (drv && !sg.coast && (lifted > 0 || slowed > 0 || held > 0.2) && uDrv < vEnd - 0.5) {
@@ -863,7 +906,8 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     t0 += drv ? tEnd : T;
     if (i < stop && o.stopWhen?.(i, findings[i]!)) stop = i;
   });
-  checkpoints[stop + 1] = save(stop + 1);
+  // (No state to resume from after a run that ended: the car is off the course.)
+  if (!ended) checkpoints[stop + 1] = save(stop + 1);
   const nAcc = Math.max(1, metricCount);
   const metrics: RideMeasures = {
     liftTime, bumpStopTime, duration: total,
@@ -873,7 +917,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     ...(TS ? { maxSway } : {}),
     bumpWork, dissipated, ...(kickers.length ? { maxKickback: maxKick } : {}),
   };
-  return { frames, findings, metrics, checkpoints, frameDt, last: stop, times };
+  return { frames, findings, metrics, checkpoints, frameDt, last: stop, times, ...(ended ? { ended } : {}) };
 
   /** The driver's steering as a steering need (for the Steering lock check and the display). */
   function handlingSteer(hs: HandlingState, straight: boolean, kappa: number): SteerNeed | null {

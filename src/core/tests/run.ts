@@ -11,7 +11,7 @@ import { segmentStates, segmentLatG, roadEffective, topSpeed, G, type RoadState,
 import { planDuration, planSpeeds, SHAPE_LABEL, type PlanCar, type PlanShape, type SegmentPlan } from './plan';
 import { wheelHeights } from './road';
 import { steerForTurn, type SteerNeed } from './steer';
-import { rideOn, joinRide, type RideMeasures } from './ride';
+import { rideOn, joinRide, type RideMeasures, type RideEnd } from './ride';
 import { classifyState, fadeFindings, pedalFindings, worstSeverity, PROFILES, type CheckProfile, type Finding, type Severity } from './checks';
 import { brakeStep, padFactors, type AxleTemps } from '../vehicle/brakeThermal';
 import { pedalTravel } from '../vehicle/brakes';
@@ -69,6 +69,8 @@ export interface SegmentResult {
   power?: PowerUse;
   /** Grip only: the ladder drove it at its own set speeds (they passed at the full push where its grip didn't). */
   capped?: boolean;
+  /** Over time the car went off course or spun before it got here (round 4, F25): not driven; its time is the plan's. */
+  notReached?: boolean;
 }
 
 export interface TestRunOptions {
@@ -114,6 +116,11 @@ export interface TestRun {
   distance?: number;
   /** Planned speeds: what the test asks of the powertrain over the whole test (F7; each segment's is on it). */
   power?: PowerUse;
+  /**
+   * Did not finish (round 4, F25): over time the car went off course or spun in this segment, at this time (s),
+   * and the run ended there. A Fail; the segments after it weren't driven (their time is the plan's).
+   */
+  ended?: { segment: number; t: number; why: 'offCourse' | 'spun'; text: string };
 }
 
 /** Segment physics plus the checks that decide its pass / fail. */
@@ -304,10 +311,10 @@ export function powertrainForce(p: VehicleProblem, asm: AssembledVehicle): ((v: 
  */
 export const PLAN_SHAPES: PlanShape[] = ['brakeIn', 'coastIn', 'hold', 'accelIn'];
 /** Failures over time that taking a segment another way or slower can cure. */
-const PLAN_HELPS = new Set(['understeer', 'oversteer', 'pathError', 'spin', 'wheelLift', 'rollover', 'trailerSway', 'nearLimit', 'lockup', 'wheelspin', 'steerLimit', 'speedNotReached']);
+const PLAN_HELPS = new Set(['understeer', 'oversteer', 'pathError', 'spin', 'offCourse', 'wheelLift', 'rollover', 'trailerSway', 'nearLimit', 'lockup', 'wheelspin', 'steerLimit', 'speedNotReached']);
 
 /** Failures over time that driving slower can cure (Driver lifts). */
-const LIFT_HELPS = new Set(['understeer', 'oversteer', 'pathError', 'spin', 'wheelLift', 'rollover', 'trailerSway', 'nearLimit']);
+const LIFT_HELPS = new Set(['understeer', 'oversteer', 'pathError', 'spin', 'offCourse', 'wheelLift', 'rollover', 'trailerSway', 'nearLimit']);
 
 export function runTest(
   p: VehicleProblem, geometries: Partial<Record<CornerId, DoubleWishboneGeometry>>, segments: TestSegmentSpec[], opts: TestRunOptions,
@@ -499,7 +506,8 @@ export function runTest(
             else if (canRaise(k)) { raise(k); i = k; break; }
           }
           if (i < 0) {
-            if (valid >= n) break;
+            // (A run that went off course or spun isn't driven on: the test didn't finish.)
+            if (valid >= n || run.ended) break;
             const cp = run.checkpoints?.[valid];
             run = cp ? joinRide(run, rideOn(p, asm, segments, { ...rideOpts, resume: cp, frameDt, stopWhen }), valid) : rideOn(p, asm, segments, { ...rideOpts, frameDt, stopWhen });
             valid = (run.last ?? n - 1) + 1;
@@ -515,7 +523,7 @@ export function runTest(
           run = cp ? joinRide(run, part, from) : part;
           valid = i + 1;
         }
-        if (valid < n) run = rideOn(p, asm, segments, { ...rideOpts, frameDt }); // the ladder's guard ran out mid-way
+        if (valid < n && !run.ended) run = rideOn(p, asm, segments, { ...rideOpts, frameDt }); // the ladder's guard ran out mid-way
         planRide = run;
       }
     }
@@ -555,6 +563,7 @@ export function runTest(
   let ride: TestRun['ride'];
   // With the pedal driver: how long each segment took as driven (the test's time is that, not the plan's).
   let drivenTimes: (number | undefined)[] | undefined;
+  let ended: RideEnd | undefined;
   if (opts.ride) {
     // Driver lifts: over time the segments are driven at the speed scale that passed the steady check, and a
     // segment still failing over time (running wide, sliding, spinning, lifting a wheel) is driven 12 % slower
@@ -575,6 +584,10 @@ export function runTest(
     }
     ride = { frames: withBrakeTemps(p, rr.frames), metrics: rr.metrics, ...(rr.error ? { error: rr.error } : {}) };
     if (opts.handling && opts.driverSpeed && !rr.error) drivenTimes = rr.times;
+    if (rr.ended) {
+      ended = rr.ended;
+      segs.forEach((sr, i) => { if (i > rr.ended!.segment) sr.notReached = true; });
+    }
     segs.forEach((sr, i) => {
       // Add what only shows over time (the steady samples already report the rest).
       const steadyKeys = new Set(sr.findings.map((f) => `${f.check}|${(f.corners ?? []).join(',')}`));
@@ -658,6 +671,7 @@ export function runTest(
     ...(power ? { power } : {}),
     severity, passed: severity !== 'fail', states, segments: segs, ...(ride ? { ride } : {}), ...(brakeUse ? { brakeUse } : {}), ...(shimmy ? { shimmy } : {}),
     ...(time !== undefined ? { time, plannedTime, driven: segs.some((s) => s.driven), distance: segments.reduce((a, sg) => a + sg.distance, 0) } : {}),
+    ...(ended ? { ended } : {}),
   };
 }
 

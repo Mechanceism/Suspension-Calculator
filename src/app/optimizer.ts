@@ -495,10 +495,18 @@ function runVehicleParallel(problem: VehicleProblem, onProgress: (p: ProgressInf
   };
 }
 
-/** Run a test in the worker. */
+/** A job stopped by the user (its worker terminated): the wait ends with this, not an error to show. */
+export class JobCancelled extends Error {
+  constructor() { super('Stopped'); this.name = 'JobCancelled'; }
+}
+export const isCancelled = (e: unknown) => e instanceof JobCancelled;
+
+/** Run a test in the worker. Cancelling ends the wait (with JobCancelled) — it used to wait forever. */
 export function runTestJob(problem: VehicleProblem, segments: SegmentSpec[], opts: TestRunOptions): { done: Promise<TestRun>; cancel(): void } {
   const worker = new Worker(new URL('./optimizer.worker.ts', import.meta.url), { type: 'module' });
+  let stop = () => {};
   const done = new Promise<TestRun>((res, rej) => {
+    stop = () => rej(new JobCancelled());
     worker.onmessage = (e: MessageEvent) => {
       const m = e.data as { type: 'done'; result: TestRun } | { type: 'error'; message: string };
       worker.terminate();
@@ -507,13 +515,15 @@ export function runTestJob(problem: VehicleProblem, segments: SegmentSpec[], opt
     worker.onerror = (e) => { worker.terminate(); rej(new Error(e.message || 'Test worker failed')); };
   });
   worker.postMessage({ kind: 'test', problem, segments, opts });
-  return { done, cancel: () => worker.terminate() };
+  return { done, cancel: () => { worker.terminate(); stop(); } };
 }
 
 /** Compute playback frames in the worker (`ride`: over time, Phase B, `handling`: steered by a driver, Phase C; otherwise steady states). */
 export function runPlaybackJob(problem: VehicleProblem, segments: SegmentSpec[], ride = false, handling = false, driverSpeed = false): { done: Promise<PlaybackFrame[]>; cancel(): void } {
   const worker = new Worker(new URL('./optimizer.worker.ts', import.meta.url), { type: 'module' });
+  let stop = () => {};
   const done = new Promise<PlaybackFrame[]>((res, rej) => {
+    stop = () => rej(new JobCancelled());
     worker.onmessage = (e: MessageEvent) => {
       const m = e.data as { type: 'done'; result: PlaybackFrame[] } | { type: 'error'; message: string };
       worker.terminate();
@@ -522,7 +532,7 @@ export function runPlaybackJob(problem: VehicleProblem, segments: SegmentSpec[],
     worker.onerror = (e) => { worker.terminate(); rej(new Error(e.message || 'Playback worker failed')); };
   });
   worker.postMessage({ kind: 'playback', problem, segments, ride, handling, driverSpeed });
-  return { done, cancel: () => worker.terminate() };
+  return { done, cancel: () => { worker.terminate(); stop(); } };
 }
 
 /** A worker job with progress messages; stop() ends it (the caller keeps the last progress). */

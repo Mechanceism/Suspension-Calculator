@@ -16,7 +16,7 @@ import type { TestRun, StateResult } from '../../core/tests/run';
 import { CHECK_IDS, CHECK_META, PROFILES, cloneProfile, type CheckProfile, type Severity, type BuiltinProfile, type Finding } from '../../core/tests/checks';
 import { useApp, BRAKE_MORE_META, type Field } from '../store';
 import { SEGMENT_PRESETS, TEST_PRESETS, newSegment, newTestId, planOption, plannedSpeeds, topSpeedOf, segmentSpec, isOff, OFF, type TestDesign, type TestSegment } from '../tests';
-import { buildVehicleProblem, runTestJob } from '../optimizer';
+import { buildVehicleProblem, runTestJob, isCancelled } from '../optimizer';
 import { POOL_SIZE, runLimited } from '../workerPool';
 import { useTireChoice, TIRE_CATALOG, rankTires, applyTire, currentTire, type TireAxleChoice } from '../tireChoice';
 import { useProfiles } from '../settings';
@@ -128,7 +128,7 @@ export function startTestRun(test: TestDesign) {
       useApp.getState().set('testView', null);
       return result;
     })
-    .catch((e: unknown) => { useRun.setState({ running: false, runningIds: [], error: e instanceof Error ? e.message : String(e), cancel: null }); return null; });
+    .catch((e: unknown) => { useRun.setState({ running: false, runningIds: [], error: isCancelled(e) ? null : e instanceof Error ? e.message : String(e), cancel: null }); return null; });
 }
 
 /**
@@ -156,7 +156,7 @@ export async function runTestsTogether(tests: TestDesign[]): Promise<(TestRun | 
       if (result) useRun.setState((r) => ({ results: { ...r.results, [test.id]: { result, from, test, ranAt: new Date().toISOString() } } }));
       return result;
     } catch (e) {
-      useRun.setState({ error: e instanceof Error ? e.message : String(e) });
+      if (!isCancelled(e)) useRun.setState({ error: e instanceof Error ? e.message : String(e) });
       return null;
     } finally {
       stops.delete(stop);

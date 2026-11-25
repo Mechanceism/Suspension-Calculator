@@ -422,8 +422,9 @@ export function CourseViewport({ model, test, ghosts = [], active = true }: {
     let lo = 0, hi = frames.length - 1;
     while (lo < hi) { const m = (lo + hi + 1) >> 1; if (frames[m]!.t <= t) lo = m; else hi = m - 1; }
     const f = frames[lo]!;
-    return (segStart[f.segment] ?? 0) + f.s;
-  }, [frames, segStart]);
+    // (The middle of the car, as chase / overhead follow: half a wheelbase behind the front axle.)
+    return Math.max(0, (segStart[f.segment] ?? 0) + f.s - (model?.wheelbase ?? 1550) / 2000);
+  }, [frames, segStart, model?.wheelbase]);
   const length = points.length ? points[points.length - 1]!.total : 0;
   const trackAt = useMemo(() => (d: number): Pose | null => {
     if (!points.length) return { pos: new THREE.Vector3(), heading: 0, grade: 0, bank: 0 };
@@ -432,7 +433,14 @@ export function CourseViewport({ model, test, ghosts = [], active = true }: {
     const q = placeOnCourse(points, segStart, { segment: seg, s: d - (segStart[seg] ?? 0), grade: 0, bank: 0, handling: undefined });
     return { pos: toScene(q.x, q.y, q.z), heading: q.heading, grade: 0, bank: 0 };
   }, [points, segStart]);
-  const followPose = useMemo(() => () => poseOf(tv.follow === 'track'), [poseOf, tv.follow]);
+  // Chase / overhead go round the middle of the car (half a wheelbase behind the front axle, which the frames
+  // place; in the car's own frame the front axle is at z = 0, the rear at −wheelbase), not its front axle.
+  const halfBase = (model?.wheelbase ?? 1550) / 2;
+  const followPose = useMemo(() => () => {
+    const p = poseOf(tv.follow === 'track');
+    const back = new THREE.Vector3(0, 0, -halfBase).applyEuler(new THREE.Euler(-p.grade, p.heading, -p.bank, 'YXZ'));
+    return { ...p, pos: p.pos.clone().add(back) };
+  }, [poseOf, tv.follow, halfBase]);
   // The track's middle and size, and the ground just below its lowest point.
   const extent = useMemo(() => {
     if (!points.length) return { center: new THREE.Vector3(), span: 20000, low: 0 };

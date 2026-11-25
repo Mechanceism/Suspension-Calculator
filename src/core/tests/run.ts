@@ -77,7 +77,7 @@ export interface TestRunOptions {
    * this share of the tires' grip (0–1), and a segment that still fails over time is tried other ways and
    * then at lower grip targets. Omitted: the set speeds are held exactly (with `onFail`).
    */
-  plan?: { gripTarget: number; /** Try other ways / lower targets when a segment fails (default on; optimizers plan once). */ ladder?: boolean };
+  plan?: { gripTarget: number; /** Try other ways / lower targets when a segment fails (default on; optimizers plan once). */ ladder?: boolean; /** Grip only: no set-speed caps (plan.ts § PlanOptions). */ gripOnly?: { topSpeed: number } };
 }
 
 export interface TestRun {
@@ -372,7 +372,7 @@ export function runTest(
       const base = segments;
       tries = base.map(() => ({ shape: -1, target: gripTarget }));
       const build = () => {
-        const pl = planSpeeds(base, car, base.map((_, i) => tryOf(i).target), base.map((_, i) => tryOf(i).shape));
+        const pl = planSpeeds(base, car, base.map((_, i) => tryOf(i).target), base.map((_, i) => tryOf(i).shape), opts.plan?.gripOnly ? { gripOnly: opts.plan.gripOnly } : {});
         return base.map((sg, i) => ({ ...sg, plan: pl.plans[i]! }));
       };
       const fails = (fs: Finding[]) => fs.some((f) => f.severity === 'fail' && PLAN_HELPS.has(f.check));
@@ -418,9 +418,12 @@ export function runTest(
       };
       /**
        * A lowered segment that passes: try halfway back up toward the lowest target known to fail, while the gap
-       * is over 4 points (at most twice: each try drives the segment again) — nearer the highest that passes than the first that did.
+       * is over 2 points (at most four times: each try drives the segment again) — nearer the highest that passes
+       * than the first that did (round 4: was 4 points, twice, and stopped after a raise that passed: the default car's Autocross (simple) hairpin stayed at 75 %, now 92.5 %).
        */
-      const canRaise = (i: number) => { const t = tries[i]!; return !!t.lowered && t.passAt === undefined && t.failAt !== undefined && t.failAt - t.target > 0.04 && (t.ups ?? 0) < 2; };
+      // (Asked only while the segment passes: a `passAt` still set then means the raised target passed too, so it
+      // is the new one that passes — round 4: it used to stop there, after one raise.)
+      const canRaise = (i: number) => { const t = tries[i]!; return !!t.lowered && t.failAt !== undefined && t.failAt - t.target > 0.02 && (t.ups ?? 0) < 4; };
       const raise = (i: number) => { const t = tries[i]!; t.passAt = t.target; t.target = (t.target + t.failAt!) / 2; t.ups = (t.ups ?? 0) + 1; };
       segments = build();
       const ladder = opts.plan.ladder !== false;

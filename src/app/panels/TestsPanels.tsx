@@ -15,7 +15,7 @@ import { segmentLongG, segmentLatG, segmentDuration, type PathKind } from '../..
 import type { TestRun, StateResult } from '../../core/tests/run';
 import { CHECK_IDS, CHECK_META, PROFILES, cloneProfile, type CheckProfile, type Severity, type BuiltinProfile, type Finding } from '../../core/tests/checks';
 import { useApp, BRAKE_MORE_META, type Field } from '../store';
-import { SEGMENT_PRESETS, TEST_PRESETS, newSegment, newTestId, planOption, segmentSpec, isOff, OFF, type TestDesign, type TestSegment } from '../tests';
+import { SEGMENT_PRESETS, TEST_PRESETS, newSegment, newTestId, planOption, plannedSpeeds, topSpeedOf, segmentSpec, isOff, OFF, type TestDesign, type TestSegment } from '../tests';
 import { buildVehicleProblem, runTestJob } from '../optimizer';
 import { POOL_SIZE, runLimited } from '../workerPool';
 import { useTireChoice, TIRE_CATALOG, rankTires, applyTire, currentTire, type TireAxleChoice } from '../tireChoice';
@@ -509,6 +509,7 @@ function TestList({ tests, activeId }: { tests: TestDesign[]; activeId: string |
 
 export function TestsSidebar() {
   const tests = useApp((s) => s.tests);
+  const disp = useDisplay();
   const test = useActiveTest();
   const set = useApp((s) => s.set);
   const run = useRun();
@@ -582,11 +583,22 @@ export function TestsSidebar() {
               <tr title="Maximums: the set speeds are the most the driver may go; the driver plans the speed to its push — how much of the tires' grip it uses — (braking earlier before turns, accelerating out), tries other ways of taking a failing segment (brake in, coast in, hold the speed, speed up in) and then pushes less there (with a finding saying so); the test is scored on time. Hold exactly: the set speeds are driven as they are (to check a car can do a given speed).">
                 <td>Speeds</td>
                 <td>
+                  <button className={`chip${test.speedMode === 'grip' ? ' on' : ''}`} title="No speed caps: the turns, braking and accelerating are limited by the grip alone, the straights by the top speed (until a powertrain limits them); the test starts at its first speed and ends at most at its last" onClick={() => updateTest(test.id, (t) => ({ ...t, speedMode: 'grip', gripTarget: t.gripTarget ?? 0.95 }))}>Grip only</button>
                   <button className={`chip${test.speedMode === 'max' ? ' on' : ''}`} onClick={() => updateTest(test.id, (t) => ({ ...t, speedMode: 'max', gripTarget: t.gripTarget ?? 0.95 }))}>Maximums</button>
-                  <button className={`chip${test.speedMode !== 'max' ? ' on' : ''}`} onClick={() => updateTest(test.id, (t) => ({ ...t, speedMode: 'hold' }))}>Hold exactly</button>
+                  <button className={`chip${!plannedSpeeds(test) ? ' on' : ''}`} onClick={() => updateTest(test.id, (t) => ({ ...t, speedMode: 'hold' }))}>Hold exactly</button>
                 </td>
               </tr>
-              {test.speedMode === 'max' ? (
+              {test.speedMode === 'grip' && (
+                <tr title="Grip only: the most the car goes on the straights, until a powertrain limits it (blank: the test's highest set speed)">
+                  <td>Top speed</td>
+                  <td>
+                    <ValueInput field={test.topSpeed ?? OFF} unit="m/s" width={64}
+                      onCommit={(t) => updateTest(test.id, (x) => ({ ...x, topSpeed: t.trim() === '' ? undefined : parse(t, 'speed', x.topSpeed ?? OFF) }))} />
+                    {!test.topSpeed && <span className="muted small-text"> blank: {disp.format(topSpeedOf(test), 'm/s', 0)} (the highest set speed)</span>}
+                  </td>
+                </tr>
+              )}
+              {plannedSpeeds(test) ? (
                 <tr title="The share of the tires' grip the driver plans to (in turns, braking and accelerating). Lower is steadier; 100 % is at the limit, where transients often tip it over.">
                   <td title="How much of the tires' grip the driver plans to use (not the grip itself): lower leaves a reserve for what the plan doesn't see — the weight shifting, the car taking time to turn in, corrections, bumps">Driver push</td>
                   <td>
@@ -919,7 +931,7 @@ function OptimizeSection({ test, onOpenOptimizer }: { test: TestDesign; onOpenOp
           {WIDEN_CHOICES.map((v) => <option key={v} value={v}>{widenLabel(v)}</option>)}
         </select>
       </div>
-      {inScope.some((t) => t.speedMode === 'max') && (
+      {inScope.some(plannedSpeeds) && (
         <div className="jm-row" title="Speeds as maximums: score the tests on their time too. The weight is how much time counts against the grip reserve and the ride — 0: safest (time ignored); 1: 1 % faster ≈ 1 point; higher: fastest. A Fail still rules a setup out (100 points); warnings cost nothing. (The Test time goal in Vehicle → Optimize.)">
           <label className="check"><input type="checkbox" checked={timeGoal.on} disabled={loop.running} onChange={() => setTimeGoal({ on: !timeGoal.on })} /> Score on time</label>
           {timeGoal.on && <><span className="muted">weight</span>

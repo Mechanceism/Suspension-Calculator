@@ -2,7 +2,7 @@
  * How good a test run is, as one number (lower is better), for the optimizers:
  *   100 · (Fail findings geometry or setup can fix) + 10 · Σ grip use over 100 % (+ average grip use
  *   when improving) + the ride measures (smooth, so a tuner can tell better from worse before anything
- *   passes or fails): 10 · wheel-lift time (s) + 5 · bump-stop time (s) + 20 · tire-load variation
+ *   passes or fails): 5 · bump-stop time (s) + 20 · tire-load variation
  *   + 0.2 · body vertical acceleration RMS (m/s²) + (handling) 2 · largest distance off the line (m)
  *   + 0.1 · largest sideslip (deg); with the Test time goal, + its weight · 100 · time ÷ the starting time.
  */
@@ -19,7 +19,9 @@ export const isUnfixable = (f: Pick<Finding, 'check' | 'text'>) =>
 /** Ride part of the score (0 without a ride). */
 export function rideScore(m: RideMeasures | undefined): number {
   if (!m) return 0;
-  return 10 * m.liftTime + 5 * m.bumpStopTime + 20 * m.loadVariation + 0.2 * m.heaveAccRms
+  // Wheel lift is noted, not scored (round 4): a lap that lifts a wheel but is faster isn't punished for it
+  // (a Fail rule still fails it).
+  return 5 * m.bumpStopTime + 20 * m.loadVariation + 0.2 * m.heaveAccRms
     + 2 * (m.maxPathError ?? 0) + 0.1 * (m.maxSideslip ?? 0);
 }
 

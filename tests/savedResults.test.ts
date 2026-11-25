@@ -34,7 +34,7 @@ describe('results saved with a model-and-tests file', () => {
     const old = { ...JSON.parse(JSON.stringify(serializeProject(d, 'Car'))), formatVersion: 42 };
     const r = importProject(old);
     expect(r.results).toEqual({});
-    expect(r.warnings).toEqual(["Upgraded from file format 42 to 43."]);
+    expect(r.warnings).toEqual(["Upgraded from file format 42 to 43.", "Upgraded from file format 43 to 44."]);
   });
 
   it('reads back defensively', () => {

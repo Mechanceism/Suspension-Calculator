@@ -260,7 +260,8 @@ export function checkResiduals(r: VehicleResult | null, profile: CheckProfile): 
     }
     if (w('bumpStop') && c.onBumpStop) out.push(w('bumpStop') * 5);
     if (w('bottoming') && c.status !== 'ok') out.push(w('bottoming') * 20);
-    if (w('wheelLift')) out.push(w('wheelLift') * Math.max(0, 25 - c.tireLoad) / 2.5);
+    // Wheel lift is noted, not fought (round 4): only when the rules make it a Fail.
+    if (profile.wheelLift.severity === 'fail') out.push(w('wheelLift') * Math.max(0, 25 - c.tireLoad) / 2.5);
   }
   return out;
 }

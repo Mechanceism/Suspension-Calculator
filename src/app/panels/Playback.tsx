@@ -13,7 +13,7 @@ import type { Severity } from '../../core/tests/checks';
 import { CORNER_IDS } from '../../core/vehicle/vehicle';
 import { useApp } from '../store';
 import { buildVehicleProblem, runPlaybackJob } from '../optimizer';
-import { segmentSpec, type TestDesign } from '../tests';
+import { segmentSpec, plannedSpeeds, type TestDesign } from '../tests';
 import { useRun } from './TestsPanels';
 import { useDisplay } from '../units';
 import { fmt } from './FieldRows';
@@ -99,7 +99,7 @@ async function computeFrames(test: TestDesign) {
     // Speeds as maximums: the speeds the last run planned. Driver lifts: the segments it lifted are driven at the speed that passes.
     const specs = test.segments.map((sg, i) => {
       const spec = segmentSpec(sg, test);
-      const planned = test.speedMode === 'max' ? last?.result.segments[i]?.plan : undefined;
+      const planned = plannedSpeeds(test) ? last?.result.segments[i]?.plan : undefined;
       if (planned) return { ...spec, plan: planned };
       const r = test.onFail === 'lift' ? last?.result.segments[i] : undefined;
       const k = r?.drivenScale ?? (r?.lifted && r.speedLimit && r.speedLimit > 0 ? r.speedLimit : 1);

@@ -72,6 +72,15 @@ export function lateralMu(car: PlanCar, kappa = 0): { front: number; rear: numbe
 }
 
 export type PlanShape = 'plan' | 'brakeIn' | 'coastIn' | 'hold' | 'accelIn';
+
+export interface PlanOptions {
+  /**
+   * Grip only (round 4, F6): the segments' set speeds aren't caps — the turns, braking and accelerating are
+   * limited by the grip alone, the straights by `topSpeed` (m/s; until a powertrain limits them). The test
+   * still starts at its first segment's start speed and ends at most at its last segment's end speed.
+   */
+  gripOnly?: { topSpeed: number };
+}
 export const SHAPE_LABEL: Record<PlanShape, string> = {
   plan: 'brake before, accelerate out', brakeIn: 'brake in, accelerate out', coastIn: 'coast in, accelerate out',
   hold: 'hold the speed', accelIn: 'speed up in, slow down out',
@@ -157,7 +166,9 @@ const kappaOf = (sg: SegmentSpec) => (sg.path === 'straight' || (sg.latG !== nul
  * Plan the speeds of a chain of segments. `target` and `shape` per segment (a grip target and a way of taking
  * it); the result has each segment's planned speeds and the whole test's time.
  */
-export function planSpeeds(segments: SegmentSpec[], car: PlanCar, target: number[], shape: PlanShape[] = []): { plans: SegmentPlan[]; time: number } {
+export function planSpeeds(segments: SegmentSpec[], car: PlanCar, target: number[], shape: PlanShape[] = [], opts: PlanOptions = {}): { plans: SegmentPlan[]; time: number } {
+  const free = opts.gripOnly;
+  const last = segments.length - 1;
   // The grid: each segment from 0 to its distance in ≈ 1 m steps (shared boundary points).
   /** capT: the grip target of the segment whose limit `cap` is (at a boundary, the stricter side's). */
   type P = { seg: number; s: number; cap: number; capT: number; kappa: number; grade: number; bank: number; coast: boolean };
@@ -170,7 +181,10 @@ export function planSpeeds(segments: SegmentSpec[], car: PlanCar, target: number
     const vLat = k0 > 1e-9 ? Math.sqrt(Math.max(0.01, (G * (lim.lateral + Math.sign(kappaOf(sg)) * Math.sin(sg.bank))) / (k0 * Math.max(Math.cos(sg.bank), 0.2)))) : Infinity;
     for (let k = 0; k <= n; k++) {
       const s = (sg.distance * k) / n;
-      const vSet = Math.sqrt(Math.max(0, sg.v0 * sg.v0 + ((sg.v1 * sg.v1 - sg.v0 * sg.v0) * k) / n));
+      // Grip only: no set speeds but the top speed — and the test's end speed (e.g. a stop box) at its end.
+      const vSet = free
+        ? (i === last && k === n ? Math.min(free.topSpeed, sg.v1) : free.topSpeed)
+        : Math.sqrt(Math.max(0, sg.v0 * sg.v0 + ((sg.v1 * sg.v1 - sg.v0 * sg.v0) * k) / n));
       const p: P = { seg: i, s, cap: Math.min(vSet, vLat), capT: target[i] ?? 0.95, kappa: kappaOf(sg), grade: sg.grade, bank: sg.bank, coast: !!sg.coast };
       if (k === 0 && pts.length) {
         // The boundary: the lower of both sides' limits.

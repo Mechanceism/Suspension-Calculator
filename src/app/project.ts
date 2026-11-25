@@ -61,7 +61,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 43;
+export const FORMAT_VERSION = 44;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -398,6 +398,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   41: (f) => ({ ...f, formatVersion: 42 }),
   // 42 → 43: an optional results section (a model-and-tests file's test scores; R9 snapshots).
   42: (f) => ({ ...f, formatVersion: 43 }),
+  // 43 → 44: a test's speeds can be grip only (with an optional top speed); wheel lift is noted, not scored.
+  43: (f) => ({ ...f, formatVersion: 44 }),
   39: (f) => ({ ...f, formatVersion: 40, ...(isObj(f.vehicle) && isObj(f.vehicle.fields) ? { vehicle: { ...f.vehicle, fields: { ...f.vehicle.fields, rollingResistance: { text: '0', value: 0 } } } } : {}) }),
   // 34 → 35: aero side force, roll sensitivity and balance shift off.
   34: (f) => ({ ...f, formatVersion: 35, ...(isObj(f.aero) && isObj(f.aero.fields) ? { aero: { ...f.aero, fields: { ...f.aero.fields, CsA: { text: '0', value: 0 }, sideCp: { text: '900', value: 900 }, rollSensF: { text: '0', value: 0 }, rollSensR: { text: '0', value: 0 }, yawBalance: { text: '0', value: 0 } } } } : {}) }),
@@ -500,8 +502,10 @@ function readTests(raw: unknown, warnings: string[]): TestDesign[] {
       handling: t.handling !== false,
       ...(t.driverSpeed === true ? { driverSpeed: true } : {}),
       ...(t.racingLine === true ? { racingLine: true } : {}),
-      speedMode: t.speedMode === 'max' ? 'max' : 'hold',
-      ...(t.speedMode === 'max' ? { gripTarget: typeof t.gripTarget === 'number' && t.gripTarget > 0.2 && t.gripTarget <= 1 ? t.gripTarget : 0.95 } : {}),
+      speedMode: t.speedMode === 'max' || t.speedMode === 'grip' ? t.speedMode : 'hold',
+      ...(t.speedMode === 'grip' && isObj(t.topSpeed) && typeof t.topSpeed.value === 'number' && t.topSpeed.value > 0
+        ? { topSpeed: { text: typeof t.topSpeed.text === 'string' ? t.topSpeed.text : String(t.topSpeed.value), value: t.topSpeed.value } } : {}),
+      ...(t.speedMode === 'max' || t.speedMode === 'grip' ? { gripTarget: typeof t.gripTarget === 'number' && t.gripTarget > 0.2 && t.gripTarget <= 1 ? t.gripTarget : 0.95 } : {}),
     });
   }
   return out;

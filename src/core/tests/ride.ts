@@ -110,6 +110,8 @@ export interface RideRun {
   frameDt?: number;
   /** The last segment driven (index). */
   last?: number;
+  /** How long each segment took as driven, s (with the pedal driver: until its distance was covered). */
+  times?: (number | undefined)[];
 }
 
 /**
@@ -128,6 +130,7 @@ export function joinRide(prev: RideRun, next: RideRun, from: number): RideRun {
     metrics: next.metrics,
     ...(next.error ?? prev.error ? { error: next.error ?? prev.error } : {}),
     checkpoints: cps,
+    times: Array.from({ length: n }, (_, i) => (i < from ? prev.times?.[i] : next.times?.[i])),
     ...(next.frameDt ?? prev.frameDt ? { frameDt: next.frameDt ?? prev.frameDt } : {}),
     ...(next.last !== undefined ? { last: next.last } : {}),
   };
@@ -550,6 +553,9 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
   // The driver working the pedals (driverSpeed): speed and distance as states, the profile as targets.
   const drv = handling && !!o.driverSpeed;
   let uDrv = segments[0]?.v0 ?? 0, sCarry = 0;
+  // Each tire's side force at the last step: what's left of its grip along the road (the pedal driver's limit).
+  let lastFy: Record<CornerId, number> | null = null;
+  const times: (number | undefined)[] = segments.map(() => undefined);
   const muEst = steady.grip ? CORNER_IDS.reduce((a, id) => a + steady.grip!.corners[id].capacity, 0) / (p.mass * G * Math.max(in0.gravityScale ?? 1, 0.1)) : 1;
   const canDrive = corners.some((c) => c.drive !== 'none'), canBrake = corners.some((c) => c.brake !== 'none');
   // Save / restore everything that carries from one segment to the next.
@@ -557,7 +563,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     segment, frameCount: (resume?.frameCount ?? 0) + frames.length, frameDt,
     state: structuredClone({
       x, v, loads, caps, groundPrev, loadMean, status, tires, bumpPush, bumpWork, dissipated, push, kickMean, maxKick, H, TS, rtdot, yawNow,
-      maxPathError, maxSideslip, maxSway, t0, nextFrame, x2d, y2d, heading, uDrv, sCarry, liftTime, bumpStopTime, loadVarSum, accSum, metricCount, lastMetricT,
+      maxPathError, maxSideslip, maxSway, t0, nextFrame, x2d, y2d, heading, uDrv, sCarry, liftTime, bumpStopTime, loadVarSum, accSum, metricCount, lastMetricT, lastFy,
     }),
   });
   if (resume) {
@@ -566,7 +572,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       tires: typeof tires; bumpPush: number; bumpWork: number; dissipated: number; push: typeof push; kickMean: number; maxKick: number; H: HandlingState | null;
       TS: SwayState | null; rtdot: number; yawNow: number | undefined; maxPathError: number; maxSideslip: number; maxSway: number; t0: number; nextFrame: number;
       x2d: number; y2d: number; heading: number; uDrv: number; sCarry: number; liftTime: number; bumpStopTime: number; loadVarSum: number; accSum: number;
-      metricCount: number; lastMetricT: number;
+      metricCount: number; lastMetricT: number; lastFy: Record<CornerId, number> | null;
     };
     x.splice(0, x.length, ...st.x); v.splice(0, v.length, ...st.v);
     loads = st.loads; caps = st.caps; groundPrev = st.groundPrev; tires = st.tires;
@@ -576,6 +582,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     maxPathError = st.maxPathError; maxSideslip = st.maxSideslip; maxSway = st.maxSway;
     t0 = st.t0; nextFrame = st.nextFrame; x2d = st.x2d; y2d = st.y2d; heading = st.heading; uDrv = st.uDrv; sCarry = st.sCarry;
     liftTime = st.liftTime; bumpStopTime = st.bumpStopTime; loadVarSum = st.loadVarSum; accSum = st.accSum; metricCount = st.metricCount; lastMetricT = st.lastMetricT;
+    lastFy = st.lastFy;
   }
   segments.forEach((sg, i) => {
     if (i < from || i > stop) return;
@@ -623,9 +630,23 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
         const mass = p.mass;
         const drag = dragAt(uDrv), gradeF = mass * G * Math.sin(sg.grade), rr = crr * mass * G * Math.cos(sg.grade);
         let Ft = sg.coast ? 0 : mass * aCmd + drag + gradeF + rr;
-        const FtMax = mass * axMax;
+        // Within the tires as they are now (round 4): each driven / braked tire's grip along the road at its load
+        // this step, after the side force it carries — a tire going light over a bump or loaded up in a turn
+        // gives less — not one grip estimate for the whole car; and within the powertrain.
+        const along = (which: 'drive' | 'brake') => {
+          if (!caps) return mass * axMax;
+          let sum = 0;
+          for (const c of corners) {
+            if ((which === 'drive' ? c.drive : c.brake) === 'none') continue;
+            const k = caps[c.id], fy = lastFy?.[c.id] ?? 0;
+            sum += k.x * Math.sqrt(Math.max(0, 1 - (fy / Math.max(k.y, 1e-6)) ** 2));
+          }
+          return sum;
+        };
+        const driveMax = canDrive ? (ptForce ? Math.min(along('drive'), ptForce(uDrv)) : along('drive')) : 0;
+        const brakeMax = canBrake ? along('brake') : 0;
         const want = Ft;
-        Ft = Math.max(canBrake ? -FtMax : 0, Math.min(canDrive ? (ptForce ? Math.min(FtMax, ptForce(uDrv)) : FtMax) : 0, Ft));
+        Ft = Math.max(-brakeMax, Math.min(driveMax, Ft));
         if (!sg.coast && Math.abs(Ft - want) > 0.02 * mass * G) held += h;
         const aSmooth = (Ft - drag - gradeF - rr) / mass;
         uDrv = Math.max(0.5, uDrv + h * (aSmooth - bumpPush / mass));
@@ -697,6 +718,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       loads = Object.fromEntries(CORNER_IDS.map((id) => [id, now.res[id].tireLoad])) as Record<CornerId, number>;
       caps = capacities(input, now.res, Math.sign(fs.latTotal));
       tires = tireNow(now.res);
+      lastFy = Object.fromEntries(CORNER_IDS.map((id) => [id, now.res[id].lateralForce])) as Record<CornerId, number>;
       // Track position (top view).
       const ds = kin.s - lastS;
       lastS = kin.s;
@@ -817,8 +839,11 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       // (Not the "Driver lifts" option: the pedal driver slows down by itself when the car runs wide.)
       const why = lifted > 0 ? `slowed down to stay on the line (for ${lifted.toFixed(1)} s)` : slowed > 0 ? 'slowed for the turn (the tires cannot take it at the set speed)' : `couldn't hold the speed (${!canDrive ? 'no powered wheels against drag, grade and rolling resistance' : 'not enough grip or brakes'})`;
       const low = Number.isFinite(vMin) && vMin < uDrv - 0.5 ? `down to ${(vMin * 3.6).toFixed(0)} km/h, ` : '';
-      if (sev !== 'pass') findings[i]!.push({ check: 'speedNotReached', severity: sev, text: `The driver ${why}: ${low}${(uDrv * 3.6).toFixed(0)} km/h at the end instead of ${(vEnd * 3.6).toFixed(0)} km/h${sg.plan ? ' (planned)' : ''}`, t: t0 + tEnd });
+      // Planned speeds: being slower than the plan is noted — the driven time shows what it cost.
+      const sevNow = sg.plan && sev === 'fail' ? 'warn' : sev;
+      if (sevNow !== 'pass') findings[i]!.push({ check: 'speedNotReached', severity: sevNow, text: `The driver ${why}: ${low}${(uDrv * 3.6).toFixed(0)} km/h at the end instead of ${(vEnd * 3.6).toFixed(0)} km/h${sg.plan ? ' (planned)' : ''}`, t: t0 + tEnd });
     }
+    times[i] = drv ? tEnd : T;
     t0 += drv ? tEnd : T;
     if (i < stop && o.stopWhen?.(i, findings[i]!)) stop = i;
   });
@@ -832,7 +857,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     ...(TS ? { maxSway } : {}),
     bumpWork, dissipated, ...(kickers.length ? { maxKickback: maxKick } : {}),
   };
-  return { frames, findings, metrics, checkpoints, frameDt, last: stop };
+  return { frames, findings, metrics, checkpoints, frameDt, last: stop, times };
 
   /** The driver's steering as a steering need (for the Steering lock check and the display). */
   function handlingSteer(hs: HandlingState, straight: boolean, kappa: number): SteerNeed | null {

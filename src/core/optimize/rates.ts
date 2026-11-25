@@ -26,7 +26,8 @@ export interface RateVar {
   label: string;
 }
 
-export interface RateTest { segments: TestSegmentSpec[]; weight: number; onFail: 'report' | 'lift'; /** Driver steering over time (Phase C). */ handling?: boolean; /** The driver also works the pedals. */ driverSpeed?: boolean; /** Speeds as maximums (planned once at the grip target). */ plan?: { gripTarget: number } }
+export interface RateTest { segments: TestSegmentSpec[]; weight: number; onFail: 'report' | 'lift'; /** Driver steering over time (Phase C). */ handling?: boolean; /** The driver also works the pedals. */ driverSpeed?: boolean; /** Speeds as maximums (planned once at the grip target). */ plan?: { gripTarget: number; gripOnly?: { topSpeed: number } };
+  /** Lap tests: scored on their driven time too (F9) — its weight and the reference (its last run's time). */ time?: { weight: number; ref: number } }
 
 /** The problem with these rates. */
 export function withRates(p: VehicleProblem, vars: RateVar[], x: number[]): VehicleProblem {
@@ -57,7 +58,7 @@ export function scoreTests(p: VehicleProblem, tests: RateTest[], mode: 'pass' | 
   const geoms = geometriesOf(p);
   const runs = tests.map((t) => runTest(p, geoms, t.segments, { onFail: t.onFail, speedLimits: false, ride: true, handling: t.handling, driverSpeed: t.driverSpeed, ...(t.plan ? { plan: { ...t.plan, ladder: false } } : {}) }));
   const tw = tests.reduce((a, t) => a + t.weight, 0) || 1;
-  const score = runs.reduce((a, r, i) => a + tests[i]!.weight * (r.error ? 1e4 : testScore(r, mode)), 0) / tw;
+  const score = runs.reduce((a, r, i) => a + tests[i]!.weight * (r.error ? 1e4 : testScore(r, mode, tests[i]!.time)), 0) / tw;
   return { score, runs };
 }
 

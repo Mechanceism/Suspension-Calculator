@@ -15,7 +15,7 @@ import { segmentLongG, segmentLatG, segmentDuration, type PathKind } from '../..
 import type { TestRun, StateResult } from '../../core/tests/run';
 import { CHECK_IDS, CHECK_META, PROFILES, cloneProfile, type CheckProfile, type Severity, type BuiltinProfile, type Finding } from '../../core/tests/checks';
 import { useApp, BRAKE_MORE_META, type Field } from '../store';
-import { SEGMENT_PRESETS, TEST_PRESETS, newSegment, newTestId, planOption, plannedSpeeds, topSpeedOf, segmentSpec, isOff, OFF, type TestDesign, type TestSegment } from '../tests';
+import { SEGMENT_PRESETS, TEST_PRESETS, newSegment, newTestId, planOption, plannedSpeeds, driverSpeedOf, topSpeedOf, segmentSpec, isOff, OFF, type TestDesign, type TestSegment } from '../tests';
 import { buildVehicleProblem, runTestJob, isCancelled } from '../optimizer';
 import { POOL_SIZE, runLimited } from '../workerPool';
 import { useTireChoice, TIRE_CATALOG, rankTires, applyTire, currentTire, type TireAxleChoice } from '../tireChoice';
@@ -119,7 +119,7 @@ export function startTestRun(test: TestDesign) {
   run.cancel?.();
   const s = useApp.getState();
   const { problem } = buildVehicleProblem(s);
-  const job = runTestJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), { onFail: test.onFail, speedLimits: true, ride: test.ride !== false, handling: test.ride !== false && test.handling !== false, driverSpeed: !!test.driverSpeed, ...planOption(test) });
+  const job = runTestJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), { onFail: test.onFail, speedLimits: true, ride: test.ride !== false, handling: test.ride !== false && test.handling !== false, driverSpeed: driverSpeedOf(test), ...planOption(test) });
   const from = designRef(s);
   useRun.setState({ running: true, testId: test.id, runningIds: [test.id], error: null, cancel: job.cancel });
   return job.done
@@ -145,7 +145,7 @@ export async function runTestsTogether(tests: TestDesign[]): Promise<(TestRun | 
   let stopped = false, done = 0;
   useRun.setState({ running: true, testId: tests[0]?.id ?? null, runningIds: [], error: null, batch: { index: 0, total: tests.length }, cancel: () => { stopped = true; for (const f of [...stops]) f(); } });
   const out = await runLimited(tests, POOL_SIZE, async (test) => {
-    const job = runTestJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), { onFail: test.onFail, speedLimits: true, ride: test.ride !== false, handling: test.ride !== false && test.handling !== false, driverSpeed: !!test.driverSpeed, ...planOption(test) });
+    const job = runTestJob(problem, test.segments.map((sg) => segmentSpec(sg, test)), { onFail: test.onFail, speedLimits: true, ride: test.ride !== false, handling: test.ride !== false && test.handling !== false, driverSpeed: driverSpeedOf(test), ...planOption(test) });
     useRun.setState((r) => ({ runningIds: [...r.runningIds, test.id] }));
     // Stopping ends the wait too (a terminated worker never answers).
     let stop = () => {};
@@ -577,7 +577,7 @@ export function TestsSidebar() {
                     <input type="checkbox" checked={!!test.racingLine} onChange={(e) => updateTest(test.id, (t) => ({ ...t, racingLine: e.target.checked }))} /> racing line (with track widths)
                   </label>
                   <label className="check-label" title="The driver also works the throttle and brakes: the segments' speeds become targets; the driver brakes ahead of bends the tires can't take at the set speed, lifts when the car runs wide, and accelerates within the grip left. Ending a segment well short of its speed is reported (Speed not reached).">
-                    <input type="checkbox" disabled={test.ride === false || test.handling === false} checked={test.ride !== false && test.handling !== false && !!test.driverSpeed} onChange={(e) => updateTest(test.id, (t) => ({ ...t, driverSpeed: e.target.checked }))} /> driver works the pedals
+                    <input type="checkbox" disabled={test.ride === false || test.handling === false || plannedSpeeds(test)} checked={driverSpeedOf(test)} onChange={(e) => updateTest(test.id, (t) => ({ ...t, driverSpeed: e.target.checked }))} /> driver works the pedals{plannedSpeeds(test) && test.ride !== false && test.handling !== false ? ' (always with planned speeds: the time is how long it took)' : ''}
                   </label>
                 </td>
               </tr>
@@ -743,8 +743,8 @@ export function TestResults() {
       <EstimatedNote />
       {stale && <p className="hint warn-text">The design changed since this run: run again.</p>}
       {r.time !== undefined && r.time > 0 && (
-        <p className="small-text" title="Speeds as maximums: the planned time over the whole test and its average speed (faster is better, within the pass rules)">
-          Time <b>{fmt(r.time, 1)} s</b> · average <b>{disp.format((r.distance ?? 0) / r.time, 'm/s', 0)}</b> over {disp.format(r.distance ?? 0, 'm', 0)} · driver pushing to {fmt((test.gripTarget ?? 0.95) * 100, 0)} % of the grip
+        <p className="small-text" title="How long the car took down the track as driven (the driver working the pedals within the tires and the powertrain each moment), and its average speed (faster is better, within the pass rules); the plan's time beside it">
+          Time <b>{fmt(r.time, 2)} s</b>{r.driven && r.plannedTime ? <span className="muted"> as driven (planned {fmt(r.plannedTime, 2)} s)</span> : null} · average <b>{disp.format((r.distance ?? 0) / r.time, 'm/s', 0)}</b> over {disp.format(r.distance ?? 0, 'm', 0)} · driver pushing to {fmt((test.gripTarget ?? 0.95) * 100, 0)} % of the grip
         </p>
       )}
       {r.power && <PowerSummary r={r} test={test} />}
@@ -941,12 +941,11 @@ function OptimizeSection({ test, onOpenOptimizer }: { test: TestDesign; onOpenOp
         </select>
       </div>
       {inScope.some(plannedSpeeds) && (
-        <div className="jm-row" title="Speeds as maximums: score the tests on their time too. The weight is how much time counts against the grip reserve and the ride — 0: safest (time ignored); 1: 1 % faster ≈ 1 point; higher: fastest. A Fail still rules a setup out (100 points); warnings cost nothing. (The Test time goal in Vehicle → Optimize.)">
-          <label className="check"><input type="checkbox" checked={timeGoal.on} disabled={loop.running} onChange={() => setTimeGoal({ on: !timeGoal.on })} /> Score on time</label>
-          {timeGoal.on && <><span className="muted">weight</span>
-            <input className="value-input small" type="number" min={0} step={0.5} value={timeGoal.weight.value} disabled={loop.running}
-              onChange={(e) => { const v = Number(e.target.value); if (Number.isFinite(v) && v >= 0) setTimeGoal({ weight: { ...timeGoal.weight, text: String(v), value: v } }); }} />
-            <span className="muted small-text">safest 0 … fastest</span></>}
+        <div className="jm-row" title="Lap tests (planned speeds) are scored on how long the car took as driven. The weight is how much time counts against the grip reserve — 0: time ignored; 1: 1 % faster ≈ 1 point; higher: time counts more. A Fail still rules a setup out (100 points); warnings cost nothing; of the ride only bump-stop time counts a little (bouncing and sliding show in the time).">
+          <span className="muted">Time weight</span>
+          <input className="value-input small" type="number" min={0} step={0.5} value={timeGoal.on ? timeGoal.weight.value : 1} disabled={loop.running}
+            onChange={(e) => { const v = Number(e.target.value); if (Number.isFinite(v) && v >= 0) setTimeGoal({ on: true, weight: { ...timeGoal.weight, text: String(v), value: v } }); }} />
+          <span className="muted small-text">0 = time ignored · 1: 1 % faster = 1 point</span>
         </div>
       )}
       <div className="jm-row" title="Geometry rounds: local from your design, or wide (several starts from a design of experiments, keeping the best)">

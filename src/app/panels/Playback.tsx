@@ -13,7 +13,7 @@ import type { Severity } from '../../core/tests/checks';
 import { CORNER_IDS } from '../../core/vehicle/vehicle';
 import { useApp } from '../store';
 import { buildVehicleProblem, runPlaybackJob } from '../optimizer';
-import { segmentSpec, plannedSpeeds, type TestDesign } from '../tests';
+import { segmentSpec, plannedSpeeds, driverSpeedOf, type TestDesign } from '../tests';
 import { useRun } from './TestsPanels';
 import { useDisplay } from '../units';
 import { fmt } from './FieldRows';
@@ -105,7 +105,7 @@ async function computeFrames(test: TestDesign) {
       const k = r?.drivenScale ?? (r?.lifted && r.speedLimit && r.speedLimit > 0 ? r.speedLimit : 1);
       return k < 1 ? { ...spec, v0: spec.v0 * k, v1: spec.v1 * k } : spec;
     });
-    const frames = reuse ?? await runPlaybackJob(problem, specs, test.ride !== false, handling, handling && !!test.driverSpeed).done;
+    const frames = reuse ?? await runPlaybackJob(problem, specs, test.ride !== false, handling, handling && driverSpeedOf(test)).done;
     usePlayback.setState({ frames, computing: false, t: 0 });
     if (frames[0]) applyFrame(frames[0]);
     return frames;

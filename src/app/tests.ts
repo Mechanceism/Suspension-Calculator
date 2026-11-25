@@ -111,6 +111,13 @@ const GRIP_ONLY = { speedMode: 'grip' as const, gripTarget: 0.95 };
 
 /** The speeds are planned by the driver (speeds as maximums or grip only). */
 export const plannedSpeeds = (t: Pick<TestDesign, 'speedMode'>) => t.speedMode === 'max' || t.speedMode === 'grip';
+/**
+ * The driver works the pedals: always with planned speeds (round 4: the test's time is how long the car took as
+ * driven, within its tires and powertrain each moment, not the plan's), else when ticked. Needs the driver
+ * steering over time.
+ */
+export const driverSpeedOf = (t: Pick<TestDesign, 'speedMode' | 'driverSpeed' | 'ride' | 'handling'>) =>
+  t.ride !== false && t.handling !== false && (plannedSpeeds(t) || !!t.driverSpeed);
 /** Grip only: the straights' top speed (m/s) — the test's own, else its highest set speed. */
 export function topSpeedOf(t: Pick<TestDesign, 'topSpeed' | 'segments'>): number {
   if (t.topSpeed && Number.isFinite(t.topSpeed.value) && t.topSpeed.value > 0) return t.topSpeed.value;

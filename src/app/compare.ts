@@ -7,7 +7,7 @@
 import { create } from 'zustand';
 import { useApp, pickDesign, type AppState, type DesignState } from './store';
 import { buildVehicleProblem, runTestJob } from './optimizer';
-import { planOption, segmentSpec, type TestDesign } from './tests';
+import { planOption, segmentSpec, driverSpeedOf, type TestDesign } from './tests';
 import { POOL_SIZE, runLimited } from './workerPool';
 import { withDesign } from './designOverride';
 import { serializeProject } from './project';
@@ -104,7 +104,7 @@ export async function runCompare(snap: Snapshot): Promise<void> {
   try {
     await runLimited(jobs, POOL_SIZE, async ({ row, model, test }) => {
       const job = runTestJob(problems[model], test.segments.map((sg) => segmentSpec(sg, test)), {
-        onFail: test.onFail, speedLimits: true, ride: test.ride !== false, handling: test.ride !== false && test.handling !== false, driverSpeed: !!test.driverSpeed, ...planOption(test),
+        onFail: test.onFail, speedLimits: true, ride: test.ride !== false, handling: test.ride !== false && test.handling !== false, driverSpeed: driverSpeedOf(test), ...planOption(test),
       });
       cancels.add(job.cancel);
       try {

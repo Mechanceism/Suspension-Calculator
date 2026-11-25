@@ -55,7 +55,10 @@ export interface SegmentResult {
   drivenScale?: number;
   /** Passes as steady states but fails over time (ride: bumps, transients). */
   rideFail?: boolean;
-  /** Speeds as maximums: the speeds it was planned at, how (the way of taking it and the grip target), and its time (s). */
+  /** Planned speeds: what it was planned at, how (the way of taking it and the grip target), and its time (s): as
+   * driven when the pedal driver drove it (`driven`), else the plan's; `plannedTime` the plan's. */
+  plannedTime?: number;
+  driven?: boolean;
   plan?: SegmentPlan;
   approach?: PlanShape;
   gripTarget?: number;
@@ -104,8 +107,10 @@ export interface TestRun {
   brakeUse?: { front: number; rear: number; pedal?: number; strokeUse?: number };
   /** Shimmy check: the fastest speed tried where the wheels kept wobbling (and with which parts). */
   shimmy?: { speed: number; worn: boolean; fresh: boolean };
-  /** Speeds as maximums: the planned time over the whole test (s) and its distance (m). */
+  /** Planned speeds: the test's time (s) — as driven when the pedal driver drove it (`driven`), else the plan's — the plan's (`plannedTime`), and its distance (m). */
   time?: number;
+  plannedTime?: number;
+  driven?: boolean;
   distance?: number;
   /** Planned speeds: what the test asks of the powertrain over the whole test (F7; each segment's is on it). */
   power?: PowerUse;
@@ -548,6 +553,8 @@ export function runTest(
     segs.push(res);
   });
   let ride: TestRun['ride'];
+  // With the pedal driver: how long each segment took as driven (the test's time is that, not the plan's).
+  let drivenTimes: (number | undefined)[] | undefined;
   if (opts.ride) {
     // Driver lifts: over time the segments are driven at the speed scale that passed the steady check, and a
     // segment still failing over time (running wide, sliding, spinning, lifting a wheel) is driven 12 % slower
@@ -567,6 +574,7 @@ export function runTest(
       scale.forEach((sc, i) => { if (sc < 1 && segs[i]) { segs[i]!.drivenScale = sc; segs[i]!.speedLimit = Math.min(segs[i]!.speedLimit ?? 1, sc); } });
     }
     ride = { frames: withBrakeTemps(p, rr.frames), metrics: rr.metrics, ...(rr.error ? { error: rr.error } : {}) };
+    if (opts.handling && opts.driverSpeed && !rr.error) drivenTimes = rr.times;
     segs.forEach((sr, i) => {
       // Add what only shows over time (the steady samples already report the rest).
       const steadyKeys = new Set(sr.findings.map((f) => `${f.check}|${(f.corners ?? []).join(',')}`));
@@ -605,6 +613,7 @@ export function runTest(
   }
   // Speeds as maximums: how each segment was taken, and a finding where the grip target had to come down.
   let time: number | undefined;
+  let plannedTime = 0;
   if (opts.plan && segments.every((sg) => sg.plan)) {
     time = 0;
     const pct = (x: number) => `${Math.round(x * 100)} %`;
@@ -612,8 +621,14 @@ export function runTest(
       const sg = segments[i]!, t = tryOf(i);
       sr.plan = sg.plan; sr.approach = t.shape; sr.gripTarget = t.target;
       if (tries[i]?.capped) sr.capped = true;
-      sr.time = planDuration(sg.plan!);
+      // The time it took as driven (the pedal driver, within the tires and the powertrain as they are each
+      // moment), else the plan's; the plan's is kept beside it.
+      sr.plannedTime = planDuration(sg.plan!);
+      const driven = drivenTimes?.[i];
+      sr.time = driven !== undefined && Number.isFinite(driven) && driven > 0 ? driven : sr.plannedTime;
+      if (driven !== undefined) sr.driven = true;
       time! += sr.time;
+      plannedTime += sr.plannedTime;
       // (The grip target is shown as the driver's push: how much of the tires' grip the driver plans to use.)
       const lowest = tries[i]?.lowest;
       const tried = lowest !== undefined && lowest < t.target - 1e-9 ? `; slowing down more didn't help (tried down to ${pct(lowest)})` : '';
@@ -642,7 +657,7 @@ export function runTest(
   return {
     ...(power ? { power } : {}),
     severity, passed: severity !== 'fail', states, segments: segs, ...(ride ? { ride } : {}), ...(brakeUse ? { brakeUse } : {}), ...(shimmy ? { shimmy } : {}),
-    ...(time !== undefined ? { time, distance: segments.reduce((a, sg) => a + sg.distance, 0) } : {}),
+    ...(time !== undefined ? { time, plannedTime, driven: segs.some((s) => s.driven), distance: segments.reduce((a, sg) => a + sg.distance, 0) } : {}),
   };
 }
 

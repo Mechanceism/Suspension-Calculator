@@ -23,7 +23,7 @@ import { buildVehicleProblem, runVehicleOptimizer, runTestJob, runRatesJob, desi
 import { testScore as coreTestScore, isUnfixable as coreUnfixable } from '../core/tests/score';
 import type { RateVar, RateTest, RateProgress } from '../core/optimize/rates';
 import { lockKeys } from './locks';
-import { planOption, rankWeight, segmentSpec, type TestDesign } from './tests';
+import { planOption, rankWeight, segmentSpec, driverSpeedOf, plannedSpeeds, type TestDesign } from './tests';
 import { pointAxisLocked } from './locks';
 import { startTestRun, runTestsTogether, useRun } from './panels/TestsPanels';
 import { POOL_SIZE, runLimited } from './workerPool';
@@ -138,7 +138,8 @@ const smallGain = (a: number, b: number): string[] => (a > 0 && (a - b) / a < 0.
 
 /** Lower is better: fixable Fail findings dominate, then grip use over the limit, then (improve) average grip use, plus the ride measures. */
 /** The Test time goal (speeds as maximums): its weight (0 = off), and each test's time when the optimizing began. */
-const timeWeight = () => { const g = useApp.getState().vehicleOptimizer.goals.testTime; return g?.on ? Math.max(0, g.weight.value) : 0; };
+// Lap tests (planned speeds) are always scored on their time (F9): weight 1 unless set (0 = time ignored).
+const timeWeight = () => { const g = useApp.getState().vehicleOptimizer.goals.testTime; return g?.on ? Math.max(0, g.weight.value) : 1; };
 const timeRefs = new Map<string, number>();
 export const testScore = (r: TestRun, mode: 'pass' | 'improve' | 'explore', testId?: string): number => {
   const w = timeWeight();
@@ -219,7 +220,12 @@ export async function tuneSpringsDampers(scope: Scope, active: TestDesign | null
     return null;
   }
   const rateTests: RateTest[] = tests.map((t) => ({
-    segments: t.segments.map((sg) => segmentSpec(sg, t)), weight: tests.length > 1 ? rankWeight(t.rank, tests.length) : 1, onFail: t.onFail, handling: t.handling !== false, driverSpeed: t.handling !== false && !!t.driverSpeed, ...planOption(t, false),
+    segments: t.segments.map((sg) => segmentSpec(sg, t)), weight: tests.length > 1 ? rankWeight(t.rank, tests.length) : 1, onFail: t.onFail, handling: t.handling !== false, driverSpeed: driverSpeedOf(t), ...planOption(t, false),
+    // Lap tests: the springs and dampers are judged on the driven time too, against the last run's.
+    ...((): { time?: { weight: number; ref: number } } => {
+      const ref = useRun.getState().results[t.id]?.result.time;
+      return plannedSpeeds(t) && ref && ref > 0 && timeWeight() > 0 ? { time: { weight: timeWeight(), ref } } : {};
+    })(),
   }));
   const { problem } = buildVehicleProblem(s);
   let last: RateProgress | null = null;

@@ -36,9 +36,9 @@ export const isLeft = (id: CornerId) => id === 'FL' || id === 'RL';
 const G = 9.80665;
 
 /**
- * none / outboard (at the wheel) / inboard (on the chassis, one per side) — a brake on each wheel — or
- * driveline: one brake for the axle, acting through its differential (a mower's transaxle brake, a kart's disc
- * on its solid axle); reacted by the chassis like an inboard brake (round 5).
+ * none / outboard (at the wheel) / inboard (on the chassis, one per side) — a brake at each corner — or
+ * driveline: before the differential, one transaxle brake for the axle (a riding mower's), shared by the
+ * differential as it shares the drive; reacted by the chassis like an inboard brake (round 5).
  */
 export type BrakeMount = 'none' | 'outboard' | 'inboard' | 'driveline';
 /** The brake torque goes into the chassis (inboard or through the driveline): the braking force acts at the wheel center. */
@@ -580,7 +580,7 @@ export interface VehicleSolveOptions {
  * Within an axle, the braking split (shares of the axle's force, summing to 1) as the wheels and brakes really
  * share it (round 5): with ABS each wheel brakes up to its own grip (by load); without ABS a brake on each wheel
  * gets the same line pressure — the same force — unless the wheels are tied together (a driven axle's locked or
- * limited-slip differential: by load, the limited-slip within its bias); one brake through the differential is
+ * limited-slip differential: by load, the limited-slip within its bias); a brake before the differential is
  * shared as the differential shares the drive (open: equal; locked: by load; limited-slip: within its bias).
  * (It was by load in every case, as only ABS does.)
  */

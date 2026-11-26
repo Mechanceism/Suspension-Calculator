@@ -680,7 +680,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
             if (ids.length < 2) return sum;
             if (which === 'brake') {
               // Braking as the wheels and brakes really share it (round 5; it was 2 × the lighter wheel for every
-              // axle without ABS, right only for one brake through an open differential).
+              // axle without ABS, right only for a brake before an open differential).
               if (ids.every((id) => byId[id].abs !== false)) return sum;
               const through = ids.some((id) => byId[id].brake === 'driveline');
               const driven = ids.some((id) => byId[id].drive === 'chassis');
@@ -689,7 +689,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
               // Tied together (a locked axle / differential): both wheels' braking combined; limited-slip: within its bias.
               if (tied === 'locked') return sum;
               if (tied === 'lsd') return Math.min(sum, (1 + 2.5) * least);
-              // One brake through an open differential: equal torque, the easier wheel limits it (a wheel in the
+              // A brake before an open differential (transaxle brake): equal torque, the easier wheel limits it (a wheel in the
               // air spins backwards and the other gets almost nothing).
               if (through) return 2 * least;
               // A brake on each wheel: the same force on both; the driver brakes until the first wheel carrying real

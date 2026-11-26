@@ -26,7 +26,7 @@
 export interface BrakeAxle {
   /** Disc (caliper on a rotor) or drum (shoes in a drum). Default disc. */
   kind?: 'disc' | 'drum';
-  /** Rotors / drums on the axle: 2 (one per wheel, default) or 1 (one brake through the differential, round 5). */
+  /** Rotors / drums on the axle: 2 (one per wheel, default) or 1 (a brake before the differential, round 5). */
   rotors?: number;
   /** Master cylinder bore, mm. */
   mcBore: number;

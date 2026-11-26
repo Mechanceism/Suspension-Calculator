@@ -33,14 +33,13 @@ describe('braking split within an axle', () => {
   });
 });
 
-describe('one brake through the differential', () => {
-  it('the mower and the kart have it on the rear; it counts one rotor for the axle', () => {
-    for (const id of ['mower', 'kart']) {
-      const d = carProfileDesign(id);
-      expect(d.settings.RL.brake).toBe('driveline');
-      expect(d.settings.RR.brake).toBe('driveline');
-      expect(d.settings.FL.brake).toBe('none');
-    }
+describe('a brake before the differential (transaxle brake)', () => {
+  it('the mower has it on the rear (a transaxle brake); the kart brakes per corner on its locked axle; one rotor counted', () => {
+    const m = carProfileDesign('mower');
+    expect(m.settings.RL.brake).toBe('driveline');
+    expect(m.settings.RR.brake).toBe('driveline');
+    expect(m.settings.FL.brake).toBe('none');
+    expect(carProfileDesign('kart').settings.RL.brake).toBe('outboard');
     const d = { ...defaultDesign() } as unknown as AppState;
     const on = { ...d, brakes: { ...d.brakes, on: true } } as AppState;
     const two = brakesOf(on)!;

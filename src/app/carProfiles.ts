@@ -65,7 +65,7 @@ export interface CarProfileSpec {
   /** Driven / braked axles. */
   drive: 'front' | 'rear' | 'all';
   brakes: 'all' | 'rear';
-  /** The rear brake is one brake through the differential / solid axle (a mower's transaxle brake, a kart's disc on its axle). */
+  /** The rear brake is before the differential: one transaxle brake for the axle (a riding mower's). */
   rearDriveline?: boolean;
   abs: boolean;
   diff: CornerSettings['diff'];
@@ -116,7 +116,7 @@ export const CAR_PROFILES: CarProfileSpec[] = [
     hint: 'No real suspension: very stiff springs stand in for the frame flex. A solid rear axle with no differential, rear brake only, 5 in wheels, 165 kg with the driver.',
     front: { layout: SAMPLE_LAYOUTS.find((l) => l.id === 'C')!.geometry, halfTrack: 540, tire: { diameter: 254, width: 114, rim: 127, text: '10x4.50-5', pressure: 75 }, unsprung: 3, rideHz: 9, zeta: 0.2, camber: -1 },
     rear: { layout: SAMPLE_BEAM4, halfTrack: 600, tire: { diameter: 279, width: 180, rim: 127, text: '11x7.10-5', pressure: 75 }, unsprung: 6, rideHz: 9, zeta: 0.2, camber: 0 },
-    mass: 165, cgHeight: 260, frontShare: 0.42, wheelbase: 1040, brakeBias: 0, driveSplit: 0, drive: 'rear', brakes: 'rear', rearDriveline: true, abs: false, diff: 'locked',
+    mass: 165, cgHeight: 260, frontShare: 0.42, wheelbase: 1040, brakeBias: 0, driveSplit: 0, drive: 'rear', brakes: 'rear', abs: false, diff: 'locked',
     inertia: [8, 14, 18], droop: 10, bump: 10, rack: [60, 25], bars: [0, 0],
     // A 206 cc four-stroke kart engine (≈ 9 hp), a centrifugal clutch, 18 : 60 chain drive.
     engine: { torque: 12.5, torqueRpm: 3800, power: 6.7, powerRpm: 5600, redline: 6100, idle: 1800, clutch: 2400, ratio: 60 / 18, efficiency: 92 },

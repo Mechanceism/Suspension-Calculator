@@ -108,17 +108,17 @@ export function CornerSetup({ compact = false }: { compact?: boolean }) {
         <span className="muted">Brake</span>
         <select
           value={settings[active].brake} onChange={(e) => {
-            // One brake through the differential is the axle's: both of its corners take it (and leave it) together.
+            // A brake before the differential is the axle's: both of its corners take it (and leave it) together.
             const v = e.target.value as BrakeMount;
             const partner = ({ FL: 'FR', FR: 'FL', RL: 'RR', RR: 'RL' } as const)[active];
             setCornerSetting(active, 'brake', v);
             if (v === 'driveline' || settings[partner].brake === 'driveline') setCornerSetting(partner, 'brake', v);
           }}
-          title="Outboard: brake torque goes into the upright (force acts at the contact patch). Inboard: into the chassis (force acts at the wheel center). Both are a brake on each wheel: without ABS both get the same force and the lighter wheel locks first. Through the differential: one brake for the axle (a mower's transaxle brake, a kart's disc on its axle), shared as the differential shares the drive — open: the easier wheel limits it (a wheel in the air spins backwards); locked: both wheels combined."
+          title="Outboard: brake torque goes into the upright (force acts at the contact patch). Inboard: into the chassis (force acts at the wheel center). Both are a brake at each corner: without ABS both wheels of an axle get the same force, and the differential ties the sides — open: separate (the lighter wheel locks first, a wheel in the air locks harmlessly); locked: the two sides' braking added together; limited-slip: together up to its bias, then separate. Before the differential (a transaxle brake, e.g. a riding mower's): one brake for the axle, shared as the differential shares the drive — open: the easier wheel limits it (a wheel in the air spins backwards and the other gets almost nothing); locked: both sides combined."
         >
           <option value="outboard">Outboard (at the wheel)</option>
           <option value="inboard">Inboard (on the chassis)</option>
-          <option value="driveline">One brake through the differential (the axle's)</option>
+          <option value="driveline">Before the differential (transaxle brake)</option>
           <option value="none">None</option>
         </select>
         {settings[active].brake !== 'none' && (

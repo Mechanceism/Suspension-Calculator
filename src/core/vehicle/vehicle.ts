@@ -35,7 +35,14 @@ export const isLeft = (id: CornerId) => id === 'FL' || id === 'RL';
 
 const G = 9.80665;
 
-export type BrakeMount = 'none' | 'outboard' | 'inboard';
+/**
+ * none / outboard (at the wheel) / inboard (on the chassis, one per side) — a brake at each corner — or
+ * driveline: before the differential, one transaxle brake for the axle (a riding mower's), shared by the
+ * differential as it shares the drive; reacted by the chassis like an inboard brake (round 5).
+ */
+export type BrakeMount = 'none' | 'outboard' | 'inboard' | 'driveline';
+/** The brake torque goes into the chassis (inboard or through the driveline): the braking force acts at the wheel center. */
+export const brakeOnChassis = (b: BrakeMount | undefined) => b === 'inboard' || b === 'driveline';
 /**
  * Drive for a powered corner. chassis: diff on the chassis, torque through a halfshaft, so the
  * drive force acts at the wheel center. hub: hub motor, torque reacted by the upright, so the force
@@ -59,7 +66,8 @@ export interface VehicleCorner {
   tire: { profile: TireProfile; model: TireForceModel; grip?: TireGrip };
   /**
    * Brake mounting. Outboard: the brake torque is reacted by the upright, so the braking force acts
-   * at the contact patch. Inboard: reacted by the chassis, so it acts at the wheel center.
+   * at the contact patch. Inboard: reacted by the chassis, so it acts at the wheel center. Driveline: one
+   * brake for the axle through its differential (both corners of the axle), reacted by the chassis.
    */
   brake?: BrakeMount;
   drive?: DriveMount;
@@ -216,7 +224,35 @@ export interface VehicleInput {
   diff?: { front?: DiffType; rear?: DiffType };
   /** Limited-slip torque bias ratio (default 2.5). */
   lsdBias?: number;
+  /**
+   * Round 5: driving and braking at once (by driving style — the drift handbrake, the rally driver's left foot, the
+   * drag line-lock): on top of what the pedals net to (accelG / brakingG), more drive on the powered wheels, more
+   * braking through the pedal (shared by the bias) or on given wheels (a handbrake / line-lock), and the drive cut
+   * from given wheels (clutch in). The car's acceleration stays accelG − brakingG: the extra drive and braking
+   * cancel or are part of it (`net`, N: what the overlap adds to the tires' push — already in accelG / brakingG).
+   */
+  overlap?: Overlap;
+  /**
+   * Brake-based traction control (per car, off by default): on an open-differential axle a wheel spinning past
+   * its grip is braked, so the differential sends the drive to the other — the axle gives up to both wheels' grip
+   * (by load) instead of twice the lighter one's.
+   */
+  brakeTC?: boolean;
 }
+
+export interface Overlap {
+  /** More drive on the powered wheels (split as the pedal's), N. */
+  drive?: number;
+  /** More braking through the pedal (shared by the bias), N. */
+  pedalBrake?: number;
+  /** Braking on given wheels (a handbrake, a line-lock), N each. */
+  brake?: Partial<Record<CornerId, number>>;
+  /** Wheels the drive is cut from (clutch in): the others take it. */
+  cut?: CornerId[];
+}
+/** What an overlap adds to the tires' push along the road, N (+ forward). */
+export const overlapNet = (o: Overlap | undefined) =>
+  o ? (o.drive ?? 0) - (o.pedalBrake ?? 0) - Object.values(o.brake ?? {}).reduce((a, b) => a + (b ?? 0), 0) : 0;
 
 export type SlipState = 'grip' | 'sliding' | 'abs-limit' | 'locked' | 'wheelspin';
 
@@ -408,7 +444,7 @@ export function cornerWork(
 ) {
   const pl = placement(c.id, input.wheelbase);
   const P = poseFns(pose);
-  const inboard = c.brake === 'inboard';
+  const inboard = brakeOnChassis(c.brake);
   const hub = c.drive === 'hub';
   const s: CornerSampleAt & Partial<Pick<AxleSampleAt, 'dwcX' | 'dcpmX' | 'dLX'>> = c.axle ? c.axle.table.at(c.axle.side, q, qOther) : c.table.at(q);
   const wc = P.point(pl.point(s.wc));
@@ -568,7 +604,29 @@ export interface VehicleSolveOptions {
   maxIterations?: number;
 }
 
-/** Braking-force shares: front axle gets the bias, split within each axle by tire load among braked corners. */
+/**
+ * Within an axle, the braking split (shares of the axle's force, summing to 1) as the wheels and brakes really
+ * share it (round 5): with ABS each wheel brakes up to its own grip (by load); without ABS a brake on each wheel
+ * gets the same line pressure — the same force — unless the wheels are tied together (a driven axle's locked or
+ * limited-slip differential: by load, the limited-slip within its bias); a brake before the differential is
+ * shared as the differential shares the drive (open: equal; locked: by load; limited-slip: within its bias).
+ * (It was by load in every case, as only ABS does.)
+ */
+export function brakeSplit(input: VehicleInput, l: CornerId, r: CornerId, loads: Record<CornerId, number>): [number, number] {
+  const cl = input.corners.find((c) => c.id === l), cr = input.corners.find((c) => c.id === r);
+  const braked = [cl, cr].map((c) => !!c && (c.brake ?? 'outboard') !== 'none');
+  if (!braked[0] || !braked[1]) return braked[0] ? [1, 0] : braked[1] ? [0, 1] : [0.5, 0.5];
+  const byLoad = (): [number, number] => { const a = Math.max(0, loads[l]), b = Math.max(0, loads[r]); return a + b > 0 ? [a / (a + b), b / (a + b)] : [0.5, 0.5]; };
+  if (cl!.abs !== false && cr!.abs !== false) return byLoad();
+  const front = isFront(l);
+  const driven = [cl, cr].some((c) => (c!.drive ?? 'none') === 'chassis');
+  const throughDiff = cl!.brake === 'driveline' || cr!.brake === 'driveline';
+  const diff: DiffType = (front ? input.diff?.front : input.diff?.rear) ?? 'open';
+  // The wheels are tied together only through a differential that isn't open (on a driven axle or a driveline brake).
+  return diffSplit(driven || throughDiff ? diff : 'open', loads[l], loads[r], input.lsdBias ?? 2.5);
+}
+
+/** Braking-force shares: front axle gets the bias, split within each axle by brakeSplit among braked corners. */
 function brakeShares(input: VehicleInput, loads: Record<CornerId, number>): Record<CornerId, number> {
   const out: Record<CornerId, number> = { FL: 0, FR: 0, RL: 0, RR: 0 };
   const braked = (id: CornerId) => (input.corners.find((c) => c.id === id)?.brake ?? 'outboard') !== 'none';
@@ -579,8 +637,8 @@ function brakeShares(input: VehicleInput, loads: Record<CornerId, number>): Reco
   if (axleLoad(front) <= 0) bias = 0;
   if (axleLoad(rear) <= 0) bias = axleLoad(front) > 0 ? 1 : bias;
   for (const [ids, share] of [[front, bias], [rear, 1 - bias]] as const) {
-    const total = axleLoad(ids);
-    for (const id of ids) out[id] = total > 0 && braked(id) ? (share * Math.max(0, loads[id])) / total : 0;
+    const [a, b] = brakeSplit(input, ids[0], ids[1], loads);
+    out[ids[0]] = share * a; out[ids[1]] = share * b;
   }
   return out;
 }
@@ -679,7 +737,9 @@ export function forceSetup(input: VehicleInput): ForceSetup {
     : undefined;
   // Rolling resistance: the tires' own drag (load × coefficient), pushed against like the air's.
   const rolling = Math.max(0, input.rollingResistance ?? 0) * gs;
-  const tireNet = (input.accelG ?? 0) - (input.brakingG ?? 0) + drag / (input.totalMass * G) + rolling - (hitch ? hitch.force.z / (input.totalMass * G) : 0);
+  // (Round 5: the pedals' part — what an overlap of drive and braking adds is taken out here and added back below.)
+  const tireNet = (input.accelG ?? 0) - (input.brakingG ?? 0) + drag / (input.totalMass * G) + rolling - (hitch ? hitch.force.z / (input.totalMass * G) : 0)
+    - overlapNet(input.overlap) / (input.totalMass * G);
   let brakingG = Math.max(0, -tireNet);
   const powered = input.corners.filter((c) => (c.drive ?? 'none') !== 'none');
   const braked = input.corners.filter((c) => (c.brake ?? 'outboard') !== 'none');
@@ -695,16 +755,19 @@ export function forceSetup(input: VehicleInput): ForceSetup {
     brakingG = 0;
     unmet.brake = true;
   }
-  const brakeTotal = input.totalMass * brakingG * G; // magnitude; acts rearward (−Z) on the tires
-  const driveTotal = input.totalMass * accelG * G; // acts forward (+Z) on the powered tires
+  const ov = input.overlap;
+  const brakeTotal = input.totalMass * brakingG * G + (braked.length ? Math.max(0, ov?.pedalBrake ?? 0) : 0); // magnitude; acts rearward (−Z) on the tires
+  const driveTotal = input.totalMass * accelG * G + (powered.length ? Math.max(0, ov?.drive ?? 0) : 0); // acts forward (+Z) on the powered tires
   // Inertia follows the car's acceleration (what the tires can't deliver is flagged as unmet).
   const aZ = unmet.accel || unmet.brake ? (accelG - brakingG - rolling) * G - drag / input.totalMass : kinematicZ;
   // Drive shares: front/rear by the split (or all to the only powered axle), equal per powered
   // wheel within an axle (open differential).
   const driveShares: Record<CornerId, number> = { FL: 0, FR: 0, RL: 0, RR: 0 };
   {
-    const fp = powered.filter((c) => isFront(c.id));
-    const rp = powered.filter((c) => !isFront(c.id));
+    // (Wheels with the drive cut — a handbrake with the clutch in — take none: the others take it all.)
+    const live = powered.filter((c) => !ov?.cut?.includes(c.id));
+    const fp = live.filter((c) => isFront(c.id));
+    const rp = live.filter((c) => !isFront(c.id));
     const split = fp.length && rp.length ? Math.min(1, Math.max(0, input.driveSplit ?? 0.5)) : fp.length ? 1 : 0;
     for (const c of fp) driveShares[c.id] = split / fp.length;
     for (const c of rp) driveShares[c.id] = (1 - split) / rp.length;
@@ -760,10 +823,21 @@ export function tireForcesFor(input: VehicleInput, fs: ForceSetup, loads: Record
         continue;
       }
     }
+    // Brake traction control on an open differential: equal drive (as the differential gives it) until the lighter
+    // wheel is at its grip; past that it is braked to hold it there and the rest goes to the other, up to its grip.
+    if (diffOf(front) === 'open' && input.brakeTC && caps) {
+      const D = fs.driveTotal * axleShare, half = D / 2;
+      const cl = Math.max(0, caps[l].x), cr = Math.max(0, caps[r].x);
+      if (half > Math.min(cl, cr)) {
+        if (cl <= cr) { lockedDrive[l] = cl; lockedDrive[r] = Math.min(D - cl, cr); }
+        else { lockedDrive[r] = cr; lockedDrive[l] = Math.min(D - cr, cl); }
+        continue;
+      }
+    }
     const [a, b] = diffSplit(diffOf(front), loads[l], loads[r], input.lsdBias ?? 2.5);
     dShares[l] = axleShare * a; dShares[r] = axleShare * b;
   }
-  const brakeF = (id: CornerId) => -fs.brakeTotal * bShares[id];
+  const brakeF = (id: CornerId) => -fs.brakeTotal * bShares[id] - Math.max(0, input.overlap?.brake?.[id] ?? 0);
   const driveF = (id: CornerId) => lockedDrive[id] ?? fs.driveTotal * dShares[id];
   const lat: Record<CornerId, number> = { FL: 0, FR: 0, RL: 0, RR: 0 };
   for (const [l, r, share] of [['FL', 'FR', fs.frontLatShare], ['RL', 'RR', 1 - fs.frontLatShare]] as const) {

@@ -20,6 +20,8 @@ export const G = 9.80665;
 
 export type PathKind = 'straight' | 'left' | 'right';
 
+export type DrivingStyle = 'drift' | 'rally' | 'drag';
+
 export interface SegmentSpec {
   name?: string;
   /** Segment length, m. */
@@ -36,8 +38,18 @@ export interface SegmentSpec {
   longG?: number | null;
   /** Coast: no throttle and no brakes; with the driver working the pedals the speed follows the forces (drag, grade, rolling resistance, bumps). */
   coast?: boolean;
-  /** Road grade, rad (+ = uphill). */
+  /**
+   * Round 5: the driving style (from the test's, by default its pass rules): drift — the handbrake into the turns;
+   * rally — left-foot braking into turns and crests; drag — the line-lock before the launch. Absent: one pedal at a time.
+   */
+  style?: DrivingStyle;
+  /** Road grade, rad (+ = uphill); with `gradeEnd`, the grade at its start. */
   grade: number;
+  /**
+   * A transition (round 5): the grade at its end, rad — the grade changes evenly along the segment from `grade` to
+   * this (a vertical curve of radius distance ÷ (gradeEnd − grade)). Absent: one grade all along.
+   */
+  gradeEnd?: number;
   /** Road bank, rad (+ = left side lower). */
   bank: number;
   /** Ground height change under each wheel, mm (+ bump, − pothole). */
@@ -52,6 +64,35 @@ export interface SegmentSpec {
    */
   plan?: SegmentPlan;
 }
+
+/** The road's grade at distance x along a segment, rad (a transition's changes evenly from start to end). */
+export function gradeAlong(s: Pick<SegmentSpec, 'grade' | 'gradeEnd' | 'distance'>, x: number): number {
+  if (s.gradeEnd === undefined || !(s.distance > 0)) return s.grade;
+  return s.grade + (s.gradeEnd - s.grade) * Math.min(1, Math.max(0, x / s.distance));
+}
+/** The road's rise from a segment's start to distance x along it, m. */
+export function heightAlong(s: Pick<SegmentSpec, 'grade' | 'gradeEnd' | 'distance'>, x: number): number {
+  const k = vertCurvature(s);
+  if (Math.abs(k) < 1e-12) return x * Math.sin(s.grade);
+  const X = Math.min(Math.max(0, x), s.distance);
+  // ∫ sin(γ₀ + k·t) dt over the curve, then straight on at its end grade.
+  return (Math.cos(s.grade) - Math.cos(s.grade + k * X)) / k + Math.max(0, x - s.distance) * Math.sin(s.gradeEnd ?? s.grade);
+}
+/** A segment's vertical curvature, 1/m (+ = a dip, − = a crest; 0 for one grade). */
+export function vertCurvature(s: Pick<SegmentSpec, 'grade' | 'gradeEnd' | 'distance'>): number {
+  return s.gradeEnd === undefined || !(s.distance > 0) ? 0 : (s.gradeEnd - s.grade) / s.distance;
+}
+
+/**
+ * Over a transition's crest at speed the tires can be left with almost no load (the car going light, or flying):
+ * a steady state means nothing there and is skipped — the ride over time judges it (wheel lift, the landing).
+ * True when the road's push on the car (in g, normal to it) is under LIGHT_G.
+ */
+export const LIGHT_G = 0.15;
+const tooLight = (s: SegmentSpec, ay: number, ax: number, grade: number, v: number) => {
+  const vertG = (v * v * vertCurvature(s)) / G;
+  return vertG < 0 && Math.cos(s.bank) * Math.cos(grade) + ay * Math.sin(s.bank) - ax * Math.sin(grade) + vertG < LIGHT_G;
+};
 
 /** The speed at distance s along a segment (its plan, or v₀ → v₁ at constant acceleration). */
 export function speedAlong(s: SegmentSpec, at: number): number {
@@ -116,11 +157,13 @@ export function segmentLatG(s: SegmentSpec, v: number): number {
  *   normal (pressing the car on the road) = cos θ·cos φ + a_y·sin θ − a_x·sin φ
  * so turning on a bank toward the inside both needs less side grip and pushes the car into the road.
  */
-export function roadEffective(ay: number, ax: number, grade: number, bank: number) {
+export function roadEffective(ay: number, ax: number, grade: number, bank: number, vertG = 0) {
   const ct = Math.cos(bank), st = Math.sin(bank), cp = Math.cos(grade), sp = Math.sin(grade);
   const lateralG = ay * ct - st * cp;
   const along = ax * cp + sp;
-  const normal = Math.max(0.05, ct * cp + ay * st - ax * sp);
+  // vertG: the path's own vertical acceleration, g (u²·κ over a transition: + in a dip, − over a crest — the car
+  // goes light there, round 5).
+  const normal = Math.max(0.05, ct * cp + ay * st - ax * sp + vertG);
   return { lateralG, accelG: Math.max(0, along), brakingG: Math.max(0, -along), gravityScale: normal };
 }
 
@@ -138,10 +181,14 @@ export function segmentStates(s: SegmentSpec, index: number, speedScale = 1, dim
     const v = n === 1 ? v0 : v0 + ((v1 - v0) * i) / (n - 1);
     let ay = segmentLatG(scaled, v);
     if (s.latG !== null && s.latG !== undefined && Number.isFinite(s.latG)) ay *= speedScale * speedScale;
-    const eff = roadEffective(ay, ax, s.grade, s.bank);
+    // (A transition: the grade where this sample is — along the segment as its speed is — and the curve's lift.)
+    const x = n === 1 ? s.distance / 2 : (s.distance * i) / (n - 1);
+    const gr = gradeAlong(s, x);
+    if (tooLight(s, ay, ax, gr, v)) continue;
+    const eff = roadEffective(ay, ax, gr, s.bank, (v * v * vertCurvature(s)) / G);
     out.push({
       name: `${index + 1}${n > 1 ? `.${i + 1}` : ''}`, segment: index, speed: v, ay, ax,
-      ...eff, groundOffset: { ...(s.bumps ?? {}) }, grade: s.grade, bank: s.bank,
+      ...eff, groundOffset: { ...(s.bumps ?? {}) }, grade: gr, bank: s.bank,
     });
   }
   // Rough road / bumps: the worst spots along the segment, at the speed the car has there.
@@ -152,6 +199,7 @@ export function segmentStates(s: SegmentSpec, index: number, speedScale = 1, dim
       const v = Math.sqrt(Math.max(0, v0 * v0 + (v1 * v1 - v0 * v0) * frac));
       let ay = segmentLatG(scaled, v);
       if (s.latG !== null && s.latG !== undefined && Number.isFinite(s.latG)) ay *= speedScale * speedScale;
+      if (tooLight(s, ay, ax, gradeAlong(s, at), v)) return;
       const h = wheelHeights(s.road!, at, wb, ht);
       const ground: Partial<Record<CornerId, number>> = {};
       for (const id of ['FL', 'FR', 'RL', 'RR'] as CornerId[]) {
@@ -160,7 +208,7 @@ export function segmentStates(s: SegmentSpec, index: number, speedScale = 1, dim
       }
       out.push({
         name: `${index + 1}.r${k + 1}`, segment: index, speed: v, ay, ax, at,
-        ...roadEffective(ay, ax, s.grade, s.bank), groundOffset: ground, grade: s.grade, bank: s.bank,
+        ...roadEffective(ay, ax, gradeAlong(s, at), s.bank, (v * v * vertCurvature(s)) / G), groundOffset: ground, grade: gradeAlong(s, at), bank: s.bank,
       });
     });
   }
@@ -181,20 +229,22 @@ function planStates(s: SegmentSpec, index: number, dims?: CarDims): RoadState[] 
   let k = 0;
   for (const p of [...pick.values()].sort((a, b) => a.x - b.x)) {
     const ay = segmentLatG(s, p.v), ax = Math.abs(p.a) > 1e-6 ? p.a / G : 0;
-    out.push({ name: `${index + 1}.${++k}`, segment: index, speed: p.v, ay, ax, at: p.x, ...roadEffective(ay, ax, s.grade, s.bank), groundOffset: { ...(s.bumps ?? {}) }, grade: s.grade, bank: s.bank });
+    if (tooLight(s, ay, ax, gradeAlong(s, p.x), p.v)) continue;
+    out.push({ name: `${index + 1}.${++k}`, segment: index, speed: p.v, ay, ax, at: p.x, ...roadEffective(ay, ax, gradeAlong(s, p.x), s.bank, (p.v * p.v * vertCurvature(s)) / G), groundOffset: { ...(s.bumps ?? {}) }, grade: gradeAlong(s, p.x), bank: s.bank });
   }
   if (dims && s.road) {
     const wb = dims.wheelbase / 1000, ht = dims.halfTrack / 1000;
     worstRoadSpots(s.road, s.distance, wb, ht).forEach((x, j) => {
       const q = planAt(pl, x);
       const ay = segmentLatG(s, q.v), ax = q.a / G;
+      if (tooLight(s, ay, ax, gradeAlong(s, x), q.v)) return;
       const h = wheelHeights(s.road!, x, wb, ht);
       const ground: Partial<Record<CornerId, number>> = {};
       for (const id of ['FL', 'FR', 'RL', 'RR'] as CornerId[]) {
         const v2 = (s.bumps?.[id] ?? 0) + h[id];
         if (Math.abs(v2) > 1e-6) ground[id] = v2;
       }
-      out.push({ name: `${index + 1}.r${j + 1}`, segment: index, speed: q.v, ay, ax, at: x, ...roadEffective(ay, ax, s.grade, s.bank), groundOffset: ground, grade: s.grade, bank: s.bank });
+      out.push({ name: `${index + 1}.r${j + 1}`, segment: index, speed: q.v, ay, ax, at: x, ...roadEffective(ay, ax, gradeAlong(s, x), s.bank, (q.v * q.v * vertCurvature(s)) / G), groundOffset: ground, grade: gradeAlong(s, x), bank: s.bank });
     });
   }
   return out;

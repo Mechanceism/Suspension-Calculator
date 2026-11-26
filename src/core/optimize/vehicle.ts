@@ -27,7 +27,7 @@ import { TwistBeam } from '../suspension/twistBeam';
 import type { BrakeThermal } from '../vehicle/brakeThermal';
 import { lineThrough } from '../math/geom';
 import {
-  CORNER_IDS, isFront, isLeft, placement, poseFns, solveVehicle, staticCornerLoads, designGroundY,
+  CORNER_IDS, isFront, isLeft, placement, poseFns, solveVehicle, staticCornerLoads, designGroundY, brakeOnChassis,
   type AxleShared, type BrakeMount, type CornerId, type DriveMount, type VehicleCorner, type VehicleResult, type ChassisPose, type DiffType, type VehicleInput, type DamperSpec,
 } from '../vehicle/vehicle';
 import { runStepsSync, type LsqResult } from './leastSquares';
@@ -110,6 +110,36 @@ export interface VehicleDesignIn {
   damping?: DamperSpec;
 }
 
+/**
+ * F28 (round 5): bounds on the characteristics — generic, wide, the same for every car — so optimizing for lap
+ * time can't wander into what no one would build (F12: bump steer 9.5 °/100 mm, negative trail, 88 mm scrub).
+ * Inside a bound nothing changes; past it the excess costs heavily (a wall). Per design (the steering ones for
+ * steered designs only); anti-dive / anti-squat for the car.
+ */
+export type BoundKind = 'camberGain' | 'rollCenter' | 'bumpSteer' | 'trackChange' | 'kpi' | 'caster' | 'scrubRadius' | 'trail' | 'antiDive' | 'antiSquat';
+export interface Bound { kind: BoundKind; min?: number; max?: number }
+export const BOUND_META: Record<BoundKind, { label: string; unit: string; min: number; max: number; steered?: boolean; car?: boolean; hint: string }> = {
+  camberGain: { label: 'Camber gain', unit: '°/100 mm', min: -6, max: 1, hint: 'Camber change per 100 mm of bump (− = top in).' },
+  rollCenter: { label: 'Roll center height', unit: 'mm', min: -50, max: 250, hint: 'Static, above the ground.' },
+  bumpSteer: { label: 'Bump steer', unit: '°/100 mm', min: -2, max: 2, hint: 'Toe change per 100 mm of travel: the wheel steering itself over bumps and in roll.' },
+  trackChange: { label: 'Track change', unit: 'mm/100 mm', min: -20, max: 20, hint: 'The tire sliding sideways as the suspension moves (scrub).' },
+  kpi: { label: 'KPI', unit: '°', min: 0, max: 20, steered: true, hint: 'Kingpin inclination (steered designs).' },
+  caster: { label: 'Caster', unit: '°', min: -1, max: 12, steered: true, hint: 'Steered designs.' },
+  scrubRadius: { label: 'Scrub radius', unit: 'mm', min: -40, max: 80, steered: true, hint: 'At the ground (steered designs): large values kick the steering.' },
+  trail: { label: 'Mechanical trail', unit: 'mm', min: -10, max: 60, steered: true, hint: 'Steered designs: negative trail makes the steering want to turn further by itself.' },
+  antiDive: { label: 'Anti-dive', unit: '%', min: -20, max: 100, car: true, hint: 'Front, braking.' },
+  antiSquat: { label: 'Anti-squat', unit: '%', min: -20, max: 120, car: true, hint: 'Rear, accelerating.' },
+};
+export const BOUND_KINDS = Object.keys(BOUND_META) as BoundKind[];
+/** A bound a design (or the car: root null) is at or past. */
+export interface ActiveBound {
+  root: CornerId | null; kind: BoundKind; side: 'min' | 'max'; value: number;
+  /** The bound it is held at: the set one, or the start's value when the design started past it (`held`). */
+  bound: number;
+  /** Past the set bound from the start: held to no worse than its start value (`bound`), the set one being `set`. */
+  held?: boolean; set?: number;
+}
+
 export interface VehicleProblem {
   /** Corner designs keyed by root corner. */
   designs: Partial<Record<CornerId, VehicleDesignIn>>;
@@ -120,6 +150,8 @@ export interface VehicleProblem {
   settings: Record<CornerId, { brake: BrakeMount; drive: DriveMount; abs?: boolean }>;
   /** Differential per axle (chassis-driven axles). */
   diff?: { front?: DiffType; rear?: DiffType };
+  /** Brake-based traction control on open differentials (round 5; off by default). */
+  brakeTC?: boolean;
   /** Test states: when given, they replace the fixed load cases. */
   states?: RoadState[];
   /** Steered corners and the rack (tests: the rack travel a turn needs). */
@@ -159,6 +191,8 @@ export interface VehicleProblem {
     weights?: Partial<Record<FixedCaseKind, number>>;
   };
   goals: VehicleGoal[];
+  /** F28: bounds on the characteristics (absent = none). */
+  bounds?: Bound[];
   variables: VehicleVariable[];
   holds?: VehicleHold[];
   /** Contact-patch pressure model (contact-area goal). */
@@ -219,6 +253,39 @@ export interface VehicleEval {
   chars: Record<CornerId, Characteristics>;
   /** The cornering limit (only when a goal needs it). null = not found. */
   limit?: LateralLimit | null;
+}
+
+/**
+ * The vehicle optimizer's variables beyond the points (round 5): a design's tire set pressure, an axle's static ride
+ * height. The problem at x with them set (static camber / toe are in the geometry: geometriesFor).
+ */
+export function problemAt(p: VehicleProblem, x: number[]): VehicleProblem {
+  let q = p;
+  p.variables.forEach((v, i) => {
+    const val = x[i]!;
+    if (v.point === 'tirePressure') {
+      const d = q.designs[v.root];
+      if (!d || d.model.kind !== 'gas') return;
+      q = { ...q, designs: { ...q.designs, [v.root]: { ...d, model: { ...d.model, conditions: { ...d.model.conditions, setPressure: val } } } } };
+    } else if (v.point === 'rideHeight') {
+      q = { ...q, rideHeight: { ...q.rideHeight, [isFront(v.root) ? 'front' : 'rear']: val } };
+    }
+  });
+  return q;
+}
+
+/** A variable's value in the problem as it is (points, camber / toe from the geometry; pressure, ride height). */
+export function vehicleVariableValue(p: VehicleProblem, v: VehicleVariable, designRide?: number): number {
+  if (v.point === 'tirePressure') { const m = p.designs[v.root]?.model; return m && m.kind === 'gas' ? m.conditions.setPressure : NaN; }
+  if (v.point === 'rideHeight') return (isFront(v.root) ? p.rideHeight?.front : p.rideHeight?.rear) ?? designRide ?? NaN;
+  return variableValue(p.designs[v.root]!.geometry, v);
+}
+
+/** The design ride height (mm: the car at its design position, −ground Y) — what a ride-height variable starts from when none is set. */
+export function designRideHeight(p: VehicleProblem): number {
+  const geoms = Object.fromEntries(Object.entries(p.designs).map(([r, d]) => [r, d!.geometry])) as Partial<Record<CornerId, DoubleWishboneGeometry>>;
+  const asm = assembleVehicle({ ...p, rideHeight: undefined }, geoms);
+  return asm ? -asm.groundY : NaN;
 }
 
 const geometriesFor = (p: VehicleProblem, x: number[]) => {
@@ -412,6 +479,7 @@ export const vehicleInputOf = (p: VehicleProblem, asm: AssembledVehicle, c: Omit
   ...(p.trailer ? { trailer: p.trailer } : {}),
   ...(p.rollingResistance && (c.speed ?? c.state?.speed ?? 0) > 0 ? { rollingResistance: p.rollingResistance } : {}),
   ...((c.speed ?? c.state?.speed ?? 0) > 0 ? { speed: c.speed ?? c.state?.speed ?? 0 } : {}),
+  ...(p.brakeTC ? { brakeTC: true } : {}),
 });
 
 /** Solve one load case on an assembled car. null = didn't converge. */
@@ -469,15 +537,18 @@ export function lateralLimit(p: VehicleProblem, asm: AssembledVehicle, warm?: { 
 /** The last cornering limit found per guesses object (warm start). */
 const lastLimit = new WeakMap<object, { g: number; pose: ChassisPose }>();
 
-/** Build the corners and run every load case for the given geometries. null = can't be assembled/solved. */
-export function evaluateVehicle(p: VehicleProblem, geometries: Partial<Record<CornerId, DoubleWishboneGeometry>>, guesses?: Partial<Record<string, ChassisPose>>): VehicleEval | null {
+/**
+ * Build the corners and run every load case for the given geometries. null = can't be assembled/solved.
+ * `guesses`: warm starts per case (and the cornering limit's); updated with the solved poses unless `frozen`.
+ */
+export function evaluateVehicle(p: VehicleProblem, geometries: Partial<Record<CornerId, DoubleWishboneGeometry>>, guesses?: Partial<Record<string, ChassisPose>>, frozen = false): VehicleEval | null {
   const asm = assembleVehicle(p, geometries);
   if (!asm) return null;
   const cases: CaseEval[] = [];
   for (const c of caseList(p)) {
     const e = solveCase(p, asm, c, guesses?.[c.name]);
     if (!e) return null;
-    if (guesses) guesses[c.name] = e.result.pose;
+    if (guesses && !frozen) guesses[c.name] = e.result.pose;
     cases.push(e);
   }
   // The cornering limit, only when a goal asks for it (several solves).
@@ -486,7 +557,7 @@ export function evaluateVehicle(p: VehicleProblem, geometries: Partial<Record<Co
     // Warm start from the last limit found with these guesses (an optimizer step moves it only a little).
     const last = guesses ? lastLimit.get(guesses) : undefined;
     limit = lateralLimit(p, asm, last ?? { g: 1, pose: guesses?.lateral });
-    if (guesses && limit) lastLimit.set(guesses, { g: limit.g, pose: limit.pose });
+    if (guesses && limit && !frozen) lastLimit.set(guesses, { g: limit.g, pose: limit.pose });
   }
   return { geometries, cases, chars: asm.chars, ...(limit !== undefined ? { limit } : {}) };
 }
@@ -533,7 +604,7 @@ function antiOf(p: VehicleProblem, e: VehicleEval, kind: 'antiDive' | 'antiSquat
     if (!ids.length) return null;
     return mean(ids.map((id) => {
       const ch = e.chars[id];
-      const th = p.settings[id].brake === 'inboard' ? ch.antiAngleWheelCenter : ch.antiAngleContact;
+      const th = brakeOnChassis(p.settings[id].brake) ? ch.antiAngleWheelCenter : ch.antiAngleContact;
       return Math.tan(th) * (p.wheelbase / h) * p.brakeBias * 100;
     }));
   }
@@ -598,6 +669,68 @@ export function vehicleGoalValue(kind: VehicleGoalKind, p: VehicleProblem, e: Ve
   }
 }
 
+/** The bounded characteristics' values now: per design (one travel sweep each), and the car's anti-dive / anti-squat. */
+export function boundValues(p: VehicleProblem, e: VehicleEval): { root: CornerId | null; kind: BoundKind; value: number | null }[] {
+  const bounds = p.bounds ?? [];
+  if (!bounds.length) return [];
+  const out: { root: CornerId | null; kind: BoundKind; value: number | null }[] = [];
+  const cornerKinds = bounds.filter((b) => !BOUND_META[b.kind].car).map((b) => b.kind as Exclude<BoundKind, 'antiDive' | 'antiSquat'>);
+  if (cornerKinds.length) {
+    for (const [root, g] of Object.entries(e.geometries) as [CornerId, DoubleWishboneGeometry][]) {
+      if (!g) continue;
+      const steered = CORNER_IDS.some((id) => p.roots[id] === root && !!p.steering?.steered[id]);
+      const kinds = cornerKinds.filter((k) => !BOUND_META[k].steered || steered);
+      if (!kinds.length) continue;
+      const sm = sampleCorner(g, { droop: -Math.abs(p.droop), bump: Math.abs(p.bump), samples: 5, goals: kinds.map((k) => ({ kind: k, target: 0, weight: 1 })) });
+      for (const k of kinds) out.push({ root, kind: k, value: sm ? goalValue(k, sm) : null });
+    }
+  }
+  for (const b of bounds) if (BOUND_META[b.kind].car) out.push({ root: null, kind: b.kind, value: vehicleGoalValue(b.kind as 'antiDive' | 'antiSquat', p, e) });
+  return out;
+}
+
+/**
+ * Past a bound, the excess (scaled to 1 % of the bound's span, × 3): effectively a wall; inside, nothing. A design
+ * already past a bound at the start (`start`, by `${root}.${kind}`) is held to no worse than it was, not forced back.
+ */
+function boundResiduals(p: VehicleProblem, e: VehicleEval, start?: Map<string, number>): number[] {
+  const bounds = new Map((p.bounds ?? []).map((b) => [b.kind, b]));
+  return boundValues(p, e).map(({ root, kind, value }) => {
+    const b = bounds.get(kind)!;
+    if (value === null || !Number.isFinite(value)) return 0;
+    const span = Math.max(1e-6, (b.max ?? BOUND_META[kind].max) - (b.min ?? BOUND_META[kind].min));
+    const s0 = start?.get(`${root}.${kind}`);
+    const hi = Math.max(b.max ?? Infinity, s0 ?? -Infinity), lo = Math.min(b.min ?? -Infinity, s0 ?? Infinity);
+    const over = Math.max(0, value - hi) + Math.max(0, lo - value);
+    return (3 * over) / (0.01 * span);
+  });
+}
+
+/** The bounds a result is at (within 2 % of the span) or past. */
+export function activeBounds(p: VehicleProblem, e: VehicleEval, start?: Map<string, number>): ActiveBound[] {
+  const bounds = new Map((p.bounds ?? []).map((b) => [b.kind, b]));
+  const out: ActiveBound[] = [];
+  for (const { root, kind, value } of boundValues(p, e)) {
+    const b = bounds.get(kind);
+    if (!b || value === null || !Number.isFinite(value)) continue;
+    const setLo = b.min ?? -Infinity, setHi = b.max ?? Infinity;
+    // A design past a bound at the start is held at its start value (as the objective does).
+    const s0 = start?.get(`${root}.${kind}`);
+    const hi = Math.max(setHi, s0 ?? -Infinity), lo = Math.min(setLo, s0 ?? Infinity);
+    const tol = 0.02 * (Number.isFinite(setHi - setLo) ? setHi - setLo : 1);
+    if (value >= hi - tol) out.push({ root, kind, side: 'max', value, bound: hi, ...(hi > setHi ? { held: true, set: setHi } : {}) });
+    else if (value <= lo + tol) out.push({ root, kind, side: 'min', value, bound: lo, ...(lo < setLo ? { held: true, set: setLo } : {}) });
+  }
+  return out;
+}
+
+/** The bounded values at the start (x0), by `${root}.${kind}`. */
+function boundStartValues(p: VehicleProblem, x0: number[], start: VehicleEval | null): Map<string, number> {
+  const m = new Map<string, number>();
+  if (p.bounds?.length && start) for (const b of boundValues(problemAt(p, x0), start)) if (b.value !== null && Number.isFinite(b.value)) m.set(`${b.root}.${b.kind}`, b.value);
+  return m;
+}
+
 const BAD = 1e3;
 
 function vehicleResiduals(goal: VehicleGoal, p: VehicleProblem, e: VehicleEval, ref: number | null | undefined): number[] {
@@ -655,14 +788,17 @@ export interface VehicleReport {
   geometries: Partial<Record<CornerId, DoubleWishboneGeometry>>;
   variables: (VehicleVariable & { before: number; after: number; atLimit: boolean })[];
   goals: VehicleGoalReport[];
+  /** F28: the characteristic bounds the result is at or past. */
+  atBounds?: ActiveBound[];
 }
 export interface VehicleOptimizeResult extends VehicleReport { lsq: LsqResult }
 
 export function reportVehicle(p: VehicleProblem, x: number[]): VehicleReport {
   const geometries = geometriesFor(p, x);
-  const x0 = p.variables.map((v) => variableValue(p.designs[v.root]!.geometry, v));
-  const before = evaluateVehicle(p, geometriesFor(p, x0));
-  const after = evaluateVehicle(p, geometries);
+  const ride0 = p.variables.some((v) => v.point === 'rideHeight') ? designRideHeight(p) : undefined;
+  const x0 = p.variables.map((v) => vehicleVariableValue(p, v, ride0));
+  const before = evaluateVehicle(problemAt(p, x0), geometriesFor(p, x0));
+  const after = evaluateVehicle(problemAt(p, x), geometries);
   return {
     geometries,
     variables: p.variables.map((v, i) => {
@@ -675,24 +811,31 @@ export function reportVehicle(p: VehicleProblem, x: number[]): VehicleReport {
       before: before ? vehicleGoalValue(g.kind, p, before) : null,
       after: after ? vehicleGoalValue(g.kind, p, after) : null,
     })),
+    ...(p.bounds?.length && after ? { atBounds: activeBounds(problemAt(p, x), after, boundStartValues(p, x0, before)) } : {}),
   };
 }
 
 /** The vehicle optimizer's objective: residuals of the goals, holds, keep-close and packaging at x. */
 export function vehicleObjective(p: VehicleProblem) {
   const goals = p.goals.filter((g) => g.weight > 0);
-  const x0 = p.variables.map((v) => variableValue(p.designs[v.root]!.geometry, v));
+  const ride0 = p.variables.some((v) => v.point === 'rideHeight') ? designRideHeight(p) : undefined;
+  const x0 = p.variables.map((v) => vehicleVariableValue(p, v, ride0));
   const lo = p.variables.map((v) => Math.min(v.lo, v.hi));
   const hi = p.variables.map((v) => Math.max(v.lo, v.hi));
   const holds = (p.holds ?? []).map((h) => ({ h, v0: holdTarget(p.designs[h.root]!.geometry, h) }));
   const keep = Math.sqrt(p.keepClose ?? 0.01);
   const guesses: Partial<Record<string, ChassisPose>> = {};
-  const start = evaluateVehicle(p, geometriesFor(p, x0), guesses);
+  const start = evaluateVehicle(problemAt(p, x0), geometriesFor(p, x0), guesses);
   const refs = new Map(goals.filter((g) => VEHICLE_GOAL_META[g.kind].maximize).map((g) => [g.kind, start ? vehicleGoalValue(g.kind, p, start) : null]));
+  const boundStart = boundStartValues(p, x0, start);
 
+  // Every evaluation warm-starts from the start's solved poses, never from the last point evaluated (round 5):
+  // with a pool of workers each kept its own last poses, so a point's residuals depended on which worker got it
+  // (up to 6e-5, ≈ 0.3 % of a slope over the 0.02 mm Jacobian step) and identical runs ended differently
+  // (default car, Autocross (simple): 14.01 vs 13.96 s after one round).
   const residuals = (x: number[]): number[] | null => {
     const geoms = geometriesFor(p, x);
-    const e = evaluateVehicle(p, geoms, guesses);
+    const e = evaluateVehicle(problemAt(p, x), geoms, guesses, true);
     if (!e) return null;
     const r: number[] = [];
     for (const goal of goals) {
@@ -702,6 +845,8 @@ export function vehicleObjective(p: VehicleProblem) {
     for (const { h, v0 } of holds) r.push((holdValue(geoms[h.root]!, h) - v0) / 1e-3);
     x.forEach((v, i) => r.push((keep * (v - x0[i]!)) / 10));
     r.push(...packagingResiduals(p, geoms, e));
+    // F28: the characteristic bounds (a wall past each).
+    if (p.bounds?.length) r.push(...boundResiduals(p, e, boundStart));
     return r;
   };
   return { goals, x0, lo, hi, residuals, guesses };
@@ -716,7 +861,7 @@ export function optimizeVehicle(p: VehicleProblem, onIteration?: (info: Progress
 /** The free variables' start and range (without evaluating anything). */
 export function vehicleBounds(p: VehicleProblem): { x0: number[]; lo: number[]; hi: number[] } {
   return {
-    x0: p.variables.map((v) => variableValue(p.designs[v.root]!.geometry, v)),
+    x0: (() => { const ride0 = p.variables.some((v) => v.point === 'rideHeight') ? designRideHeight(p) : undefined; return p.variables.map((v) => vehicleVariableValue(p, v, ride0)); })(),
     lo: p.variables.map((v) => Math.min(v.lo, v.hi)),
     hi: p.variables.map((v) => Math.max(v.lo, v.hi)),
   };
@@ -768,7 +913,7 @@ export interface SensitivitySample { cost: number; values: number[] }
 /** One DOE point: the optimizer's total miss and each goal's value (NaN where it can't be evaluated). */
 export function sensitivitySample(p: VehicleProblem, obj: ReturnType<typeof vehicleObjective>, x: number[]): SensitivitySample {
   const r = obj.residuals(x);
-  const e = r ? evaluateVehicle(p, geometriesFor(p, x), obj.guesses) : null;
+  const e = r ? evaluateVehicle(problemAt(p, x), geometriesFor(p, x), obj.guesses, true) : null;
   return {
     cost: r ? 0.5 * r.reduce((a, v) => a + v * v, 0) : NaN,
     values: obj.goals.map((g) => (e ? vehicleGoalValue(g.kind, p, e) ?? NaN : NaN)),

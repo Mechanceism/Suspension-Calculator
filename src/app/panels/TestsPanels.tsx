@@ -16,7 +16,7 @@ import { segmentLongG, segmentLatG, segmentDuration, type PathKind } from '../..
 import type { TestRun, StateResult } from '../../core/tests/run';
 import { CHECK_IDS, CHECK_META, PROFILES, cloneProfile, type CheckProfile, type Severity, type BuiltinProfile, type Finding } from '../../core/tests/checks';
 import { useApp, BRAKE_MORE_META, type Field } from '../store';
-import { SEGMENT_PRESETS, TEST_PRESETS, newSegment, newTestId, planOption, plannedSpeeds, driverSpeedOf, topSpeedOf, segmentSpec, isOff, OFF, type TestDesign, type TestSegment } from '../tests';
+import { SEGMENT_PRESETS, TEST_PRESETS, newSegment, newTestId, planOption, plannedSpeeds, driverSpeedOf, topSpeedOf, segmentSpec, transitionGrades, isOff, OFF, styleOf, STYLE_LABEL, type TestDesign, type TestSegment } from '../tests';
 import { buildVehicleProblem, runTestJob, isCancelled } from '../optimizer';
 import { POOL_SIZE, runLimited } from '../workerPool';
 import { useTireChoice, TIRE_CATALOG, rankTires, applyTire, currentTire, type TireAxleChoice } from '../tireChoice';
@@ -70,6 +70,11 @@ export const useRun = create<RunStore>(() => ({ running: false, testId: null, re
 type DesignRef = { geom: unknown; corners: unknown; settings: unknown; steer: unknown; vehicle: unknown };
 const designRef = (s: ReturnType<typeof useApp.getState>): DesignRef => ({ geom: s.geom, corners: s.corners, settings: s.settings, steer: s.steer, vehicle: s.vehicle });
 const sameDesign = (a: DesignRef, b: DesignRef) => a.geom === b.geom && a.corners === b.corners && a.settings === b.settings && a.steer === b.steer && a.vehicle === b.vehicle;
+/** A test's last result if the design hasn't changed since (null: none, or stale) — for Results. */
+export const currentResult = (testId: string): TestRun | null => {
+  const e = useRun.getState().results[testId];
+  return e && sameDesign(e.from, designRef(useApp.getState())) ? e.result : null;
+};
 // A model-and-tests file saves the results run on the design and the tests as they are now (scores only).
 setResultsSource(() => {
   const s = useApp.getState(), now = designRef(s), results = useRun.getState().results;
@@ -288,7 +293,7 @@ function segmentSummary(seg: TestSegment, disp: ReturnType<typeof useDisplay>) {
   const sp = `${disp.format(seg.speedStart.value, 'm/s', 0)} → ${disp.format(seg.speedEnd.value, 'm/s', 0)}`;
   const path = seg.path === 'straight' ? 'straight' : `${seg.path === 'left' ? '↰' : '↱'} R ${disp.format(seg.radius.value, 'm', 0)}`;
   const road = [
-    seg.grade.value ? `${seg.grade.value > 0 ? '+' : ''}${seg.grade.value}%` : '',
+    seg.transition ? 'transition (grade rounds)' : seg.grade.value ? `${seg.grade.value > 0 ? '+' : ''}${seg.grade.value}%` : '',
     seg.bank.value ? `bank ${seg.bank.value}°` : '',
     CORNER_IDS.some((id) => seg.bumps[id].value) ? 'held bumps' : '',
     seg.features.length ? `${seg.features.length} bump/pothole` : '',
@@ -405,7 +410,7 @@ function SegmentEditor({ test, seg, index, wheelbase }: { test: TestDesign; seg:
             </>
           )}
           <tr className="seg-layer"><td colSpan={4}>Road</td></tr>
-          <RoadEditor seg={seg} upd={upd} />
+          <RoadEditor seg={seg} upd={upd} {...(seg.transition ? { grades: transitionGrades(test, seg) } : {})} />
           <tr className="seg-layer"><td colSpan={4}>Importance</td></tr>
           <tr title="Priority within the test when optimizing (P1 = most important; equal = same priority). Separate from the run order.">
             <td>Priority</td>
@@ -593,6 +598,15 @@ export function TestsSidebar() {
                   </label>
                 </td>
               </tr>
+              <tr title="Driving and braking at once (with the driver working the pedals). Auto: by the pass rules — Drift: the handbrake into each turn (0.5 s, the rear wheels braked to their grip, clutch in) to start the slide; Off-road: rally left-foot braking into turns and crests (the throttle kept on, 30 % of the braking); Drag: the line-lock burnout before the launch (not timed). Others: one pedal at a time.">
+                <td>Driving style</td>
+                <td>
+                  <select value={test.style ?? 'auto'} onChange={(e) => updateTest(test.id, (t) => { const v = e.target.value; const { style: _s, ...rest } = t; void _s; return v === 'auto' ? rest : { ...rest, style: v as NonNullable<TestDesign['style']> }; })}>
+                    <option value="auto">Auto ({STYLE_LABEL[styleOf({ ...test, style: undefined }) ?? 'none'].split(' (')[0]})</option>
+                    {(['none', 'drift', 'rally', 'drag'] as const).map((k) => <option key={k} value={k}>{STYLE_LABEL[k]}</option>)}
+                  </select>
+                </td>
+              </tr>
               <tr title="Maximums: the set speeds are the most the driver may go; the driver plans the speed to its push — how much of the tires' grip it uses — (braking earlier before turns, accelerating out), tries other ways of taking a failing segment (brake in, coast in, hold the speed, speed up in) and then pushes less there (with a finding saying so); the test is scored on time. Hold exactly: the set speeds are driven as they are (to check a car can do a given speed).">
                 <td>Speeds</td>
                 <td>
@@ -755,7 +769,7 @@ export function TestResults() {
       <EstimatedNote />
       {stale && <p className="hint warn-text">The design changed since this run: run again.</p>}
       {r.ended && (
-        <p className="small-text warn-text" title="Over time the car went more than twice its width off the line, or turned more than 90° from the path: the run ends there (the model and the driver mean nothing past it). Slower, or a car that holds the line better.">
+        <p className="small-text warn-text" title="Over time the car went more than twice its width off the line, turned more than 90° from the path, or rolled over (its CG passed over its outside contact patches): the run ends there (the model and the driver mean nothing past it). Slower, or a car that holds the line better.">
           <b>Did not finish</b>: {r.ended.text} in segment {r.ended.segment + 1} ({test.segments[r.ended.segment]?.name ?? ''}); the run ended at {fmt(r.ended.t, 1)} s. The segments after it weren't driven.
         </p>
       )}
@@ -764,6 +778,14 @@ export function TestResults() {
           Time <b>{fmt(r.time, 2)} s</b>{r.driven && r.plannedTime ? <span className="muted"> as driven (planned {fmt(r.plannedTime, 2)} s)</span> : null} · average <b>{disp.format((r.distance ?? 0) / r.time, 'm/s', 0)}</b> over {disp.format(r.distance ?? 0, 'm', 0)} · driver pushing to {fmt((test.gripTarget ?? 0.95) * 100, 0)} % of the grip
         </p>
       )}
+      {r.ride?.metrics?.rollMargin && (() => {
+        const m = r.ride!.metrics!.rollMargin!;
+        return (
+          <p className={`small-text${m.margin < 0.25 ? ' warn-text' : ''}`} title="How close the car came to tipping over: where its CG (body and wheels) was between the lines through its left and right contact patches — 100 % centered, 0 % over one of them (it tips). The Vehicle results give the lateral g its inside wheels lift at and its trip speed.">
+            Closest to tipping over: <b>{fmt(Math.max(0, m.margin) * 100, 0)} %</b> margin at {fmt(m.t, 1)} s ({disp.format(m.speed, 'm/s', 0)}, {fmt(Math.abs(m.ay), 2)} g lateral)
+          </p>
+        );
+      })()}
       {r.power && <PowerSummary r={r} test={test} />}
       <table className="corner-table test-table">
         <thead><tr><th>#</th><th>Segment</th>{r.time !== undefined && <th title="Planned speed through the segment (lowest – highest) and its time">Speed</th>}<th title="Worst tire grip use">Grip</th>{r.segments.some((s) => s.brakeTemp) && <th title="Brake fade: rotor temperature at the end of the segment, front / rear">Brakes</th>}<th /></tr></thead>
@@ -802,6 +824,7 @@ export function TestResults() {
             {s.impossible && <div className="small-text warn-text">No suspension change can make this pass: the tires can't give that much force. Lower the speed, enlarge the radius, or improve the tires.</div>}
             {s.findings.some((f) => f.check === 'steerLimit' && f.severity === 'fail') && <div className="small-text warn-text">Slowing down doesn't help: enlarge the radius, or allow more rack travel / a longer-reach steering arm (Corner view → Steering rack).</div>}
             {s.rideFail && <div className="small-text warn-text">Passes as steady states but fails over time (bumps at speed, transients): softer / firmer damping, more travel or a lower speed can help. Play it back to watch.</div>}
+            {s.technique && <div className="small-text" title="Driving and braking at once, by the test's driving style">Driver: {s.technique}.</div>}
             {s.drivenScale !== undefined && (
               <div className="small-text">Driver lifts: driven at {fmt(s.drivenScale * 100, 0)}% of its speed (≈ {disp.format(vmax * s.drivenScale, 'm/s', 0)}) and judged there.</div>
             )}

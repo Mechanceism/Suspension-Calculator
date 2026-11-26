@@ -61,7 +61,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 48;
+export const FORMAT_VERSION = 53;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -125,6 +125,8 @@ export interface ProjectFile {
     goals: Record<string, { on: boolean; target: FieldJson; weight: FieldJson }>;
     lateralG: FieldJson; brakingG: FieldJson; accelG: FieldJson; keepClose: FieldJson; caseSource?: string; starts?: number;
     combinedLatG?: FieldJson; combinedBrakeG?: FieldJson; caseWeights?: Record<string, number>;
+    /** F28 (format 52): characteristic bounds and asking at them. */
+    bounds?: Record<string, { on: boolean; min: FieldJson; max: FieldJson }>; askLimits?: boolean;
   };
   /** Contact-patch pressure model (contact-area goal). */
   grip: Record<string, FieldJson>;
@@ -140,6 +142,8 @@ export interface ProjectFile {
   powertrain?: { kind: 'none' | 'electric' | 'gas'; fields: Record<string, FieldJson> };
   brakes?: {
     on: boolean; dualMc: boolean; useBias: boolean; fields: Record<string, FieldJson>; fade?: { on: boolean; fields: Record<string, FieldJson> };
+    /** Format 53: brake-based traction control. */
+    tc?: boolean;
     /** Format 39: drums, wheel room, detailed hydraulics, the ladder's reserve and permissions. */
     more?: { drumF: boolean; drumR: boolean; detail: boolean; allowDiscF: boolean; allowDiscR: boolean; fields: Record<string, FieldJson> };
   };
@@ -237,6 +241,8 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
       ...(d.vehicleOptimizer.combinedLatG ? { combinedLatG: fj(d.vehicleOptimizer.combinedLatG) } : {}),
       ...(d.vehicleOptimizer.combinedBrakeG ? { combinedBrakeG: fj(d.vehicleOptimizer.combinedBrakeG) } : {}),
       ...(d.vehicleOptimizer.caseWeights ? { caseWeights: { ...d.vehicleOptimizer.caseWeights } } : {}),
+      bounds: Object.fromEntries(Object.entries(d.vehicleOptimizer.bounds ?? {}).map(([k, b]) => [k, { on: b.on, min: fj(b.min), max: fj(b.max) }])),
+      askLimits: d.vehicleOptimizer.askLimits !== false,
     },
     grip: mapFields(GRIP_KEYS, d.grip),
     tireGrip: mapFields(MF_KEYS, d.tireGrip),
@@ -247,7 +253,7 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
     aero: { on: d.aero.on, fields: mapFields(AERO_KEYS, d.aero), file: d.aero.file ? JSON.parse(JSON.stringify(d.aero.file)) as AeroModel : null },
     powertrain: { kind: d.powertrain.kind, fields: mapFields(PT_KEYS, d.powertrain) },
     rideHeight: { on: d.rideHeight.on, front: { ...d.rideHeight.front }, rear: { ...d.rideHeight.rear } },
-    brakes: { on: d.brakes.on, dualMc: d.brakes.dualMc, useBias: d.brakes.useBias, fields: mapFields(BRAKE_KEYS, d.brakes), fade: { on: d.brakes.fade, fields: mapFields(FADE_KEYS, d.brakes) },
+    brakes: { on: d.brakes.on, ...(d.brakes.tc ? { tc: true } : {}), dualMc: d.brakes.dualMc, useBias: d.brakes.useBias, fields: mapFields(BRAKE_KEYS, d.brakes), fade: { on: d.brakes.fade, fields: mapFields(FADE_KEYS, d.brakes) },
       more: { drumF: d.brakes.drumF, drumR: d.brakes.drumR, detail: d.brakes.detail, allowDiscF: d.brakes.allowDiscF, allowDiscR: d.brakes.allowDiscR, fields: mapFields(BRAKE_MORE_KEYS, d.brakes) } },
     tow: { on: d.tow.on, fields: mapFields(TOW_KEYS, d.tow) },
     shimmy: { check: d.shimmy.check, handsOn: d.shimmy.handsOn, fields: mapFields(SHIMMY_KEYS, d.shimmy) },
@@ -417,6 +423,16 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   46: (f) => ({ ...f, formatVersion: 47 }),
   // 47 → 48: a set static ride height (off in older files: the car rests at the design position).
   47: (f) => ({ ...f, formatVersion: 48 }),
+  // 48 → 49: a brake can be 'driveline' (one brake for the axle, through its differential); older files have none.
+  48: (f) => ({ ...f, formatVersion: 49 }),
+  // 49 → 50: transition segments (a segment's grade rounding from the one before's to the one after's); older files have none.
+  49: (f) => ({ ...f, formatVersion: 50 }),
+  // 50 → 51: a tire's max pressure and load rating (sidewall; 0 = not given): older files have neither.
+  50: (f) => ({ ...f, formatVersion: 51 }),
+  // 51 → 52: the vehicle optimizer's characteristic bounds (F28; generic, on) and asking at them — older files get the defaults.
+  51: (f) => ({ ...f, formatVersion: 52 }),
+  // 52 → 53: driving styles (each test's, Auto: by its pass rules) and brake-based traction control (off).
+  52: (f) => ({ ...f, formatVersion: 53 }),
   39: (f) => ({ ...f, formatVersion: 40, ...(isObj(f.vehicle) && isObj(f.vehicle.fields) ? { vehicle: { ...f.vehicle, fields: { ...f.vehicle.fields, rollingResistance: { text: '0', value: 0 } } } } : {}) }),
   // 34 → 35: aero side force, roll sensitivity and balance shift off.
   34: (f) => ({ ...f, formatVersion: 35, ...(isObj(f.aero) && isObj(f.aero.fields) ? { aero: { ...f.aero, fields: { ...f.aero.fields, CsA: { text: '0', value: 0 }, sideCp: { text: '900', value: 900 }, rollSensF: { text: '0', value: 0 }, rollSensR: { text: '0', value: 0 }, yawBalance: { text: '0', value: 0 } } } } : {}) }),
@@ -479,6 +495,7 @@ function readTests(raw: unknown, warnings: string[]): TestDesign[] {
         bumps: Object.fromEntries(CORNER_IDS.map((id) => [id, fieldOr(bumpsRaw[id], 'length', d.bumps[id], where(`bump ${id}`))])) as TestSegment['bumps'],
         lumpy: sr.lumpy === true,
         ...(sr.coast === true ? { coast: true } : {}),
+        ...(sr.transition === true ? { transition: true } : {}),
         rough: (() => {
           const r = isObj(sr.rough) ? sr.rough : null;
           // Format 8 "lumpy" becomes a rough surface.
@@ -519,6 +536,7 @@ function readTests(raw: unknown, warnings: string[]): TestDesign[] {
       handling: t.handling !== false,
       ...(t.driverSpeed === true ? { driverSpeed: true } : {}),
       ...(t.racingLine === true ? { racingLine: true } : {}),
+      ...(t.style === 'none' || t.style === 'drift' || t.style === 'rally' || t.style === 'drag' ? { style: t.style } : {}),
       speedMode: t.speedMode === 'max' || t.speedMode === 'grip' ? t.speedMode : 'hold',
       ...(t.speedMode === 'grip' && isObj(t.topSpeed) && typeof t.topSpeed.value === 'number' && t.topSpeed.value > 0
         ? { topSpeed: { text: typeof t.topSpeed.text === 'string' ? t.topSpeed.text : String(t.topSpeed.value), value: t.topSpeed.value } } : {}),
@@ -585,6 +603,8 @@ function readVehicleOptimizer(raw: unknown, warnings: string[]): VehicleOptimize
   const rf = (x: unknown, q: Quantity, fb: Field, where: string) => readField(x, q, fb, `vehicle optimizer ${where}`, warnings);
   const valid = (k: string) => {
     const [root, pk, ax] = k.split('.');
+    // (Round 5: the adjustments' keys too — `FL.scalar.staticCamber` …; they were dropped on reading.)
+    if ((CORNER_IDS as string[]).includes(root!) && pk === 'scalar') return ['staticCamber', 'staticToe', 'tirePressure', 'rideHeight'].includes(ax!);
     return (CORNER_IDS as string[]).includes(root!) && (POINT_KEYS as readonly string[]).includes(pk!) && AXIS_KEYS.includes(ax!);
   };
   const { ranges, goals } = readRangesGoals(raw, d.goals, valid, rf);
@@ -600,6 +620,11 @@ function readVehicleOptimizer(raw: unknown, warnings: string[]): VehicleOptimize
     ...(raw.combinedLatG ? { combinedLatG: rf(raw.combinedLatG, 'ratio', zero, 'braking-in-a-turn lateral g') } : {}),
     ...(raw.combinedBrakeG ? { combinedBrakeG: rf(raw.combinedBrakeG, 'ratio', zero, 'braking-in-a-turn braking g') } : {}),
     ...(cw && Object.keys(cw).length ? { caseWeights: cw } : {}),
+    bounds: Object.fromEntries((Object.keys(d.bounds) as (keyof typeof d.bounds)[]).map((k) => {
+      const b = isObj(raw.bounds) && isObj((raw.bounds as Json)[k]) ? (raw.bounds as Json)[k] as Json : null;
+      return [k, b ? { on: b.on !== false, min: rf(b.min, 'ratio', d.bounds[k].min, `${k} bound min`), max: rf(b.max, 'ratio', d.bounds[k].max, `${k} bound max`) } : d.bounds[k]];
+    })) as VehicleOptimizerSetup['bounds'],
+    askLimits: raw.askLimits !== false,
   };
 }
 
@@ -866,7 +891,7 @@ export function importProject(data: unknown): ImportResult {
     return [id, {
       steered: typeof r.steered === 'boolean' ? r.steered : DEFAULT_SETTINGS[id].steered,
       powered: typeof r.powered === 'boolean' ? r.powered : DEFAULT_SETTINGS[id].powered,
-      brake: r.brake === 'none' || r.brake === 'inboard' || r.brake === 'outboard' ? r.brake : DEFAULT_SETTINGS[id].brake,
+      brake: r.brake === 'none' || r.brake === 'inboard' || r.brake === 'outboard' || r.brake === 'driveline' ? r.brake : DEFAULT_SETTINGS[id].brake,
       drive: r.drive === 'hub' ? 'hub' : 'chassis',
       abs: typeof r.abs === 'boolean' ? r.abs : true,
       diff: r.diff === 'locked' || r.diff === 'lsd' ? r.diff : 'open',
@@ -949,7 +974,7 @@ export function importProject(data: unknown): ImportResult {
       const mo = isObj(b.more) ? b.more : {};
       const more = readRecord(mo.fields, BRAKE_MORE_KEYS, (k) => BRAKE_MORE_META[k].quantity, defaultBrakes(), 'brakes.more', isObj(b.more) ? warnings : []);
       return {
-        ...fields, ...fade, ...more, on: b.on === true, fade: fd.on === true, dualMc: b.dualMc === true, useBias: b.useBias === true,
+        ...fields, ...fade, ...more, on: b.on === true, tc: b.tc === true, fade: fd.on === true, dualMc: b.dualMc === true, useBias: b.useBias === true,
         drumF: mo.drumF === true, drumR: mo.drumR === true, detail: mo.detail === true, allowDiscF: mo.allowDiscF === true, allowDiscR: mo.allowDiscR === true,
       };
     })(),

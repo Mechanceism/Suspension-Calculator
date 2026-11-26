@@ -10,7 +10,7 @@ export type Severity = 'pass' | 'warn' | 'fail';
 
 export type CheckId =
   | 'nearLimit' | 'understeer' | 'oversteer' | 'wheelspin' | 'absActive' | 'lockup' | 'speedNotReached'
-  | 'bumpStop' | 'bottoming' | 'wheelLift' | 'rollover' | 'noSolution' | 'beyondGrip' | 'steerLimit' | 'pathError' | 'spin' | 'offCourse' | 'brakeLimit' | 'brakeFade' | 'longPedal' | 'mcStroke' | 'kickback' | 'shimmy' | 'trailerSway' | 'hitchLoad' | 'lightTongue' | 'gripTarget';
+  | 'bumpStop' | 'bottoming' | 'wheelLift' | 'rollover' | 'noSolution' | 'beyondGrip' | 'steerLimit' | 'pathError' | 'spin' | 'offCourse' | 'airborne' | 'blowout' | 'impact' | 'tireOverload' | 'brakeLimit' | 'brakeFade' | 'longPedal' | 'mcStroke' | 'kickback' | 'shimmy' | 'trailerSway' | 'hitchLoad' | 'lightTongue' | 'gripTarget';
 
 export interface CheckSetting {
   severity: Severity;
@@ -57,6 +57,10 @@ export const CHECK_META: Record<CheckId, CheckMeta> = {
   steerLimit: { label: 'Steering lock', hint: 'The turn is tighter than the steering allows: its road-wheel angle (atan(wheelbase ÷ radius), plus the front − rear tire slip angle at speed) needs more rack travel than the rack limit, or no wheel steers.' },
   gripTarget: { label: 'Driver push lowered', hint: 'Speeds as maximums: every way of taking the segment with the driver pushing to the test’s share of the tires’ grip (brake before, brake in, coast in, hold the speed, speed up in) failed over time, so the driver pushes less there (slower, a reserve for what the plan doesn’t see). The finding says to what; it also says when slowing down didn’t cure it.' },
   beyondGrip: { label: 'Beyond the tires', hint: 'The state asks for more total force than all four tires can give: no suspension can pass it. Lower the speed, enlarge the radius, or improve the tires.', fixed: true },
+  airborne: { label: 'Wheels on the ground', hint: 'At least this many wheels on the ground (round 5): fewer for more than a moment — off a crest, a jump — fails. It also sets how the driver takes a crest: needing 3 or more, the speed plan slows so the tires keep some load over it; fewer (or Pass: e.g. Off-road) and the car may take a jump flat out.', threshold: { label: 'at least', unit: 'wheels' } },
+  blowout: { label: 'Tire pressure spike', hint: 'Over time (round 5): a tire squashed on a landing or a big hit, its air pressure rises; with its sidewall maximum given (Tire → Max pressure) it blows out past it (a Warning within 10 % of it); otherwise the thresholds are shares over its cold set pressure — a Warning above the second, a blowout above the first. Gas-model tires only.', threshold: { label: 'blows out at', unit: '% over' }, threshold2: { label: 'warn at', unit: '% over' } },
+  impact: { label: 'Landing / impact (body)', hint: 'Over time (round 5): the body\'s largest vertical acceleration (a landing, a big hit), in g — a Warning above the second threshold, this rule\'s severity above the first.', threshold: { label: 'limit', unit: 'g' }, threshold2: { label: 'warn at', unit: 'g' } },
+  tireOverload: { label: 'Tire overload', hint: 'Over time (round 5): a tire\'s largest load as a multiple of its rated load (Tire → Load rating; when not given, estimated as its load at 15 % of its section height squashed at the set pressure) — a Warning above the second threshold, this rule\'s severity above the first.', threshold: { label: 'limit', unit: '× rated' }, threshold2: { label: 'warn at', unit: '× rated' } },
   offCourse: { label: 'Off course / spun', hint: 'Driving over time with the driver steering: the car went more than twice its width off the line (and at least one width past the lane), or turned more than 90° from the path (across it or backwards). The run ends there: the test did not finish.', fixed: true },
 };
 export const CHECK_IDS = Object.keys(CHECK_META) as CheckId[];
@@ -99,6 +103,12 @@ const base: CheckProfile = {
   spin: { severity: 'warn', threshold: 12 },
   // Off course / spun (round 4, F25): the run ends there, always a Fail.
   offCourse: { severity: 'fail' },
+  // Crests and jumps (round 5): a road car keeps at least 3 wheels on the ground (the plan slows for a crest).
+  airborne: { severity: 'fail', threshold: 3 },
+  // Landings and big hits (round 5): Fail at the first threshold, Warning above the second.
+  blowout: { severity: 'fail', threshold: 100, threshold2: 50 },
+  impact: { severity: 'fail', threshold: 6, threshold2: 3 },
+  tireOverload: { severity: 'fail', threshold: 4, threshold2: 2.5 },
   gripTarget: { severity: 'warn' },
 };
 
@@ -106,11 +116,11 @@ export type BuiltinProfile = 'default' | 'street' | 'track' | 'drift' | 'offroad
 export const PROFILES: Record<BuiltinProfile, { label: string; checks: CheckProfile }> = {
   default: { label: 'Default', checks: base },
   street: { label: 'Street (strict)', checks: { ...base, absActive: { severity: 'fail', threshold: 0 }, bumpStop: { severity: 'fail' } } },
-  track: { label: 'Track', checks: { ...base, nearLimit: { severity: 'pass', threshold: 0 }, wheelLift: { severity: 'warn' } } },
-  drift: { label: 'Drift', checks: { ...base, oversteer: { severity: 'warn', threshold: 30, threshold2: 10 }, wheelspin: { severity: 'warn', threshold: 30 }, nearLimit: { severity: 'pass', threshold: 0 }, spin: { severity: 'warn', threshold: 45 }, pathError: { severity: 'warn', threshold: 300 } } },
-  offroad: { label: 'Off-road', checks: { ...base, wheelLift: { severity: 'pass' }, bumpStop: { severity: 'pass' } } },
+  track: { label: 'Track', checks: { ...base, nearLimit: { severity: 'pass', threshold: 0 }, wheelLift: { severity: 'warn' }, airborne: { severity: 'fail', threshold: 2 } } },
+  drift: { label: 'Drift', checks: { ...base, oversteer: { severity: 'warn', threshold: 30, threshold2: 10 }, wheelspin: { severity: 'warn', threshold: 30 }, nearLimit: { severity: 'pass', threshold: 0 }, spin: { severity: 'warn', threshold: 45 }, pathError: { severity: 'warn', threshold: 300 }, airborne: { severity: 'fail', threshold: 2 } } },
+  offroad: { label: 'Off-road', checks: { ...base, wheelLift: { severity: 'pass' }, bumpStop: { severity: 'pass' }, airborne: { severity: 'pass', threshold: 0 }, impact: { severity: 'fail', threshold: 8, threshold2: 4 }, tireOverload: { severity: 'fail', threshold: 5, threshold2: 3 } } },
   // Drag (round 4): the front lifting off the line is fine; the rear stepping out (sideslip) or leaving the lane is not.
-  drag: { label: 'Drag', checks: { ...base, wheelLift: { severity: 'pass' }, nearLimit: { severity: 'pass', threshold: 0 }, spin: { severity: 'fail', threshold: 6 } } },
+  drag: { label: 'Drag', checks: { ...base, wheelLift: { severity: 'pass' }, airborne: { severity: 'fail', threshold: 2 }, nearLimit: { severity: 'pass', threshold: 0 }, spin: { severity: 'fail', threshold: 6 } } },
 };
 /** A copy, with any check missing (profiles saved before it existed) taken from the default. */
 export const cloneProfile = (p: CheckProfile): CheckProfile => ({ ...(JSON.parse(JSON.stringify(base)) as CheckProfile), ...(JSON.parse(JSON.stringify(p)) as CheckProfile) });
@@ -224,6 +234,8 @@ export function classifyState(f: StateFacts, profile: CheckProfile): Finding[] {
   if (atLimit.length) add('bottoming', `${atLimit.map((id) => `${id} ${r.corners[id].status === 'bump-limit' ? 'bottoms out' : 'tops out'}`).join(', ')}`, atLimit);
   const lifted = CORNER_IDS.filter((id) => r.corners[id].tireLoad < 25);
   if (lifted.length) add('wheelLift', `${lifted.join(', ')} lifts off the ground`, lifted);
+  const least = profile.airborne?.threshold ?? 3;
+  if (4 - lifted.length < least) add('airborne', `Only ${4 - lifted.length} wheel${4 - lifted.length === 1 ? '' : 's'} on the ground (at least ${least}): ${lifted.join(', ')} in the air`, lifted);
   return out;
 }
 

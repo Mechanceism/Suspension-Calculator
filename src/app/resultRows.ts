@@ -4,6 +4,7 @@
  * units (formatted with `digits` when shown); `text` stands in where a row isn't a number.
  */
 import { deg } from '../core/suspension/characteristics';
+import type { RolloverStats } from '../core/vehicle/rollover';
 import { dampingRatio } from '../core/suspension/spring';
 import { CORNER_IDS } from '../core/vehicle/vehicle';
 import type { Model } from './useModel';
@@ -98,7 +99,8 @@ export function cornerResultRows(model: Model, damper: { bump: number; rebound: 
 }
 
 /** The whole car's results (Vehicle results), the corners' loads, travels, inclinations and toes included. */
-export function vehicleResultRows(model: VehicleModel | null): ResultRow[] {
+/** `rollover`: the rollover stats (Vehicle results, worked out in a worker: 'pending' meanwhile); absent: no rollover rows. */
+export function vehicleResultRows(model: VehicleModel | null, rollover?: RolloverStats | null | 'pending'): ResultRow[] {
   const res = model?.result;
   if (!model || !res) return [];
   const t = model.transfer;
@@ -125,6 +127,11 @@ export function vehicleResultRows(model: VehicleModel | null): ResultRow[] {
     r(B, 'Roll center height, rear', model.rollCenters.rear?.h, 1, 'mm'),
     r(B, 'Roll center lateral, front', model.rollCenters.front?.x, 1, 'mm', '+ = left of centerline'),
     r(B, 'Rollover threshold (rigid)', model.rolloverG, 2, 'g', 'half track ÷ CG height'),
+    ...(rollover === 'pending' ? [{ ...r(B, 'Inside wheels lift at', undefined, 2, 'g', 'Working out…'), text: '…' }] : rollover ? [
+      { ...r(B, 'Inside wheels lift at', rollover.liftOffG ?? undefined, 2, 'g', 'Lateral g at which the inside wheels unload, the whole car solved (body roll, tire squash, the CG moving out): below the rigid threshold'), ...(rollover.liftOffG === null ? { text: 'not found (no lift before the solve gives up)' } : {}) },
+      r(B, 'Tipping angle', rollover.tippingAngle, 1, '°', 'Roll of the whole car (about the outside contact patches) at which its CG is over them: atan(half track ÷ CG height)'),
+      r(B, 'Trip speed', rollover.tripSpeed * 3.6, 1, 'km/h', 'Least sideways speed that tips it over when its tires are stopped at once (a curb, soft ground): the energy to lift the CG over the outside contact patches, with the roll inertia about them'),
+    ] : []),
     ...model.ackermannLines.map((a) => {
       const row = r(B, `Ackermann lines cross, ${a.axle}`, a.cross && a.lines.length >= 2 ? (a.axle === 'front' ? a.cross.z - a.target.z : a.target.z - a.cross.z) : undefined, 0, 'mm',
         `Top view: lines from each steered wheel's steering axis through its steering arm's outer joint (View → Ackermann lines). Distance of their crossing past (+) or short of (−) the ${a.target.label.toLowerCase()}, where classic 100 % Ackermann puts it. Parallel = parallel steer. Drag the crossing or a line's handle in the Vehicle view to move the outer tie-rod joints. A rule for near straight ahead: Ackermann % in the Corner view shows what the linkage really does.`);

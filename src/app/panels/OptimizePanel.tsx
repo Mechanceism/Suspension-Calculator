@@ -15,20 +15,22 @@ import {
 } from '../../core/optimize/corner';
 import {
   VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, evaluateVehicle, vehicleGoalValue, type LateralLimit, type FixedCaseKind,
-  type VehicleGoalKind, type VehicleGoalMeta,
+  type VehicleGoalKind, type VehicleGoalMeta, BOUND_KINDS, BOUND_META, type ActiveBound,
 } from '../../core/optimize/vehicle';
 import { layoutOf, toGeometry,
-  useApp, rootOf, defaultOptimizerSetup, defaultVehicleOptimizerSetup, mergedCorners,
+  useApp, rootOf, defaultOptimizerSetup, defaultVehicleOptimizerSetup, defaultBounds, mergedCorners,
   POINT_KEYS, POINT_NAMES, activeParam, activePointKeys, OPT_DEFAULT_RANGE, GRIP_KEYS, GRIP_META,
   type Field, type OptimizerSetup, type PointKey, type GoalSetting, type CornerDesign,
+  type VehScalar,
 } from '../store';
+import { adjustmentRanges } from '../testOptimize';
 import { CORNER_IDS, type CornerId } from '../../core/vehicle/vehicle';
 import { POINT_LABELS, pointLabel } from '../components';
 import type { SuspensionKind, DoubleWishboneGeometry } from '../../core/suspension/doubleWishbone';
 import { lockKeys, pointAxisLocked } from '../locks';
 import { armMetrics } from '../../core/suspension/armGeometry';
 import {
-  buildProblem, buildVehicleProblem, runOptimizer, runVehicleOptimizer, varKey, parseVarKey, vehVarKey, parseVehVarKey, customVarKey, parseCustomVarKey, customOfVariable,
+  buildProblem, buildVehicleProblem, runOptimizer, runVehicleOptimizer, vehUpdateOf, vehScalarKey, parseVehScalarKey, varKey, parseVarKey, vehVarKey, parseVehVarKey, customVarKey, parseCustomVarKey, customOfVariable,
   pointKeyOf, designRoots, type RunHandle, type RunResult,
 } from '../optimizer';
 import { ValueInput } from './ValueInput';
@@ -210,6 +212,8 @@ export function GripModelFields() {
 type Report = {
   goals: { kind: string; target: number; before: number | null; after: number | null }[];
   variables: (Variable & { root?: CornerId; before: number; after: number; atLimit: boolean })[];
+  /** F28: the characteristic bounds the result is at (vehicle optimizer). */
+  atBounds?: ActiveBound[];
 };
 interface RunState {
   running: boolean;
@@ -309,6 +313,11 @@ function RunArea({ useRun, blockers, notes, label, start, current, meta, onApply
               ))}
             </tbody>
           </table>
+          {!!run.result.atBounds?.length && (
+            <p className="hint warn-text" title="The result sits at (or past) these characteristic limits: widen them under Limits to let it go further">
+              At a limit: {atBoundsText(run.result.atBounds)}.
+            </p>
+          )}
           {stale && <p className="hint warn-text">The design changed since this run. Run again before applying.</p>}
           <div className="jm-row">
             <button className="wide-btn primary" disabled={stale} onClick={() => { clearPreview(); onApply(run.result!); useRun.setState({ result: null, from: null }); }}>Apply to design</button>
@@ -672,6 +681,125 @@ function VehiclePresets() {
   );
 }
 
+/** "KPI (FL, FR) 20° max · Trail (RL) 0 mm min" — the bounds a result is at, grouped by kind and side. */
+export function atBoundsText(list: ActiveBound[]): string {
+  const groups = new Map<string, { a: ActiveBound; roots: string[] }>();
+  for (const a of list) {
+    const k = `${a.kind}.${a.side}`;
+    const g = groups.get(k) ?? { a, roots: [] };
+    if (a.root) g.roots.push(a.root);
+    groups.set(k, g);
+  }
+  return [...groups.values()].map(({ a, roots }) => `${BOUND_META[a.kind].label}${roots.length ? ` (${roots.join(', ')})` : ''} ${fmt(a.bound, 2)} ${BOUND_META[a.kind].unit} ${a.side}${a.held ? ` (held at its start value, past the ${fmt(a.set!, 2)} limit)` : ''}`).join(' · ');
+}
+
+/**
+ * F28 (round 5): bounds on the characteristics. The optimizer moves the points for the goals; these keep it from
+ * wandering into what no one would build. Generic and wide (the same for every car); past one costs heavily.
+ */
+function Limits() {
+  const o = useApp((s) => s.vehicleOptimizer);
+  const update = useApp((s) => s.updateVehicleOptimizer);
+  const setB = (k: (typeof BOUND_KINDS)[number], fn: (b: (typeof o.bounds)[typeof k]) => (typeof o.bounds)[typeof k]) =>
+    update((v) => ({ ...v, bounds: { ...v.bounds, [k]: fn(v.bounds[k]) } }));
+  const setN = (k: (typeof BOUND_KINDS)[number], which: 'min' | 'max', text: string) => {
+    const n = Number(text);
+    if (Number.isFinite(n)) setB(k, (b) => ({ ...b, [which]: { text, value: n } }));
+  };
+  const on = BOUND_KINDS.filter((k) => o.bounds[k].on).length;
+  return (
+    <Section title={`Limits (${on} on)`} open={false}>
+      <p className="hint">Bounds on the characteristics: inside them the optimizer is free; past one costs heavily, so it stops there. They are wide and generic on purpose (the same for every car and use) — they only stop designs no one would build. The steering ones apply to steered designs; anti-dive and anti-squat to the car. These also apply to the Tests optimizer.</p>
+      <label className="check-row" title="When the Tests optimizer reaches a limit (or an adjustment's range end), ask whether to let it go further. Off: it stays within them.">
+        <input type="checkbox" checked={o.askLimits} onChange={(e) => update((v) => ({ ...v, askLimits: e.target.checked }))} /> Ask before going past a limit
+      </label>
+      <table className="opt-table">
+        <thead><tr><th>On</th><th>Characteristic</th><th>Min</th><th>Max</th></tr></thead>
+        <tbody>
+          {BOUND_KINDS.map((k) => {
+            const b = o.bounds[k], m = BOUND_META[k];
+            return (
+              <tr key={k} title={m.hint}>
+                <td><input type="checkbox" checked={b.on} onChange={(e) => setB(k, (x) => ({ ...x, on: e.target.checked }))} /></td>
+                <td>{m.label}</td>
+                <td className="nowrap"><input key={`${k}.min.${b.min.text}`} type="number" style={{ width: 60 }} disabled={!b.on} defaultValue={b.min.text} onBlur={(e) => setN(k, 'min', e.target.value)} /></td>
+                <td className="nowrap"><input key={`${k}.max.${b.max.text}`} type="number" style={{ width: 60 }} disabled={!b.on} defaultValue={b.max.text} onBlur={(e) => setN(k, 'max', e.target.value)} /> <span className="unit">{m.unit}</span></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <div className="jm-row">
+        <button className="chip" onClick={() => update((v) => ({ ...v, bounds: defaultBounds() }))}>Default limits</button>
+      </div>
+    </Section>
+  );
+}
+
+const ADJ_LABEL: Record<VehScalar, string> = { staticCamber: 'Static camber', staticToe: 'Static toe', tirePressure: 'Tire pressure', rideHeight: 'Ride height' };
+const ADJ_UNIT: Record<VehScalar, string> = { staticCamber: '°', staticToe: '°', tirePressure: 'kPa', rideHeight: 'mm' };
+
+/**
+ * Round 5: the vehicle optimizer's other variables — what a mechanic adjusts without moving a pickup point: each
+ * design's static camber, toe and tire pressure, each axle's static ride height. Free / fixed and their ranges.
+ */
+function Adjustments({ roots, all, ranges, update }: {
+  roots: CornerId[]; all: Record<CornerId, CornerDesign>; ranges: Record<string, { lo: Field; hi: Field }>;
+  update: (fn: (r: Record<string, { lo: Field; hi: Field }>) => Record<string, { lo: Field; hi: Field }>) => void;
+}) {
+  const rideHeight = useApp((s) => s.rideHeight);
+  const rows: { key: string; label: string; name: VehScalar; now: string }[] = [];
+  for (const root of roots) {
+    const d = all[root];
+    rows.push({ key: vehScalarKey(root, 'staticCamber'), label: `${root} static camber`, name: 'staticCamber', now: d.geom.scalars.staticCamber.text });
+    rows.push({ key: vehScalarKey(root, 'staticToe'), label: `${root} static toe`, name: 'staticToe', now: d.geom.scalars.staticToe.text });
+    if (d.tireModel === 'gas') rows.push({ key: vehScalarKey(root, 'tirePressure'), label: `${root} tire pressure`, name: 'tirePressure', now: d.tire.pressure.text });
+  }
+  for (const [root, axle] of [['FL', 'front'], ['RL', 'rear']] as const) {
+    rows.push({ key: vehScalarKey(root, 'rideHeight'), label: `Ride height, ${axle}`, name: 'rideHeight', now: rideHeight.on ? rideHeight[axle].text : 'design' });
+  }
+  const setBound = (key: string, which: 'lo' | 'hi', text: string) => update((r) => {
+    const n = Number(text);
+    return r[key] && Number.isFinite(n) ? { ...r, [key]: { ...r[key]!, [which]: { text, value: n } } } : r;
+  });
+  const free = (key: string, on: boolean) => update((r) => {
+    if (!on) { const { [key]: _drop, ...rest } = r; void _drop; return rest; }
+    const def = adjustmentRanges(useApp.getState())[key];
+    return def ? { ...r, [key]: def } : r;
+  });
+  return (
+    <Section title="Adjustments" open={rows.some((x) => ranges[x.key])}>
+      <p className="hint">What a mechanic sets without moving a pickup point: static camber and toe (the wheel's alignment at the design position — moving points changes how they change with travel, not these), tire pressure (gas tire model) and ride height (the spring preload). Free ones move with the points; locked ones (Locks tab) can't be freed.</p>
+      <div className="jm-row">
+        <button className="chip" onClick={() => update((r) => ({ ...r, ...adjustmentRanges(useApp.getState()) }))} title="Free every adjustment that isn't locked, with its default range">Free all</button>
+        <button className="chip" onClick={() => update((r) => Object.fromEntries(Object.entries(r).filter(([k]) => !parseVehScalarKey(k))))} title="Fix every adjustment">Fix all</button>
+      </div>
+      <table className="opt-table">
+        <thead><tr><th>Free</th><th>Adjustment</th><th>Now</th><th>Range</th></tr></thead>
+        <tbody>
+          {rows.map((x) => {
+            const r = ranges[x.key];
+            return (
+              <tr key={x.key}>
+                <td><input type="checkbox" checked={!!r} onChange={(e) => free(x.key, e.target.checked)} /></td>
+                <td>{x.label}</td>
+                <td className="num">{x.now} {x.now !== 'design' ? ADJ_UNIT[x.name] : ''}</td>
+                <td className="nowrap">{r ? (
+                  <>
+                    <input type="number" style={{ width: 64 }} defaultValue={r.lo.text} onBlur={(e) => setBound(x.key, 'lo', e.target.value)} />
+                    {' – '}
+                    <input type="number" style={{ width: 64 }} defaultValue={r.hi.text} onBlur={(e) => setBound(x.key, 'hi', e.target.value)} /> {ADJ_UNIT[x.name]}
+                  </>
+                ) : <span className="muted">fixed</span>}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </Section>
+  );
+}
+
 export function VehicleOptimizePanel() {
   const o = useApp((s) => s.vehicleOptimizer);
   const update = useApp((s) => s.updateVehicleOptimizer);
@@ -825,6 +953,8 @@ export function VehicleOptimizePanel() {
           </div>
         )}
       />
+      <Adjustments roots={roots.map((r) => r.root)} all={all} ranges={o.ranges} update={(fn) => update((v) => ({ ...v, ranges: fn(v.ranges) }))} />
+      <Limits />
       <Section title="What matters most" open={false}>
         <SensitivityReport build={() => buildVehicleProblem(useApp.getState())} current={geometryKey} what="the optimizer's miss" />
       </Section>
@@ -832,10 +962,10 @@ export function VehicleOptimizePanel() {
         <RunArea
           useRun={useVehicleRun} blockers={built.blockers} meta={VEHICLE_GOAL_META} current={geometryKey}
           label="Optimize vehicle"
-          notes={skippedNote(built.skippedLocked, (k) => { const v = parseVehVarKey(k)!; return `${v.root} ${POINT_LABELS[v.k]} ${AXES[v.axis]}`; }, built.problem.holds ?? [])}
+          notes={skippedNote(built.skippedLocked, (k) => { const sv = parseVehScalarKey(k); if (sv) return `${sv.name === 'rideHeight' ? (sv.root === 'FL' ? 'front' : 'rear') : sv.root} ${ADJ_LABEL[sv.name].toLowerCase()}`; const v = parseVehVarKey(k)!; return `${v.root} ${POINT_LABELS[v.k]} ${AXES[v.axis]}`; }, built.problem.holds ?? [])}
           start={(onP) => runVehicleOptimizer(built.problem, onP)}
           onApply={(r) => {
-            applyVehicleOptimized(r.variables.map((v) => ({ root: v.root!, key: pointKeyOf(v.point), axis: v.axis, value: v.after })));
+            applyVehicleOptimized(r.variables.map((v) => vehUpdateOf(v, v.after)));
             notify('Optimized geometry applied to the corner designs. Undo is in the Optimize tab.');
           }}
           undo={{ available: !!vehOptUndo, run: undoVehicleOptimized }}

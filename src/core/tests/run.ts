@@ -7,8 +7,8 @@
 import { assembleVehicle, solveCase, type VehicleProblem, type AssembledVehicle } from '../optimize/vehicle';
 import type { DoubleWishboneGeometry } from '../suspension/doubleWishbone';
 import { CORNER_IDS, type CornerId, type ChassisPose, type CornerStatus, type GripSummary, type VehicleResult } from '../vehicle/vehicle';
-import { segmentStates, segmentLatG, roadEffective, topSpeed, G, type RoadState, type SegmentSpec, type CarDims } from './segments';
-import { planDuration, planSpeeds, SHAPE_LABEL, type PlanCar, type PlanShape, type SegmentPlan } from './plan';
+import { segmentStates, segmentLatG, roadEffective, topSpeed, G, type RoadState, type SegmentSpec, type CarDims, gradeAlong, vertCurvature } from './segments';
+import { planDuration, planSpeeds, SHAPE_LABEL, LAUNCH_SPEED, type PlanCar, type PlanShape, type SegmentPlan } from './plan';
 import { wheelHeights } from './road';
 import { steerForTurn, type SteerNeed } from './steer';
 import { rideOn, joinRide, type RideMeasures, type RideEnd } from './ride';
@@ -55,6 +55,8 @@ export interface SegmentResult {
   drivenScale?: number;
   /** Passes as steady states but fails over time (ride: bumps, transients). */
   rideFail?: boolean;
+  /** Round 5: driving and braking at once, by the driving style (the handbrake, left-foot braking, the line-lock). */
+  technique?: string;
   /** Planned speeds: what it was planned at, how (the way of taking it and the grip target), and its time (s): as
    * driven when the pedal driver drove it (`driven`), else the plan's; `plannedTime` the plan's. */
   plannedTime?: number;
@@ -136,7 +138,7 @@ export interface TestRun {
    * Did not finish (round 4, F25): over time the car went off course or spun in this segment, at this time (s),
    * and the run ended there. A Fail; the segments after it weren't driven (their time is the plan's).
    */
-  ended?: { segment: number; t: number; why: 'offCourse' | 'spun'; text: string };
+  ended?: { segment: number; t: number; why: 'offCourse' | 'spun' | 'rolledOver'; text: string };
 }
 
 /** Segment physics plus the checks that decide its pass / fail. */
@@ -327,7 +329,7 @@ export function powertrainForce(p: VehicleProblem, asm: AssembledVehicle): ((v: 
  */
 export const PLAN_SHAPES: PlanShape[] = ['brakeIn', 'coastIn', 'hold', 'accelIn'];
 /** Failures over time that taking a segment another way or slower can cure. */
-const PLAN_HELPS = new Set(['understeer', 'oversteer', 'pathError', 'spin', 'offCourse', 'wheelLift', 'rollover', 'trailerSway', 'nearLimit', 'lockup', 'wheelspin', 'steerLimit', 'speedNotReached']);
+const PLAN_HELPS = new Set(['understeer', 'oversteer', 'pathError', 'spin', 'offCourse', 'airborne', 'wheelLift', 'rollover', 'trailerSway', 'nearLimit', 'lockup', 'wheelspin', 'steerLimit', 'speedNotReached']);
 
 /** Failures over time that driving slower can cure (Driver lifts). */
 const LIFT_HELPS = new Set(['understeer', 'oversteer', 'pathError', 'spin', 'offCourse', 'wheelLift', 'rollover', 'trailerSway', 'nearLimit']);
@@ -428,6 +430,8 @@ export function runTest(
     const car = planCar = planCarOf(p, asm, gripTarget, segments.filter((sg) => sg.path !== 'straight' && !(sg.latG !== null && sg.latG !== undefined && Number.isFinite(sg.latG))).map((sg) => sg.radius));
     if (car) {
       const base = segments;
+      // The pass rules that want 3 or more wheels on the ground: the plan keeps them down over crests (round 5).
+      const wheelsDown = base.map((sg) => { const a = (sg.checks ?? PROFILES.default.checks).airborne ?? PROFILES.default.checks.airborne; return !!a && a.severity !== 'pass' && (a.threshold ?? 3) >= 3; });
       tries = base.map((_, i) => {
         const s0 = opts.plan?.start?.[i];
         if (!s0 || !(s0.target > 0)) return { shape: -1, target: gripTarget };
@@ -436,7 +440,7 @@ export function runTest(
       });
       const build = () => {
         const pl = planSpeeds(base, car, base.map((_, i) => tryOf(i).target), base.map((_, i) => tryOf(i).shape),
-          opts.plan?.gripOnly ? { gripOnly: { ...opts.plan.gripOnly, capped: tries.map((t) => !!t?.capped) } } : {});
+          { ...(opts.plan?.gripOnly ? { gripOnly: { ...opts.plan.gripOnly, capped: tries.map((t) => !!t?.capped) } } : {}), wheelsDown });
         return base.map((sg, i) => ({ ...sg, plan: pl.plans[i]! }));
       };
       const fails = (fs: Finding[]) => fs.some((f) => f.severity === 'fail' && PLAN_HELPS.has(f.check));
@@ -605,6 +609,8 @@ export function runTest(
     }
     ride = { frames: withBrakeTemps(p, rr.frames), metrics: rr.metrics, ...(rr.error ? { error: rr.error } : {}) };
     if (opts.handling && opts.driverSpeed && !rr.error) drivenTimes = rr.times;
+    // Round 5: what the driver did with both pedals (or the handbrake) by the driving style.
+    rr.technique?.forEach((t, i) => { if (t && segs[i]) segs[i]!.technique = t; });
     if (rr.ended) {
       ended = rr.ended;
       segs.forEach((sr, i) => { if (i > rr.ended!.segment) sr.notReached = true; });
@@ -671,7 +677,7 @@ export function runTest(
       let text = '';
       if (t.target < gripTarget - 1e-9) {
         const still = !sr.passed ? `; even at ${pct(t.target)} it still fails there` : '';
-        text = `Had to lower the driver's push to ${pct(t.target)} of the grip (from ${pct(gripTarget)}): at ${pct(gripTarget)} every way of taking it (${(['plan', 'brakeIn', 'coastIn', 'hold', 'accelIn'] as PlanShape[]).map((x) => SHAPE_LABEL[x]).join(', ')}) failed over time${still}${tried}`;
+        text = `Had to lower the driver's push to ${pct(t.target)} of the grip (from ${pct(gripTarget)}): at ${pct(gripTarget)} ${sg.v0 < LAUNCH_SPEED ? 'it failed over time (from a standstill only its own plan applies)' : `every way of taking it (${(['plan', 'brakeIn', 'coastIn', 'hold', 'accelIn'] as PlanShape[]).map((x) => SHAPE_LABEL[x]).join(', ')}) failed over time`}${still}${tried}`;
       } else if (tried && !sr.passed) text = `Slowing down doesn't cure it: it fails with the driver pushing to ${pct(t.target)} of the grip${tried}`;
       if (text && sev !== 'pass') {
         sr.findings = dedupe([...sr.findings, { check: 'gripTarget', severity: sev, text }]);
@@ -784,13 +790,13 @@ export function playbackFrames(
       heading += curv * ds;
       x += ds * Math.cos(heading);
       y += ds * Math.sin(heading);
-      z += ds * Math.sin(sg.grade);
+      z += ds * Math.sin(gradeAlong(sg, sAlong));
       const ay = segmentLatG(sg, v);
       const ax = sg.longG !== null && sg.longG !== undefined && Number.isFinite(sg.longG) ? sg.longG : a / G;
       const wh = sg.road ? wheelHeights(sg.road, sAlong, dims.wheelbase / 1000, dims.halfTrack / 1000) : { FL: 0, FR: 0, RL: 0, RR: 0 };
       const ground: Partial<Record<CornerId, number>> = {};
       for (const id of CORNER_IDS) { const h = (sg.bumps?.[id] ?? 0) + wh[id]; if (Math.abs(h) > 1e-6) ground[id] = h; }
-      const st: RoadState = { name: `${i + 1}@${sAlong.toFixed(1)}m`, segment: i, speed: v, ay, ax, at: sAlong, ...roadEffective(ay, ax, sg.grade, sg.bank), groundOffset: ground, grade: sg.grade, bank: sg.bank };
+      const st: RoadState = { name: `${i + 1}@${sAlong.toFixed(1)}m`, segment: i, speed: v, ay, ax, at: sAlong, ...roadEffective(ay, ax, gradeAlong(sg, sAlong), sg.bank, (v * v * vertCurvature(sg)) / G), groundOffset: ground, grade: gradeAlong(sg, sAlong), bank: sg.bank };
       const r = evalState(p, asm, st, checks, guess, sg);
       if (r.pose) guess = r.pose;
       let brakeTemp: AxleTemps | undefined;
@@ -803,7 +809,7 @@ export function playbackFrames(
         temp = brakeStep(th, temp, force, v, Math.min(dt, T - tt));
       }
       frames.push({
-        t: t0 + tt, segment: i, s: sAlong, speed: v, ay, ax, grade: sg.grade, bank: sg.bank, groundOffset: ground,
+        t: t0 + tt, segment: i, s: sAlong, speed: v, ay, ax, grade: gradeAlong(sg, sAlong), bank: sg.bank, groundOffset: ground,
         pos: { x, y, z }, heading, rack: r.steer?.rackUsed ?? 0, severity: r.severity,
         utilization: Object.fromEntries(CORNER_IDS.map((id) => [id, r.grip?.corners[id].utilization ?? NaN])) as Record<CornerId, number>,
         findings: r.findings.filter((f) => f.severity !== 'pass').map((f) => f.text),

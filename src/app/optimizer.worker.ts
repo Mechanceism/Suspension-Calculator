@@ -1,7 +1,8 @@
 /// <reference lib="webworker" />
 /** Runs optimizers (corner / whole vehicle) and tests off the main thread; posts progress after every iteration. */
 import { optimizeCorner, type CornerProblem } from '../core/optimize/corner';
-import { optimizeVehicle, vehicleSensitivity, vehicleObjective, reportVehicle, sensitivitySample, type VehicleProblem } from '../core/optimize/vehicle';
+import { optimizeVehicle, vehicleSensitivity, vehicleObjective, reportVehicle, sensitivitySample, assembleVehicle, vehicleInputOf, type VehicleProblem } from '../core/optimize/vehicle';
+import { rolloverStats } from '../core/vehicle/rollover';
 import { tuneRates, scoreTests, withRates, type RateVar, type RateTest } from '../core/optimize/rates';
 import type { PoolContext, PoolTask } from './workerPool';
 import { fitTire, type TireSample } from '../core/tire/fit';
@@ -16,7 +17,8 @@ type Job =
   | { kind: 'playback'; problem: VehicleProblem; segments: SegmentSpec[]; ride?: boolean; handling?: boolean; driverSpeed?: boolean }
   | { kind: 'sensitivity'; problem: VehicleProblem; samples: number }
   | { kind: 'tirefit'; samples: TireSample[]; name: string; unloadedRadius?: number }
-  | { kind: 'rates'; problem: VehicleProblem; tests: RateTest[]; vars: RateVar[]; budget: number; mode: 'pass' | 'improve' };
+  | { kind: 'rates'; problem: VehicleProblem; tests: RateTest[]; vars: RateVar[]; budget: number; mode: 'pass' | 'improve' }
+  | { kind: 'rollover'; problem: VehicleProblem };
 
 // Pool worker (workerPool.ts): one context, then many small tasks.
 let pool: { ctx: PoolContext; obj?: ReturnType<typeof vehicleObjective> } | null = null;
@@ -58,6 +60,12 @@ self.onmessage = (e: MessageEvent<Job | { kind: 'pool-init'; ctx: PoolContext } 
     if (j.kind === 'rates') {
       const r = tuneRates(j.problem, j.tests, j.vars, { budget: j.budget, mode: j.mode }, (info) => { self.postMessage({ type: 'progress', info }); });
       self.postMessage({ type: 'done', result: r });
+      return;
+    }
+    if (j.kind === 'rollover') {
+      const geometries = Object.fromEntries(Object.entries(j.problem.designs).map(([r, d]) => [r, d!.geometry]));
+      const asm = assembleVehicle(j.problem, geometries);
+      self.postMessage({ type: 'done', result: asm ? rolloverStats(vehicleInputOf(j.problem, asm, { lateralG: 0, brakingG: 0, accelG: 0 }), j.problem.ride?.rollInertia ?? 0) : null });
       return;
     }
     if (j.kind === 'test') {

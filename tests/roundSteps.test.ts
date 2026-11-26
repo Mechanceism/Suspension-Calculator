@@ -14,14 +14,16 @@ const valueOf = async (p: VehicleProblem) => {
 vi.mock('../src/app/optimizer', async (orig) => {
   const m = await orig<typeof import('../src/app/optimizer')>();
   const { variableValue } = await import('../src/core/optimize/corner');
+  // (Points only: the round-5 adjustments — camber, toe, pressure, ride height — stay where they are here.)
+  const isPoint = (v: { point: string; root: string }, p: VehicleProblem) => !['staticCamber', 'staticToe', 'tirePressure', 'rideHeight'].includes(v.point) && !!p.designs[v.root as 'FL'];
   return {
     ...m,
     runVehicleOptimizer: (p: VehicleProblem) => ({
       stop() {},
       done: Promise.resolve().then(() => {
-        const v0 = p.variables[0]!;
+        const v0 = p.variables.find((v) => isPoint(v, p))!;
         if (probe.root === undefined) { probe.root = v0.root; probe.point = v0.point; probe.axis = v0.axis; probe.x0 = variableValue(p.designs[v0.root]!.geometry, v0); }
-        const variables = p.variables.map((v) => {
+        const variables = p.variables.filter((v) => isPoint(v, p)).map((v) => {
           const b = variableValue(p.designs[v.root]!.geometry, v);
           const first = v.root === probe.root && v.point === probe.point && v.axis === probe.axis;
           return { ...v, before: b, after: b + (first ? 10 : 0), atLimit: false };

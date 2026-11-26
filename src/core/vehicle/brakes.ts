@@ -26,6 +26,8 @@
 export interface BrakeAxle {
   /** Disc (caliper on a rotor) or drum (shoes in a drum). Default disc. */
   kind?: 'disc' | 'drum';
+  /** Rotors / drums on the axle: 2 (one per wheel, default) or 1 (a brake before the differential, round 5). */
+  rotors?: number;
   /** Master cylinder bore, mm. */
   mcBore: number;
   /** Caliper piston diameter (mm) and pistons per side. */
@@ -82,7 +84,7 @@ export function brakeCapacity(b: BrakeSystem, tireRadius: { front: number; rear:
   const axle = (a: BrakeAxle, s: number, rTire: number) => {
     const p = a.mcBore > 0 ? (pedal * s) / area(a.mcBore) : 0; // N/mm² = MPa
     const torque = wheelTorque(a, p); // N·mm
-    return { pressure: p * 1000, torque: torque / 1000, force: rTire > 0 ? (2 * torque) / rTire : 0 };
+    return { pressure: p * 1000, torque: torque / 1000, force: rTire > 0 ? ((a.rotors ?? 2) * torque) / rTire : 0 };
   };
   const f = axle(b.front, share.front, tireRadius.front), r = axle(b.rear, share.rear, tireRadius.rear);
   return {
@@ -178,12 +180,12 @@ export interface BrakeDetail {
   compliance: { front: number; rear: number };
 }
 
-/** Fluid an axle's circuit takes at line pressure p (MPa), both wheels, mm³. */
+/** Fluid an axle's circuit takes at line pressure p (MPa), every brake on the axle (both wheels, or the one driveline brake), mm³. */
 export function circuitVolume(a: BrakeAxle, d: BrakeDetail, compliance: number, p: number): number {
   const close = a.kind === 'drum'
     ? 2 * area(a.wheelCylinder ?? 0) * d.shoeClearance
     : 2 * area(a.pistonDiameter) * Math.max(0, a.pistonsPerSide) * d.padClearance;
-  return 2 * close + Math.max(0, compliance) * Math.max(0, p);
+  return (a.rotors ?? 2) * close + Math.max(0, compliance) * Math.max(0, p);
 }
 
 export interface PedalTravel {

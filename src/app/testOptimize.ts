@@ -16,15 +16,16 @@ import { planStartOf, type TestRun } from '../core/tests/run';
 import type { Severity } from '../core/tests/checks';
 import type { DoubleWishboneGeometry } from '../core/suspension/doubleWishbone';
 import { variableValue } from '../core/optimize/corner';
-import type { VehicleProblem } from '../core/optimize/vehicle';
+import { BOUND_META, type VehicleProblem, type ActiveBound } from '../core/optimize/vehicle';
 import type { CornerId } from '../core/vehicle/vehicle';
-import { layoutOf, useApp, mergedCorners, rootOf, pickDesign, OPT_DEFAULT_RANGE, POINT_KEYS, CORNER_NAMES, type Field, type RateUpdate, type AppState, type DamperKey, type DesignState } from './store';
+import { layoutOf, useApp, mergedCorners, rootOf, pickDesign, OPT_DEFAULT_RANGE, POINT_KEYS, CORNER_NAMES, type Field, type RateUpdate, type AppState, type DamperKey, type DesignState, isVehScalar, type VehUpdateKey } from './store';
 import { useSnapshots } from './snapshots';
 import { isOneAxle } from '../core/suspension/doubleWishbone';
-import { buildVehicleProblem, runVehicleOptimizer, runTestJob, runRatesJob, designRoots, vehVarKey, pointKeyOf } from './optimizer';
+import { buildVehicleProblem, runVehicleOptimizer, runTestJob, runRatesJob, designRoots, vehVarKey, pointKeyOf, vehUpdateOf, vehRangeKeyOf, vehScalarKey } from './optimizer';
 import { testScore as coreTestScore, isUnfixable as coreUnfixable } from '../core/tests/score';
 import type { RateVar, RateTest, RateProgress } from '../core/optimize/rates';
 import { lockKeys } from './locks';
+import { designRideHeight } from '../core/optimize/vehicle';
 import { planOption, rankWeight, segmentSpec, driverSpeedOf, plannedSpeeds, type TestDesign } from './tests';
 import { pointAxisLocked } from './locks';
 import { startTestRun, runTestsTogether, useRun, resultsOf, restoreResults } from './panels/TestsPanels';
@@ -40,7 +41,7 @@ export interface Exploration {
   candidate: { passed: boolean; severity: Severity };
   /** Moves, with whether they leave the user's range. */
   moves: { key: string; label: string; before: number; after: number; outside: boolean }[];
-  updates: { root: CornerId; key: (typeof POINT_KEYS)[number]; axis: 0 | 1 | 2; value: number }[];
+  updates: { root: CornerId; key: VehUpdateKey; axis: 0 | 1 | 2; value: number }[];
   /** Tests it was explored on. */
   testIds: string[];
 }
@@ -62,7 +63,8 @@ export interface RateSettings {
   /** Also tune them inside Optimize until it passes / Improve (when geometry alone stops helping). */
   withLoop: boolean;
 }
-const DEFAULT_RATES: RateSettings = { springs: true, dampers: true, bars: false, spread: 2.5, budget: 30, withLoop: true };
+// Bars on by default (round 5): an axle's bar is tuned only when it has one (no bar, nothing added).
+const DEFAULT_RATES: RateSettings = { springs: true, dampers: true, bars: true, spread: 2.5, budget: 30, withLoop: true };
 
 interface LoopState {
   running: boolean;
@@ -320,11 +322,43 @@ export async function tuneSpringsDampers(scope: Scope, active: TestDesign | null
   }
 }
 
-/** Free every unlocked coordinate of every design (±25 mm) when nothing is free yet; asks first. */
+/**
+ * Round 5: the vehicle optimizer's other variables, freed with their default ranges — each design's static camber
+ * (±1.5°), toe (±0.3°) and tire set pressure (gas model, ±25 %), each axle's static ride height (±15 mm about the
+ * set or design height) — leaving out locked ones. Keys → ranges.
+ */
+export function adjustmentRanges(s: AppState): Record<string, { lo: Field; hi: Field }> {
+  const all = mergedCorners(s);
+  const f = (x: number, d = 2): Field => ({ text: String(Number(x.toFixed(d))), value: x });
+  const out: Record<string, { lo: Field; hi: Field }> = {};
+  for (const { root } of designRoots(s)) {
+    const d = all[root];
+    for (const [name, span] of [['staticCamber', 1.5], ['staticToe', 0.3]] as const) {
+      if (s.locks[lockKeys.field(root, 'scalar', name)]) continue;
+      const v = d.geom.scalars[name].value;
+      out[vehScalarKey(root, name)] = { lo: f(v - span, 3), hi: f(v + span, 3) };
+    }
+    if (d.tireModel === 'gas' && !s.locks[lockKeys.field(root, 'tire', 'pressure')]) {
+      const v = d.tire.pressure.value;
+      out[vehScalarKey(root, 'tirePressure')] = { lo: f(v * 0.75, 1), hi: f(v * 1.25, 1) };
+    }
+  }
+  // Ride height: about the set height, else where the car rests at its design position.
+  let design = NaN;
+  try { design = designRideHeight(buildVehicleProblem(s).problem); } catch { /* no car yet */ }
+  for (const [root, axle] of [['FL', 'front'], ['RL', 'rear']] as const) {
+    const v = s.rideHeight.on ? s.rideHeight[axle].value : design;
+    if (Number.isFinite(v)) out[vehScalarKey(root, 'rideHeight')] = { lo: f(v - 15, 1), hi: f(v + 15, 1) };
+  }
+  return out;
+}
+
+/** Free every unlocked coordinate of every design (±25 mm) when nothing is free yet, and the other variables; asks first. */
 function ensureFreeCoordinates(): boolean {
   const s = useApp.getState();
   if (Object.keys(s.vehicleOptimizer.ranges).length) return true;
-  if (!window.confirm('No free coordinates are chosen for the vehicle optimizer. Free all available (unlocked) coordinates, ±25 mm?')) return false;
+  if (!window.confirm('No free coordinates are chosen for the vehicle optimizer. Free all available (unlocked) coordinates (±25 mm), static camber and toe, tire pressure and ride height?')) return false;
+  const extra = adjustmentRanges(s);
   const all = mergedCorners(s);
   const f = (x: number): Field => ({ text: String(Number(x.toFixed(2))), value: x });
   s.updateVehicleOptimizer((o) => {
@@ -337,7 +371,7 @@ function ensureFreeCoordinates(): boolean {
         ranges[vehVarKey(root, k, a)] = { lo: f(v - OPT_DEFAULT_RANGE), hi: f(v + OPT_DEFAULT_RANGE) };
       }
     }
-    return { ...o, ranges };
+    return { ...o, ranges: { ...ranges, ...extra } };
   });
   return true;
 }
@@ -361,10 +395,11 @@ export function testsInScope(scope: Scope, active: TestDesign | null): TestDesig
   return active ? [active] : [];
 }
 
-/** The free ranges widened ×k about their centers (always containing the current value). */
+/** The free ranges widened ×k about their centers (always containing the current value); points only — the adjustments (camber, toe, pressure, ride height) keep theirs. */
 function widened(p: VehicleProblem, k: number): VehicleProblem['variables'] {
   if (k <= 1) return p.variables;
   return p.variables.map((v) => {
+    if (isVehScalar(v.point)) return v;
     const now = variableValue(p.designs[v.root]!.geometry, v);
     const c = (v.lo + v.hi) / 2, half = (Math.abs(v.hi - v.lo) / 2) * k + 1;
     return { ...v, lo: Math.min(c - half, now), hi: Math.max(c + half, now) };
@@ -385,6 +420,77 @@ function growRanges(moves: { key: string; value: number }[]) {
     }
     return changed ? { ...o, ranges } : o;
   });
+}
+
+const ADJ_NAME: Record<string, [string, string]> = { staticCamber: ['Static camber', '°'], staticToe: ['Static toe', '°'], tirePressure: ['Tire pressure', 'kPa'], rideHeight: ['Ride height', 'mm'] };
+const round2 = (x: number) => Number(x.toFixed(2));
+
+/**
+ * F28 (round 5): after a round, the characteristic bounds its result reached — and the adjustments (camber, toe,
+ * pressure, ride height) stopped at their range ends — are offered past: one question for all of them, each
+ * widened by a fifth of its span on yes. A no is remembered for the rest of the run; with "Ask before going past
+ * a limit" off nothing is asked and the run stays within. Returns the log line (null: nothing new to ask).
+ */
+export function offerLimits(
+  result: { atBounds?: ActiveBound[]; variables: { root: string; point: string; axis: number; after: number; atLimit: boolean }[] },
+  declined: Set<string>,
+): string | null {
+  const o = useApp.getState().vehicleOptimizer;
+  if (!o.askLimits) return null;
+  type Item = { key: string; text: string; apply: (v: typeof o) => typeof o };
+  const items: Item[] = [];
+  const byBound = new Map<string, { a: ActiveBound; roots: string[] }>();
+  for (const a of result.atBounds ?? []) {
+    const k = `bound.${a.kind}.${a.side}`;
+    const g = byBound.get(k) ?? { a, roots: [] };
+    if (a.root) g.roots.push(a.root);
+    // The furthest out sets the group's bound (a design held at its start value past the set one).
+    if (a.side === 'max' ? a.bound > g.a.bound : a.bound < g.a.bound) g.a = a;
+    byBound.set(k, g);
+  }
+  for (const [key, { a, roots }] of byBound) {
+    const b = o.bounds[a.kind];
+    if (!b?.on || declined.has(key)) continue;
+    const lo = Math.min(b.min.value, b.max.value), hi = Math.max(b.min.value, b.max.value);
+    const step = Math.max(0.2 * (hi - lo), 0.1);
+    const at = a.side === 'max' ? Math.max(hi, a.bound) : Math.min(lo, a.bound);
+    const next = round2(a.side === 'max' ? at + step : at - step);
+    const m = BOUND_META[a.kind];
+    const where = `${m.label}${roots.length ? ` (${roots.join(', ')})` : ''}`;
+    const what = a.held
+      ? `is held at its start value ${round2(at)} ${m.unit} (past its ${round2(a.side === 'max' ? hi : lo)} ${m.unit} ${a.side === 'max' ? 'maximum' : 'minimum'}: no worse than it started)`
+      : `reached its ${round2(at)} ${m.unit} ${a.side === 'max' ? 'maximum' : 'minimum'}`;
+    items.push({
+      key,
+      text: `${where} ${what} → allow ${a.side === 'max' ? 'up to' : 'down to'} ${next} ${m.unit}`,
+      apply: (v) => ({ ...v, bounds: { ...v.bounds, [a.kind]: { ...v.bounds[a.kind], [a.side]: { text: String(next), value: next } } } }),
+    });
+  }
+  for (const x of result.variables) {
+    if (!x.atLimit || !isVehScalar(x.point)) continue;
+    const rk = vehRangeKeyOf(vehUpdateOf(x as never, x.after));
+    const r = o.ranges[rk];
+    const key = `range.${rk}`;
+    if (!r || declined.has(key) || items.some((i) => i.key === key)) continue;
+    const lo = Math.min(r.lo.value, r.hi.value), hi = Math.max(r.lo.value, r.hi.value);
+    const side: 'lo' | 'hi' = Math.abs(x.after - hi) <= Math.abs(x.after - lo) ? 'hi' : 'lo';
+    const next = round2(side === 'hi' ? hi + 0.2 * (hi - lo) : lo - 0.2 * (hi - lo));
+    const [label, unit] = ADJ_NAME[x.point]!;
+    const who = x.point === 'rideHeight' ? (x.root === 'FL' ? 'front' : 'rear') : x.root;
+    items.push({
+      key,
+      text: `${label} (${who}) reached its range end ${round2(side === 'hi' ? hi : lo)} ${unit} → allow ${side === 'hi' ? 'up to' : 'down to'} ${next} ${unit}`,
+      apply: (v) => ({ ...v, ranges: { ...v.ranges, [rk]: { ...v.ranges[rk]!, [side]: { text: String(next), value: next } } } }),
+    });
+  }
+  if (!items.length) return null;
+  const yes = window.confirm(`The optimizer reached ${items.length === 1 ? 'a limit' : `${items.length} limits`}:\n\n${items.map((i) => `• ${i.text}`).join('\n')}\n\nLet it go past ${items.length === 1 ? 'it' : 'them'}? (Cancel keeps it within ${items.length === 1 ? 'this limit' : 'these limits'} for the rest of this run.)`);
+  if (yes) {
+    useApp.getState().updateVehicleOptimizer((v) => items.reduce((acc, i) => i.apply(acc), v));
+    return `Limits widened: ${items.map((i) => i.text).join('; ')}`;
+  }
+  for (const i of items) declined.add(i.key);
+  return `Limits kept: ${items.map((i) => i.text.split(' → ')[0]).join('; ')}`;
 }
 
 interface SetRun { runs: { test: TestDesign; run: TestRun }[]; passed: boolean; score: number }
@@ -486,7 +592,7 @@ export async function offerSplit(scope: Scope, active: TestDesign | null, mode: 
         const { result } = await h.done;
         currentCancel = null;
         if (!stopped) {
-          useApp.getState().applyVehicleOptimized(result.variables.map((v) => ({ root: v.root!, key: pointKeyOf(v.point), axis: v.axis, value: v.after })));
+          useApp.getState().applyVehicleOptimized(result.variables.map((v) => vehUpdateOf(v, v.after)));
           const next = await runSet(tests, mode, isStopped);
           if (next) {
             const time = next.runs.reduce((a, r) => a + (r.run.time ?? 0), 0);
@@ -544,6 +650,7 @@ async function optimizeTestsOnly(scope: Scope, active: TestDesign | null, mode: 
     log(`Start: ${describe(set)} (score ${set.score.toFixed(2)})`);
     let slow = 0;
     let lastAtLimit: string[] = [];
+    const declinedLimits = new Set<string>();
     let ratesTried = false;
     const rates = useLoop.getState().rates;
     // The brake ladder: after a test run, size the brakes to the hardest stop and run again if they changed.
@@ -609,7 +716,7 @@ async function optimizeTestsOnly(scope: Scope, active: TestDesign | null, mode: 
       let undone = false;
       if (moved >= 0.05) {
         // F24: the move at the full step, ½ and ¼, each driven; the best kept (if better than not moving).
-        const at = (f: number) => result.variables.map((v) => ({ root: v.root!, key: pointKeyOf(v.point), axis: v.axis, value: v.before + f * (v.after - v.before) }));
+        const at = (f: number) => result.variables.map((v) => vehUpdateOf(v, v.before + f * (v.after - v.before)));
         const ids = tests.map((t) => t.id);
         const kept = resultsOf(ids);
         const undoBefore = useApp.getState().vehOptUndo;
@@ -640,7 +747,7 @@ async function optimizeTestsOnly(scope: Scope, active: TestDesign | null, mode: 
           const last = ROUND_STEPS[ROUND_STEPS.length - 1]!;
           if (best.f !== last) { useApp.getState().applyVehicleOptimized(at(best.f)); restoreResults(best.results); }
           useApp.setState({ vehOptUndo: roundUndo });
-          if (k > 1) growRanges(at(best.f).map((u) => ({ key: vehVarKey(u.root, u.key, u.axis), value: u.value })));
+          if (k > 1) growRanges(at(best.f).map((u) => ({ key: vehRangeKeyOf(u), value: u.value })));
           gain = set.score > 0 ? (set.score - best.set.score) / set.score : 0;
           const step = best.f === 1 ? 'the full step' : best.f === 0.5 ? 'half the step' : 'a quarter of the step';
           log(`Round ${round}: ${describe(best.set)} · score ${set.score.toFixed(2)} → ${best.set.score.toFixed(2)} (${(gain * 100).toFixed(1)}% better) with ${step} · largest move ${(moved * best.f).toFixed(1)} mm (${steps})`);
@@ -652,6 +759,12 @@ async function optimizeTestsOnly(scope: Scope, active: TestDesign | null, mode: 
       }
       // Nothing moved, or undone (the same design again would repeat the same round exactly): wider ranges next.
       slow = moved < 0.05 || undone ? 2 : gain < 0.01 ? slow + 1 : 0;
+      // F28: at a characteristic limit (or an adjustment's range end): ask whether to go past it.
+      const offered = offerLimits(result, declinedLimits);
+      if (offered) {
+        log(offered);
+        if (offered.startsWith('Limits widened')) slow = 0;
+      }
       if (mode === 'pass' && set.passed) continue; // reported at the top of the next round
       if (slow >= 2) {
         if (wi + 1 < steps.length) {
@@ -735,7 +848,7 @@ export async function exploreRanges(scope: Scope, active: TestDesign | null): Pr
     const moves = result.variables.map((v, i) => {
       const orig = p.variables[i]!;
       return {
-        key: vehVarKey(v.root!, pointKeyOf(v.point), v.axis), label: `${v.root} ${pointKeyOf(v.point)} ${'XYZ'[v.axis]}`,
+        key: vehRangeKeyOf(vehUpdateOf(v, v.after)), label: isVehScalar(v.point) ? `${v.root} ${v.point}` : `${v.root} ${pointKeyOf(v.point)} ${'XYZ'[v.axis]}`,
         before: v.before, after: v.after, outside: v.after < Math.min(orig.lo, orig.hi) - 1e-6 || v.after > Math.max(orig.lo, orig.hi) + 1e-6,
       };
     }).filter((m) => Math.abs(m.after - m.before) > 0.05);
@@ -743,7 +856,7 @@ export async function exploreRanges(scope: Scope, active: TestDesign | null): Pr
     const exploration: Exploration = {
       before: before.score, after: afterScore, moves, testIds: tests.map((t) => t.id),
       candidate: { passed, severity: runsAfter.some((r) => r.severity === 'fail') ? 'fail' : runsAfter.some((r) => r.severity === 'warn') ? 'warn' : 'pass' },
-      updates: result.variables.map((v) => ({ root: v.root!, key: pointKeyOf(v.point), axis: v.axis, value: v.after })),
+      updates: result.variables.map((v) => vehUpdateOf(v, v.after)),
     };
     useLoop.setState({ exploration, outcome: null });
     log(`Candidate: ${passed ? 'passes' : 'still fails'} · score ${exploration.before.toFixed(2)} → ${exploration.after.toFixed(2)} · ${moves.filter((m) => m.outside).length} move(s) outside your ranges.`);

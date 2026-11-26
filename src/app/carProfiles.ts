@@ -65,6 +65,8 @@ export interface CarProfileSpec {
   /** Driven / braked axles. */
   drive: 'front' | 'rear' | 'all';
   brakes: 'all' | 'rear';
+  /** The rear brake is before the differential: one transaxle brake for the axle (a riding mower's). */
+  rearDriveline?: boolean;
   abs: boolean;
   diff: CornerSettings['diff'];
   /** Body inertias, kg·m²: roll, pitch, yaw. */
@@ -145,7 +147,7 @@ export const CAR_PROFILES: CarProfileSpec[] = [
     hint: 'No suspension (very stiff springs stand in for the frame and tire flex): 15 × 6-6 front and 20 × 8-8 rear tires, 200 kg with the driver, a 13 hp engine geared for ≈ 9 km/h, rear brakes, no differential lock, no ABS.',
     front: { layout: SAMPLE_LAYOUTS.find((l) => l.id === 'C')!.geometry, halfTrack: 400, tire: { diameter: 381, width: 152, rim: 152.4, text: '15x6.00-6', pressure: 100 }, unsprung: 6, rideHz: 6, zeta: 0.2, camber: 0 },
     rear: { layout: SAMPLE_BEAM4, halfTrack: 430, tire: { diameter: 508, width: 203, rim: 203.2, text: '20x8.00-8', pressure: 70 }, unsprung: 15, rideHz: 6, zeta: 0.2, camber: 0 },
-    mass: 200, cgHeight: 420, frontShare: 0.35, wheelbase: 1200, brakeBias: 0, driveSplit: 0, drive: 'rear', brakes: 'rear', abs: false, diff: 'open',
+    mass: 200, cgHeight: 420, frontShare: 0.35, wheelbase: 1200, brakeBias: 0, driveSplit: 0, drive: 'rear', brakes: 'rear', rearDriveline: true, abs: false, diff: 'open',
     inertia: [12, 25, 30], droop: 10, bump: 10, rack: [40, 30], bars: [0, 0],
     // A 13 hp single, governed at 3600 rpm, through a big reduction (≈ 9 km/h at full throttle).
     engine: { torque: 27, torqueRpm: 2600, power: 9.7, powerRpm: 3400, redline: 3600, idle: 1200, clutch: 1500, ratio: 38, efficiency: 80 },
@@ -299,7 +301,7 @@ export function carProfileDesign(id: string): DesignState {
   const powered = (id: CornerId) => p.drive === 'all' || (p.drive === 'front') === id.startsWith('F');
   const settings = Object.fromEntries((['FL', 'FR', 'RL', 'RR'] as CornerId[]).map((id) => [id, {
     ...d.settings[id], steered: id.startsWith('F'), powered: powered(id),
-    brake: p.brakes === 'rear' && id.startsWith('F') ? 'none' : 'outboard', abs: p.abs, diff: p.diff,
+    brake: p.brakes === 'rear' && id.startsWith('F') ? 'none' : p.rearDriveline && id.startsWith('R') ? 'driveline' : 'outboard', abs: p.abs, diff: p.diff,
   } satisfies CornerSettings])) as Record<CornerId, CornerSettings>;
   // The tire grip model's nominal load and pressure at this car's static tire load and set pressure (the
   // generic coefficients are relative to them; left at a light car's 1 kN, a heavy car's tires read as

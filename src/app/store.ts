@@ -3,6 +3,7 @@
  * base-unit value (mm / deg), per GOALS.md § Units.
  */
 import { create } from 'zustand';
+import { BOUND_KINDS, BOUND_META, type BoundKind } from '../core/optimize/vehicle';
 import { parseValue, formatValue, type Quantity } from '../core/units/units';
 import { vec3, type Vec3 } from '../core/math/vec3';
 import { customFromWishbone, type CustomLinkage } from '../core/suspension/customLinkage';
@@ -11,7 +12,7 @@ import { DoubleWishbone, spinAxisFromCamberToe, SUSPENSION_LABELS, virtualPivot,
 import { SAMPLE_LAYOUTS, SAMPLE_SPRING, PRESET_LAYOUTS } from '../examples/sampleLayouts';
 import { fitFreeLength } from '../core/suspension/spring';
 import { rockerFromCoilover } from '../core/suspension/coilover';
-import { CORNER_IDS, staticCornerLoads, type CornerId, type BrakeMount, type ChassisPose } from '../core/vehicle/vehicle';
+import { CORNER_IDS, isFront, staticCornerLoads, type CornerId, type BrakeMount, type ChassisPose } from '../core/vehicle/vehicle';
 import { setArmLength, setPivotInclination, setPivotPlanAngle, setArmFrontViewAngle, transferArmPoint } from '../core/suspension/armGeometry';
 import { add, sub } from '../core/math/vec3';
 import type { TireProfile } from '../core/tire/geometry';
@@ -93,7 +94,7 @@ export function mountedTireWidth(s: Record<ScalarKey, Field>): number {
 }
 
 /** Tire load / force-model inputs (docs/MATH.md § L4). */
-export const TIRE_KEYS = ['rate', 'pressure', 'setAltitude', 'setTemperature', 'opAltitude', 'opTemperature', 'volumeFactor'] as const;
+export const TIRE_KEYS = ['rate', 'pressure', 'setAltitude', 'setTemperature', 'opAltitude', 'opTemperature', 'volumeFactor', 'maxPressure', 'loadRating'] as const;
 export type TireKey = (typeof TIRE_KEYS)[number];
 export const TIRE_META: Record<TireKey, { label: string; quantity: Quantity; unit: string; initial: number; models: TireModelKind[] }> = {
   rate: { label: 'Vertical stiffness', quantity: 'rate', unit: 'N/mm', initial: 120, models: ['stiffness'] },
@@ -103,6 +104,9 @@ export const TIRE_META: Record<TireKey, { label: string; quantity: Quantity; uni
   opAltitude: { label: 'Driving altitude', quantity: 'altitude', unit: 'm', initial: 0, models: ['gas'] },
   opTemperature: { label: 'Driving temperature', quantity: 'temperature', unit: '°C', initial: 20, models: ['gas'] },
   volumeFactor: { label: 'Volume-loss factor', quantity: 'ratio', unit: '×', initial: 1, models: ['gas'] },
+  // Round 5, the landing checks (0 = not given: a share over the cold pressure / an estimate from the tire).
+  maxPressure: { label: 'Max pressure (sidewall; 0 = not given)', quantity: 'pressure', unit: 'kPa', initial: 0, models: ['gas'] },
+  loadRating: { label: 'Load rating (sidewall; 0 = estimate)', quantity: 'mass', unit: 'kg', initial: 0, models: ['gas', 'stiffness'] },
 };
 export type TireModelKind = 'rigid' | 'stiffness' | 'gas';
 
@@ -514,10 +518,12 @@ export function toProfile(e: EditableGeometry): TireProfile {
 }
 
 export function toForceModel(kind: TireModelKind, f: Record<TireKey, Field>, volumeChange: boolean): TireForceModel | null {
-  if (kind === 'stiffness') return { kind: 'stiffness', rate: f.rate.value };
+  const rated = f.loadRating && f.loadRating.value > 0 ? { ratedLoad: f.loadRating.value * 9.80665 } : {};
+  if (kind === 'stiffness') return { kind: 'stiffness', rate: f.rate.value, ...rated };
   if (kind === 'gas') {
     return {
-      kind: 'gas', volumeChange, volumeFactor: f.volumeFactor.value,
+      kind: 'gas', volumeChange, volumeFactor: f.volumeFactor.value, ...rated,
+      ...(f.maxPressure && f.maxPressure.value > 0 ? { maxPressure: f.maxPressure.value } : {}),
       conditions: {
         setPressure: f.pressure.value, setAltitude: f.setAltitude.value, setTemperature: f.setTemperature.value,
         operatingAltitude: f.opAltitude.value, operatingTemperature: f.opTemperature.value,
@@ -676,12 +682,16 @@ export interface AppState extends DesignState {
   /** Set the tire size (mm) of the designs used on an axle (both = every design). */
   applyTireDims(axle: TireAxle, dims: { outerDiameter?: number; width?: number; rimDiameter?: number }): void;
   resetTireGrip(): void;
-  /** Write vehicle-optimized coordinates into each corner design (Undo keeps the previous geometry). */
-  applyVehicleOptimized(updates: { root: CornerId; key: PointKey; axis: 0 | 1 | 2; value: number }[]): void;
+  /**
+   * Write vehicle-optimized values into each corner design (Undo keeps what they replaced): points, and since round
+   * 5 a design's static camber / toe (deg) and tire set pressure (kPa), and an axle's static ride height (mm; root
+   * 'FL' = front, 'RL' = rear — the ride height is set then).
+   */
+  applyVehicleOptimized(updates: { root: CornerId; key: VehUpdateKey; axis: 0 | 1 | 2; value: number }[]): void;
   /** Set spring / damper rates of designs and anti-roll bar rates of axles (rate tuning). One undo step. */
   applyRateValues(updates: RateUpdate[]): void;
   undoVehicleOptimized(): void;
-  vehOptUndo: Partial<Record<CornerId, EditableGeometry>> | null;
+  vehOptUndo: VehOptUndo | null;
   /** Hold a dimension (replaces one with the same points and measure). */
   holdDimension(d: Omit<HeldDimension, 'id'>): void;
   removeDimension(id: string): void;
@@ -983,6 +993,8 @@ export interface BrakeSettings extends Record<BrakeKey, Field>, Record<FadeKey, 
   allowDiscR: boolean;
   /** Model the brake hydraulics (off = the brakes are always strong enough). */
   on: boolean;
+  /** Round 5: brake-based traction control — a spinning wheel on an open differential is braked (off by default). */
+  tc: boolean;
   /** Model brake fade in tests (with the hydraulics). */
   fade: boolean;
   /** Two master cylinders on a balance bar (else one tandem master cylinder). */
@@ -994,7 +1006,7 @@ export const defaultBrakes = (): BrakeSettings => ({
   ...(Object.fromEntries(BRAKE_KEYS.map((k) => [k, field(BRAKE_META[k].initial, BRAKE_META[k].quantity)])) as Record<BrakeKey, Field>),
   ...(Object.fromEntries(FADE_KEYS.map((k) => [k, field(FADE_META[k].initial, FADE_META[k].quantity)])) as Record<FadeKey, Field>),
   ...(Object.fromEntries(BRAKE_MORE_KEYS.map((k) => [k, field(BRAKE_MORE_META[k].initial, BRAKE_MORE_META[k].quantity)])) as Record<BrakeMoreKey, Field>),
-  on: false, fade: false, dualMc: false, useBias: false, drumF: false, drumR: false, detail: false, allowDiscF: false, allowDiscR: false,
+  on: false, tc: false, fade: false, dualMc: false, useBias: false, drumF: false, drumR: false, detail: false, allowDiscF: false, allowDiscR: false,
 });
 
 /** Shimmy / death wobble inputs (round 3, R8; docs/MATH.md § Shimmy). */
@@ -1125,10 +1137,19 @@ export interface VehicleOptimizerSetup {
   caseSource?: string;
   /** Gradient runs (1 = local from the current design; more = wide search from the best DOE samples too). */
   starts?: number;
+  /** F28 (round 5): bounds on the characteristics (generic, wide; on by default). */
+  bounds: Record<BoundKind, { on: boolean; min: Field; max: Field }>;
+  /** F28: at a bound mid-run, ask whether to go past it (off: stay within). */
+  askLimits: boolean;
 }
+
+export const defaultBounds = (): VehicleOptimizerSetup['bounds'] =>
+  Object.fromEntries(BOUND_KINDS.map((k) => [k, { on: true, min: field(BOUND_META[k].min, 'ratio'), max: field(BOUND_META[k].max, 'ratio') }])) as VehicleOptimizerSetup['bounds'];
 
 export function defaultVehicleOptimizerSetup(): VehicleOptimizerSetup {
   return {
+    bounds: defaultBounds(),
+    askLimits: true,
     ranges: {},
     goals: Object.fromEntries(VEHICLE_GOAL_KINDS.map((k) => [k, { on: false, target: field(VEHICLE_GOAL_META[k].target, 'ratio'), weight: field(1, 'ratio') }])) as Record<VehicleGoalKind, GoalSetting>,
     lateralG: field(1, 'ratio'),
@@ -1295,6 +1316,14 @@ export const workingDesign = (s: CornerDesign): CornerDesign => ({
 });
 
 /** All corner designs with the working fields written back into the active corner's root. */
+/** What a vehicle-optimizer update writes: a point, or (round 5) a design's static camber / toe / tire pressure, an axle's ride height. */
+export type VehScalar = 'staticCamber' | 'staticToe' | 'tirePressure' | 'rideHeight';
+export type VehUpdateKey = PointKey | VehScalar;
+export const VEH_SCALARS: readonly VehScalar[] = ['staticCamber', 'staticToe', 'tirePressure', 'rideHeight'];
+export const isVehScalar = (k: string): k is VehScalar => (VEH_SCALARS as readonly string[]).includes(k);
+/** The vehicle optimizer's undo: each design's geometry and tire fields before, and the ride height. */
+export type VehOptUndo = { geoms: Partial<Record<CornerId, EditableGeometry>>; tires: Partial<Record<CornerId, Record<TireKey, Field>>>; rideHeight: DesignState['rideHeight'] };
+
 export function mergedCorners(s: DesignState): Record<CornerId, CornerDesign> {
   return { ...s.corners, [rootOf(s.activeCorner, s.links)]: workingDesign(s) };
 }
@@ -1720,23 +1749,37 @@ export const useApp = create<AppState>((set, get) => ({
     const s = get();
     const merged = mergedCorners(s);
     const activeRoot = rootOf(s.activeCorner, s.links);
-    const before: Partial<Record<CornerId, EditableGeometry>> = {};
+    const before: VehOptUndo = { geoms: {}, tires: {}, rideHeight: s.rideHeight };
     const corners = { ...s.corners };
-    let working = s.geom;
-    for (const root of new Set(updates.map((u) => u.root))) {
-      const g0 = root === activeRoot ? s.geom : merged[root].geom;
-      before[root] = g0;
+    let working = s.geom, tire = s.tire, rideHeight = s.rideHeight;
+    const roots = new Set(updates.filter((u) => u.key !== 'rideHeight').map((u) => u.root));
+    for (const root of roots) {
+      const isActive = root === activeRoot;
+      const g0 = isActive ? s.geom : merged[root].geom;
+      const t0 = isActive ? s.tire : merged[root].tire;
+      before.geoms[root] = g0;
+      before.tires[root] = t0;
       const points = { ...g0.points };
+      const scalars = { ...g0.scalars };
+      let t1 = t0;
       for (const u of updates.filter((x) => x.root === root)) {
-        const triple = [...points[u.key]] as [Field, Field, Field];
-        triple[u.axis] = field(Number(u.value.toFixed(2)));
-        points[u.key] = triple;
+        if (u.key === 'staticCamber' || u.key === 'staticToe') scalars[u.key] = field(Number(u.value.toFixed(3)), 'angle');
+        else if (u.key === 'tirePressure') t1 = { ...t1, pressure: field(Number(u.value.toFixed(2)), 'pressure') };
+        else if (u.key !== 'rideHeight') {
+          const triple = [...points[u.key]] as [Field, Field, Field];
+          triple[u.axis] = field(Number(u.value.toFixed(2)));
+          points[u.key] = triple;
+        }
       }
-      const g1 = { ...g0, points };
-      if (root === activeRoot) working = g1;
-      else corners[root] = { ...merged[root], geom: g1 };
+      const g1 = { ...g0, points, scalars };
+      if (isActive) { working = g1; tire = t1; }
+      else corners[root] = { ...merged[root], geom: g1, tire: t1 };
     }
-    set({ corners, geom: working, presetId: 'custom', vehOptUndo: before });
+    for (const u of updates.filter((x) => x.key === 'rideHeight')) {
+      const axle = isFront(u.root) ? 'front' : 'rear';
+      rideHeight = { ...rideHeight, on: true, [axle]: field(Number(u.value.toFixed(1))) };
+    }
+    set({ corners, geom: working, tire, rideHeight, presetId: 'custom', vehOptUndo: before });
   },
   undoVehicleOptimized: () => {
     const s = get();
@@ -1745,12 +1788,13 @@ export const useApp = create<AppState>((set, get) => ({
     const merged = mergedCorners(s);
     const activeRoot = rootOf(s.activeCorner, s.links);
     const corners = { ...s.corners };
-    let working = s.geom;
-    for (const root of Object.keys(snap) as CornerId[]) {
-      if (root === activeRoot) working = snap[root]!;
-      else corners[root] = { ...merged[root], geom: snap[root]! };
+    let working = s.geom, tire = s.tire;
+    for (const root of Object.keys(snap.geoms) as CornerId[]) {
+      const t = snap.tires[root];
+      if (root === activeRoot) { working = snap.geoms[root]!; if (t) tire = t; }
+      else corners[root] = { ...merged[root], geom: snap.geoms[root]!, ...(t ? { tire: t } : {}) };
     }
-    set({ corners, geom: working, presetId: 'custom', vehOptUndo: null });
+    set({ corners, geom: working, tire, rideHeight: snap.rideHeight, presetId: 'custom', vehOptUndo: null });
   },
   setCornerSetting: (id, key, value) => {
     const s = get();

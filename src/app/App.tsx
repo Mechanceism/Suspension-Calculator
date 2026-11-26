@@ -135,7 +135,8 @@ export function App() {
     const row = pickedRow();
     const snap = useSnapshots.getState().list.find((x) => x.id === useSnapshots.getState().activeId);
     const wheelbase = snap?.design.vehicle.wheelbase.value;
-    return { test: row ? (row.a ?? row.b)! : null, ghosts: row ? [{ frames: ghostFrames(row), color: '#ffb703', label: 'Snapshot', ...(wheelbase ? { wheelbase } : {}) }] : [] };
+    const gf = ghostFrames(row);
+    return { test: row ? (row.a ?? row.b)! : null, ghosts: row && gf.length ? [{ frames: gf, color: '#ffb703', label: 'Snapshot', ...(wheelbase ? { wheelbase } : {}) }] : [] };
   }, [compareTests, comparePicked, compareRuns, snapId]); // eslint-disable-line react-hooks/exhaustive-deps
   const dirty = useDirty();
 
@@ -206,10 +207,10 @@ export function App() {
           <button role="tab" aria-selected={workspace === 'corner'} className={workspace === 'corner' ? 'on' : ''} onClick={() => setWorkspace('corner')}>Corner</button>
           <button role="tab" aria-selected={workspace === 'vehicle'} className={workspace === 'vehicle' ? 'on' : ''} onClick={() => setWorkspace('vehicle')}>Vehicle</button>
           <button role="tab" aria-selected={workspace === 'tests'} className={workspace === 'tests' ? 'on' : ''} onClick={() => setWorkspace('tests')} title="Chains of driving segments run on the whole car">Tests</button>
-          <button role="tab" aria-selected={workspace === 'compare'} className={workspace === 'compare' ? 'on' : ''} onClick={() => setWorkspace('compare')} title="The current design against a snapshot (another design: File → Take snapshot / Import snapshot)">Compare</button>
+          <button role="tab" aria-selected={workspace === 'compare'} className={workspace === 'compare' ? 'on' : ''} onClick={() => setWorkspace('compare')} title="The current design's results — vehicles, tests, setup character — on their own, or beside a snapshot (another design: File → Take snapshot / Import snapshot)">Results</button>
         </nav>
         <BusyIndicator />
-        <span className="muted topbar-note">{workspace === 'corner' ? 'Chassis fixed · one corner' : workspace === 'vehicle' ? 'Whole car · quasi-static' : workspace === 'compare' ? 'Compare · current vs a snapshot' : 'Tests · steady states + ride over time'}</span>
+        <span className="muted topbar-note">{workspace === 'corner' ? 'Chassis fixed · one corner' : workspace === 'vehicle' ? 'Whole car · quasi-static' : workspace === 'compare' ? (snapId ? 'Results · current vs a snapshot' : 'Results · current design') : 'Tests · steady states + ride over time'}</span>
         <button className="menu-btn help-btn" onClick={() => setHelp(true)} title="Keyboard & mouse help (?)">?</button>
       </header>
       {help && <HelpOverlay onClose={() => setHelp(false)} />}

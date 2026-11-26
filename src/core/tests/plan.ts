@@ -20,7 +20,7 @@
  * accelerate out (no pedals in the first half); hold the segment's lowest speed throughout; speed up in /
  * slow down out (lower at the ends, its lowest speed at the middle).
  */
-import { G, type SegmentSpec } from './segments';
+import { G, type SegmentSpec, gradeAlong, vertCurvature } from './segments';
 
 /** What the car can do (from its static grip). */
 export interface PlanCar {
@@ -90,7 +90,16 @@ export interface PlanOptions {
    * still starts at its first segment's start speed and ends at most at its last segment's end speed.
    */
   gripOnly?: { topSpeed: number; /** Segments the ladder drives at their own set speeds after all (round 4, F11). */ capped?: boolean[] };
+  /**
+   * Per segment (round 5): keep the wheels down over a crest (the pass rules want at least 3 on the ground): the plan
+   * slows so the tires keep 30 % of their load — over a transition by its own curvature, at an abrupt crest by the
+   * grade change spread over the wheelbase. Absent / false: the car may take a crest flat out (and fly).
+   */
+  wheelsDown?: boolean[];
 }
+
+/** The most speed over a crest of curvature κ (1/m, < 0) that leaves the tires 30 % of their load: √(0.7·g·cos γ ÷ |κ|). */
+export const crestSpeed = (kappa: number, grade = 0) => (kappa < 0 ? Math.sqrt((0.7 * G * Math.cos(grade)) / -kappa) : Infinity);
 export const SHAPE_LABEL: Record<PlanShape, string> = {
   plan: 'brake before, accelerate out', brakeIn: 'brake in, accelerate out', coastIn: 'coast in, accelerate out',
   hold: 'hold the speed', accelIn: 'speed up in, slow down out',
@@ -170,13 +179,21 @@ export function combinedLimit(car: PlanCar, target: number, ay: number, kind: 'b
   return lo;
 }
 
+/** A segment starting slower than this (m/s) starts from rest: only its own plan applies (see planSpeeds). */
+export const LAUNCH_SPEED = 1;
+
 const kappaOf = (sg: SegmentSpec) => (sg.path === 'straight' || (sg.latG !== null && sg.latG !== undefined && Number.isFinite(sg.latG)) ? 0 : (sg.path === 'left' ? 1 : -1) / Math.max(sg.radius, 0.1));
 
 /**
  * Plan the speeds of a chain of segments. `target` and `shape` per segment (a grip target and a way of taking
  * it); the result has each segment's planned speeds and the whole test's time.
  */
-export function planSpeeds(segments: SegmentSpec[], car: PlanCar, target: number[], shape: PlanShape[] = [], opts: PlanOptions = {}): { plans: SegmentPlan[]; time: number } {
+export function planSpeeds(segments: SegmentSpec[], car: PlanCar, target: number[], shapeIn: PlanShape[] = [], opts: PlanOptions = {}): { plans: SegmentPlan[]; time: number } {
+  // A segment that starts from rest (a launch) is only taken its own way: braking or coasting in, holding its
+  // lowest speed or easing up from it all mean staying at 0 there (round 5: the trophy truck's launch failed at
+  // the full push, the ladder tried "hold the speed" — 0 km/h — and the driver crawled 100 s at its 0.5 m/s
+  // minimum, which passed every check). The ladder skips a way that plans the same speeds, so it goes on to push less.
+  const shape = segments.map((sg, i) => (sg.v0 < LAUNCH_SPEED ? 'plan' : shapeIn[i] ?? 'plan')) as PlanShape[];
   // Grip only: with a powertrain nothing caps the straights (it, the drag and the rolling resistance limit
   // them); without one, the top speed stands in for it.
   const free = opts.gripOnly ? { topSpeed: car.drive ? Infinity : opts.gripOnly.topSpeed } : undefined;
@@ -199,10 +216,17 @@ export function planSpeeds(segments: SegmentSpec[], car: PlanCar, target: number
       const vSet = !capped
         ? (i === last && k === n ? Math.min(free!.topSpeed, sg.v1) : free!.topSpeed)
         : Math.sqrt(Math.max(0, sg.v0 * sg.v0 + ((sg.v1 * sg.v1 - sg.v0 * sg.v0) * k) / n));
-      const p: P = { seg: i, s, cap: Math.min(vSet, vLat, car.gearTop ?? Infinity), capT: target[i] ?? 0.95, kappa: kappaOf(sg), grade: sg.grade, bank: sg.bank, coast: !!sg.coast };
+      // Keeping the wheels down over a transition's crest (round 5).
+      const vCrest = opts.wheelsDown?.[i] ? crestSpeed(vertCurvature(sg), gradeAlong(sg, s)) : Infinity;
+      const p: P = { seg: i, s, cap: Math.min(vSet, vLat, car.gearTop ?? Infinity, vCrest), capT: target[i] ?? 0.95, kappa: kappaOf(sg), grade: gradeAlong(sg, s), bank: sg.bank, coast: !!sg.coast };
       if (k === 0 && pts.length) {
         // The boundary: the lower of both sides' limits.
         const prev = pts[pts.length - 1]!;
+        // An abrupt crest here (the grade drops with no transition): its change spread over the wheelbase (round 5).
+        if (opts.wheelsDown?.[i] || opts.wheelsDown?.[i - 1]) {
+          const before = segments[i - 1]!, drop = gradeAlong(sg, 0) - gradeAlong(before, before.distance);
+          if (drop < -1e-6) p.cap = Math.min(p.cap, crestSpeed(drop / Math.max(car.wheelbase / 1000, 0.5), gradeAlong(sg, 0)));
+        }
         if (p.cap < prev.cap) { prev.cap = p.cap; prev.capT = p.capT; }
         if (Math.abs(p.kappa) > Math.abs(prev.kappa)) prev.kappa = p.kappa;
         continue;

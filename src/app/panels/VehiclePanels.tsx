@@ -1,13 +1,14 @@
 import { usePlayLoop } from '../playLoop';
 import { vehicleResultRows } from '../resultRows';
 import { steeringWheelAngle, inputForWheelAngle } from '../../core/tests/steer';
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Num, UnitLabel } from './UnitText';
 import { openWizard, EstimatedNote } from './SetupWizard';
 import { AeroPanel } from './AeroPanel';
 import { PowertrainPanel, PowertrainBadge } from './PowertrainPanel';
 import { RideHeightPanel } from './RideHeightPanel';
-import { brakesOf, buildVehicleProblem } from '../optimizer';
+import { brakesOf, buildVehicleProblem, runRolloverJob, isCancelled } from '../optimizer';
+import type { RolloverStats } from '../../core/vehicle/rollover';
 import { shimmyReport, shimmyKicks } from '../../core/optimize/shimmyOf';
 import type { ShimmyScan } from '../../core/vehicle/shimmy';
 import { maxRotor, fitsWheel, pedalTravel, brakeFixes, pedalFixes } from '../../core/vehicle/brakes';
@@ -61,7 +62,7 @@ export function CornerSetup({ compact = false }: { compact?: boolean }) {
         {CORNER_IDS.map((id) => (
           <button key={id} role="tab" aria-selected={id === active} className={id === active ? 'on' : ''} onClick={() => setActiveCorner(id)} title={CORNER_NAMES[id]}>
             {id}
-            <span className="corner-flags">{settings[id].steered ? 'S' : ''}{settings[id].powered ? 'P' : ''}{settings[id].brake === 'inboard' ? 'i' : settings[id].brake === 'none' ? '–' : ''}</span>
+            <span className="corner-flags">{settings[id].steered ? 'S' : ''}{settings[id].powered ? 'P' : ''}{settings[id].brake === 'inboard' ? 'i' : settings[id].brake === 'driveline' ? 'd' : settings[id].brake === 'none' ? '–' : ''}</span>
           </button>
         ))}
       </div>
@@ -107,11 +108,18 @@ export function CornerSetup({ compact = false }: { compact?: boolean }) {
       <div className="row">
         <span className="muted">Brake</span>
         <select
-          value={settings[active].brake} onChange={(e) => setCornerSetting(active, 'brake', e.target.value as BrakeMount)}
-          title="Outboard: brake torque goes into the upright (force acts at the contact patch). Inboard: into the chassis (force acts at the wheel center)."
+          value={settings[active].brake} onChange={(e) => {
+            // A brake before the differential is the axle's: both of its corners take it (and leave it) together.
+            const v = e.target.value as BrakeMount;
+            const partner = ({ FL: 'FR', FR: 'FL', RL: 'RR', RR: 'RL' } as const)[active];
+            setCornerSetting(active, 'brake', v);
+            if (v === 'driveline' || settings[partner].brake === 'driveline') setCornerSetting(partner, 'brake', v);
+          }}
+          title="Outboard: brake torque goes into the upright (force acts at the contact patch). Inboard: into the chassis (force acts at the wheel center). Both are a brake at each corner: without ABS both wheels of an axle get the same force, and the differential ties the sides — open: separate (the lighter wheel locks first, a wheel in the air locks harmlessly); locked: the two sides' braking added together; limited-slip: together up to its bias, then separate. Before the differential (a transaxle brake, e.g. a riding mower's): one brake for the axle, shared as the differential shares the drive — open: the easier wheel limits it (a wheel in the air spins backwards and the other gets almost nothing); locked: both sides combined."
         >
           <option value="outboard">Outboard (at the wheel)</option>
           <option value="inboard">Inboard (on the chassis)</option>
+          <option value="driveline">Before the differential (transaxle brake)</option>
           <option value="none">None</option>
         </select>
         {settings[active].brake !== 'none' && (
@@ -295,12 +303,32 @@ function SharedEditor({ axle }: { axle: Axle }) {
 
 const STATUS: Record<string, string> = { 'droop-limit': 'droop limit', 'bump-limit': 'bump limit' };
 
+/** Rollover stats per design (round 5): worked out in a worker (a dozen whole-car solves), kept per design key. */
+const rolloverStatsCache = new WeakMap<object, RolloverStats | null>();
+function useRolloverStats(key: object | undefined): RolloverStats | null | undefined {
+  const [, bump] = useState(0);
+  useEffect(() => {
+    if (!key || rolloverStatsCache.has(key)) return;
+    let live = true;
+    // A little after the design stops changing (a drag changes it every frame).
+    const timer = setTimeout(() => {
+      const job = runRolloverJob(buildVehicleProblem(useApp.getState()).problem);
+      cancel = job.cancel;
+      job.done.then((r) => { rolloverStatsCache.set(key, r); if (live) bump((x) => x + 1); }, (e: unknown) => { if (!isCancelled(e)) { rolloverStatsCache.set(key, null); if (live) bump((x) => x + 1); } });
+    }, 400);
+    let cancel = () => {};
+    return () => { live = false; clearTimeout(timer); cancel(); };
+  }, [key]);
+  return key ? rolloverStatsCache.get(key) : undefined;
+}
+
 export function VehicleResults({ model }: { model: VehicleModel | null }) {
+  const rollover = useRolloverStats(model?.designKey);
   const r = model?.result;
   if (!model || !r) return <section className="panel"><h2>Vehicle results</h2><p className="muted">{model?.error ?? 'Solving…'}</p></section>;
   const corners = CORNER_IDS.map((id) => ({ id, c: r.corners[id], v: model.corners[id], s: model.staticLoads[id] }));
-  // The rows (shared with the Compare tab).
-  const shared = vehicleResultRows(model);
+  // The rows (shared with the Compare tab); the rollover stats come from a worker, once per design.
+  const shared = vehicleResultRows(model, rollover === undefined ? 'pending' : rollover);
   return (
     <section className="panel">
       <h2>
@@ -473,6 +501,9 @@ function BrakePanel() {
   const worst = use ? Math.max(use.front, use.rear) : 0;
   return (
     <>
+      <label className="check-row" title="Brake-based traction control: on a driven axle with an open differential, a wheel spinning past its grip is braked, so the differential sends the drive to the other wheel — the axle gives up to both wheels' grip instead of twice the lighter one's. Off by default.">
+        <input type="checkbox" checked={!!b.tc} onChange={(e) => setB({ tc: e.target.checked })} /> Brake-based traction control (open differentials)
+      </label>
       <div className="jm-row" title="Off: the brakes can always make the braking asked (only grip limits it). On: from the pedal through the master cylinders, calipers and rotors, the braking is limited to what they make at the most pedal force.">
         <button className={`chip${!b.on ? ' on' : ''}`} onClick={() => setB({ on: false })}>Off (always strong enough)</button>
         <button className={`chip${b.on ? ' on' : ''}`} onClick={() => setB({ on: true })}>Model the hydraulics</button>

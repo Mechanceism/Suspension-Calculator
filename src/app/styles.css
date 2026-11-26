@@ -699,3 +699,18 @@ tr.clickable:hover { background: var(--panel-2); }
 .use-case b { color: var(--text); }
 .use-case .muted { color: var(--muted); }
 .use-case.on { outline: 2px solid var(--accent); }
+
+/* F29: Compare → Character */
+.char-strip-row td { padding-top: 0; padding-bottom: 5px; }
+.char-row td { padding-bottom: 1px; }
+.char-fits { display: block; margin-top: 2px; }
+.char-strip { position: relative; width: 100%; min-width: 120px; background: color-mix(in srgb, var(--muted) 10%, transparent); border-radius: 2px; }
+.char-band { position: absolute; border-radius: 1px; opacity: 0.75; }
+.char-mark { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--text, #fff); }
+.char-mark.snap { background: none; border-left: 2px dashed #ffb703; }
+.char-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 3px; vertical-align: middle; }
+.char-group td { font-weight: 600; padding-top: 6px; color: var(--muted); }
+.char-bar-cell { position: relative; min-width: 110px; }
+.char-bar-cell .char-bar { position: absolute; left: 3px; top: 4px; bottom: 4px; opacity: 0.35; border-radius: 2px; max-width: calc(100% - 6px); }
+.char-bar-cell span { position: relative; padding-left: 4px; }
+.char-refs input { font-size: 11px; }

@@ -16,6 +16,7 @@ import { cornerResultRows, vehicleResultRows, type ResultRow } from '../resultRo
 import { useSnapshots, takeSnapshot, importSnapshot, removeSnapshot, setActiveSnapshot, type Snapshot } from '../snapshots';
 import { useCompare, runCompare, runKey, designDifferences, type CompareTest } from '../compare';
 import { Section, fmt } from './FieldRows';
+import { CharacterPanel } from './CharacterPanel';
 import { Plots } from './Plots';
 import { useDisplay } from '../units';
 import type { TestRun, PlaybackFrame } from '../../core/tests/run';
@@ -23,13 +24,13 @@ import { usePlayback, framePatch, frameAt } from './Playback';
 import type { SavedResult } from '../savedResults';
 import type { Severity } from '../../core/tests/checks';
 
-export type CompareMode = 'vehicles' | 'tests';
+export type CompareMode = 'vehicles' | 'tests' | 'character';
 const loadPins = (): string[] => { try { return JSON.parse(localStorage.getItem('susp.comparePins') ?? '[]') as string[]; } catch { return []; } };
 export const useCompareView = create<{ mode: CompareMode; pins: string[]; onlyDiff: boolean; picked: string | null }>(() => ({ mode: 'vehicles', pins: loadPins(), onlyDiff: false, picked: null }));
 /** Vehicles: the cars at the Vehicle view's sliders (no playback pose). */
 export function setCompareMode(mode: CompareMode) {
   useCompareView.setState({ mode });
-  if (mode === 'vehicles') { usePlayback.setState({ playing: false }); useApp.setState({ rideView: null }); }
+  if (mode !== 'tests') { usePlayback.setState({ playing: false }); useApp.setState({ rideView: null }); }
   else { const row = pickedRow(); if (row) pickRow(row); }
 }
 /** The row shown in the 3D views and played (Tests): its runs' frames, the current design's driven, the snapshot's as the ghost. */
@@ -88,6 +89,7 @@ export function CompareSidebar() {
         <div className="jm-row" role="tablist">
           <button className={`chip${mode === 'vehicles' ? ' on' : ''}`} onClick={() => setCompareMode('vehicles')} title="The two cars: the Corner results, their curves, and the design values that differ">Vehicles</button>
           <button className={`chip${mode === 'tests' ? ' on' : ''}`} onClick={() => setCompareMode('tests')} title="Both cars on both sets of tests: the scores side by side, and the whole car's results">Tests</button>
+          <button className={`chip${mode === 'character' ? ' on' : ''}`} onClick={() => setCompareMode('character')} title="The setup's character: each axle's characteristics against the ranges typical for each kind of driving (no snapshot needed)">Character</button>
         </div>
         {mode === 'tests' && active && (
           <>
@@ -97,7 +99,7 @@ export function CompareSidebar() {
             {cmp.error && <p className="hint warn-text">{cmp.error}</p>}
           </>
         )}
-        {!active && <p className="hint">Take or import a snapshot to compare with.</p>}
+        {!active && <p className="hint">{mode === 'character' ? 'The current design’s character; take or import a snapshot to see its alongside.' : 'Take or import a snapshot to compare with.'}</p>}
       </Section>
     </div>
   );
@@ -172,6 +174,9 @@ export function CompareResults({ corner, vehicle }: { corner: Model; vehicle: Ve
   const value = useThrottled(useSnapshotDesign(true), 200, playing);
   const cornerT = useThrottled(corner, 200, playing), vehicleT = useThrottled(vehicle, 200, playing);
   const a = useMemo(() => ({ corner: cornerT, vehicle: vehicleT }), [cornerT, vehicleT]);
+  const mode = useCompareView((s) => s.mode);
+  // F29: the setup's character needs no snapshot (the snapshot's shown alongside when there is one).
+  if (mode === 'character') return <CharacterPanel snap={snap} />;
   if (!snap || !value) return <section className="panel"><h2>Compare</h2><p className="muted">Take a snapshot (File → Take snapshot, or here on the left) or import one, then change the design: the two are compared here.</p></section>;
   return <DesignOverride.Provider value={value}><ResultsInner a={a} snap={snap} /></DesignOverride.Provider>;
 }

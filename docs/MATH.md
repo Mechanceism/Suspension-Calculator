@@ -945,6 +945,10 @@ One evaluation of the vehicle optimizer (every load case or test state through t
 - Spring and bar rates in the steady geometry stage too (today they are tuned on the ride).
 - Damper knees and dyno curves as tuning variables; clicker positions when a damper's settings are known.
 
+## Setup character ✅ (round 5, F29; `src/core/vehicle/character.ts`, `src/app/character.ts`)
+
+Compare → *Character* sets a design's characteristics and adjustments against ranges typical for each kind of driving (the six use cases: autocross / track, road, rally / off-road, drift, drag, towing / utility). **Rows**, per axle (the left corner's design) — static camber and toe (the design's scalars), camber gain, roll-center height, and for a steered axle caster and KPI (one 5-sample travel sweep, as the optimizer's goals measure them), ride height (the set static height, else the design's), ride frequency f = √(k_ride / m_s) / 2π with k_ride the wheel rate at the spring's static equilibrium (the corner's static load from the car, minus the unsprung weight) in series with the tire rate — and for the car, the front share of roll stiffness, anti-dive and anti-squat (the whole car solved). **Match** of a row with range [lo, hi]: max(0, 1 − |v − (lo + hi)/2| / (hi − lo)) — 100 % at the middle, 50 % at the ends, 0 a range-width from the middle. Scored from the middle, not as inside / outside, because the kinds' ranges overlap (a track car's values sit inside most drift ranges: inside-or-out scored it 98 % drift). Front, rear, car and overall are the mean of their rows; the summary names the best kind, or *between* the best two when they are within 10 points. The reference ranges are typical published / workshop values, rounded and wide (setup handbooks, FSAE reports, alignment tables, rally / drift / drag setup guides) — a guide, not rules; editable on the page and kept in the browser (not part of a design).
+
 ## L7: Optimizer objectives and requirements
 
 ### Requirements (noted 2026-11-21)

@@ -1,13 +1,14 @@
 import { usePlayLoop } from '../playLoop';
 import { vehicleResultRows } from '../resultRows';
 import { steeringWheelAngle, inputForWheelAngle } from '../../core/tests/steer';
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Num, UnitLabel } from './UnitText';
 import { openWizard, EstimatedNote } from './SetupWizard';
 import { AeroPanel } from './AeroPanel';
 import { PowertrainPanel, PowertrainBadge } from './PowertrainPanel';
 import { RideHeightPanel } from './RideHeightPanel';
-import { brakesOf, buildVehicleProblem } from '../optimizer';
+import { brakesOf, buildVehicleProblem, runRolloverJob, isCancelled } from '../optimizer';
+import type { RolloverStats } from '../../core/vehicle/rollover';
 import { shimmyReport, shimmyKicks } from '../../core/optimize/shimmyOf';
 import type { ShimmyScan } from '../../core/vehicle/shimmy';
 import { maxRotor, fitsWheel, pedalTravel, brakeFixes, pedalFixes } from '../../core/vehicle/brakes';
@@ -302,12 +303,32 @@ function SharedEditor({ axle }: { axle: Axle }) {
 
 const STATUS: Record<string, string> = { 'droop-limit': 'droop limit', 'bump-limit': 'bump limit' };
 
+/** Rollover stats per design (round 5): worked out in a worker (a dozen whole-car solves), kept per design key. */
+const rolloverStatsCache = new WeakMap<object, RolloverStats | null>();
+function useRolloverStats(key: object | undefined): RolloverStats | null | undefined {
+  const [, bump] = useState(0);
+  useEffect(() => {
+    if (!key || rolloverStatsCache.has(key)) return;
+    let live = true;
+    // A little after the design stops changing (a drag changes it every frame).
+    const timer = setTimeout(() => {
+      const job = runRolloverJob(buildVehicleProblem(useApp.getState()).problem);
+      cancel = job.cancel;
+      job.done.then((r) => { rolloverStatsCache.set(key, r); if (live) bump((x) => x + 1); }, (e: unknown) => { if (!isCancelled(e)) { rolloverStatsCache.set(key, null); if (live) bump((x) => x + 1); } });
+    }, 400);
+    let cancel = () => {};
+    return () => { live = false; clearTimeout(timer); cancel(); };
+  }, [key]);
+  return key ? rolloverStatsCache.get(key) : undefined;
+}
+
 export function VehicleResults({ model }: { model: VehicleModel | null }) {
+  const rollover = useRolloverStats(model?.designKey);
   const r = model?.result;
   if (!model || !r) return <section className="panel"><h2>Vehicle results</h2><p className="muted">{model?.error ?? 'Solving…'}</p></section>;
   const corners = CORNER_IDS.map((id) => ({ id, c: r.corners[id], v: model.corners[id], s: model.staticLoads[id] }));
-  // The rows (shared with the Compare tab).
-  const shared = vehicleResultRows(model);
+  // The rows (shared with the Compare tab); the rollover stats come from a worker, once per design.
+  const shared = vehicleResultRows(model, rollover === undefined ? 'pending' : rollover);
   return (
     <section className="panel">
       <h2>

@@ -136,7 +136,7 @@ export interface TestRun {
    * Did not finish (round 4, F25): over time the car went off course or spun in this segment, at this time (s),
    * and the run ended there. A Fail; the segments after it weren't driven (their time is the plan's).
    */
-  ended?: { segment: number; t: number; why: 'offCourse' | 'spun'; text: string };
+  ended?: { segment: number; t: number; why: 'offCourse' | 'spun' | 'rolledOver'; text: string };
 }
 
 /** Segment physics plus the checks that decide its pass / fail. */

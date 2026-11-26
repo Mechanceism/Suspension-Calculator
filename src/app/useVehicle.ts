@@ -20,6 +20,7 @@ import { CornerTable } from '../core/vehicle/cornerTable';
 import { AxleTable, AxleCornerTable } from '../core/vehicle/axleTable';
 import type { CornerTableLike } from '../core/vehicle/vehicle';
 import { brakeOnChassis } from '../core/vehicle/vehicle';
+
 import { staticTravelFor } from '../core/optimize/vehicle';
 import {
   CORNER_IDS, isLeft, isFront, placement, poseFns, solveVehicle, vehicleAt, designGroundY, axleRollCenter,
@@ -86,6 +87,14 @@ export interface VehicleModel {
   antiLiftAccel: number;
   rolloverG: number;
   sprungCgWorld: Vec3 | null;
+  /**
+   * Round 5: the unsprung CG (the corners' masses at their wheel centers, mass-weighted) and the total CG (the
+   * mass-weighted average of the sprung and unsprung CGs — it moves as the wheels travel and the body rolls / pitches).
+   */
+  unsprungCgWorld: Vec3 | null;
+  totalCgWorld: Vec3 | null;
+  /** The same object while the design stays the same (not the motion): a key for results worked out per design (rollover, round 5). */
+  designKey?: object;
   wheelbase: number;
   /** Accelerations used in the solve, g (+ lateral = left turn, + longitudinal = accelerating). */
   accel: { lateral: number; longitudinal: number };
@@ -190,7 +199,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
       rollCenters: { front: null, rear: null }, rideHeight: { front: NaN, rear: NaN },
       transfer: { front: { total: 0, geometric: 0, elastic: 0 }, rear: { total: 0, geometric: 0, elastic: 0 }, lltdFront: NaN },
       rollStiffness: { front: NaN, rear: NaN }, rollGradient: NaN, ackermannLines: [],
-      rolloverG: NaN, sprungCgWorld: null, wheelbase, accel: { lateral: 0, longitudinal: 0 }, frontLoadGain: NaN, antiDive: NaN, antiLift: NaN, antiSquat: NaN, antiLiftAccel: NaN,
+      rolloverG: NaN, sprungCgWorld: null, unsprungCgWorld: null, totalCgWorld: null, wheelbase, accel: { lateral: 0, longitudinal: 0 }, frontLoadGain: NaN, antiDive: NaN, antiLift: NaN, antiSquat: NaN, antiLiftAccel: NaN,
     };
     if (!setup.all || !setup.built) return empty;
     const all = setup.all;
@@ -408,6 +417,16 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
         antiSquat: driveAnti(rearPowered, 1 - split, -1),
         antiLiftAccel: driveAnti(frontPowered, split, 1),
         sprungCgWorld: P.point(res.sprungCg),
+        designKey: frameCache,
+        ...(() => {
+          // The unsprung masses at their wheel centers, and with the body the whole car's CG (round 5).
+          let mu = 0, sx = 0, sy = 0, sz = 0;
+          for (const c of vin.corners) { const w = res.corners[c.id]?.wheelCenter; if (!w || !(c.unsprungMass > 0)) continue; mu += c.unsprungMass; sx += w.x * c.unsprungMass; sy += w.y * c.unsprungMass; sz += w.z * c.unsprungMass; }
+          const sc = P.point(res.sprungCg), ms = res.sprungMass;
+          const unsprung = mu > 0 ? vec3(sx / mu, sy / mu, sz / mu) : null;
+          const total = unsprung && ms + mu > 0 ? vec3((sc.x * ms + unsprung.x * mu) / (ms + mu), (sc.y * ms + unsprung.y * mu) / (ms + mu), (sc.z * ms + unsprung.z * mu) / (ms + mu)) : sc;
+          return { unsprungCgWorld: unsprung, totalCgWorld: total };
+        })(),
         wheelbase,
         accel: { lateral: lateralG, longitudinal: res.notes.length ? -brakingG : accelG - brakingG },
       };

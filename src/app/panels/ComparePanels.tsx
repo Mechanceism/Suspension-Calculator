@@ -312,7 +312,7 @@ function TestScores({ snap }: { snap: Snapshot }) {
   const rows = fresh ? cmp.rows : [];
   const order = [...rows].sort((x, y) => Number(pins.includes(`test|${y.name}`)) - Number(pins.includes(`test|${x.name}`)));
   // A run that went off course / spun didn't finish: no time (round 4, F25).
-  const dnf = (r: TestRun | SavedResult) => r.segments.some((s) => s.findings.some((f) => f.check === 'offCourse'));
+  const dnf = (r: TestRun | SavedResult) => r.segments.some((s) => s.findings.some((f) => f.check === 'offCourse' || (f.check === 'rollover' && f.text.startsWith('Rolled over'))));
   const score = (r: TestRun | SavedResult | undefined) => (r ? <span className={`sev-text-${r.severity}`}>{SEV_ICON[r.severity]}{dnf(r) ? ' did not finish' : typeof r.time === 'number' ? ` ${r.time.toFixed(2)} s` : ''}</span> : <span className="muted">—</span>);
   const dt = (x?: number, y?: number) => {
     if (typeof x !== 'number' || typeof y !== 'number') return '';

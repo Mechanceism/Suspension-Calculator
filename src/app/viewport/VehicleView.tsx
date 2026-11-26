@@ -266,6 +266,8 @@ export function VehicleScene({ model, arrows, ground = true }: { model: VehicleM
       {measureMode && <VehicleMeasurePicks model={model} />}
       <VehicleMeasure model={model} />
       {vis.cg && model.sprungCgWorld && <Joint p={model.sprungCgWorld} color="#ffffff" r={16} />}
+      {vis.cg && model.unsprungCgWorld && <Joint p={model.unsprungCgWorld} color="#9aa4b2" r={12} />}
+      {vis.cg && model.totalCgWorld && <Joint p={model.totalCgWorld} color="#ffd166" r={14} />}
       {vis.rollCenter && rcF && rcR && (
         <>
           <Joint p={vec3(rcF.x, rcF.y, 0)} color={COLORS.rc} r={10} />
@@ -473,6 +475,8 @@ function vehicleAnchor(model: VehicleModel, id: string): Vec3 | null {
   if (!r) return null;
   const P = poseFns(r.pose);
   if (id === 'cg') return model.sprungCgWorld;
+  if (id === 'cgU') return model.unsprungCgWorld;
+  if (id === 'cgT') return model.totalCgWorld;
   if (id === 'rcF') return model.rollCenters.front ? vec3(model.rollCenters.front.x, model.rollCenters.front.y, 0) : null;
   if (id === 'rcR') return model.rollCenters.rear ? vec3(model.rollCenters.rear.x, model.rollCenters.rear.y, -model.wheelbase) : null;
   const [c, key] = id.split('.') as [CornerId, string];
@@ -485,6 +489,8 @@ function vehicleAnchor(model: VehicleModel, id: string): Vec3 | null {
 
 const anchorName = (id: string) => {
   if (id === 'cg') return 'CG (sprung)';
+  if (id === 'cgU') return 'CG (unsprung)';
+  if (id === 'cgT') return 'CG (total)';
   if (id === 'rcF') return 'Roll center, front';
   if (id === 'rcR') return 'Roll center, rear';
   const [c, key] = id.split('.');
@@ -591,7 +597,7 @@ function VehicleMeasurePicks({ model }: { model: VehicleModel }) {
   return (
     <group>
       {CORNER_IDS.map((id) => <VPick key={id} p={r.corners[id].contact} color={COLORS.patch} r={9} onPick={() => add2(`${id}.contact`)} />)}
-      {(['cg', 'rcF', 'rcR'] as const).map((id) => { const q = vehicleAnchor(model, id); return q ? <VPick key={id} p={q} color="#ffffff" r={10} onPick={() => add2(id)} /> : null; })}
+      {(['cg', 'cgU', 'cgT', 'rcF', 'rcR'] as const).map((id) => { const q = vehicleAnchor(model, id); return q ? <VPick key={id} p={q} color="#ffffff" r={10} onPick={() => add2(id)} /> : null; })}
     </group>
   );
 }
@@ -610,6 +616,8 @@ function overlayLabels(model: VehicleModel | null, arrows: ForceArrow[], showVal
   // Labels: one switch, and each label only with its item.
   if (vis.labels) {
     if (vis.cg && model.sprungCgWorld) mark('cg', 'CG (sprung)', model.sprungCgWorld);
+    if (vis.cg && model.unsprungCgWorld) mark('cgU', 'CG (unsprung)', model.unsprungCgWorld);
+    if (vis.cg && model.totalCgWorld) mark('cgT', 'CG (total)', model.totalCgWorld);
     const rcF = model.rollCenters.front, rcR = model.rollCenters.rear;
     if (vis.rollCenter && rcF && rcR) {
       mark('rcF', 'Roll center, front', vec3(rcF.x, rcF.y, 0));

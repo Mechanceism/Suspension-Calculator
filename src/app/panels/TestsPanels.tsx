@@ -755,7 +755,7 @@ export function TestResults() {
       <EstimatedNote />
       {stale && <p className="hint warn-text">The design changed since this run: run again.</p>}
       {r.ended && (
-        <p className="small-text warn-text" title="Over time the car went more than twice its width off the line, or turned more than 90° from the path: the run ends there (the model and the driver mean nothing past it). Slower, or a car that holds the line better.">
+        <p className="small-text warn-text" title="Over time the car went more than twice its width off the line, turned more than 90° from the path, or rolled over (its CG passed over its outside contact patches): the run ends there (the model and the driver mean nothing past it). Slower, or a car that holds the line better.">
           <b>Did not finish</b>: {r.ended.text} in segment {r.ended.segment + 1} ({test.segments[r.ended.segment]?.name ?? ''}); the run ended at {fmt(r.ended.t, 1)} s. The segments after it weren't driven.
         </p>
       )}
@@ -764,6 +764,14 @@ export function TestResults() {
           Time <b>{fmt(r.time, 2)} s</b>{r.driven && r.plannedTime ? <span className="muted"> as driven (planned {fmt(r.plannedTime, 2)} s)</span> : null} · average <b>{disp.format((r.distance ?? 0) / r.time, 'm/s', 0)}</b> over {disp.format(r.distance ?? 0, 'm', 0)} · driver pushing to {fmt((test.gripTarget ?? 0.95) * 100, 0)} % of the grip
         </p>
       )}
+      {r.ride?.metrics?.rollMargin && (() => {
+        const m = r.ride!.metrics!.rollMargin!;
+        return (
+          <p className={`small-text${m.margin < 0.25 ? ' warn-text' : ''}`} title="How close the car came to tipping over: where its CG (body and wheels) was between the lines through its left and right contact patches — 100 % centered, 0 % over one of them (it tips). The Vehicle results give the lateral g its inside wheels lift at and its trip speed.">
+            Closest to tipping over: <b>{fmt(Math.max(0, m.margin) * 100, 0)} %</b> margin at {fmt(m.t, 1)} s ({disp.format(m.speed, 'm/s', 0)}, {fmt(Math.abs(m.ay), 2)} g lateral)
+          </p>
+        );
+      })()}
       {r.power && <PowerSummary r={r} test={test} />}
       <table className="corner-table test-table">
         <thead><tr><th>#</th><th>Segment</th>{r.time !== undefined && <th title="Planned speed through the segment (lowest – highest) and its time">Speed</th>}<th title="Worst tire grip use">Grip</th>{r.segments.some((s) => s.brakeTemp) && <th title="Brake fade: rotor temperature at the end of the segment, front / rear">Brakes</th>}<th /></tr></thead>

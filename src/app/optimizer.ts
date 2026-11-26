@@ -3,6 +3,7 @@
  * CornerProblem or a VehicleProblem, and runs them in a Web Worker so the UI stays responsive.
  */
 import { blendCurves, parseDamperCurve } from '../core/vehicle/vehicle';
+import type { RolloverStats } from '../core/vehicle/rollover';
 import { brakeCapacity, type BrakeSystem, type BrakeCapacity, type BrakeAxle, type BrakeDetail, type WheelRoom } from '../core/vehicle/brakes';
 import type { BrakeThermal } from '../core/vehicle/brakeThermal';
 import type { TrailerSpec } from '../core/vehicle/towing';
@@ -504,6 +505,23 @@ export class JobCancelled extends Error {
   constructor() { super('Stopped'); this.name = 'JobCancelled'; }
 }
 export const isCancelled = (e: unknown) => e instanceof JobCancelled;
+
+/** Rollover stats in the worker (round 5: a dozen whole-car solves, too slow for the view's own update). */
+export function runRolloverJob(problem: VehicleProblem): { done: Promise<RolloverStats | null>; cancel(): void } {
+  const worker = new Worker(new URL('./optimizer.worker.ts', import.meta.url), { type: 'module' });
+  let stop = () => {};
+  const done = new Promise<RolloverStats | null>((res, rej) => {
+    stop = () => rej(new JobCancelled());
+    worker.onmessage = (e: MessageEvent) => {
+      const m = e.data as { type: 'done'; result: RolloverStats | null } | { type: 'error'; message: string };
+      worker.terminate();
+      if (m.type === 'error') rej(new Error(m.message)); else res(m.result);
+    };
+    worker.onerror = (e) => { worker.terminate(); rej(new Error(e.message || 'Rollover worker failed')); };
+  });
+  worker.postMessage({ kind: 'rollover', problem });
+  return { done, cancel: () => { worker.terminate(); stop(); } };
+}
 
 /** Run a test in the worker. Cancelling ends the wait (with JobCancelled) — it used to wait forever. */
 export function runTestJob(problem: VehicleProblem, segments: SegmentSpec[], opts: TestRunOptions): { done: Promise<TestRun>; cancel(): void } {

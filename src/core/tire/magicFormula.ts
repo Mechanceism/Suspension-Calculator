@@ -58,13 +58,21 @@ export interface MFInputs {
   pressure?: number;
 }
 
+/**
+ * Inclination is held within ±GAMMA_MAX rad (≈ ±8.6°, the range the curves — and a .tir's peak table — are fitted
+ * over). Past it their camber terms (grip ∝ 1 − p·γ², stiffness ∝ 1 − p·|γ|, camber thrust ∝ γ) run away: a car rolled
+ * 20° up on its outside tires got a side force pointing the wrong way (round 5, rolling over).
+ */
+export const GAMMA_MAX = 0.15;
+const gam = (i: { gamma?: number }) => Math.max(-GAMMA_MAX, Math.min(GAMMA_MAX, i.gamma ?? 0));
+
 interface Curve { B: number; C: number; D: number; E: number; SV: number }
 
 const dfzOf = (m: MFCoeffs, fz: number) => (fz - m.fz0) / m.fz0;
 const dpOf = (m: MFCoeffs, p?: number) => (p !== undefined && Number.isFinite(p) && m.p0 > 0 ? (p - m.p0) / m.p0 : 0);
 
 function lateralCurve(m: MFCoeffs, i: MFInputs): Curve {
-  const fz = Math.max(i.fz, 0), g = i.gamma ?? 0, dfz = dfzOf(m, fz), dp = dpOf(m, i.pressure);
+  const fz = Math.max(i.fz, 0), g = gam(i), dfz = dfzOf(m, fz), dp = dpOf(m, i.pressure);
   const C = m.pCy1;
   const D = Math.max(0, (m.pDy1 + m.pDy2 * dfz) * (1 + m.ppy3 * dp) * (1 - m.pDy3 * g * g)) * fz;
   const K = m.pKy1 * m.fz0 * Math.sin(2 * Math.atan(fz / Math.max(m.pKy2 * m.fz0, 1e-9))) * Math.max(0, 1 - m.pKy3 * Math.abs(g)) * (1 + m.ppy1 * dp);
@@ -72,7 +80,7 @@ function lateralCurve(m: MFCoeffs, i: MFInputs): Curve {
 }
 
 function longitudinalCurve(m: MFCoeffs, i: MFInputs): Curve {
-  const fz = Math.max(i.fz, 0), g = i.gamma ?? 0, dfz = dfzOf(m, fz), dp = dpOf(m, i.pressure);
+  const fz = Math.max(i.fz, 0), g = gam(i), dfz = dfzOf(m, fz), dp = dpOf(m, i.pressure);
   const C = m.pCx1;
   const D = Math.max(0, (m.pDx1 + m.pDx2 * dfz) * (1 + m.ppx3 * dp) * (1 - m.pDx3 * g * g)) * fz;
   const K = m.pKx1 * fz;
@@ -98,11 +106,11 @@ function peakSlip(c: Curve, max: number): number {
 
 /** Lateral force at slip angle α (rad), N. */
 export const mfLateral = (m: TireGrip, alpha: number, i: MFInputs): number => (isTir(m)
-  ? Math.sign(alpha || 1) * tirLateralToward(m, Math.abs(alpha), i.fz, Math.sign(alpha || 1) * (i.gamma ?? 0), i.pressure)
+  ? Math.sign(alpha || 1) * tirLateralToward(m, Math.abs(alpha), i.fz, Math.sign(alpha || 1) * (gam(i)), i.pressure)
   : curve(lateralCurve(m, i), alpha));
 /** Longitudinal force at slip ratio κ, N. */
 export const mfLongitudinal = (m: TireGrip, kappa: number, i: MFInputs): number => (isTir(m)
-  ? Math.sign(kappa || 1) * tirLongitudinalToward(m, Math.abs(kappa), i.fz, i.gamma ?? 0, i.pressure)
+  ? Math.sign(kappa || 1) * tirLongitudinalToward(m, Math.abs(kappa), i.fz, gam(i), i.pressure)
   : curve(longitudinalCurve(m, i), kappa));
 
 export interface MFPeaks {
@@ -143,19 +151,19 @@ function invert(c: Curve, f: number, max: number): number {
 
 /** Slip angle (rad) that gives lateral force fy, NaN beyond the peak. */
 export const mfSlipAngle = (m: TireGrip, fy: number, i: MFInputs): number => (isTir(m)
-  ? invertToward((a) => tirLateralToward(m, a, i.fz, i.gamma ?? 0, i.pressure), fy, TIR_ALPHA)
+  ? invertToward((a) => tirLateralToward(m, a, i.fz, gam(i), i.pressure), fy, TIR_ALPHA)
   : invert(lateralCurve(m, i), fy, ALPHA_MAX));
 /** Slip ratio that gives longitudinal force fx, NaN beyond the peak. */
 export const mfSlipRatio = (m: TireGrip, fx: number, i: MFInputs): number => (isTir(m)
-  ? invertToward((k) => tirLongitudinalToward(m, k, i.fz, i.gamma ?? 0, i.pressure), fx, TIR_KAPPA)
+  ? invertToward((k) => tirLongitudinalToward(m, k, i.fz, gam(i), i.pressure), fx, TIR_KAPPA)
   : invert(longitudinalCurve(m, i), fx, KAPPA_MAX));
 
 /** Peak slip angle (rad) and slip ratio: past these the tire slides. */
 export function mfPeakSlips(m: TireGrip, i: MFInputs): { alpha: number; kappa: number } {
   if (isTir(m)) {
     return {
-      alpha: scanPeak((a) => tirLateralToward(m, a, i.fz, i.gamma ?? 0, i.pressure), TIR_ALPHA).at,
-      kappa: scanPeak((k) => tirLongitudinalToward(m, k, i.fz, i.gamma ?? 0, i.pressure), TIR_KAPPA).at,
+      alpha: scanPeak((a) => tirLateralToward(m, a, i.fz, gam(i), i.pressure), TIR_ALPHA).at,
+      kappa: scanPeak((k) => tirLongitudinalToward(m, k, i.fz, gam(i), i.pressure), TIR_KAPPA).at,
     };
   }
   return { alpha: peakSlip(lateralCurve(m, i), ALPHA_MAX), kappa: peakSlip(longitudinalCurve(m, i), KAPPA_MAX) };
@@ -222,7 +230,7 @@ function tirPeaksCached(m: TirModel, i: MFInputs): MFPeaks {
     byP.set(pk, t);
   }
   const fa = Math.min(t.nf - 1, Math.max(0, (Math.max(0, i.fz) / t.fzMax) * (t.nf - 1)));
-  const gb = Math.min(t.ng - 1, Math.max(0, (((i.gamma ?? 0) + t.gMax) / (2 * t.gMax)) * (t.ng - 1)));
+  const gb = Math.min(t.ng - 1, Math.max(0, (((gam(i)) + t.gMax) / (2 * t.gMax)) * (t.ng - 1)));
   const a0 = Math.min(t.nf - 2, Math.floor(fa)), b0 = Math.min(t.ng - 2, Math.floor(gb));
   const u = fa - a0, v = gb - b0;
   const at = (a: number, b: number) => t!.data[a * t!.ng + b]!;

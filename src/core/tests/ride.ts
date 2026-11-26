@@ -117,7 +117,7 @@ export interface RideRun {
 }
 
 /** Where and why a run ended before the end of the test (did not finish). */
-export interface RideEnd { segment: number; t: number; why: 'offCourse' | 'spun'; text: string }
+export interface RideEnd { segment: number; t: number; why: 'offCourse' | 'spun' | 'rolledOver'; text: string }
 
 /**
  * Off course / spun (round 4, F25): with the driver steering, the run ends — did not finish — when the car's
@@ -188,6 +188,12 @@ export interface RideMeasures {
   dissipated?: number;
   /** Largest steering-wheel kick (N·m): the jolt above the 0.3 s running mean (front tires' forces). */
   maxKickback?: number;
+  /**
+   * Closest to tipping over (round 5): the smallest margin — where the whole car's CG is between the lines through
+   * its left and right contact patches, 1 = centered, 0 = over one of them (tipping) — when, the speed and the
+   * lateral g then.
+   */
+  rollMargin?: { margin: number; t: number; speed: number; ay: number };
 }
 
 const NO_METRICS: RideMeasures = { liftTime: 0, bumpStopTime: 0, loadVariation: 0, heaveAccRms: 0, duration: 0 };
@@ -450,6 +456,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
   let kickMean = NaN, maxKick = 0;
   let H: HandlingState | null = null;
   let maxPathError = 0, maxSideslip = 0, maxSway = 0;
+  let rollMargin: { margin: number; t: number; speed: number; ay: number } | null = null;
   /** The road frame's last motion (frameVel): its change each step is taken out of the body's motion relative to it. */
   let frameV: { heave: number; pitch: number } | null = null;
   /** Forces of the tires on the handling state; in the slow (kinematic) mode, what the motion needs. */
@@ -613,7 +620,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     segment, frameCount: (resume?.frameCount ?? 0) + frames.length, frameDt,
     state: structuredClone({
       x, v, loads, caps, groundPrev, loadMean, status, tires, bumpPush, bumpWork, dissipated, push, kickMean, maxKick, H, TS, rtdot, yawNow,
-      maxPathError, maxSideslip, maxSway, t0, nextFrame, x2d, y2d, heading, uDrv, sCarry, liftTime, bumpStopTime, loadVarSum, accSum, metricCount, lastMetricT, lastFy, frameV,
+      maxPathError, maxSideslip, maxSway, t0, nextFrame, x2d, y2d, heading, uDrv, sCarry, liftTime, bumpStopTime, loadVarSum, accSum, metricCount, lastMetricT, lastFy, frameV, rollMargin,
     }),
   });
   if (resume) {
@@ -622,7 +629,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       tires: typeof tires; bumpPush: number; bumpWork: number; dissipated: number; push: typeof push; kickMean: number; maxKick: number; H: HandlingState | null;
       TS: SwayState | null; rtdot: number; yawNow: number | undefined; maxPathError: number; maxSideslip: number; maxSway: number; t0: number; nextFrame: number;
       x2d: number; y2d: number; heading: number; uDrv: number; sCarry: number; liftTime: number; bumpStopTime: number; loadVarSum: number; accSum: number;
-      metricCount: number; lastMetricT: number; lastFy: Record<CornerId, number> | null; frameV?: { heave: number; pitch: number } | null;
+      metricCount: number; lastMetricT: number; lastFy: Record<CornerId, number> | null; frameV?: { heave: number; pitch: number } | null; rollMargin?: { margin: number; t: number; speed: number; ay: number } | null;
     };
     x.splice(0, x.length, ...st.x); v.splice(0, v.length, ...st.v);
     loads = st.loads; caps = st.caps; groundPrev = st.groundPrev; tires = st.tires;
@@ -634,6 +641,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     liftTime = st.liftTime; bumpStopTime = st.bumpStopTime; loadVarSum = st.loadVarSum; accSum = st.accSum; metricCount = st.metricCount; lastMetricT = st.lastMetricT;
     lastFy = st.lastFy;
     frameV = st.frameV ?? null;
+    rollMargin = st.rollMargin ?? null;
   }
   let ended: RideEnd | undefined;
   segments.forEach((sg, i) => {
@@ -643,7 +651,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     if (!(T > 0)) return;
     const checks = sg.checks ?? PROFILES.default.checks;
     const offLimit = offCourseLimit(carWidth, laneShare(checks.pathError?.threshold));
-    let gone: ReturnType<typeof offCourseOf> = null;
+    let gone: { why: RideEnd['why']; text: string } | null = null;
     /** Per check: when the current spell began, whether it was reported, how many spells counted. */
     const spells = new Map<string, { since: number; first: Finding; reported: boolean; count: number; countedThis?: boolean; firstT?: number; lost: number; worst: number }>();
     let nextCheck = t0;
@@ -831,6 +839,22 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       if (H) { maxPathError = Math.max(maxPathError, Math.abs(H.eY)); if (kin.v >= KINEMATIC_SPEED) maxSideslip = Math.max(maxSideslip, Math.abs(beta)); }
       // Off course or spun: this moment is checked and drawn, then the run ends (did not finish).
       if (H) gone = offCourseOf(H.eY, H.ePsi, offLimit);
+      // Tipping (round 5): the whole car's CG (body and wheels) against the lines through the left and right contact
+      // patches, in the road's plane; past one of them the car rolls over and the run ends.
+      {
+        const P = poseFns(now.pose);
+        let m = sp.mass, cx = P.point(sp.cg).x * sp.mass;
+        for (const id of CORNER_IDS) { const mu = byId[id].unsprungMass; m += mu; cx += now.res[id].wheelCenter.x * mu; }
+        cx /= m;
+        const xL = (now.res.FL.contact.x + now.res.RL.contact.x) / 2, xR = (now.res.FR.contact.x + now.res.RR.contact.x) / 2;
+        const half = Math.abs(xL - xR) / 2;
+        if (half > 1) {
+          const lo = Math.min(xL, xR), hi = Math.max(xL, xR);
+          const margin = Math.min(hi - cx, cx - lo) / half;
+          if (!rollMargin || margin < rollMargin.margin) rollMargin = { margin, t: t0 + tt, speed: kin.v, ay: ayH ?? kin.ay };
+          if (margin < 0 && !gone) gone = { why: 'rolledOver', text: `Rolled over: the car's CG passed over its ${cx > hi === (xL > xR) ? 'left' : 'right'} wheels' contact patches at ${(kin.v * 3.6).toFixed(0)} km/h, ${Math.abs(ayH ?? kin.ay).toFixed(2)} g lateral` };
+        }
+      }
       if (gone) { tEnd = tt; segEnd = true; }
       const isFrame = !(t + 1e-9 < nextFrame && !segEnd);
       const isCheck = isFrame || t + 1e-9 >= nextCheck;
@@ -938,7 +962,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     }
     if (gone) {
       ended = { segment: i, t: t0 + tEnd, why: gone.why, text: gone.text };
-      findings[i]!.push({ check: 'offCourse', severity: 'fail', t: ended.t, text: `${gone.text}: the run ended at ${ended.t.toFixed(1)} s (did not finish)` });
+      findings[i]!.push({ check: gone.why === 'rolledOver' ? 'rollover' : 'offCourse', severity: 'fail', t: ended.t, text: `${gone.text}: the run ended at ${ended.t.toFixed(1)} s (did not finish)` });
       times[i] = tEnd;
       t0 += tEnd;
       stop = i;
@@ -967,6 +991,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     loadVariation: Math.sqrt(loadVarSum / Math.max(1, metricCount * 4)),
     heaveAccRms: Math.sqrt(accSum / nAcc),
     ...(H ? { maxPathError, maxSideslip } : {}),
+    ...(rollMargin ? { rollMargin } : {}),
     ...(TS ? { maxSway } : {}),
     bumpWork, dissipated, ...(kickers.length ? { maxKickback: maxKick } : {}),
   };

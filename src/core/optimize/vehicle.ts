@@ -132,7 +132,13 @@ export const BOUND_META: Record<BoundKind, { label: string; unit: string; min: n
 };
 export const BOUND_KINDS = Object.keys(BOUND_META) as BoundKind[];
 /** A bound a design (or the car: root null) is at or past. */
-export interface ActiveBound { root: CornerId | null; kind: BoundKind; side: 'min' | 'max'; value: number; bound: number }
+export interface ActiveBound {
+  root: CornerId | null; kind: BoundKind; side: 'min' | 'max'; value: number;
+  /** The bound it is held at: the set one, or the start's value when the design started past it (`held`). */
+  bound: number;
+  /** Past the set bound from the start: held to no worse than its start value (`bound`), the set one being `set`. */
+  held?: boolean; set?: number;
+}
 
 export interface VehicleProblem {
   /** Corner designs keyed by root corner. */
@@ -698,18 +704,28 @@ function boundResiduals(p: VehicleProblem, e: VehicleEval, start?: Map<string, n
 }
 
 /** The bounds a result is at (within 2 % of the span) or past. */
-export function activeBounds(p: VehicleProblem, e: VehicleEval): ActiveBound[] {
+export function activeBounds(p: VehicleProblem, e: VehicleEval, start?: Map<string, number>): ActiveBound[] {
   const bounds = new Map((p.bounds ?? []).map((b) => [b.kind, b]));
   const out: ActiveBound[] = [];
   for (const { root, kind, value } of boundValues(p, e)) {
     const b = bounds.get(kind);
     if (!b || value === null || !Number.isFinite(value)) continue;
-    const lo = b.min ?? -Infinity, hi = b.max ?? Infinity;
-    const tol = 0.02 * (Number.isFinite(hi - lo) ? hi - lo : 1);
-    if (value >= hi - tol) out.push({ root, kind, side: 'max', value, bound: hi });
-    else if (value <= lo + tol) out.push({ root, kind, side: 'min', value, bound: lo });
+    const setLo = b.min ?? -Infinity, setHi = b.max ?? Infinity;
+    // A design past a bound at the start is held at its start value (as the objective does).
+    const s0 = start?.get(`${root}.${kind}`);
+    const hi = Math.max(setHi, s0 ?? -Infinity), lo = Math.min(setLo, s0 ?? Infinity);
+    const tol = 0.02 * (Number.isFinite(setHi - setLo) ? setHi - setLo : 1);
+    if (value >= hi - tol) out.push({ root, kind, side: 'max', value, bound: hi, ...(hi > setHi ? { held: true, set: setHi } : {}) });
+    else if (value <= lo + tol) out.push({ root, kind, side: 'min', value, bound: lo, ...(lo < setLo ? { held: true, set: setLo } : {}) });
   }
   return out;
+}
+
+/** The bounded values at the start (x0), by `${root}.${kind}`. */
+function boundStartValues(p: VehicleProblem, x0: number[], start: VehicleEval | null): Map<string, number> {
+  const m = new Map<string, number>();
+  if (p.bounds?.length && start) for (const b of boundValues(problemAt(p, x0), start)) if (b.value !== null && Number.isFinite(b.value)) m.set(`${b.root}.${b.kind}`, b.value);
+  return m;
 }
 
 const BAD = 1e3;
@@ -792,7 +808,7 @@ export function reportVehicle(p: VehicleProblem, x: number[]): VehicleReport {
       before: before ? vehicleGoalValue(g.kind, p, before) : null,
       after: after ? vehicleGoalValue(g.kind, p, after) : null,
     })),
-    ...(p.bounds?.length && after ? { atBounds: activeBounds(problemAt(p, x), after) } : {}),
+    ...(p.bounds?.length && after ? { atBounds: activeBounds(problemAt(p, x), after, boundStartValues(p, x0, before)) } : {}),
   };
 }
 
@@ -808,8 +824,7 @@ export function vehicleObjective(p: VehicleProblem) {
   const guesses: Partial<Record<string, ChassisPose>> = {};
   const start = evaluateVehicle(problemAt(p, x0), geometriesFor(p, x0), guesses);
   const refs = new Map(goals.filter((g) => VEHICLE_GOAL_META[g.kind].maximize).map((g) => [g.kind, start ? vehicleGoalValue(g.kind, p, start) : null]));
-  const boundStart = new Map<string, number>();
-  if (p.bounds?.length && start) for (const b of boundValues(problemAt(p, x0), start)) if (b.value !== null && Number.isFinite(b.value)) boundStart.set(`${b.root}.${b.kind}`, b.value);
+  const boundStart = boundStartValues(p, x0, start);
 
   // Every evaluation warm-starts from the start's solved poses, never from the last point evaluated (round 5):
   // with a pool of workers each kept its own last poses, so a point's residuals depended on which worker got it

@@ -52,6 +52,9 @@ describe('characteristic bounds', () => {
     expect(rOff.length).toBe(r0.length - 1);
     const ss = (r: number[]) => r.reduce((a, b) => a + b * b, 0);
     expect(ss(r0)).toBeCloseTo(ss(rOff), 9);
+    // The result reports it held at its start value (past the set bound), not as reaching the set bound.
+    const rep = reportVehicle(p, obj.x0);
+    expect(rep.atBounds).toEqual([{ root: 'FL', kind: 'kpi', side: 'max', value: kpi, bound: kpi, held: true, set: kpi - 2 }]);
   });
 
   it('a design moved past a bound pays heavily (a wall)', () => {
@@ -119,6 +122,15 @@ describe('asking at a limit mid-run', () => {
     useApp.getState().updateVehicleOptimizer((o) => ({ ...o, askLimits: false }));
     expect(offerLimits(at, new Set())).toBeNull();
     expect(n).toBe(1);
+  });
+
+  it('a design held at its start value past a bound: said so, and widened from there', () => {
+    useApp.getState().applyDesign(defaultDesign() as never, null, null);
+    const asked: string[] = [];
+    setConfirm((m) => { asked.push(m); return true; });
+    offerLimits({ atBounds: [{ root: 'FL', kind: 'bumpSteer', side: 'max', value: 2.86, bound: 2.86, held: true, set: 2 }], variables: [] }, new Set());
+    expect(asked[0]).toMatch(/Bump steer \(FL\) is held at its start value 2.86 °\/100 mm \(past its 2 °\/100 mm maximum: no worse than it started\) → allow up to 3.66 °\/100 mm/);
+    expect(useApp.getState().vehicleOptimizer.bounds.bumpSteer.max.value).toBe(3.66);
   });
 
   it('an adjustment stopped at its range end is offered too (its range widened)', () => {

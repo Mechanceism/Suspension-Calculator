@@ -444,6 +444,8 @@ export function offerLimits(
     const k = `bound.${a.kind}.${a.side}`;
     const g = byBound.get(k) ?? { a, roots: [] };
     if (a.root) g.roots.push(a.root);
+    // The furthest out sets the group's bound (a design held at its start value past the set one).
+    if (a.side === 'max' ? a.bound > g.a.bound : a.bound < g.a.bound) g.a = a;
     byBound.set(k, g);
   }
   for (const [key, { a, roots }] of byBound) {
@@ -451,11 +453,16 @@ export function offerLimits(
     if (!b?.on || declined.has(key)) continue;
     const lo = Math.min(b.min.value, b.max.value), hi = Math.max(b.min.value, b.max.value);
     const step = Math.max(0.2 * (hi - lo), 0.1);
-    const next = round2(a.side === 'max' ? hi + step : lo - step);
+    const at = a.side === 'max' ? Math.max(hi, a.bound) : Math.min(lo, a.bound);
+    const next = round2(a.side === 'max' ? at + step : at - step);
     const m = BOUND_META[a.kind];
+    const where = `${m.label}${roots.length ? ` (${roots.join(', ')})` : ''}`;
+    const what = a.held
+      ? `is held at its start value ${round2(at)} ${m.unit} (past its ${round2(a.side === 'max' ? hi : lo)} ${m.unit} ${a.side === 'max' ? 'maximum' : 'minimum'}: no worse than it started)`
+      : `reached its ${round2(at)} ${m.unit} ${a.side === 'max' ? 'maximum' : 'minimum'}`;
     items.push({
       key,
-      text: `${m.label}${roots.length ? ` (${roots.join(', ')})` : ''} reached its ${round2(a.side === 'max' ? hi : lo)} ${m.unit} ${a.side === 'max' ? 'maximum' : 'minimum'} → allow ${a.side === 'max' ? 'up to' : 'down to'} ${next} ${m.unit}`,
+      text: `${where} ${what} → allow ${a.side === 'max' ? 'up to' : 'down to'} ${next} ${m.unit}`,
       apply: (v) => ({ ...v, bounds: { ...v.bounds, [a.kind]: { ...v.bounds[a.kind], [a.side]: { text: String(next), value: next } } } }),
     });
   }

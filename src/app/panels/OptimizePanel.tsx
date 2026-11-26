@@ -690,7 +690,7 @@ export function atBoundsText(list: ActiveBound[]): string {
     if (a.root) g.roots.push(a.root);
     groups.set(k, g);
   }
-  return [...groups.values()].map(({ a, roots }) => `${BOUND_META[a.kind].label}${roots.length ? ` (${roots.join(', ')})` : ''} ${fmt(a.bound, 2)} ${BOUND_META[a.kind].unit} ${a.side}`).join(' · ');
+  return [...groups.values()].map(({ a, roots }) => `${BOUND_META[a.kind].label}${roots.length ? ` (${roots.join(', ')})` : ''} ${fmt(a.bound, 2)} ${BOUND_META[a.kind].unit} ${a.side}${a.held ? ` (held at its start value, past the ${fmt(a.set!, 2)} limit)` : ''}`).join(' · ');
 }
 
 /**

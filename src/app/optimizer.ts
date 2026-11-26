@@ -13,7 +13,7 @@ import {
 } from '../core/optimize/corner';
 import {
   VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, reportVehicle, vehicleSteps, vehicleBounds, sensitivityPlan, sensitivityResult,
-  type SensitivitySample, type VehicleProblem, type VehicleReport, type VehicleVariable, type VehicleHold, designRideHeight, vehicleVariableValue } from '../core/optimize/vehicle';
+  type SensitivitySample, type VehicleProblem, type VehicleReport, type VehicleVariable, type VehicleHold, type BoundKind, designRideHeight, vehicleVariableValue } from '../core/optimize/vehicle';
 import type { GripModel } from '../core/tire/grip';
 import type { MFCoeffs, TireGrip } from '../core/tire/magicFormula';
 import type { TirModel } from '../core/tire/tir';
@@ -369,10 +369,13 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string; pl
   }
   const holds: VehicleHold[] = roots.flatMap((root) => holdsFor(s, root).map((h) => ({ ...h, root })));
   const goals = VEHICLE_GOAL_KINDS.filter((k) => o.goals[k].on).map((k) => ({ kind: k, target: o.goals[k].target.value, weight: o.goals[k].weight.value }));
+  // F28: the characteristic bounds that are on.
+  const bounds = Object.entries(o.bounds ?? {}).filter(([, b]) => b.on).map(([k, b]) => ({ kind: k as BoundKind, min: Math.min(b.min.value, b.max.value), max: Math.max(b.min.value, b.max.value) }));
   const v = s.vehicle;
   const dl = (a: SharedDesign) => (a.antiRollBar === 'torsionBar' ? vec3(a.dropLink[0].value, a.dropLink[1].value, a.dropLink[2].value) : null);
   const problem: VehicleProblem = {
     designs,
+    ...(bounds.length ? { bounds } : {}),
     roots: Object.fromEntries(CORNER_IDS.map((id) => [id, rootOf(id, s.links)])) as Record<CornerId, CornerId>,
     settings: Object.fromEntries(CORNER_IDS.map((id) => [id, {
       brake: s.settings[id].brake, drive: s.settings[id].powered ? s.settings[id].drive : 'none', abs: s.settings[id].abs,

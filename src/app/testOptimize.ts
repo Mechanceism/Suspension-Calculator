@@ -16,7 +16,7 @@ import { planStartOf, type TestRun } from '../core/tests/run';
 import type { Severity } from '../core/tests/checks';
 import type { DoubleWishboneGeometry } from '../core/suspension/doubleWishbone';
 import { variableValue } from '../core/optimize/corner';
-import type { VehicleProblem } from '../core/optimize/vehicle';
+import { BOUND_META, type VehicleProblem, type ActiveBound } from '../core/optimize/vehicle';
 import type { CornerId } from '../core/vehicle/vehicle';
 import { layoutOf, useApp, mergedCorners, rootOf, pickDesign, OPT_DEFAULT_RANGE, POINT_KEYS, CORNER_NAMES, type Field, type RateUpdate, type AppState, type DamperKey, type DesignState, isVehScalar, type VehUpdateKey } from './store';
 import { useSnapshots } from './snapshots';
@@ -422,6 +422,70 @@ function growRanges(moves: { key: string; value: number }[]) {
   });
 }
 
+const ADJ_NAME: Record<string, [string, string]> = { staticCamber: ['Static camber', '°'], staticToe: ['Static toe', '°'], tirePressure: ['Tire pressure', 'kPa'], rideHeight: ['Ride height', 'mm'] };
+const round2 = (x: number) => Number(x.toFixed(2));
+
+/**
+ * F28 (round 5): after a round, the characteristic bounds its result reached — and the adjustments (camber, toe,
+ * pressure, ride height) stopped at their range ends — are offered past: one question for all of them, each
+ * widened by a fifth of its span on yes. A no is remembered for the rest of the run; with "Ask before going past
+ * a limit" off nothing is asked and the run stays within. Returns the log line (null: nothing new to ask).
+ */
+export function offerLimits(
+  result: { atBounds?: ActiveBound[]; variables: { root: string; point: string; axis: number; after: number; atLimit: boolean }[] },
+  declined: Set<string>,
+): string | null {
+  const o = useApp.getState().vehicleOptimizer;
+  if (!o.askLimits) return null;
+  type Item = { key: string; text: string; apply: (v: typeof o) => typeof o };
+  const items: Item[] = [];
+  const byBound = new Map<string, { a: ActiveBound; roots: string[] }>();
+  for (const a of result.atBounds ?? []) {
+    const k = `bound.${a.kind}.${a.side}`;
+    const g = byBound.get(k) ?? { a, roots: [] };
+    if (a.root) g.roots.push(a.root);
+    byBound.set(k, g);
+  }
+  for (const [key, { a, roots }] of byBound) {
+    const b = o.bounds[a.kind];
+    if (!b?.on || declined.has(key)) continue;
+    const lo = Math.min(b.min.value, b.max.value), hi = Math.max(b.min.value, b.max.value);
+    const step = Math.max(0.2 * (hi - lo), 0.1);
+    const next = round2(a.side === 'max' ? hi + step : lo - step);
+    const m = BOUND_META[a.kind];
+    items.push({
+      key,
+      text: `${m.label}${roots.length ? ` (${roots.join(', ')})` : ''} reached its ${round2(a.side === 'max' ? hi : lo)} ${m.unit} ${a.side === 'max' ? 'maximum' : 'minimum'} → allow ${a.side === 'max' ? 'up to' : 'down to'} ${next} ${m.unit}`,
+      apply: (v) => ({ ...v, bounds: { ...v.bounds, [a.kind]: { ...v.bounds[a.kind], [a.side]: { text: String(next), value: next } } } }),
+    });
+  }
+  for (const x of result.variables) {
+    if (!x.atLimit || !isVehScalar(x.point)) continue;
+    const rk = vehRangeKeyOf(vehUpdateOf(x as never, x.after));
+    const r = o.ranges[rk];
+    const key = `range.${rk}`;
+    if (!r || declined.has(key) || items.some((i) => i.key === key)) continue;
+    const lo = Math.min(r.lo.value, r.hi.value), hi = Math.max(r.lo.value, r.hi.value);
+    const side: 'lo' | 'hi' = Math.abs(x.after - hi) <= Math.abs(x.after - lo) ? 'hi' : 'lo';
+    const next = round2(side === 'hi' ? hi + 0.2 * (hi - lo) : lo - 0.2 * (hi - lo));
+    const [label, unit] = ADJ_NAME[x.point]!;
+    const who = x.point === 'rideHeight' ? (x.root === 'FL' ? 'front' : 'rear') : x.root;
+    items.push({
+      key,
+      text: `${label} (${who}) reached its range end ${round2(side === 'hi' ? hi : lo)} ${unit} → allow ${side === 'hi' ? 'up to' : 'down to'} ${next} ${unit}`,
+      apply: (v) => ({ ...v, ranges: { ...v.ranges, [rk]: { ...v.ranges[rk]!, [side]: { text: String(next), value: next } } } }),
+    });
+  }
+  if (!items.length) return null;
+  const yes = window.confirm(`The optimizer reached ${items.length === 1 ? 'a limit' : `${items.length} limits`}:\n\n${items.map((i) => `• ${i.text}`).join('\n')}\n\nLet it go past ${items.length === 1 ? 'it' : 'them'}? (Cancel keeps it within ${items.length === 1 ? 'this limit' : 'these limits'} for the rest of this run.)`);
+  if (yes) {
+    useApp.getState().updateVehicleOptimizer((v) => items.reduce((acc, i) => i.apply(acc), v));
+    return `Limits widened: ${items.map((i) => i.text).join('; ')}`;
+  }
+  for (const i of items) declined.add(i.key);
+  return `Limits kept: ${items.map((i) => i.text.split(' → ')[0]).join('; ')}`;
+}
+
 interface SetRun { runs: { test: TestDesign; run: TestRun }[]; passed: boolean; score: number }
 
 /** Run the tests (several at once; the results show in the Tests panel); priority-weighted score. */
@@ -579,6 +643,7 @@ async function optimizeTestsOnly(scope: Scope, active: TestDesign | null, mode: 
     log(`Start: ${describe(set)} (score ${set.score.toFixed(2)})`);
     let slow = 0;
     let lastAtLimit: string[] = [];
+    const declinedLimits = new Set<string>();
     let ratesTried = false;
     const rates = useLoop.getState().rates;
     // The brake ladder: after a test run, size the brakes to the hardest stop and run again if they changed.
@@ -687,6 +752,12 @@ async function optimizeTestsOnly(scope: Scope, active: TestDesign | null, mode: 
       }
       // Nothing moved, or undone (the same design again would repeat the same round exactly): wider ranges next.
       slow = moved < 0.05 || undone ? 2 : gain < 0.01 ? slow + 1 : 0;
+      // F28: at a characteristic limit (or an adjustment's range end): ask whether to go past it.
+      const offered = offerLimits(result, declinedLimits);
+      if (offered) {
+        log(offered);
+        if (offered.startsWith('Limits widened')) slow = 0;
+      }
       if (mode === 'pass' && set.passed) continue; // reported at the top of the next round
       if (slow >= 2) {
         if (wi + 1 < steps.length) {

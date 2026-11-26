@@ -3,6 +3,7 @@
  * base-unit value (mm / deg), per GOALS.md § Units.
  */
 import { create } from 'zustand';
+import { BOUND_KINDS, BOUND_META, type BoundKind } from '../core/optimize/vehicle';
 import { parseValue, formatValue, type Quantity } from '../core/units/units';
 import { vec3, type Vec3 } from '../core/math/vec3';
 import { customFromWishbone, type CustomLinkage } from '../core/suspension/customLinkage';
@@ -1134,10 +1135,19 @@ export interface VehicleOptimizerSetup {
   caseSource?: string;
   /** Gradient runs (1 = local from the current design; more = wide search from the best DOE samples too). */
   starts?: number;
+  /** F28 (round 5): bounds on the characteristics (generic, wide; on by default). */
+  bounds: Record<BoundKind, { on: boolean; min: Field; max: Field }>;
+  /** F28: at a bound mid-run, ask whether to go past it (off: stay within). */
+  askLimits: boolean;
 }
+
+export const defaultBounds = (): VehicleOptimizerSetup['bounds'] =>
+  Object.fromEntries(BOUND_KINDS.map((k) => [k, { on: true, min: field(BOUND_META[k].min, 'ratio'), max: field(BOUND_META[k].max, 'ratio') }])) as VehicleOptimizerSetup['bounds'];
 
 export function defaultVehicleOptimizerSetup(): VehicleOptimizerSetup {
   return {
+    bounds: defaultBounds(),
+    askLimits: true,
     ranges: {},
     goals: Object.fromEntries(VEHICLE_GOAL_KINDS.map((k) => [k, { on: false, target: field(VEHICLE_GOAL_META[k].target, 'ratio'), weight: field(1, 'ratio') }])) as Record<VehicleGoalKind, GoalSetting>,
     lateralG: field(1, 'ratio'),

@@ -110,6 +110,30 @@ export interface VehicleDesignIn {
   damping?: DamperSpec;
 }
 
+/**
+ * F28 (round 5): bounds on the characteristics — generic, wide, the same for every car — so optimizing for lap
+ * time can't wander into what no one would build (F12: bump steer 9.5 °/100 mm, negative trail, 88 mm scrub).
+ * Inside a bound nothing changes; past it the excess costs heavily (a wall). Per design (the steering ones for
+ * steered designs only); anti-dive / anti-squat for the car.
+ */
+export type BoundKind = 'camberGain' | 'rollCenter' | 'bumpSteer' | 'trackChange' | 'kpi' | 'caster' | 'scrubRadius' | 'trail' | 'antiDive' | 'antiSquat';
+export interface Bound { kind: BoundKind; min?: number; max?: number }
+export const BOUND_META: Record<BoundKind, { label: string; unit: string; min: number; max: number; steered?: boolean; car?: boolean; hint: string }> = {
+  camberGain: { label: 'Camber gain', unit: '°/100 mm', min: -6, max: 1, hint: 'Camber change per 100 mm of bump (− = top in).' },
+  rollCenter: { label: 'Roll center height', unit: 'mm', min: -50, max: 250, hint: 'Static, above the ground.' },
+  bumpSteer: { label: 'Bump steer', unit: '°/100 mm', min: -2, max: 2, hint: 'Toe change per 100 mm of travel: the wheel steering itself over bumps and in roll.' },
+  trackChange: { label: 'Track change', unit: 'mm/100 mm', min: -20, max: 20, hint: 'The tire sliding sideways as the suspension moves (scrub).' },
+  kpi: { label: 'KPI', unit: '°', min: 0, max: 20, steered: true, hint: 'Kingpin inclination (steered designs).' },
+  caster: { label: 'Caster', unit: '°', min: -1, max: 12, steered: true, hint: 'Steered designs.' },
+  scrubRadius: { label: 'Scrub radius', unit: 'mm', min: -40, max: 80, steered: true, hint: 'At the ground (steered designs): large values kick the steering.' },
+  trail: { label: 'Mechanical trail', unit: 'mm', min: -10, max: 60, steered: true, hint: 'Steered designs: negative trail makes the steering want to turn further by itself.' },
+  antiDive: { label: 'Anti-dive', unit: '%', min: -20, max: 100, car: true, hint: 'Front, braking.' },
+  antiSquat: { label: 'Anti-squat', unit: '%', min: -20, max: 120, car: true, hint: 'Rear, accelerating.' },
+};
+export const BOUND_KINDS = Object.keys(BOUND_META) as BoundKind[];
+/** A bound a design (or the car: root null) is at or past. */
+export interface ActiveBound { root: CornerId | null; kind: BoundKind; side: 'min' | 'max'; value: number; bound: number }
+
 export interface VehicleProblem {
   /** Corner designs keyed by root corner. */
   designs: Partial<Record<CornerId, VehicleDesignIn>>;
@@ -159,6 +183,8 @@ export interface VehicleProblem {
     weights?: Partial<Record<FixedCaseKind, number>>;
   };
   goals: VehicleGoal[];
+  /** F28: bounds on the characteristics (absent = none). */
+  bounds?: Bound[];
   variables: VehicleVariable[];
   holds?: VehicleHold[];
   /** Contact-patch pressure model (contact-area goal). */
@@ -634,6 +660,58 @@ export function vehicleGoalValue(kind: VehicleGoalKind, p: VehicleProblem, e: Ve
   }
 }
 
+/** The bounded characteristics' values now: per design (one travel sweep each), and the car's anti-dive / anti-squat. */
+export function boundValues(p: VehicleProblem, e: VehicleEval): { root: CornerId | null; kind: BoundKind; value: number | null }[] {
+  const bounds = p.bounds ?? [];
+  if (!bounds.length) return [];
+  const out: { root: CornerId | null; kind: BoundKind; value: number | null }[] = [];
+  const cornerKinds = bounds.filter((b) => !BOUND_META[b.kind].car).map((b) => b.kind as Exclude<BoundKind, 'antiDive' | 'antiSquat'>);
+  if (cornerKinds.length) {
+    for (const [root, g] of Object.entries(e.geometries) as [CornerId, DoubleWishboneGeometry][]) {
+      if (!g) continue;
+      const steered = CORNER_IDS.some((id) => p.roots[id] === root && !!p.steering?.steered[id]);
+      const kinds = cornerKinds.filter((k) => !BOUND_META[k].steered || steered);
+      if (!kinds.length) continue;
+      const sm = sampleCorner(g, { droop: -Math.abs(p.droop), bump: Math.abs(p.bump), samples: 5, goals: kinds.map((k) => ({ kind: k, target: 0, weight: 1 })) });
+      for (const k of kinds) out.push({ root, kind: k, value: sm ? goalValue(k, sm) : null });
+    }
+  }
+  for (const b of bounds) if (BOUND_META[b.kind].car) out.push({ root: null, kind: b.kind, value: vehicleGoalValue(b.kind as 'antiDive' | 'antiSquat', p, e) });
+  return out;
+}
+
+/**
+ * Past a bound, the excess (scaled to 1 % of the bound's span, × 3): effectively a wall; inside, nothing. A design
+ * already past a bound at the start (`start`, by `${root}.${kind}`) is held to no worse than it was, not forced back.
+ */
+function boundResiduals(p: VehicleProblem, e: VehicleEval, start?: Map<string, number>): number[] {
+  const bounds = new Map((p.bounds ?? []).map((b) => [b.kind, b]));
+  return boundValues(p, e).map(({ root, kind, value }) => {
+    const b = bounds.get(kind)!;
+    if (value === null || !Number.isFinite(value)) return 0;
+    const span = Math.max(1e-6, (b.max ?? BOUND_META[kind].max) - (b.min ?? BOUND_META[kind].min));
+    const s0 = start?.get(`${root}.${kind}`);
+    const hi = Math.max(b.max ?? Infinity, s0 ?? -Infinity), lo = Math.min(b.min ?? -Infinity, s0 ?? Infinity);
+    const over = Math.max(0, value - hi) + Math.max(0, lo - value);
+    return (3 * over) / (0.01 * span);
+  });
+}
+
+/** The bounds a result is at (within 2 % of the span) or past. */
+export function activeBounds(p: VehicleProblem, e: VehicleEval): ActiveBound[] {
+  const bounds = new Map((p.bounds ?? []).map((b) => [b.kind, b]));
+  const out: ActiveBound[] = [];
+  for (const { root, kind, value } of boundValues(p, e)) {
+    const b = bounds.get(kind);
+    if (!b || value === null || !Number.isFinite(value)) continue;
+    const lo = b.min ?? -Infinity, hi = b.max ?? Infinity;
+    const tol = 0.02 * (Number.isFinite(hi - lo) ? hi - lo : 1);
+    if (value >= hi - tol) out.push({ root, kind, side: 'max', value, bound: hi });
+    else if (value <= lo + tol) out.push({ root, kind, side: 'min', value, bound: lo });
+  }
+  return out;
+}
+
 const BAD = 1e3;
 
 function vehicleResiduals(goal: VehicleGoal, p: VehicleProblem, e: VehicleEval, ref: number | null | undefined): number[] {
@@ -691,6 +769,8 @@ export interface VehicleReport {
   geometries: Partial<Record<CornerId, DoubleWishboneGeometry>>;
   variables: (VehicleVariable & { before: number; after: number; atLimit: boolean })[];
   goals: VehicleGoalReport[];
+  /** F28: the characteristic bounds the result is at or past. */
+  atBounds?: ActiveBound[];
 }
 export interface VehicleOptimizeResult extends VehicleReport { lsq: LsqResult }
 
@@ -712,6 +792,7 @@ export function reportVehicle(p: VehicleProblem, x: number[]): VehicleReport {
       before: before ? vehicleGoalValue(g.kind, p, before) : null,
       after: after ? vehicleGoalValue(g.kind, p, after) : null,
     })),
+    ...(p.bounds?.length && after ? { atBounds: activeBounds(problemAt(p, x), after) } : {}),
   };
 }
 
@@ -727,6 +808,8 @@ export function vehicleObjective(p: VehicleProblem) {
   const guesses: Partial<Record<string, ChassisPose>> = {};
   const start = evaluateVehicle(problemAt(p, x0), geometriesFor(p, x0), guesses);
   const refs = new Map(goals.filter((g) => VEHICLE_GOAL_META[g.kind].maximize).map((g) => [g.kind, start ? vehicleGoalValue(g.kind, p, start) : null]));
+  const boundStart = new Map<string, number>();
+  if (p.bounds?.length && start) for (const b of boundValues(problemAt(p, x0), start)) if (b.value !== null && Number.isFinite(b.value)) boundStart.set(`${b.root}.${b.kind}`, b.value);
 
   // Every evaluation warm-starts from the start's solved poses, never from the last point evaluated (round 5):
   // with a pool of workers each kept its own last poses, so a point's residuals depended on which worker got it
@@ -744,6 +827,8 @@ export function vehicleObjective(p: VehicleProblem) {
     for (const { h, v0 } of holds) r.push((holdValue(geoms[h.root]!, h) - v0) / 1e-3);
     x.forEach((v, i) => r.push((keep * (v - x0[i]!)) / 10));
     r.push(...packagingResiduals(p, geoms, e));
+    // F28: the characteristic bounds (a wall past each).
+    if (p.bounds?.length) r.push(...boundResiduals(p, e, boundStart));
     return r;
   };
   return { goals, x0, lo, hi, residuals, guesses };

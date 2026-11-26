@@ -61,7 +61,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 51;
+export const FORMAT_VERSION = 52;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -125,6 +125,8 @@ export interface ProjectFile {
     goals: Record<string, { on: boolean; target: FieldJson; weight: FieldJson }>;
     lateralG: FieldJson; brakingG: FieldJson; accelG: FieldJson; keepClose: FieldJson; caseSource?: string; starts?: number;
     combinedLatG?: FieldJson; combinedBrakeG?: FieldJson; caseWeights?: Record<string, number>;
+    /** F28 (format 52): characteristic bounds and asking at them. */
+    bounds?: Record<string, { on: boolean; min: FieldJson; max: FieldJson }>; askLimits?: boolean;
   };
   /** Contact-patch pressure model (contact-area goal). */
   grip: Record<string, FieldJson>;
@@ -237,6 +239,8 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
       ...(d.vehicleOptimizer.combinedLatG ? { combinedLatG: fj(d.vehicleOptimizer.combinedLatG) } : {}),
       ...(d.vehicleOptimizer.combinedBrakeG ? { combinedBrakeG: fj(d.vehicleOptimizer.combinedBrakeG) } : {}),
       ...(d.vehicleOptimizer.caseWeights ? { caseWeights: { ...d.vehicleOptimizer.caseWeights } } : {}),
+      bounds: Object.fromEntries(Object.entries(d.vehicleOptimizer.bounds ?? {}).map(([k, b]) => [k, { on: b.on, min: fj(b.min), max: fj(b.max) }])),
+      askLimits: d.vehicleOptimizer.askLimits !== false,
     },
     grip: mapFields(GRIP_KEYS, d.grip),
     tireGrip: mapFields(MF_KEYS, d.tireGrip),
@@ -423,6 +427,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   49: (f) => ({ ...f, formatVersion: 50 }),
   // 50 → 51: a tire's max pressure and load rating (sidewall; 0 = not given): older files have neither.
   50: (f) => ({ ...f, formatVersion: 51 }),
+  // 51 → 52: the vehicle optimizer's characteristic bounds (F28; generic, on) and asking at them — older files get the defaults.
+  51: (f) => ({ ...f, formatVersion: 52 }),
   39: (f) => ({ ...f, formatVersion: 40, ...(isObj(f.vehicle) && isObj(f.vehicle.fields) ? { vehicle: { ...f.vehicle, fields: { ...f.vehicle.fields, rollingResistance: { text: '0', value: 0 } } } } : {}) }),
   // 34 → 35: aero side force, roll sensitivity and balance shift off.
   34: (f) => ({ ...f, formatVersion: 35, ...(isObj(f.aero) && isObj(f.aero.fields) ? { aero: { ...f.aero, fields: { ...f.aero.fields, CsA: { text: '0', value: 0 }, sideCp: { text: '900', value: 900 }, rollSensF: { text: '0', value: 0 }, rollSensR: { text: '0', value: 0 }, yawBalance: { text: '0', value: 0 } } } } : {}) }),
@@ -592,6 +598,8 @@ function readVehicleOptimizer(raw: unknown, warnings: string[]): VehicleOptimize
   const rf = (x: unknown, q: Quantity, fb: Field, where: string) => readField(x, q, fb, `vehicle optimizer ${where}`, warnings);
   const valid = (k: string) => {
     const [root, pk, ax] = k.split('.');
+    // (Round 5: the adjustments' keys too — `FL.scalar.staticCamber` …; they were dropped on reading.)
+    if ((CORNER_IDS as string[]).includes(root!) && pk === 'scalar') return ['staticCamber', 'staticToe', 'tirePressure', 'rideHeight'].includes(ax!);
     return (CORNER_IDS as string[]).includes(root!) && (POINT_KEYS as readonly string[]).includes(pk!) && AXIS_KEYS.includes(ax!);
   };
   const { ranges, goals } = readRangesGoals(raw, d.goals, valid, rf);
@@ -607,6 +615,11 @@ function readVehicleOptimizer(raw: unknown, warnings: string[]): VehicleOptimize
     ...(raw.combinedLatG ? { combinedLatG: rf(raw.combinedLatG, 'ratio', zero, 'braking-in-a-turn lateral g') } : {}),
     ...(raw.combinedBrakeG ? { combinedBrakeG: rf(raw.combinedBrakeG, 'ratio', zero, 'braking-in-a-turn braking g') } : {}),
     ...(cw && Object.keys(cw).length ? { caseWeights: cw } : {}),
+    bounds: Object.fromEntries((Object.keys(d.bounds) as (keyof typeof d.bounds)[]).map((k) => {
+      const b = isObj(raw.bounds) && isObj((raw.bounds as Json)[k]) ? (raw.bounds as Json)[k] as Json : null;
+      return [k, b ? { on: b.on !== false, min: rf(b.min, 'ratio', d.bounds[k].min, `${k} bound min`), max: rf(b.max, 'ratio', d.bounds[k].max, `${k} bound max`) } : d.bounds[k]];
+    })) as VehicleOptimizerSetup['bounds'],
+    askLimits: raw.askLimits !== false,
   };
 }
 

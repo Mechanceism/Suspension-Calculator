@@ -15,10 +15,10 @@ import {
 } from '../../core/optimize/corner';
 import {
   VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, evaluateVehicle, vehicleGoalValue, type LateralLimit, type FixedCaseKind,
-  type VehicleGoalKind, type VehicleGoalMeta,
+  type VehicleGoalKind, type VehicleGoalMeta, BOUND_KINDS, BOUND_META, type ActiveBound,
 } from '../../core/optimize/vehicle';
 import { layoutOf, toGeometry,
-  useApp, rootOf, defaultOptimizerSetup, defaultVehicleOptimizerSetup, mergedCorners,
+  useApp, rootOf, defaultOptimizerSetup, defaultVehicleOptimizerSetup, defaultBounds, mergedCorners,
   POINT_KEYS, POINT_NAMES, activeParam, activePointKeys, OPT_DEFAULT_RANGE, GRIP_KEYS, GRIP_META,
   type Field, type OptimizerSetup, type PointKey, type GoalSetting, type CornerDesign,
   type VehScalar,
@@ -212,6 +212,8 @@ export function GripModelFields() {
 type Report = {
   goals: { kind: string; target: number; before: number | null; after: number | null }[];
   variables: (Variable & { root?: CornerId; before: number; after: number; atLimit: boolean })[];
+  /** F28: the characteristic bounds the result is at (vehicle optimizer). */
+  atBounds?: ActiveBound[];
 };
 interface RunState {
   running: boolean;
@@ -311,6 +313,11 @@ function RunArea({ useRun, blockers, notes, label, start, current, meta, onApply
               ))}
             </tbody>
           </table>
+          {!!run.result.atBounds?.length && (
+            <p className="hint warn-text" title="The result sits at (or past) these characteristic limits: widen them under Limits to let it go further">
+              At a limit: {atBoundsText(run.result.atBounds)}.
+            </p>
+          )}
           {stale && <p className="hint warn-text">The design changed since this run. Run again before applying.</p>}
           <div className="jm-row">
             <button className="wide-btn primary" disabled={stale} onClick={() => { clearPreview(); onApply(run.result!); useRun.setState({ result: null, from: null }); }}>Apply to design</button>
@@ -674,6 +681,61 @@ function VehiclePresets() {
   );
 }
 
+/** "KPI (FL, FR) 20° max · Trail (RL) 0 mm min" — the bounds a result is at, grouped by kind and side. */
+export function atBoundsText(list: ActiveBound[]): string {
+  const groups = new Map<string, { a: ActiveBound; roots: string[] }>();
+  for (const a of list) {
+    const k = `${a.kind}.${a.side}`;
+    const g = groups.get(k) ?? { a, roots: [] };
+    if (a.root) g.roots.push(a.root);
+    groups.set(k, g);
+  }
+  return [...groups.values()].map(({ a, roots }) => `${BOUND_META[a.kind].label}${roots.length ? ` (${roots.join(', ')})` : ''} ${fmt(a.bound, 2)} ${BOUND_META[a.kind].unit} ${a.side}`).join(' · ');
+}
+
+/**
+ * F28 (round 5): bounds on the characteristics. The optimizer moves the points for the goals; these keep it from
+ * wandering into what no one would build. Generic and wide (the same for every car); past one costs heavily.
+ */
+function Limits() {
+  const o = useApp((s) => s.vehicleOptimizer);
+  const update = useApp((s) => s.updateVehicleOptimizer);
+  const setB = (k: (typeof BOUND_KINDS)[number], fn: (b: (typeof o.bounds)[typeof k]) => (typeof o.bounds)[typeof k]) =>
+    update((v) => ({ ...v, bounds: { ...v.bounds, [k]: fn(v.bounds[k]) } }));
+  const setN = (k: (typeof BOUND_KINDS)[number], which: 'min' | 'max', text: string) => {
+    const n = Number(text);
+    if (Number.isFinite(n)) setB(k, (b) => ({ ...b, [which]: { text, value: n } }));
+  };
+  const on = BOUND_KINDS.filter((k) => o.bounds[k].on).length;
+  return (
+    <Section title={`Limits (${on} on)`} open={false}>
+      <p className="hint">Bounds on the characteristics: inside them the optimizer is free; past one costs heavily, so it stops there. They are wide and generic on purpose (the same for every car and use) — they only stop designs no one would build. The steering ones apply to steered designs; anti-dive and anti-squat to the car. These also apply to the Tests optimizer.</p>
+      <label className="check-row" title="When the Tests optimizer reaches a limit (or an adjustment's range end), ask whether to let it go further. Off: it stays within them.">
+        <input type="checkbox" checked={o.askLimits} onChange={(e) => update((v) => ({ ...v, askLimits: e.target.checked }))} /> Ask before going past a limit
+      </label>
+      <table className="opt-table">
+        <thead><tr><th>On</th><th>Characteristic</th><th>Min</th><th>Max</th></tr></thead>
+        <tbody>
+          {BOUND_KINDS.map((k) => {
+            const b = o.bounds[k], m = BOUND_META[k];
+            return (
+              <tr key={k} title={m.hint}>
+                <td><input type="checkbox" checked={b.on} onChange={(e) => setB(k, (x) => ({ ...x, on: e.target.checked }))} /></td>
+                <td>{m.label}</td>
+                <td className="nowrap"><input key={`${k}.min.${b.min.text}`} type="number" style={{ width: 60 }} disabled={!b.on} defaultValue={b.min.text} onBlur={(e) => setN(k, 'min', e.target.value)} /></td>
+                <td className="nowrap"><input key={`${k}.max.${b.max.text}`} type="number" style={{ width: 60 }} disabled={!b.on} defaultValue={b.max.text} onBlur={(e) => setN(k, 'max', e.target.value)} /> <span className="unit">{m.unit}</span></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <div className="jm-row">
+        <button className="chip" onClick={() => update((v) => ({ ...v, bounds: defaultBounds() }))}>Default limits</button>
+      </div>
+    </Section>
+  );
+}
+
 const ADJ_LABEL: Record<VehScalar, string> = { staticCamber: 'Static camber', staticToe: 'Static toe', tirePressure: 'Tire pressure', rideHeight: 'Ride height' };
 const ADJ_UNIT: Record<VehScalar, string> = { staticCamber: '°', staticToe: '°', tirePressure: 'kPa', rideHeight: 'mm' };
 
@@ -892,6 +954,7 @@ export function VehicleOptimizePanel() {
         )}
       />
       <Adjustments roots={roots.map((r) => r.root)} all={all} ranges={o.ranges} update={(fn) => update((v) => ({ ...v, ranges: fn(v.ranges) }))} />
+      <Limits />
       <Section title="What matters most" open={false}>
         <SensitivityReport build={() => buildVehicleProblem(useApp.getState())} current={geometryKey} what="the optimizer's miss" />
       </Section>

@@ -150,6 +150,8 @@ export interface VehicleProblem {
   settings: Record<CornerId, { brake: BrakeMount; drive: DriveMount; abs?: boolean }>;
   /** Differential per axle (chassis-driven axles). */
   diff?: { front?: DiffType; rear?: DiffType };
+  /** Brake-based traction control on open differentials (round 5; off by default). */
+  brakeTC?: boolean;
   /** Test states: when given, they replace the fixed load cases. */
   states?: RoadState[];
   /** Steered corners and the rack (tests: the rack travel a turn needs). */
@@ -477,6 +479,7 @@ export const vehicleInputOf = (p: VehicleProblem, asm: AssembledVehicle, c: Omit
   ...(p.trailer ? { trailer: p.trailer } : {}),
   ...(p.rollingResistance && (c.speed ?? c.state?.speed ?? 0) > 0 ? { rollingResistance: p.rollingResistance } : {}),
   ...((c.speed ?? c.state?.speed ?? 0) > 0 ? { speed: c.speed ?? c.state?.speed ?? 0 } : {}),
+  ...(p.brakeTC ? { brakeTC: true } : {}),
 });
 
 /** Solve one load case on an assembled car. null = didn't converge. */

@@ -61,7 +61,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 52;
+export const FORMAT_VERSION = 53;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -142,6 +142,8 @@ export interface ProjectFile {
   powertrain?: { kind: 'none' | 'electric' | 'gas'; fields: Record<string, FieldJson> };
   brakes?: {
     on: boolean; dualMc: boolean; useBias: boolean; fields: Record<string, FieldJson>; fade?: { on: boolean; fields: Record<string, FieldJson> };
+    /** Format 53: brake-based traction control. */
+    tc?: boolean;
     /** Format 39: drums, wheel room, detailed hydraulics, the ladder's reserve and permissions. */
     more?: { drumF: boolean; drumR: boolean; detail: boolean; allowDiscF: boolean; allowDiscR: boolean; fields: Record<string, FieldJson> };
   };
@@ -251,7 +253,7 @@ export function serializeProject(d: DesignState, name: string, include: { tests:
     aero: { on: d.aero.on, fields: mapFields(AERO_KEYS, d.aero), file: d.aero.file ? JSON.parse(JSON.stringify(d.aero.file)) as AeroModel : null },
     powertrain: { kind: d.powertrain.kind, fields: mapFields(PT_KEYS, d.powertrain) },
     rideHeight: { on: d.rideHeight.on, front: { ...d.rideHeight.front }, rear: { ...d.rideHeight.rear } },
-    brakes: { on: d.brakes.on, dualMc: d.brakes.dualMc, useBias: d.brakes.useBias, fields: mapFields(BRAKE_KEYS, d.brakes), fade: { on: d.brakes.fade, fields: mapFields(FADE_KEYS, d.brakes) },
+    brakes: { on: d.brakes.on, ...(d.brakes.tc ? { tc: true } : {}), dualMc: d.brakes.dualMc, useBias: d.brakes.useBias, fields: mapFields(BRAKE_KEYS, d.brakes), fade: { on: d.brakes.fade, fields: mapFields(FADE_KEYS, d.brakes) },
       more: { drumF: d.brakes.drumF, drumR: d.brakes.drumR, detail: d.brakes.detail, allowDiscF: d.brakes.allowDiscF, allowDiscR: d.brakes.allowDiscR, fields: mapFields(BRAKE_MORE_KEYS, d.brakes) } },
     tow: { on: d.tow.on, fields: mapFields(TOW_KEYS, d.tow) },
     shimmy: { check: d.shimmy.check, handsOn: d.shimmy.handsOn, fields: mapFields(SHIMMY_KEYS, d.shimmy) },
@@ -429,6 +431,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   50: (f) => ({ ...f, formatVersion: 51 }),
   // 51 → 52: the vehicle optimizer's characteristic bounds (F28; generic, on) and asking at them — older files get the defaults.
   51: (f) => ({ ...f, formatVersion: 52 }),
+  // 52 → 53: driving styles (each test's, Auto: by its pass rules) and brake-based traction control (off).
+  52: (f) => ({ ...f, formatVersion: 53 }),
   39: (f) => ({ ...f, formatVersion: 40, ...(isObj(f.vehicle) && isObj(f.vehicle.fields) ? { vehicle: { ...f.vehicle, fields: { ...f.vehicle.fields, rollingResistance: { text: '0', value: 0 } } } } : {}) }),
   // 34 → 35: aero side force, roll sensitivity and balance shift off.
   34: (f) => ({ ...f, formatVersion: 35, ...(isObj(f.aero) && isObj(f.aero.fields) ? { aero: { ...f.aero, fields: { ...f.aero.fields, CsA: { text: '0', value: 0 }, sideCp: { text: '900', value: 900 }, rollSensF: { text: '0', value: 0 }, rollSensR: { text: '0', value: 0 }, yawBalance: { text: '0', value: 0 } } } } : {}) }),
@@ -532,6 +536,7 @@ function readTests(raw: unknown, warnings: string[]): TestDesign[] {
       handling: t.handling !== false,
       ...(t.driverSpeed === true ? { driverSpeed: true } : {}),
       ...(t.racingLine === true ? { racingLine: true } : {}),
+      ...(t.style === 'none' || t.style === 'drift' || t.style === 'rally' || t.style === 'drag' ? { style: t.style } : {}),
       speedMode: t.speedMode === 'max' || t.speedMode === 'grip' ? t.speedMode : 'hold',
       ...(t.speedMode === 'grip' && isObj(t.topSpeed) && typeof t.topSpeed.value === 'number' && t.topSpeed.value > 0
         ? { topSpeed: { text: typeof t.topSpeed.text === 'string' ? t.topSpeed.text : String(t.topSpeed.value), value: t.topSpeed.value } } : {}),
@@ -969,7 +974,7 @@ export function importProject(data: unknown): ImportResult {
       const mo = isObj(b.more) ? b.more : {};
       const more = readRecord(mo.fields, BRAKE_MORE_KEYS, (k) => BRAKE_MORE_META[k].quantity, defaultBrakes(), 'brakes.more', isObj(b.more) ? warnings : []);
       return {
-        ...fields, ...fade, ...more, on: b.on === true, fade: fd.on === true, dualMc: b.dualMc === true, useBias: b.useBias === true,
+        ...fields, ...fade, ...more, on: b.on === true, tc: b.tc === true, fade: fd.on === true, dualMc: b.dualMc === true, useBias: b.useBias === true,
         drumF: mo.drumF === true, drumR: mo.drumR === true, detail: mo.detail === true, allowDiscF: mo.allowDiscF === true, allowDiscR: mo.allowDiscR === true,
       };
     })(),

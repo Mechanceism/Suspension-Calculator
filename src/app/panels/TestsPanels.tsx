@@ -16,7 +16,7 @@ import { segmentLongG, segmentLatG, segmentDuration, type PathKind } from '../..
 import type { TestRun, StateResult } from '../../core/tests/run';
 import { CHECK_IDS, CHECK_META, PROFILES, cloneProfile, type CheckProfile, type Severity, type BuiltinProfile, type Finding } from '../../core/tests/checks';
 import { useApp, BRAKE_MORE_META, type Field } from '../store';
-import { SEGMENT_PRESETS, TEST_PRESETS, newSegment, newTestId, planOption, plannedSpeeds, driverSpeedOf, topSpeedOf, segmentSpec, transitionGrades, isOff, OFF, type TestDesign, type TestSegment } from '../tests';
+import { SEGMENT_PRESETS, TEST_PRESETS, newSegment, newTestId, planOption, plannedSpeeds, driverSpeedOf, topSpeedOf, segmentSpec, transitionGrades, isOff, OFF, styleOf, STYLE_LABEL, type TestDesign, type TestSegment } from '../tests';
 import { buildVehicleProblem, runTestJob, isCancelled } from '../optimizer';
 import { POOL_SIZE, runLimited } from '../workerPool';
 import { useTireChoice, TIRE_CATALOG, rankTires, applyTire, currentTire, type TireAxleChoice } from '../tireChoice';
@@ -593,6 +593,15 @@ export function TestsSidebar() {
                   </label>
                 </td>
               </tr>
+              <tr title="Driving and braking at once (with the driver working the pedals). Auto: by the pass rules — Drift: the handbrake into each turn (0.5 s, the rear wheels braked to their grip, clutch in) to start the slide; Off-road: rally left-foot braking into turns and crests (the throttle kept on, 30 % of the braking); Drag: the line-lock burnout before the launch (not timed). Others: one pedal at a time.">
+                <td>Driving style</td>
+                <td>
+                  <select value={test.style ?? 'auto'} onChange={(e) => updateTest(test.id, (t) => { const v = e.target.value; const { style: _s, ...rest } = t; void _s; return v === 'auto' ? rest : { ...rest, style: v as NonNullable<TestDesign['style']> }; })}>
+                    <option value="auto">Auto ({STYLE_LABEL[styleOf({ ...test, style: undefined }) ?? 'none'].split(' (')[0]})</option>
+                    {(['none', 'drift', 'rally', 'drag'] as const).map((k) => <option key={k} value={k}>{STYLE_LABEL[k]}</option>)}
+                  </select>
+                </td>
+              </tr>
               <tr title="Maximums: the set speeds are the most the driver may go; the driver plans the speed to its push — how much of the tires' grip it uses — (braking earlier before turns, accelerating out), tries other ways of taking a failing segment (brake in, coast in, hold the speed, speed up in) and then pushes less there (with a finding saying so); the test is scored on time. Hold exactly: the set speeds are driven as they are (to check a car can do a given speed).">
                 <td>Speeds</td>
                 <td>
@@ -810,6 +819,7 @@ export function TestResults() {
             {s.impossible && <div className="small-text warn-text">No suspension change can make this pass: the tires can't give that much force. Lower the speed, enlarge the radius, or improve the tires.</div>}
             {s.findings.some((f) => f.check === 'steerLimit' && f.severity === 'fail') && <div className="small-text warn-text">Slowing down doesn't help: enlarge the radius, or allow more rack travel / a longer-reach steering arm (Corner view → Steering rack).</div>}
             {s.rideFail && <div className="small-text warn-text">Passes as steady states but fails over time (bumps at speed, transients): softer / firmer damping, more travel or a lower speed can help. Play it back to watch.</div>}
+            {s.technique && <div className="small-text" title="Driving and braking at once, by the test's driving style">Driver: {s.technique}.</div>}
             {s.drivenScale !== undefined && (
               <div className="small-text">Driver lifts: driven at {fmt(s.drivenScale * 100, 0)}% of its speed (≈ {disp.format(vmax * s.drivenScale, 'm/s', 0)}) and judged there.</div>
             )}

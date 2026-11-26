@@ -501,6 +501,9 @@ function BrakePanel() {
   const worst = use ? Math.max(use.front, use.rear) : 0;
   return (
     <>
+      <label className="check-row" title="Brake-based traction control: on a driven axle with an open differential, a wheel spinning past its grip is braked, so the differential sends the drive to the other wheel — the axle gives up to both wheels' grip instead of twice the lighter one's. Off by default.">
+        <input type="checkbox" checked={!!b.tc} onChange={(e) => setB({ tc: e.target.checked })} /> Brake-based traction control (open differentials)
+      </label>
       <div className="jm-row" title="Off: the brakes can always make the braking asked (only grip limits it). On: from the pedal through the master cylinders, calipers and rotors, the braking is limited to what they make at the most pedal force.">
         <button className={`chip${!b.on ? ' on' : ''}`} onClick={() => setB({ on: false })}>Off (always strong enough)</button>
         <button className={`chip${b.on ? ' on' : ''}`} onClick={() => setB({ on: true })}>Model the hydraulics</button>

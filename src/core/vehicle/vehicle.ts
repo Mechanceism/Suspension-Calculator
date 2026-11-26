@@ -224,7 +224,35 @@ export interface VehicleInput {
   diff?: { front?: DiffType; rear?: DiffType };
   /** Limited-slip torque bias ratio (default 2.5). */
   lsdBias?: number;
+  /**
+   * Round 5: driving and braking at once (by driving style — the drift handbrake, the rally driver's left foot, the
+   * drag line-lock): on top of what the pedals net to (accelG / brakingG), more drive on the powered wheels, more
+   * braking through the pedal (shared by the bias) or on given wheels (a handbrake / line-lock), and the drive cut
+   * from given wheels (clutch in). The car's acceleration stays accelG − brakingG: the extra drive and braking
+   * cancel or are part of it (`net`, N: what the overlap adds to the tires' push — already in accelG / brakingG).
+   */
+  overlap?: Overlap;
+  /**
+   * Brake-based traction control (per car, off by default): on an open-differential axle a wheel spinning past
+   * its grip is braked, so the differential sends the drive to the other — the axle gives up to both wheels' grip
+   * (by load) instead of twice the lighter one's.
+   */
+  brakeTC?: boolean;
 }
+
+export interface Overlap {
+  /** More drive on the powered wheels (split as the pedal's), N. */
+  drive?: number;
+  /** More braking through the pedal (shared by the bias), N. */
+  pedalBrake?: number;
+  /** Braking on given wheels (a handbrake, a line-lock), N each. */
+  brake?: Partial<Record<CornerId, number>>;
+  /** Wheels the drive is cut from (clutch in): the others take it. */
+  cut?: CornerId[];
+}
+/** What an overlap adds to the tires' push along the road, N (+ forward). */
+export const overlapNet = (o: Overlap | undefined) =>
+  o ? (o.drive ?? 0) - (o.pedalBrake ?? 0) - Object.values(o.brake ?? {}).reduce((a, b) => a + (b ?? 0), 0) : 0;
 
 export type SlipState = 'grip' | 'sliding' | 'abs-limit' | 'locked' | 'wheelspin';
 
@@ -709,7 +737,9 @@ export function forceSetup(input: VehicleInput): ForceSetup {
     : undefined;
   // Rolling resistance: the tires' own drag (load × coefficient), pushed against like the air's.
   const rolling = Math.max(0, input.rollingResistance ?? 0) * gs;
-  const tireNet = (input.accelG ?? 0) - (input.brakingG ?? 0) + drag / (input.totalMass * G) + rolling - (hitch ? hitch.force.z / (input.totalMass * G) : 0);
+  // (Round 5: the pedals' part — what an overlap of drive and braking adds is taken out here and added back below.)
+  const tireNet = (input.accelG ?? 0) - (input.brakingG ?? 0) + drag / (input.totalMass * G) + rolling - (hitch ? hitch.force.z / (input.totalMass * G) : 0)
+    - overlapNet(input.overlap) / (input.totalMass * G);
   let brakingG = Math.max(0, -tireNet);
   const powered = input.corners.filter((c) => (c.drive ?? 'none') !== 'none');
   const braked = input.corners.filter((c) => (c.brake ?? 'outboard') !== 'none');
@@ -725,16 +755,19 @@ export function forceSetup(input: VehicleInput): ForceSetup {
     brakingG = 0;
     unmet.brake = true;
   }
-  const brakeTotal = input.totalMass * brakingG * G; // magnitude; acts rearward (−Z) on the tires
-  const driveTotal = input.totalMass * accelG * G; // acts forward (+Z) on the powered tires
+  const ov = input.overlap;
+  const brakeTotal = input.totalMass * brakingG * G + (braked.length ? Math.max(0, ov?.pedalBrake ?? 0) : 0); // magnitude; acts rearward (−Z) on the tires
+  const driveTotal = input.totalMass * accelG * G + (powered.length ? Math.max(0, ov?.drive ?? 0) : 0); // acts forward (+Z) on the powered tires
   // Inertia follows the car's acceleration (what the tires can't deliver is flagged as unmet).
   const aZ = unmet.accel || unmet.brake ? (accelG - brakingG - rolling) * G - drag / input.totalMass : kinematicZ;
   // Drive shares: front/rear by the split (or all to the only powered axle), equal per powered
   // wheel within an axle (open differential).
   const driveShares: Record<CornerId, number> = { FL: 0, FR: 0, RL: 0, RR: 0 };
   {
-    const fp = powered.filter((c) => isFront(c.id));
-    const rp = powered.filter((c) => !isFront(c.id));
+    // (Wheels with the drive cut — a handbrake with the clutch in — take none: the others take it all.)
+    const live = powered.filter((c) => !ov?.cut?.includes(c.id));
+    const fp = live.filter((c) => isFront(c.id));
+    const rp = live.filter((c) => !isFront(c.id));
     const split = fp.length && rp.length ? Math.min(1, Math.max(0, input.driveSplit ?? 0.5)) : fp.length ? 1 : 0;
     for (const c of fp) driveShares[c.id] = split / fp.length;
     for (const c of rp) driveShares[c.id] = (1 - split) / rp.length;
@@ -790,10 +823,21 @@ export function tireForcesFor(input: VehicleInput, fs: ForceSetup, loads: Record
         continue;
       }
     }
+    // Brake traction control on an open differential: equal drive (as the differential gives it) until the lighter
+    // wheel is at its grip; past that it is braked to hold it there and the rest goes to the other, up to its grip.
+    if (diffOf(front) === 'open' && input.brakeTC && caps) {
+      const D = fs.driveTotal * axleShare, half = D / 2;
+      const cl = Math.max(0, caps[l].x), cr = Math.max(0, caps[r].x);
+      if (half > Math.min(cl, cr)) {
+        if (cl <= cr) { lockedDrive[l] = cl; lockedDrive[r] = Math.min(D - cl, cr); }
+        else { lockedDrive[r] = cr; lockedDrive[l] = Math.min(D - cr, cl); }
+        continue;
+      }
+    }
     const [a, b] = diffSplit(diffOf(front), loads[l], loads[r], input.lsdBias ?? 2.5);
     dShares[l] = axleShare * a; dShares[r] = axleShare * b;
   }
-  const brakeF = (id: CornerId) => -fs.brakeTotal * bShares[id];
+  const brakeF = (id: CornerId) => -fs.brakeTotal * bShares[id] - Math.max(0, input.overlap?.brake?.[id] ?? 0);
   const driveF = (id: CornerId) => lockedDrive[id] ?? fs.driveTotal * dShares[id];
   const lat: Record<CornerId, number> = { FL: 0, FR: 0, RL: 0, RR: 0 };
   for (const [l, r, share] of [['FL', 'FR', fs.frontLatShare], ['RL', 'RR', 1 - fs.frontLatShare]] as const) {

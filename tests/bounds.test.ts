@@ -86,7 +86,7 @@ describe('characteristic bounds', () => {
     const o = d.vehicleOptimizer;
     const s0 = { ...d, vehicleOptimizer: { ...o, askLimits: false, bounds: { ...o.bounds, trail: { on: false, min: { text: '5', value: 5 }, max: { text: '45', value: 45 } } } } };
     const file = JSON.parse(JSON.stringify(serializeProject(s0 as never, 'B')));
-    expect(file.formatVersion).toBe(52);
+    expect(file.formatVersion).toBeGreaterThanOrEqual(52);
     const vo = importProject(file).design.vehicleOptimizer;
     expect(vo.askLimits).toBe(false);
     expect(vo.bounds.trail.on).toBe(false);

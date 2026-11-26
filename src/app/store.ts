@@ -993,6 +993,8 @@ export interface BrakeSettings extends Record<BrakeKey, Field>, Record<FadeKey, 
   allowDiscR: boolean;
   /** Model the brake hydraulics (off = the brakes are always strong enough). */
   on: boolean;
+  /** Round 5: brake-based traction control — a spinning wheel on an open differential is braked (off by default). */
+  tc: boolean;
   /** Model brake fade in tests (with the hydraulics). */
   fade: boolean;
   /** Two master cylinders on a balance bar (else one tandem master cylinder). */
@@ -1004,7 +1006,7 @@ export const defaultBrakes = (): BrakeSettings => ({
   ...(Object.fromEntries(BRAKE_KEYS.map((k) => [k, field(BRAKE_META[k].initial, BRAKE_META[k].quantity)])) as Record<BrakeKey, Field>),
   ...(Object.fromEntries(FADE_KEYS.map((k) => [k, field(FADE_META[k].initial, FADE_META[k].quantity)])) as Record<FadeKey, Field>),
   ...(Object.fromEntries(BRAKE_MORE_KEYS.map((k) => [k, field(BRAKE_MORE_META[k].initial, BRAKE_MORE_META[k].quantity)])) as Record<BrakeMoreKey, Field>),
-  on: false, fade: false, dualMc: false, useBias: false, drumF: false, drumR: false, detail: false, allowDiscF: false, allowDiscR: false,
+  on: false, tc: false, fade: false, dualMc: false, useBias: false, drumF: false, drumR: false, detail: false, allowDiscF: false, allowDiscR: false,
 });
 
 /** Shimmy / death wobble inputs (round 3, R8; docs/MATH.md § Shimmy). */

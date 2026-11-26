@@ -393,6 +393,7 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string; pl
     shimmy: shimmySpecOf(s),
     brakeBias: brk?.useBias ?? v.brakeBias.value / 100, driveSplit: v.driveSplit.value / 100, autoPreload: s.autoPreload,
     ...(brk ? { brakeLimit: brk.limit } : {}),
+    ...(s.brakes.tc ? { brakeTC: true } : {}),
     ...(brakes?.thermal ? { brakeThermal: brakes.thermal } : {}),
     ...(brakes?.detail ? { brakeDetail: { system: brakes.system, detail: brakes.detail } } : {}),
     ...(trailerOf(s) ? { trailer: trailerOf(s)! } : {}),

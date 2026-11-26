@@ -55,6 +55,8 @@ export interface SegmentResult {
   drivenScale?: number;
   /** Passes as steady states but fails over time (ride: bumps, transients). */
   rideFail?: boolean;
+  /** Round 5: driving and braking at once, by the driving style (the handbrake, left-foot braking, the line-lock). */
+  technique?: string;
   /** Planned speeds: what it was planned at, how (the way of taking it and the grip target), and its time (s): as
    * driven when the pedal driver drove it (`driven`), else the plan's; `plannedTime` the plan's. */
   plannedTime?: number;
@@ -607,6 +609,8 @@ export function runTest(
     }
     ride = { frames: withBrakeTemps(p, rr.frames), metrics: rr.metrics, ...(rr.error ? { error: rr.error } : {}) };
     if (opts.handling && opts.driverSpeed && !rr.error) drivenTimes = rr.times;
+    // Round 5: what the driver did with both pedals (or the handbrake) by the driving style.
+    rr.technique?.forEach((t, i) => { if (t && segs[i]) segs[i]!.technique = t; });
     if (rr.ended) {
       ended = rr.ended;
       segs.forEach((sr, i) => { if (i > rr.ended!.segment) sr.notReached = true; });

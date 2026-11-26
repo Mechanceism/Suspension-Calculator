@@ -20,6 +20,8 @@ export const G = 9.80665;
 
 export type PathKind = 'straight' | 'left' | 'right';
 
+export type DrivingStyle = 'drift' | 'rally' | 'drag';
+
 export interface SegmentSpec {
   name?: string;
   /** Segment length, m. */
@@ -36,6 +38,11 @@ export interface SegmentSpec {
   longG?: number | null;
   /** Coast: no throttle and no brakes; with the driver working the pedals the speed follows the forces (drag, grade, rolling resistance, bumps). */
   coast?: boolean;
+  /**
+   * Round 5: the driving style (from the test's, by default its pass rules): drift — the handbrake into the turns;
+   * rally — left-foot braking into turns and crests; drag — the line-lock before the launch. Absent: one pedal at a time.
+   */
+  style?: DrivingStyle;
   /** Road grade, rad (+ = uphill); with `gradeEnd`, the grade at its start. */
   grade: number;
   /**

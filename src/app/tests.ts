@@ -3,6 +3,7 @@
  * conversion to the core segment spec. Saved with the project.
  */
 import { CORNER_IDS, type CornerId } from '../core/vehicle/vehicle';
+import type { DrivingStyle } from '../core/tests/segments';
 import { formatValue, type Quantity } from '../core/units/units';
 import { segmentStates, type PathKind, type RoadState, type CarDims , racingLineRadius } from '../core/tests/segments';
 import type { RoadSpec } from '../core/tests/road';
@@ -98,6 +99,11 @@ export interface TestDesign {
   gripTarget?: number;
   /** Included in Run all / Optimize all (unchecked = skipped). */
   enabled: boolean;
+  /**
+   * Round 5: the driving style — driving and braking at once. Missing = Auto (by the pass rules: Drift → the
+   * handbrake into turns, Off-road → rally left-foot braking, Drag → the line-lock before the launch; others none).
+   */
+  style?: 'none' | DrivingStyle;
   /** Also drive the test over time (Phase B ride: bumps at speed, transients) and check every moment. */
   ride: boolean;
   /** Over time, a driver steers the car along the path (Phase C handling: slip angles, yaw, sideslip). */
@@ -353,8 +359,19 @@ export function segmentSpec(s: TestSegment, test?: TestDesign): TestSegmentSpec 
     samples: 3,
     road: roadSpecOf(s),
     ...(s.coast ? { coast: true } : {}),
+    ...(styleOf(test, s) ? { style: styleOf(test, s)! } : {}),
   };
 }
+
+/** The driving style a segment is driven with: the test's, or by its pass rules (Auto). */
+export function styleOf(test: TestDesign | undefined, s?: TestSegment): DrivingStyle | undefined {
+  if (!test) return undefined;
+  if (test.style === 'none') return undefined;
+  if (test.style) return test.style;
+  return STYLE_BY_PROFILE[(s?.profile ?? test.profile) as string];
+}
+export const STYLE_BY_PROFILE: Record<string, DrivingStyle | undefined> = { drift: 'drift', offroad: 'rally', drag: 'drag' };
+export const STYLE_LABEL: Record<'none' | DrivingStyle, string> = { none: 'One pedal at a time', drift: 'Drift (handbrake into turns)', rally: 'Rally (left-foot braking)', drag: 'Drag (line-lock launch)' };
 
 /** The segment's road (rough surface + features) for the core. */
 export function roadSpecOf(s: TestSegment): RoadSpec | undefined {

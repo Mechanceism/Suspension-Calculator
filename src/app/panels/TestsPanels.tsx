@@ -70,6 +70,11 @@ export const useRun = create<RunStore>(() => ({ running: false, testId: null, re
 type DesignRef = { geom: unknown; corners: unknown; settings: unknown; steer: unknown; vehicle: unknown };
 const designRef = (s: ReturnType<typeof useApp.getState>): DesignRef => ({ geom: s.geom, corners: s.corners, settings: s.settings, steer: s.steer, vehicle: s.vehicle });
 const sameDesign = (a: DesignRef, b: DesignRef) => a.geom === b.geom && a.corners === b.corners && a.settings === b.settings && a.steer === b.steer && a.vehicle === b.vehicle;
+/** A test's last result if the design hasn't changed since (null: none, or stale) — for Results. */
+export const currentResult = (testId: string): TestRun | null => {
+  const e = useRun.getState().results[testId];
+  return e && sameDesign(e.from, designRef(useApp.getState())) ? e.result : null;
+};
 // A model-and-tests file saves the results run on the design and the tests as they are now (scores only).
 setResultsSource(() => {
   const s = useApp.getState(), now = designRef(s), results = useRun.getState().results;

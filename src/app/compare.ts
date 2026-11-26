@@ -91,19 +91,23 @@ export const runKey = (row: CompareTest, model: Side) => `${row.key}|${model}`;
 /** The app state with model B in place of the current one (the sliders and settings as they are). */
 const stateFor = (s: AppState, model: Side, snap: Snapshot): AppState => (model === 'A' ? s : withDesign(s, snap.design));
 
-/** Run both models on every row's test (its own copy for each side: a test both have runs as tests A's). */
-export async function runCompare(snap: Snapshot): Promise<void> {
+/**
+ * Run both models on every row's test (its own copy for each side: a test both have runs as tests A's). Without a
+ * snapshot (Results on its own): the current design on its own enabled tests.
+ */
+export async function runCompare(snap: Snapshot | null): Promise<void> {
   useCompare.getState().cancel?.();
   const s = useApp.getState();
-  const rows = compareTests(s.tests, snap.design.tests);
-  const jobs = rows.flatMap((row) => (['A', 'B'] as const).map((model) => ({ row, model, test: (row.a ?? row.b)! })));
+  const rows = compareTests(s.tests, snap?.design.tests ?? []);
+  const models: Side[] = snap ? ['A', 'B'] : ['A'];
+  const jobs = rows.flatMap((row) => models.map((model) => ({ row, model, test: (row.a ?? row.b)! })));
   let stopped = false;
   const cancels = new Set<() => void>();
-  useCompare.setState({ snapshotId: snap.id, running: true, done: 0, total: jobs.length, runs: {}, rows, error: null, from: pickDesign(s), cancel: () => { stopped = true; for (const c of cancels) c(); } });
-  const problems = { A: buildVehicleProblem(stateFor(s, 'A', snap)).problem, B: buildVehicleProblem(stateFor(s, 'B', snap)).problem };
+  useCompare.setState({ snapshotId: snap?.id ?? null, running: true, done: 0, total: jobs.length, runs: {}, rows, error: null, from: pickDesign(s), cancel: () => { stopped = true; for (const c of cancels) c(); } });
+  const problems = { A: buildVehicleProblem(s).problem, B: snap ? buildVehicleProblem(stateFor(s, 'B', snap)).problem : null };
   try {
     await runLimited(jobs, POOL_SIZE, async ({ row, model, test }) => {
-      const job = runTestJob(problems[model], test.segments.map((sg) => segmentSpec(sg, test)), {
+      const job = runTestJob(problems[model]!, test.segments.map((sg) => segmentSpec(sg, test)), {
         onFail: test.onFail, speedLimits: true, ride: test.ride !== false, handling: test.ride !== false && test.handling !== false, driverSpeed: driverSpeedOf(test), ...planOption(test),
       });
       cancels.add(job.cancel);

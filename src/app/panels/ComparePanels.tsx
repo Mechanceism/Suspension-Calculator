@@ -1,5 +1,6 @@
 /**
- * The Compare tab (R9): the current design against a snapshot (another design: model, tests, results).
+ * The Results tab (R9; "Compare" until round 5): the current design's results — its vehicles, its tests, its setup
+ * character — on their own, or against a snapshot (another design: model, tests, results) when one is picked.
  * - Left: the snapshots (take, import, pick the one compared, remove), what to compare, and running it.
  * - Right: *Vehicles* — the Corner results of both (the active corner, at the current travel / steer), their
  *   curves overlaid, and the design values that differ; *Tests* — both models on both sets of tests (the
@@ -14,7 +15,8 @@ import { useModel, type Model } from '../useModel';
 import { useVehicle, type VehicleModel } from '../useVehicle';
 import { cornerResultRows, vehicleResultRows, type ResultRow } from '../resultRows';
 import { useSnapshots, takeSnapshot, importSnapshot, removeSnapshot, setActiveSnapshot, type Snapshot } from '../snapshots';
-import { useCompare, runCompare, runKey, designDifferences, type CompareTest } from '../compare';
+import { useCompare, runCompare, runKey, designDifferences, compareTests, type CompareTest } from '../compare';
+import { useRun, currentResult } from './TestsPanels';
 import { Section, fmt } from './FieldRows';
 import { CharacterPanel } from './CharacterPanel';
 import { Plots } from './Plots';
@@ -34,10 +36,15 @@ export function setCompareMode(mode: CompareMode) {
   else { const row = pickedRow(); if (row) pickRow(row); }
 }
 /** The row shown in the 3D views and played (Tests): its runs' frames, the current design's driven, the snapshot's as the ghost. */
-export const pickedRow = (): CompareTest | null => { const c = useCompare.getState(); return c.rows.find((r) => r.key === useCompareView.getState().picked) ?? c.rows[0] ?? null; };
+export const pickedRow = (): CompareTest | null => {
+  const c = useCompare.getState();
+  // (Without a snapshot or a run here, the current design's own tests.)
+  const rows = c.rows.length ? c.rows : compareTests(useApp.getState().tests, []);
+  return rows.find((r) => r.key === useCompareView.getState().picked) ?? rows[0] ?? null;
+};
 export function pickRow(row: CompareTest) {
   useCompareView.setState({ picked: row.key });
-  const run = useCompare.getState().runs[runKey(row, 'A')];
+  const run = useCompare.getState().runs[runKey(row, 'A')] ?? (row.a ? currentResult(row.a.id) ?? undefined : undefined);
   const frames = run?.ride?.frames ?? [];
   const test = (row.a ?? row.b)!;
   const s = useApp.getState();
@@ -65,15 +72,20 @@ export function CompareSidebar() {
   const active = list.find((x) => x.id === activeId) ?? null;
   return (
     <div className="compare-side">
-      <Section title="Snapshots">
-        <p className="hint">Another whole design — model, tests and their last results — to compare the current one with. Each is its own file; the list lasts while the page is open.</p>
+      <Section title="Compare with a snapshot">
+        <p className="hint">Optional: another whole design — model, tests and their last results — to set beside the current one. Each is its own file; the list lasts while the page is open.</p>
         <div className="jm-row">
           <button className="wide-btn" onClick={() => takeSnapshot()} title="Save the current design (model, tests and their up-to-date results) as a file and add it here">Take snapshot</button>
           <button className="wide-btn" onClick={() => input.current?.click()} title="Any project file as a snapshot (the current design stays as it is)">Import…</button>
         </div>
         <input ref={input} type="file" accept=".json,application/json" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) void importSnapshot(f); e.target.value = ''; }} />
-        {!list.length && <p className="muted small-text">No snapshots yet.</p>}
+        {!list.length && <p className="muted small-text">No snapshots yet: the results are the current design's alone.</p>}
         <ul className="snapshot-list">
+          {list.length > 0 && (
+            <li className={activeId === null ? 'on' : ''}>
+              <label><input type="radio" name="snapshot" checked={activeId === null} onChange={() => setActiveSnapshot(null)} /> <span><b>None</b><br /><span className="muted small-text">the current design alone</span></span></label>
+            </li>
+          )}
           {list.map((sn) => (
             <li key={sn.id} className={sn.id === activeId ? 'on' : ''}>
               <label title={sn.fileName}>
@@ -85,21 +97,23 @@ export function CompareSidebar() {
           ))}
         </ul>
       </Section>
-      <Section title="Compare">
+      <Section title="Show">
         <div className="jm-row" role="tablist">
           <button className={`chip${mode === 'vehicles' ? ' on' : ''}`} onClick={() => setCompareMode('vehicles')} title="The two cars: the Corner results, their curves, and the design values that differ">Vehicles</button>
           <button className={`chip${mode === 'tests' ? ' on' : ''}`} onClick={() => setCompareMode('tests')} title="Both cars on both sets of tests: the scores side by side, and the whole car's results">Tests</button>
           <button className={`chip${mode === 'character' ? ' on' : ''}`} onClick={() => setCompareMode('character')} title="The setup's character: each axle's characteristics against the ranges typical for each kind of driving (no snapshot needed)">Character</button>
         </div>
-        {mode === 'tests' && active && (
+        {mode === 'tests' && (
           <>
             {!cmp.running
-              ? <button className="wide-btn primary" onClick={() => void runCompare(active)} title="Run the current design and the snapshot on every ticked test of both (a track both have runs once per design)">▶ Run both on both sets of tests</button>
+              ? (active
+                ? <button className="wide-btn primary" onClick={() => void runCompare(active)} title="Run the current design and the snapshot on every ticked test of both (a track both have runs once per design)">▶ Run both on both sets of tests</button>
+                : <button className="wide-btn primary" onClick={() => void runCompare(null)} title="Run the current design on every ticked test">▶ Run all tests</button>)
               : <div className="jm-row"><span className="muted">Running {cmp.done} of {cmp.total}…</span><button className="wide-btn" onClick={() => cmp.cancel?.()}>Stop</button></div>}
             {cmp.error && <p className="hint warn-text">{cmp.error}</p>}
           </>
         )}
-        {!active && <p className="hint">{mode === 'character' ? 'The current design’s character; take or import a snapshot to see its alongside.' : 'Take or import a snapshot to compare with.'}</p>}
+        {!active && <p className="hint">The current design alone; take or import a snapshot (above) to see another design beside it.</p>}
       </Section>
     </div>
   );
@@ -177,7 +191,8 @@ export function CompareResults({ corner, vehicle }: { corner: Model; vehicle: Ve
   const mode = useCompareView((s) => s.mode);
   // F29: the setup's character needs no snapshot (the snapshot's shown alongside when there is one).
   if (mode === 'character') return <CharacterPanel snap={snap} />;
-  if (!snap || !value) return <section className="panel"><h2>Compare</h2><p className="muted">Take a snapshot (File → Take snapshot, or here on the left) or import one, then change the design: the two are compared here.</p></section>;
+  // No snapshot: the current design's results on their own.
+  if (!snap || !value) return <CompareBody a={a} b={null} snap={null} />;
   return <DesignOverride.Provider value={value}><ResultsInner a={a} snap={snap} /></DesignOverride.Provider>;
 }
 function ResultsInner({ a, snap }: { a: { corner: Model; vehicle: VehicleModel | null }; snap: Snapshot }) {
@@ -208,32 +223,36 @@ const differs = (p: Pair) => {
   return Math.abs(a - b) >= 0.5 * 10 ** -p.digits;
 };
 
-const CompareBody = memo(function CompareBody({ a, b, snap }: { a: { corner: Model; vehicle: VehicleModel | null }; b: { corner: Model; vehicle: VehicleModel | null }; snap: Snapshot }) {
+const CompareBody = memo(function CompareBody({ a, b, snap }: { a: { corner: Model; vehicle: VehicleModel | null }; b: { corner: Model; vehicle: VehicleModel | null } | null; snap: Snapshot | null }) {
   const mode = useCompareView((s) => s.mode);
   const damperA = useApp((s) => s.damper);
   const current = useApp((s) => s.corners), geom = useApp((s) => s.geom), links = useApp((s) => s.links);
   const activeCorner = useApp((s) => s.activeCorner);
-  const bDamper = withActiveCorner(snap.design, activeCorner).damper;
-  const cornerPairs = pairRows('corner', cornerResultRows(a.corner, { bump: damperA.bumpDamping.value, rebound: damperA.reboundDamping.value }), cornerResultRows(b.corner, { bump: bDamper.bumpDamping.value, rebound: bDamper.reboundDamping.value }));
-  const vehiclePairs = pairRows('vehicle', vehicleResultRows(a.vehicle), vehicleResultRows(b.vehicle));
+  const bDamper = snap ? withActiveCorner(snap.design, activeCorner).damper : null;
+  const cornerPairs = pairRows('corner', cornerResultRows(a.corner, { bump: damperA.bumpDamping.value, rebound: damperA.reboundDamping.value }), b && bDamper ? cornerResultRows(b.corner, { bump: bDamper.bumpDamping.value, rebound: bDamper.reboundDamping.value }) : []);
+  const vehiclePairs = pairRows('vehicle', vehicleResultRows(a.vehicle), b ? vehicleResultRows(b.vehicle) : []);
   // The design values that differ (recomputed when either design changes).
-  const diffs = useMemo(() => designDifferences(useApp.getState(), snap.design), [snap, current, geom, links]); // eslint-disable-line react-hooks/exhaustive-deps
+  const diffs = useMemo(() => (snap ? designDifferences(useApp.getState(), snap.design) : []), [snap, current, geom, links]); // eslint-disable-line react-hooks/exhaustive-deps
+  const single = !snap || !b;
   return (
     <section className="panel compare-panel">
-      <h2>Compare</h2>
-      <p className="small-text muted compare-who">Current design · snapshot “{snap.name}” ({snap.source === 'taken' ? 'taken' : 'imported'} {when(snap.takenAt)})</p>
+      <h2>Results</h2>
+      <p className="small-text muted compare-who">{snap ? <>Current design · snapshot “{snap.name}” ({snap.source === 'taken' ? 'taken' : 'imported'} {when(snap.takenAt)})</> : 'Current design (no snapshot to compare with)'}</p>
       {mode === 'vehicles' ? (
         <>
-          <PairTable title={`Corner results (${activeCorner})`} pairs={cornerPairs} />
-          <Section title={`Design values that differ (${diffs.length})`} open={diffs.length > 0 && diffs.length < 40}>
-            {diffs.length ? <DiffTable diffs={diffs} /> : <p className="muted small-text">The two models are the same.</p>}
-          </Section>
-          <Plots model={a.corner} other={b.corner} />
+          <PairTable title={`Corner results (${activeCorner})`} pairs={cornerPairs} single={single} />
+          {snap && (
+            <Section title={`Design values that differ (${diffs.length})`} open={diffs.length > 0 && diffs.length < 40}>
+              {diffs.length ? <DiffTable diffs={diffs} /> : <p className="muted small-text">The two models are the same.</p>}
+            </Section>
+          )}
+          <PairTable title="Vehicle results (the Vehicle view’s state)" pairs={vehiclePairs} single={single} />
+          <Plots model={a.corner} {...(b ? { other: b.corner } : {})} />
         </>
       ) : (
         <>
           <TestScores snap={snap} />
-          <PairTable title="Vehicle results (the Vehicle view’s state)" pairs={vehiclePairs} />
+          <PairTable title="Vehicle results (the Vehicle view’s state)" pairs={vehiclePairs} single={single} />
         </>
       )}
     </section>
@@ -241,12 +260,12 @@ const CompareBody = memo(function CompareBody({ a, b, snap }: { a: { corner: Mod
 });
 
 /** Rows of both designs: pinned first, then by group; optionally only the ones that differ. */
-function PairTable({ title, pairs }: { title: string; pairs: Pair[] }) {
+function PairTable({ title, pairs, single = false }: { title: string; pairs: Pair[]; single?: boolean }) {
   const pins = useCompareView((s) => s.pins);
   const onlyDiff = useCompareView((s) => s.onlyDiff);
   const d = useDisplay();
   const pinned = pairs.filter((p) => pins.includes(p.key));
-  const rest = pairs.filter((p) => !pins.includes(p.key) && (!onlyDiff || differs(p)));
+  const rest = pairs.filter((p) => !pins.includes(p.key) && (single || !onlyDiff || differs(p)));
   const groups = [...new Set(rest.map((p) => p.group))];
   const cell = (r: ResultRow | undefined, unit: string, digits: number) => (r?.text ?? (r?.value === undefined || !Number.isFinite(r.value) ? '—' : d.text(fmt(r.value, digits), unit).text));
   const delta = (p: Pair) => {
@@ -256,18 +275,20 @@ function PairTable({ title, pairs }: { title: string; pairs: Pair[] }) {
     return x - y > 0 ? `+${t}` : t;
   };
   const Row = ({ p }: { p: Pair }) => (
-    <tr className={differs(p) ? 'differs' : ''} title={p.hint}>
+    <tr className={!single && differs(p) ? 'differs' : ''} title={p.hint}>
       <td><button className={`pin${pins.includes(p.key) ? ' on' : ''}`} onClick={() => togglePin(p.key)} title={pins.includes(p.key) ? 'Unpin' : 'Pin: listed first'}>{pins.includes(p.key) ? '★' : '☆'}</button></td>
       <td>{p.label}</td>
       <td className="num">{cell(p.a, p.unit, p.digits)}</td>
-      <td className="num">{cell(p.b, p.unit, p.digits)}</td>
-      <td className="num delta">{delta(p)}</td>
+      {!single && <td className="num">{cell(p.b, p.unit, p.digits)}</td>}
+      {!single && <td className="num delta">{delta(p)}</td>}
       <td className="unit">{d.conv(p.unit).unit}</td>
     </tr>
   );
-  const head = <thead><tr><th /><th /><th>Current</th><th>Snapshot</th><th title="Current − snapshot: negative = the current one is lower">Δ</th><th /></tr></thead>;
+  const head = single
+    ? <thead><tr><th /><th /><th>Current</th><th /></tr></thead>
+    : <thead><tr><th /><th /><th>Current</th><th>Snapshot</th><th title="Current − snapshot: negative = the current one is lower">Δ</th><th /></tr></thead>;
   return (
-    <Section title={title} extra={<label className="small-text muted" title="Hide the rows that are the same in both"><input type="checkbox" checked={onlyDiff} onChange={() => useCompareView.setState({ onlyDiff: !onlyDiff })} /> only differences</label>}>
+    <Section title={title} extra={single ? undefined : <label className="small-text muted" title="Hide the rows that are the same in both"><input type="checkbox" checked={onlyDiff} onChange={() => useCompareView.setState({ onlyDiff: !onlyDiff })} /> only differences</label>}>
       {pinned.length > 0 && (
         <table className="compare-table pinned">
           <caption>Pinned</caption>
@@ -282,7 +303,7 @@ function PairTable({ title, pairs }: { title: string; pairs: Pair[] }) {
           <tbody>{rest.filter((p) => p.group === g).map((p) => <Row key={p.key} p={p} />)}</tbody>
         </table>
       ))}
-      {!pinned.length && !groups.length && <p className="muted small-text">{onlyDiff ? 'Nothing differs.' : 'No results.'}</p>}
+      {!pinned.length && !groups.length && <p className="muted small-text">{!single && onlyDiff ? 'Nothing differs.' : 'No results.'}</p>}
     </Section>
   );
 }
@@ -302,19 +323,26 @@ function DiffTable({ diffs }: { diffs: { path: string; a: string; b: string }[] 
   );
 }
 
-/** The test scores: both models on each row's test, and the snapshot's saved last run. */
-function TestScores({ snap }: { snap: Snapshot }) {
+/**
+ * The test scores: both models on each row's test, and the snapshot's saved last run. Without a snapshot: the
+ * current design's tests — its runs from here, or else its up-to-date results from the Tests tab.
+ */
+function TestScores({ snap }: { snap: Snapshot | null }) {
   const cmp = useCompare();
   const pins = useCompareView((s) => s.pins);
   const [open, setOpen] = useState<string | null>(null);
   const picked = useCompareView((s) => s.picked);
+  const tests = useApp((s) => s.tests);
+  useRun((s) => s.results); // (re-render when the Tests tab's results change)
   // The playhead: the segment being driven (of the picked test).
   const playSeg = usePlayback((s) => (s.frames.length ? frameAt(s.frames, s.t)?.segment : undefined));
-  const fresh = cmp.snapshotId === snap.id;
+  const fresh = cmp.snapshotId === (snap?.id ?? null) && cmp.rows.length > 0;
   // When the runs are in, show the first test (or the one picked) in the 3D views.
   const allIn = fresh && !cmp.running && cmp.rows.length > 0;
   useEffect(() => { if (allIn) { const row = pickedRow(); if (row) pickRow(row); } }, [allIn, cmp.runs]); // eslint-disable-line react-hooks/exhaustive-deps
-  const rows = fresh ? cmp.rows : [];
+  const rows = fresh ? cmp.rows : snap ? [] : compareTests(tests, []);
+  // Without a snapshot, a test not run here shows the Tests tab's result for it (if the design hasn't changed since).
+  const runA = (row: CompareTest): TestRun | undefined => cmp.runs[runKey(row, 'A')] ?? (!snap && row.a ? currentResult(row.a.id) ?? undefined : undefined);
   const order = [...rows].sort((x, y) => Number(pins.includes(`test|${y.name}`)) - Number(pins.includes(`test|${x.name}`)));
   // A run that went off course / spun didn't finish: no time (round 4, F25).
   const dnf = (r: TestRun | SavedResult) => r.segments.some((s) => s.findings.some((f) => f.check === 'offCourse' || (f.check === 'rollover' && f.text.startsWith('Rolled over'))));
@@ -326,34 +354,36 @@ function TestScores({ snap }: { snap: Snapshot }) {
   };
   return (
     <Section title="Test scores">
-      {!rows.length && <p className="muted small-text">{cmp.running ? 'Running…' : 'Run both on both sets of tests (left) to compare their scores.'}</p>}
+      {!rows.length && <p className="muted small-text">{cmp.running ? 'Running…' : snap ? 'Run both on both sets of tests (left) to compare their scores.' : 'No enabled tests (Tests tab).'}</p>}
       {rows.length > 0 && (
         <table className="compare-table">
-          <thead><tr><th /><th>Test</th><th>Current</th><th>Snapshot</th><th title="Current − snapshot: negative = the current one is lower">Δ time</th><th title="The snapshot's own results, saved with it (its last run)">Last run</th></tr></thead>
+          <thead>{snap
+            ? <tr><th /><th>Test</th><th>Current</th><th>Snapshot</th><th title="Current − snapshot: negative = the current one is lower">Δ time</th><th title="The snapshot's own results, saved with it (its last run)">Last run</th></tr>
+            : <tr><th /><th>Test</th><th>Result</th></tr>}</thead>
           <tbody>
             {order.map((row: CompareTest) => {
-              const ra = cmp.runs[runKey(row, 'A')], rb = cmp.runs[runKey(row, 'B')];
-              const saved = row.b ? snap.results[row.b.id] : undefined;
+              const ra = runA(row), rb = snap ? cmp.runs[runKey(row, 'B')] : undefined;
+              const saved = snap && row.b ? snap.results[row.b.id] : undefined;
               const k = `test|${row.name}`;
               return (
                 <Fragment key={row.key}>
                   <tr className={`${ra && rb && (ra.severity !== rb.severity || Math.abs((ra.time ?? 0) - (rb.time ?? 0)) > 0.005) ? 'differs' : ''}${picked === row.key ? ' picked' : ''}`}>
                     <td><button className={`pin${pins.includes(k) ? ' on' : ''}`} onClick={() => togglePin(k)} title="Pin: listed first">{pins.includes(k) ? '★' : '☆'}</button></td>
-                    <td><button className="link-btn" onClick={() => { setOpen(open === row.key ? null : row.key); pickRow(row); }} title={`${row.from === 'both' ? 'A track both designs have' : row.from === 'A' ? 'The current design’s test' : 'The snapshot’s test'} — click for its segments; it is shown and played in the 3D views (the snapshot as the ghost)`}>{row.name}</button> <span className="muted small-text">{row.from === 'both' ? 'both' : row.from === 'A' ? 'current' : 'snapshot'}</span></td>
+                    <td><button className="link-btn" onClick={() => { setOpen(open === row.key ? null : row.key); pickRow(row); }} title={`${row.from === 'both' ? 'A track both designs have' : row.from === 'A' ? 'The current design’s test' : 'The snapshot’s test'} — click for its segments; it is shown and played in the 3D views (the snapshot as the ghost)`}>{row.name}</button> {snap && <span className="muted small-text">{row.from === 'both' ? 'both' : row.from === 'A' ? 'current' : 'snapshot'}</span>}</td>
                     <td className="num">{score(ra)}</td>
-                    <td className="num">{score(rb)}</td>
-                    <td className="num delta">{dt(ra && !dnf(ra) ? ra.time : undefined, rb && !dnf(rb) ? rb.time : undefined)}</td>
-                    <td className="num">{score(saved)}</td>
+                    {snap && <td className="num">{score(rb)}</td>}
+                    {snap && <td className="num delta">{dt(ra && !dnf(ra) ? ra.time : undefined, rb && !dnf(rb) ? rb.time : undefined)}</td>}
+                    {snap && <td className="num">{score(saved)}</td>}
                   </tr>
-                  {(open === row.key || (open === null && picked === row.key)) && ra && rb && (
-                    <tr key={`${row.key}-segs`} className="segs"><td /><td colSpan={5}>
+                  {(open === row.key || (open === null && picked === row.key)) && ra && (rb || !snap) && (
+                    <tr key={`${row.key}-segs`} className="segs"><td /><td colSpan={snap ? 5 : 2}>
                       <table className="compare-table inner">
-                        <thead><tr><th>Segment</th><th>Current</th><th>Snapshot</th></tr></thead>
+                        <thead><tr><th>Segment</th><th>{snap ? 'Current' : 'Result'}</th>{snap && <th>Snapshot</th>}</tr></thead>
                         <tbody>
                           {(row.a ?? row.b)!.segments.map((sg, i) => {
-                            const x = ra.segments[i], y = rb.segments[i];
+                            const x = ra.segments[i], y = rb?.segments[i];
                             const cellOf = (s?: TestRun['segments'][number]) => (s ? <span className={`sev-text-${s.severity}`} title={s.findings.filter((f) => f.severity !== 'pass').map((f) => f.text).join('\n')}>{SEV_ICON[s.severity]}{typeof s.time === 'number' ? ` ${s.time.toFixed(2)} s` : ''} · {Math.round(s.maxUtilization * 100)} %</span> : '—');
-                            return <tr key={sg.id} className={`${x && y && x.severity !== y.severity ? 'differs' : ''}${picked === row.key && playSeg === i ? ' playing' : ''}`}><td className="small-text">{sg.name}</td><td className="num">{cellOf(x)}</td><td className="num">{cellOf(y)}</td></tr>;
+                            return <tr key={sg.id} className={`${x && y && x.severity !== y.severity ? 'differs' : ''}${picked === row.key && playSeg === i ? ' playing' : ''}`}><td className="small-text">{sg.name}</td><td className="num">{cellOf(x)}</td>{snap && <td className="num">{cellOf(y)}</td>}</tr>;
                           })}
                         </tbody>
                       </table>

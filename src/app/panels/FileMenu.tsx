@@ -99,7 +99,7 @@ export function FileMenu() {
           <button role="menuitem" onClick={run(() => aeroInput.current?.click())} title="Aerodynamic characteristics: constant coefficients or a ride-height map (JSON or CSV, e.g. from a CFD tool)">Aero data</button>
           <div className="menu-sep" />
           <div className="menu-head">Snapshots (to compare){snapshots ? <span className="muted"> · {snapshots} this session</span> : null}</div>
-          <button role="menuitem" onClick={run(() => { takeSnapshot(); })} title="Save the current design (model, tests and their up-to-date results — scores only) as a file, and add it to the snapshots to compare with (Compare tab)">Take snapshot</button>
+          <button role="menuitem" onClick={run(() => { takeSnapshot(); })} title="Save the current design (model, tests and their up-to-date results — scores only) as a file, and add it to the snapshots to compare with (Results tab)">Take snapshot</button>
           <button role="menuitem" onClick={run(() => snapshotInput.current?.click())} title="Any project file as a snapshot to compare with (the current design stays as it is)">Import snapshot…</button>
           <div className="menu-sep" />
           <div className="menu-head">Settings (units, view, pass-rule profiles)</div>

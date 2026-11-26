@@ -53,7 +53,7 @@ export function takeSnapshot(): Snapshot {
   const r = importProject(JSON.parse(JSON.stringify(file)));
   const sn = add({ name, fileName, takenAt: now.toISOString(), design: r.design, results: r.results, source: 'taken' });
   const n = Object.keys(r.results).length;
-  s.notify(`Snapshot “${name}” taken (${n ? `${n} test result${n === 1 ? '' : 's'} saved with it` : 'no up-to-date test results to save with it'}), saved as “${fileName}”. Compare it in the Compare tab.`);
+  s.notify(`Snapshot “${name}” taken (${n ? `${n} test result${n === 1 ? '' : 's'} saved with it` : 'no up-to-date test results to save with it'}), saved as “${fileName}”. Compare it in the Results tab.`);
   return sn;
 }
 
@@ -64,7 +64,7 @@ export async function importSnapshot(file: File): Promise<Snapshot | null> {
     const data = JSON.parse(await file.text()) as Record<string, unknown>;
     const r = importProject(data);
     const sn = add({ name: r.name, fileName: file.name, takenAt: typeof data.savedAt === 'string' ? data.savedAt : new Date().toISOString(), design: r.design, results: r.results, source: 'imported' });
-    s.notify(r.warnings.length ? `Imported “${r.name}” as a snapshot with notes:\n${r.warnings.join('\n')}` : `Imported “${r.name}” as a snapshot. Compare it in the Compare tab.`, r.warnings.length ? 'warn' : 'info');
+    s.notify(r.warnings.length ? `Imported “${r.name}” as a snapshot with notes:\n${r.warnings.join('\n')}` : `Imported “${r.name}” as a snapshot. Compare it in the Results tab.`, r.warnings.length ? 'warn' : 'info');
     return sn;
   } catch (e) {
     s.notify(`Could not import ${file.name} as a snapshot: ${e instanceof Error ? e.message : String(e)}`, 'error');

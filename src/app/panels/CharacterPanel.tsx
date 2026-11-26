@@ -125,7 +125,7 @@ export function CharacterPanel({ snap }: { snap: Snapshot | null }) {
         </table>
       </Section>
       <Section title="Reference ranges" open={false}>
-        <p className="hint">Typical values per kind of driving, from setup handbooks, FSAE reports, alignment tables and rally / drift / drag setup guides, rounded. Pick a kind and edit its ranges; kept in this browser for every design.</p>
+        <p className="hint">Typical values per kind of driving, rounded and wide — the kind of values setup guides give, not checked item by item against sources. Pick a kind and edit its ranges; kept in this browser for every design.</p>
         <div className="jm-row">
           {STYLES.map((st) => (
             <button key={st} className={`chip${st === edit ? ' on' : ''}`} onClick={() => setEdit(st)}><span className="char-dot" style={{ background: STYLE_COLOR[st] }} />{STYLE_LABEL[st]}</button>

@@ -41,8 +41,8 @@ export type Range = [number, number];
 export type References = Record<Style, Partial<Record<RowKey, Range>>>;
 
 /**
- * Typical ranges (rounded; sources: suspension / chassis setup handbooks — Milliken RCVD, Staniforth, Smith's
- * *Tune to Win*, FSAE design reports, manufacturer alignment tables and rally / drift / drag setup guides).
+ * Typical ranges, rounded and wide: the kind of values setup handbooks and guides give, written from general
+ * knowledge — not checked item by item against sources. Editable in the app.
  */
 export const DEFAULT_REFERENCES: References = {
   track: {

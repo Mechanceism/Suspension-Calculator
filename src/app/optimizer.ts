@@ -94,7 +94,7 @@ export interface BrakesModel {
   tireRadius: { front: number; rear: number };
 }
 
-export function brakesOf(s: Pick<AppState, 'brakes'> & Parameters<typeof mergedCorners>[0]): BrakesModel | null {
+export function brakesOf(s: Pick<AppState, 'brakes'> & Partial<Pick<AppState, 'settings'>> & Parameters<typeof mergedCorners>[0]): BrakesModel | null {
   const b = s.brakes;
   if (!b?.on) return null;
   const v = (k: BrakeKey | BrakeMoreKey) => b[k].value;
@@ -107,6 +107,9 @@ export function brakesOf(s: Pick<AppState, 'brakes'> & Parameters<typeof mergedC
     maxPedalForce: v('maxPedalForce'), pedalRatio: v('pedalRatio'), boost: v('boost'), dualMc: b.dualMc, balanceFront: v('balanceFront') / 100,
     front: axle('F', !!b.drumF), rear: axle('R', !!b.drumR),
   };
+  // One brake through the differential: one rotor for the axle (round 5).
+  if (s.settings?.FL?.brake === 'driveline') system.front.rotors = 1;
+  if (s.settings?.RL?.brake === 'driveline') system.rear.rotors = 1;
   const all = mergedCorners(s);
   const g = (id: CornerId) => all[rootOf(id, s.links)].geom.scalars;
   const r = (id: CornerId) => g(id).tireDiameter.value / 2;

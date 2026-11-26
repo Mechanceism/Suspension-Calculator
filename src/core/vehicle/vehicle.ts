@@ -35,7 +35,14 @@ export const isLeft = (id: CornerId) => id === 'FL' || id === 'RL';
 
 const G = 9.80665;
 
-export type BrakeMount = 'none' | 'outboard' | 'inboard';
+/**
+ * none / outboard (at the wheel) / inboard (on the chassis, one per side) — a brake on each wheel — or
+ * driveline: one brake for the axle, acting through its differential (a mower's transaxle brake, a kart's disc
+ * on its solid axle); reacted by the chassis like an inboard brake (round 5).
+ */
+export type BrakeMount = 'none' | 'outboard' | 'inboard' | 'driveline';
+/** The brake torque goes into the chassis (inboard or through the driveline): the braking force acts at the wheel center. */
+export const brakeOnChassis = (b: BrakeMount | undefined) => b === 'inboard' || b === 'driveline';
 /**
  * Drive for a powered corner. chassis: diff on the chassis, torque through a halfshaft, so the
  * drive force acts at the wheel center. hub: hub motor, torque reacted by the upright, so the force
@@ -59,7 +66,8 @@ export interface VehicleCorner {
   tire: { profile: TireProfile; model: TireForceModel; grip?: TireGrip };
   /**
    * Brake mounting. Outboard: the brake torque is reacted by the upright, so the braking force acts
-   * at the contact patch. Inboard: reacted by the chassis, so it acts at the wheel center.
+   * at the contact patch. Inboard: reacted by the chassis, so it acts at the wheel center. Driveline: one
+   * brake for the axle through its differential (both corners of the axle), reacted by the chassis.
    */
   brake?: BrakeMount;
   drive?: DriveMount;
@@ -408,7 +416,7 @@ export function cornerWork(
 ) {
   const pl = placement(c.id, input.wheelbase);
   const P = poseFns(pose);
-  const inboard = c.brake === 'inboard';
+  const inboard = brakeOnChassis(c.brake);
   const hub = c.drive === 'hub';
   const s: CornerSampleAt & Partial<Pick<AxleSampleAt, 'dwcX' | 'dcpmX' | 'dLX'>> = c.axle ? c.axle.table.at(c.axle.side, q, qOther) : c.table.at(q);
   const wc = P.point(pl.point(s.wc));
@@ -568,7 +576,29 @@ export interface VehicleSolveOptions {
   maxIterations?: number;
 }
 
-/** Braking-force shares: front axle gets the bias, split within each axle by tire load among braked corners. */
+/**
+ * Within an axle, the braking split (shares of the axle's force, summing to 1) as the wheels and brakes really
+ * share it (round 5): with ABS each wheel brakes up to its own grip (by load); without ABS a brake on each wheel
+ * gets the same line pressure — the same force — unless the wheels are tied together (a driven axle's locked or
+ * limited-slip differential: by load, the limited-slip within its bias); one brake through the differential is
+ * shared as the differential shares the drive (open: equal; locked: by load; limited-slip: within its bias).
+ * (It was by load in every case, as only ABS does.)
+ */
+export function brakeSplit(input: VehicleInput, l: CornerId, r: CornerId, loads: Record<CornerId, number>): [number, number] {
+  const cl = input.corners.find((c) => c.id === l), cr = input.corners.find((c) => c.id === r);
+  const braked = [cl, cr].map((c) => !!c && (c.brake ?? 'outboard') !== 'none');
+  if (!braked[0] || !braked[1]) return braked[0] ? [1, 0] : braked[1] ? [0, 1] : [0.5, 0.5];
+  const byLoad = (): [number, number] => { const a = Math.max(0, loads[l]), b = Math.max(0, loads[r]); return a + b > 0 ? [a / (a + b), b / (a + b)] : [0.5, 0.5]; };
+  if (cl!.abs !== false && cr!.abs !== false) return byLoad();
+  const front = isFront(l);
+  const driven = [cl, cr].some((c) => (c!.drive ?? 'none') === 'chassis');
+  const throughDiff = cl!.brake === 'driveline' || cr!.brake === 'driveline';
+  const diff: DiffType = (front ? input.diff?.front : input.diff?.rear) ?? 'open';
+  // The wheels are tied together only through a differential that isn't open (on a driven axle or a driveline brake).
+  return diffSplit(driven || throughDiff ? diff : 'open', loads[l], loads[r], input.lsdBias ?? 2.5);
+}
+
+/** Braking-force shares: front axle gets the bias, split within each axle by brakeSplit among braked corners. */
 function brakeShares(input: VehicleInput, loads: Record<CornerId, number>): Record<CornerId, number> {
   const out: Record<CornerId, number> = { FL: 0, FR: 0, RL: 0, RR: 0 };
   const braked = (id: CornerId) => (input.corners.find((c) => c.id === id)?.brake ?? 'outboard') !== 'none';
@@ -579,8 +609,8 @@ function brakeShares(input: VehicleInput, loads: Record<CornerId, number>): Reco
   if (axleLoad(front) <= 0) bias = 0;
   if (axleLoad(rear) <= 0) bias = axleLoad(front) > 0 ? 1 : bias;
   for (const [ids, share] of [[front, bias], [rear, 1 - bias]] as const) {
-    const total = axleLoad(ids);
-    for (const id of ids) out[id] = total > 0 && braked(id) ? (share * Math.max(0, loads[id])) / total : 0;
+    const [a, b] = brakeSplit(input, ids[0], ids[1], loads);
+    out[ids[0]] = share * a; out[ids[1]] = share * b;
   }
   return out;
 }

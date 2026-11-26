@@ -61,7 +61,7 @@ export function CornerSetup({ compact = false }: { compact?: boolean }) {
         {CORNER_IDS.map((id) => (
           <button key={id} role="tab" aria-selected={id === active} className={id === active ? 'on' : ''} onClick={() => setActiveCorner(id)} title={CORNER_NAMES[id]}>
             {id}
-            <span className="corner-flags">{settings[id].steered ? 'S' : ''}{settings[id].powered ? 'P' : ''}{settings[id].brake === 'inboard' ? 'i' : settings[id].brake === 'none' ? '–' : ''}</span>
+            <span className="corner-flags">{settings[id].steered ? 'S' : ''}{settings[id].powered ? 'P' : ''}{settings[id].brake === 'inboard' ? 'i' : settings[id].brake === 'driveline' ? 'd' : settings[id].brake === 'none' ? '–' : ''}</span>
           </button>
         ))}
       </div>
@@ -107,11 +107,18 @@ export function CornerSetup({ compact = false }: { compact?: boolean }) {
       <div className="row">
         <span className="muted">Brake</span>
         <select
-          value={settings[active].brake} onChange={(e) => setCornerSetting(active, 'brake', e.target.value as BrakeMount)}
-          title="Outboard: brake torque goes into the upright (force acts at the contact patch). Inboard: into the chassis (force acts at the wheel center)."
+          value={settings[active].brake} onChange={(e) => {
+            // One brake through the differential is the axle's: both of its corners take it (and leave it) together.
+            const v = e.target.value as BrakeMount;
+            const partner = ({ FL: 'FR', FR: 'FL', RL: 'RR', RR: 'RL' } as const)[active];
+            setCornerSetting(active, 'brake', v);
+            if (v === 'driveline' || settings[partner].brake === 'driveline') setCornerSetting(partner, 'brake', v);
+          }}
+          title="Outboard: brake torque goes into the upright (force acts at the contact patch). Inboard: into the chassis (force acts at the wheel center). Both are a brake on each wheel: without ABS both get the same force and the lighter wheel locks first. Through the differential: one brake for the axle (a mower's transaxle brake, a kart's disc on its axle), shared as the differential shares the drive — open: the easier wheel limits it (a wheel in the air spins backwards); locked: both wheels combined."
         >
           <option value="outboard">Outboard (at the wheel)</option>
           <option value="inboard">Inboard (on the chassis)</option>
+          <option value="driveline">One brake through the differential (the axle's)</option>
           <option value="none">None</option>
         </select>
         {settings[active].brake !== 'none' && (

@@ -61,7 +61,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 48;
+export const FORMAT_VERSION = 49;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -417,6 +417,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   46: (f) => ({ ...f, formatVersion: 47 }),
   // 47 → 48: a set static ride height (off in older files: the car rests at the design position).
   47: (f) => ({ ...f, formatVersion: 48 }),
+  // 48 → 49: a brake can be 'driveline' (one brake for the axle, through its differential); older files have none.
+  48: (f) => ({ ...f, formatVersion: 49 }),
   39: (f) => ({ ...f, formatVersion: 40, ...(isObj(f.vehicle) && isObj(f.vehicle.fields) ? { vehicle: { ...f.vehicle, fields: { ...f.vehicle.fields, rollingResistance: { text: '0', value: 0 } } } } : {}) }),
   // 34 → 35: aero side force, roll sensitivity and balance shift off.
   34: (f) => ({ ...f, formatVersion: 35, ...(isObj(f.aero) && isObj(f.aero.fields) ? { aero: { ...f.aero, fields: { ...f.aero.fields, CsA: { text: '0', value: 0 }, sideCp: { text: '900', value: 900 }, rollSensF: { text: '0', value: 0 }, rollSensR: { text: '0', value: 0 }, yawBalance: { text: '0', value: 0 } } } } : {}) }),
@@ -866,7 +868,7 @@ export function importProject(data: unknown): ImportResult {
     return [id, {
       steered: typeof r.steered === 'boolean' ? r.steered : DEFAULT_SETTINGS[id].steered,
       powered: typeof r.powered === 'boolean' ? r.powered : DEFAULT_SETTINGS[id].powered,
-      brake: r.brake === 'none' || r.brake === 'inboard' || r.brake === 'outboard' ? r.brake : DEFAULT_SETTINGS[id].brake,
+      brake: r.brake === 'none' || r.brake === 'inboard' || r.brake === 'outboard' || r.brake === 'driveline' ? r.brake : DEFAULT_SETTINGS[id].brake,
       drive: r.drive === 'hub' ? 'hub' : 'chassis',
       abs: typeof r.abs === 'boolean' ? r.abs : true,
       diff: r.diff === 'locked' || r.diff === 'lsd' ? r.diff : 'open',

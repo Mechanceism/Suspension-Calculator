@@ -27,7 +27,7 @@ import { TwistBeam } from '../suspension/twistBeam';
 import type { BrakeThermal } from '../vehicle/brakeThermal';
 import { lineThrough } from '../math/geom';
 import {
-  CORNER_IDS, isFront, isLeft, placement, poseFns, solveVehicle, staticCornerLoads, designGroundY,
+  CORNER_IDS, isFront, isLeft, placement, poseFns, solveVehicle, staticCornerLoads, designGroundY, brakeOnChassis,
   type AxleShared, type BrakeMount, type CornerId, type DriveMount, type VehicleCorner, type VehicleResult, type ChassisPose, type DiffType, type VehicleInput, type DamperSpec,
 } from '../vehicle/vehicle';
 import { runStepsSync, type LsqResult } from './leastSquares';
@@ -536,7 +536,7 @@ function antiOf(p: VehicleProblem, e: VehicleEval, kind: 'antiDive' | 'antiSquat
     if (!ids.length) return null;
     return mean(ids.map((id) => {
       const ch = e.chars[id];
-      const th = p.settings[id].brake === 'inboard' ? ch.antiAngleWheelCenter : ch.antiAngleContact;
+      const th = brakeOnChassis(p.settings[id].brake) ? ch.antiAngleWheelCenter : ch.antiAngleContact;
       return Math.tan(th) * (p.wheelbase / h) * p.brakeBias * 100;
     }));
   }

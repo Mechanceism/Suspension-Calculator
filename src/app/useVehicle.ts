@@ -19,6 +19,7 @@ import type { TireForceModel } from '../core/tire/model';
 import { CornerTable } from '../core/vehicle/cornerTable';
 import { AxleTable, AxleCornerTable } from '../core/vehicle/axleTable';
 import type { CornerTableLike } from '../core/vehicle/vehicle';
+import { brakeOnChassis } from '../core/vehicle/vehicle';
 import { staticTravelFor } from '../core/optimize/vehicle';
 import {
   CORNER_IDS, isLeft, isFront, placement, poseFns, solveVehicle, vehicleAt, designGroundY, axleRollCenter,
@@ -369,7 +370,7 @@ export function useVehicle(enabled: boolean): VehicleModel | null {
       const antiOf = (ids: CornerId[], share: number, sign: number) => {
         const vals = ids.filter((id) => s.settings[id].brake !== 'none').map((id) => {
           const ch = views[id]!.chars;
-          const th = s.settings[id].brake === 'inboard' ? ch.antiAngleWheelCenter : ch.antiAngleContact;
+          const th = brakeOnChassis(s.settings[id].brake) ? ch.antiAngleWheelCenter : ch.antiAngleContact;
           return sign * Math.tan(th) * (wheelbase / v.cgY.value) * share * 100;
         });
         return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;

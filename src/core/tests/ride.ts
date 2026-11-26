@@ -678,7 +678,27 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
             const each = ids.map((id) => caps![id].x * Math.sqrt(Math.max(0, 1 - ((lastFy?.[id] ?? 0) / Math.max(caps![id].y, 1e-6)) ** 2)));
             const sum = each.reduce((x, y) => x + y, 0), least = Math.min(...each);
             if (ids.length < 2) return sum;
-            if (which === 'brake') return ids.every((id) => byId[id].abs !== false) ? sum : 2 * least;
+            if (which === 'brake') {
+              // Braking as the wheels and brakes really share it (round 5; it was 2 × the lighter wheel for every
+              // axle without ABS, right only for one brake through an open differential).
+              if (ids.every((id) => byId[id].abs !== false)) return sum;
+              const through = ids.some((id) => byId[id].brake === 'driveline');
+              const driven = ids.some((id) => byId[id].drive === 'chassis');
+              const diff = ((front ? p.diff?.front : p.diff?.rear) ?? 'open');
+              const tied = driven || through ? diff : 'open';
+              // Tied together (a locked axle / differential): both wheels' braking combined; limited-slip: within its bias.
+              if (tied === 'locked') return sum;
+              if (tied === 'lsd') return Math.min(sum, (1 + 2.5) * least);
+              // One brake through an open differential: equal torque, the easier wheel limits it (a wheel in the
+              // air spins backwards and the other gets almost nothing).
+              if (through) return 2 * least;
+              // A brake on each wheel: the same force on both; the driver brakes until the first wheel carrying real
+              // load (over 20 % of its static load) is at its limit — a light or airborne wheel locks harmlessly.
+              const loaded = ids.map((id, k) => ({ id, k })).filter(({ id }) => loads[id] > 0.2 * Math.max(staticLoad[id], 1));
+              if (!loaded.length) return sum;
+              const F = Math.min(...loaded.map(({ k }) => each[k]!));
+              return each.reduce((a, c) => a + Math.min(F, c), 0);
+            }
             if (ids.every((id) => byId[id].drive === 'hub')) return sum;
             const diff = (front ? p.diff?.front : p.diff?.rear) ?? 'open';
             return diff === 'open' ? 2 * least : diff === 'lsd' ? Math.min(sum, (1 + 2.5) * least) : sum;

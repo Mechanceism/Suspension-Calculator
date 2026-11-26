@@ -469,15 +469,18 @@ export function lateralLimit(p: VehicleProblem, asm: AssembledVehicle, warm?: { 
 /** The last cornering limit found per guesses object (warm start). */
 const lastLimit = new WeakMap<object, { g: number; pose: ChassisPose }>();
 
-/** Build the corners and run every load case for the given geometries. null = can't be assembled/solved. */
-export function evaluateVehicle(p: VehicleProblem, geometries: Partial<Record<CornerId, DoubleWishboneGeometry>>, guesses?: Partial<Record<string, ChassisPose>>): VehicleEval | null {
+/**
+ * Build the corners and run every load case for the given geometries. null = can't be assembled/solved.
+ * `guesses`: warm starts per case (and the cornering limit's); updated with the solved poses unless `frozen`.
+ */
+export function evaluateVehicle(p: VehicleProblem, geometries: Partial<Record<CornerId, DoubleWishboneGeometry>>, guesses?: Partial<Record<string, ChassisPose>>, frozen = false): VehicleEval | null {
   const asm = assembleVehicle(p, geometries);
   if (!asm) return null;
   const cases: CaseEval[] = [];
   for (const c of caseList(p)) {
     const e = solveCase(p, asm, c, guesses?.[c.name]);
     if (!e) return null;
-    if (guesses) guesses[c.name] = e.result.pose;
+    if (guesses && !frozen) guesses[c.name] = e.result.pose;
     cases.push(e);
   }
   // The cornering limit, only when a goal asks for it (several solves).
@@ -486,7 +489,7 @@ export function evaluateVehicle(p: VehicleProblem, geometries: Partial<Record<Co
     // Warm start from the last limit found with these guesses (an optimizer step moves it only a little).
     const last = guesses ? lastLimit.get(guesses) : undefined;
     limit = lateralLimit(p, asm, last ?? { g: 1, pose: guesses?.lateral });
-    if (guesses && limit) lastLimit.set(guesses, { g: limit.g, pose: limit.pose });
+    if (guesses && limit && !frozen) lastLimit.set(guesses, { g: limit.g, pose: limit.pose });
   }
   return { geometries, cases, chars: asm.chars, ...(limit !== undefined ? { limit } : {}) };
 }
@@ -690,9 +693,13 @@ export function vehicleObjective(p: VehicleProblem) {
   const start = evaluateVehicle(p, geometriesFor(p, x0), guesses);
   const refs = new Map(goals.filter((g) => VEHICLE_GOAL_META[g.kind].maximize).map((g) => [g.kind, start ? vehicleGoalValue(g.kind, p, start) : null]));
 
+  // Every evaluation warm-starts from the start's solved poses, never from the last point evaluated (round 5):
+  // with a pool of workers each kept its own last poses, so a point's residuals depended on which worker got it
+  // (up to 6e-5, ≈ 0.3 % of a slope over the 0.02 mm Jacobian step) and identical runs ended differently
+  // (default car, Autocross (simple): 14.01 vs 13.96 s after one round).
   const residuals = (x: number[]): number[] | null => {
     const geoms = geometriesFor(p, x);
-    const e = evaluateVehicle(p, geoms, guesses);
+    const e = evaluateVehicle(p, geoms, guesses, true);
     if (!e) return null;
     const r: number[] = [];
     for (const goal of goals) {
@@ -768,7 +775,7 @@ export interface SensitivitySample { cost: number; values: number[] }
 /** One DOE point: the optimizer's total miss and each goal's value (NaN where it can't be evaluated). */
 export function sensitivitySample(p: VehicleProblem, obj: ReturnType<typeof vehicleObjective>, x: number[]): SensitivitySample {
   const r = obj.residuals(x);
-  const e = r ? evaluateVehicle(p, geometriesFor(p, x), obj.guesses) : null;
+  const e = r ? evaluateVehicle(p, geometriesFor(p, x), obj.guesses, true) : null;
   return {
     cost: r ? 0.5 * r.reduce((a, v) => a + v * v, 0) : NaN,
     values: obj.goals.map((g) => (e ? vehicleGoalValue(g.kind, p, e) ?? NaN : NaN)),

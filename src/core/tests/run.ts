@@ -8,7 +8,7 @@ import { assembleVehicle, solveCase, type VehicleProblem, type AssembledVehicle 
 import type { DoubleWishboneGeometry } from '../suspension/doubleWishbone';
 import { CORNER_IDS, type CornerId, type ChassisPose, type CornerStatus, type GripSummary, type VehicleResult } from '../vehicle/vehicle';
 import { segmentStates, segmentLatG, roadEffective, topSpeed, G, type RoadState, type SegmentSpec, type CarDims } from './segments';
-import { planDuration, planSpeeds, SHAPE_LABEL, type PlanCar, type PlanShape, type SegmentPlan } from './plan';
+import { planDuration, planSpeeds, SHAPE_LABEL, LAUNCH_SPEED, type PlanCar, type PlanShape, type SegmentPlan } from './plan';
 import { wheelHeights } from './road';
 import { steerForTurn, type SteerNeed } from './steer';
 import { rideOn, joinRide, type RideMeasures, type RideEnd } from './ride';
@@ -671,7 +671,7 @@ export function runTest(
       let text = '';
       if (t.target < gripTarget - 1e-9) {
         const still = !sr.passed ? `; even at ${pct(t.target)} it still fails there` : '';
-        text = `Had to lower the driver's push to ${pct(t.target)} of the grip (from ${pct(gripTarget)}): at ${pct(gripTarget)} every way of taking it (${(['plan', 'brakeIn', 'coastIn', 'hold', 'accelIn'] as PlanShape[]).map((x) => SHAPE_LABEL[x]).join(', ')}) failed over time${still}${tried}`;
+        text = `Had to lower the driver's push to ${pct(t.target)} of the grip (from ${pct(gripTarget)}): at ${pct(gripTarget)} ${sg.v0 < LAUNCH_SPEED ? 'it failed over time (from a standstill only its own plan applies)' : `every way of taking it (${(['plan', 'brakeIn', 'coastIn', 'hold', 'accelIn'] as PlanShape[]).map((x) => SHAPE_LABEL[x]).join(', ')}) failed over time`}${still}${tried}`;
       } else if (tried && !sr.passed) text = `Slowing down doesn't cure it: it fails with the driver pushing to ${pct(t.target)} of the grip${tried}`;
       if (text && sev !== 'pass') {
         sr.findings = dedupe([...sr.findings, { check: 'gripTarget', severity: sev, text }]);

@@ -170,13 +170,21 @@ export function combinedLimit(car: PlanCar, target: number, ay: number, kind: 'b
   return lo;
 }
 
+/** A segment starting slower than this (m/s) starts from rest: only its own plan applies (see planSpeeds). */
+export const LAUNCH_SPEED = 1;
+
 const kappaOf = (sg: SegmentSpec) => (sg.path === 'straight' || (sg.latG !== null && sg.latG !== undefined && Number.isFinite(sg.latG)) ? 0 : (sg.path === 'left' ? 1 : -1) / Math.max(sg.radius, 0.1));
 
 /**
  * Plan the speeds of a chain of segments. `target` and `shape` per segment (a grip target and a way of taking
  * it); the result has each segment's planned speeds and the whole test's time.
  */
-export function planSpeeds(segments: SegmentSpec[], car: PlanCar, target: number[], shape: PlanShape[] = [], opts: PlanOptions = {}): { plans: SegmentPlan[]; time: number } {
+export function planSpeeds(segments: SegmentSpec[], car: PlanCar, target: number[], shapeIn: PlanShape[] = [], opts: PlanOptions = {}): { plans: SegmentPlan[]; time: number } {
+  // A segment that starts from rest (a launch) is only taken its own way: braking or coasting in, holding its
+  // lowest speed or easing up from it all mean staying at 0 there (round 5: the trophy truck's launch failed at
+  // the full push, the ladder tried "hold the speed" — 0 km/h — and the driver crawled 100 s at its 0.5 m/s
+  // minimum, which passed every check). The ladder skips a way that plans the same speeds, so it goes on to push less.
+  const shape = segments.map((sg, i) => (sg.v0 < LAUNCH_SPEED ? 'plan' : shapeIn[i] ?? 'plan')) as PlanShape[];
   // Grip only: with a powertrain nothing caps the straights (it, the drag and the rolling resistance limit
   // them); without one, the top speed stands in for it.
   const free = opts.gripOnly ? { topSpeed: car.drive ? Infinity : opts.gripOnly.topSpeed } : undefined;

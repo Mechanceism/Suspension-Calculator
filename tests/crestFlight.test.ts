@@ -129,3 +129,28 @@ describe('tire sidewall ratings (format 51)', () => {
     expect(m.ratedLoad).toBeCloseTo(450 * 9.80665, 6);
   });
 });
+
+describe('the driver at a crest, by the pass rules (round 5)', () => {
+  it('keeping 3 wheels down: the plan caps a crest at √(0.7·g / |κ|); free (fewer wheels / Pass) it doesn\'t', async () => {
+    const { planSpeeds, crestSpeed } = await import('../src/core/tests/plan');
+    const car = { muFront: 1.2, muRear: 1.2, frontShare: 0.5, cgHeight: 400, wheelbase: 2500, track: 1500, brakeBias: 0.6, driveSplit: 0, brakesFront: true, brakesRear: true, drivenFront: false, drivenRear: true, mass: 1000 };
+    // A 20 m crest from +8 % to −8 % (κ ≈ −0.008 /m): ≈ 82 km/h keeps 30 % of the load.
+    const segs = [seg({ v0: 30, v1: 30, distance: 60, grade: Math.atan(0.08) }), seg({ v0: 30, v1: 30, distance: 20, grade: Math.atan(0.08), gradeEnd: Math.atan(-0.08) }), seg({ v0: 30, v1: 30, distance: 60, grade: Math.atan(-0.08) })];
+    const free = planSpeeds(segs, car, [0.95, 0.95, 0.95]);
+    const down = planSpeeds(segs, car, [0.95, 0.95, 0.95], [], { wheelsDown: [true, true, true] });
+    const k = (Math.atan(-0.08) - Math.atan(0.08)) / 20;
+    expect(Math.max(...free.plans[1]!.v)).toBeCloseTo(30, 6);
+    expect(Math.max(...down.plans[1]!.v)).toBeLessThanOrEqual(crestSpeed(k) + 1e-6);
+    expect(crestSpeed(k)).toBeCloseTo(Math.sqrt((0.7 * 9.80665) / -k), 9);
+    // An abrupt crest (no transition): the drop spread over the wheelbase.
+    const abrupt = planSpeeds([segs[0]!, segs[2]!], car, [0.95, 0.95], [], { wheelsDown: [true, true] });
+    const atCrest = abrupt.plans[1]!.v[0]!;
+    expect(atCrest).toBeCloseTo(crestSpeed((Math.atan(-0.08) - Math.atan(0.08)) / 2.5, Math.atan(-0.08)), 3);
+  });
+  it('wheels on the ground over time: a jump fails the Default rule (at least 3), not Off-road (Pass)', async () => {
+    const { PROFILES } = await import('../src/core/tests/checks');
+    const fly = (checks: unknown) => rideRun(base(), { FL: geom }, [seg({ v0: 20, v1: 20, grade: 0.1 }), seg({ distance: 40, v0: 20, v1: 20, grade: -0.1 })].map((s) => ({ ...s, checks: checks as never })), { hz: 200 }).findings.flat();
+    expect(fly(PROFILES.default.checks).some((f) => f.check === 'airborne' && f.severity === 'fail')).toBe(true);
+    expect(fly(PROFILES.offroad.checks).some((f) => f.check === 'airborne')).toBe(false);
+  }, 60000);
+});

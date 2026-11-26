@@ -327,7 +327,7 @@ export function powertrainForce(p: VehicleProblem, asm: AssembledVehicle): ((v: 
  */
 export const PLAN_SHAPES: PlanShape[] = ['brakeIn', 'coastIn', 'hold', 'accelIn'];
 /** Failures over time that taking a segment another way or slower can cure. */
-const PLAN_HELPS = new Set(['understeer', 'oversteer', 'pathError', 'spin', 'offCourse', 'wheelLift', 'rollover', 'trailerSway', 'nearLimit', 'lockup', 'wheelspin', 'steerLimit', 'speedNotReached']);
+const PLAN_HELPS = new Set(['understeer', 'oversteer', 'pathError', 'spin', 'offCourse', 'airborne', 'wheelLift', 'rollover', 'trailerSway', 'nearLimit', 'lockup', 'wheelspin', 'steerLimit', 'speedNotReached']);
 
 /** Failures over time that driving slower can cure (Driver lifts). */
 const LIFT_HELPS = new Set(['understeer', 'oversteer', 'pathError', 'spin', 'offCourse', 'wheelLift', 'rollover', 'trailerSway', 'nearLimit']);
@@ -428,6 +428,8 @@ export function runTest(
     const car = planCar = planCarOf(p, asm, gripTarget, segments.filter((sg) => sg.path !== 'straight' && !(sg.latG !== null && sg.latG !== undefined && Number.isFinite(sg.latG))).map((sg) => sg.radius));
     if (car) {
       const base = segments;
+      // The pass rules that want 3 or more wheels on the ground: the plan keeps them down over crests (round 5).
+      const wheelsDown = base.map((sg) => { const a = (sg.checks ?? PROFILES.default.checks).airborne ?? PROFILES.default.checks.airborne; return !!a && a.severity !== 'pass' && (a.threshold ?? 3) >= 3; });
       tries = base.map((_, i) => {
         const s0 = opts.plan?.start?.[i];
         if (!s0 || !(s0.target > 0)) return { shape: -1, target: gripTarget };
@@ -436,7 +438,7 @@ export function runTest(
       });
       const build = () => {
         const pl = planSpeeds(base, car, base.map((_, i) => tryOf(i).target), base.map((_, i) => tryOf(i).shape),
-          opts.plan?.gripOnly ? { gripOnly: { ...opts.plan.gripOnly, capped: tries.map((t) => !!t?.capped) } } : {});
+          { ...(opts.plan?.gripOnly ? { gripOnly: { ...opts.plan.gripOnly, capped: tries.map((t) => !!t?.capped) } } : {}), wheelsDown });
         return base.map((sg, i) => ({ ...sg, plan: pl.plans[i]! }));
       };
       const fails = (fs: Finding[]) => fs.some((f) => f.severity === 'fail' && PLAN_HELPS.has(f.check));

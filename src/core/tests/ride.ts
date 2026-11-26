@@ -204,6 +204,47 @@ const DEFAULT_RIDE = { rollInertia: 35, pitchInertia: 100, tireDamping: 100 };
 /** Tire tables already built, by tire (profile + force model): reused across runs (optimizers run many). */
 const TABLES = new Map<string, (h0: number, tilt: number) => number>();
 
+/**
+ * The landing checks' view of a tire (round 5): its air pressure at a load (gas model, from the squashed air
+ * volume; null for a tire without one), the pressure it's judged against (the sidewall maximum when given, else the
+ * cold set pressure) and its rated load (the sidewall's when given, else its load at 15 % of its section height
+ * squashed at the set pressure).
+ */
+interface TireRating { pressureAt: ((load: number) => number) | null; refPressure: number; ratedLoad: number }
+const RATINGS = new Map<string, TireRating>();
+function tireRating(c: VehicleCorner): TireRating {
+  const key = JSON.stringify([c.tire.profile, c.tire.model]);
+  const hit = RATINGS.get(key);
+  if (hit) return hit;
+  const prof = c.tire.profile, model = c.tire.model;
+  const R = prof.radius;
+  const loads: number[] = [], pressures: number[] = [];
+  for (let h = R + 2; h >= R - 90; h -= 0.5) {
+    const patch = localPatch(prof, h, 0);
+    const f = patch.inContact ? tireForce(model, prof, patch) : { force: 0 };
+    loads.push(f.force);
+    pressures.push(f.pressureGauge ?? NaN);
+  }
+  const at = (h: number) => { const patch = localPatch(prof, h, 0); return patch.inContact ? tireForce(model, prof, patch).force : 0; };
+  const ratedLoad = model.ratedLoad && model.ratedLoad > 0 ? model.ratedLoad : at(R - 0.15 * Math.max(1, R - prof.rimRadius));
+  const gas = model.kind === 'gas';
+  const r: TireRating = {
+    pressureAt: gas ? (load: number) => {
+      // Loads rise as the tire squashes: interpolate the pressure at this load (beyond the table, its last).
+      let k = 0;
+      while (k < loads.length - 1 && loads[k + 1]! < load) k++;
+      const a = loads[k]!, b = loads[Math.min(k + 1, loads.length - 1)]!;
+      const u = b > a ? Math.min(1, Math.max(0, (load - a) / (b - a))) : 1;
+      return pressures[k]! + (pressures[Math.min(k + 1, pressures.length - 1)]! - pressures[k]!) * u;
+    } : null,
+    refPressure: gas ? (model.maxPressure && model.maxPressure > 0 ? model.maxPressure : model.conditions.setPressure) : NaN,
+    ratedLoad,
+  };
+  if (RATINGS.size > 32) RATINGS.delete(RATINGS.keys().next().value!);
+  RATINGS.set(key, r);
+  return r;
+}
+
 /** Vertical tire force vs wheel-center height above the ground and tilt, tabulated once per tire. */
 function tireTable(c: VehicleCorner): (h0: number, tilt: number) => number {
   const key = JSON.stringify([c.tire.profile, c.tire.model]);
@@ -662,6 +703,9 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     const maxSteps = drv ? nSteps * 4 + Math.ceil(5 / h) : nSteps;
     const aProf = sg.distance > 0 ? (sg.v1 * sg.v1 - sg.v0 * sg.v0) / (2 * sg.distance) : 0;
     let sDrv = sCarry, segEnd = false, tEnd = T, lifted = 0, slowed = 0, held = 0, kickSeg = 0, kickT = 0, vMin = Infinity;
+    // The landing checks' peaks in this segment (round 5): tire pressure (share of its reference), tire load (× its
+    // rating), the body's vertical acceleration (g) — each with where and when.
+    const peak = { press: { r: 0, id: '' as CornerId | '', t: 0, kPa: 0 }, load: { r: 0, id: '' as CornerId | '', t: 0, N: 0 }, g: { v: 0, t: 0 } };
     for (let n = 1; n <= maxSteps && !(drv && segEnd); n++) {
       const tt = n * h;
       let kin: ReturnType<typeof kinFrom>;
@@ -871,6 +915,20 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       }
       accSum += (now.acc[0] ?? 0) ** 2;
       metricCount++;
+      // Landings and big hits (round 5).
+      {
+        const gv = Math.abs(now.acc[0] ?? 0) / G;
+        if (gv > peak.g.v) peak.g = { v: gv, t };
+        for (const id of CORNER_IDS) {
+          const rt = tireRating(byId[id]);
+          const load = now.res[id].tireLoad;
+          if (rt.ratedLoad > 0 && load / rt.ratedLoad > peak.load.r) peak.load = { r: load / rt.ratedLoad, id, t, N: load };
+          if (rt.pressureAt && rt.refPressure > 0) {
+            const kPa = rt.pressureAt(load);
+            if (kPa / rt.refPressure > peak.press.r) peak.press = { r: kPa / rt.refPressure, id, t, kPa };
+          }
+        }
+      }
       nextCheck = t + checkDt;
       if (isFrame) nextFrame = t + frameDt;
       // Check this moment (and record a frame).
@@ -953,6 +1011,27 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
         const brief = sp2.worst < LOST_SPEED_FAIL;
         findings[i]!.push({ ...x, severity: brief && x.severity === 'fail' ? 'warn' : x.severity, t: ft, text: `${x.text}${at}: ${brief ? `brief, ${cost} (like a tire squeal: noted)` : cost}` });
       } else findings[i]!.push({ ...x, t: ft, text: `${x.text}${at}` });
+    }
+    // Landings and big hits (round 5): a Warning above the second threshold, the rule's severity above the first.
+    {
+      const judge = (id: 'blowout' | 'impact' | 'tireOverload', value: number, text: (lvl: string) => string, t: number, limits?: { fail: number; warn: number }) => {
+        const cs = checks[id] ?? PROFILES.default.checks[id];
+        if (!cs || cs.severity === 'pass') return;
+        const fail = limits?.fail ?? cs.threshold ?? Infinity, warn = limits?.warn ?? cs.threshold2 ?? Infinity;
+        if (value > fail) findings[i]!.push({ check: id, severity: cs.severity, text: text('over the limit'), t });
+        else if (value > warn) findings[i]!.push({ check: id, severity: 'warn', text: text('high'), t });
+      };
+      const pr = peak.press;
+      if (pr.id) {
+        const rt = tireRating(byId[pr.id]);
+        const given = byId[pr.id].tire.model.kind === 'gas' && !!(byId[pr.id].tire.model as { maxPressure?: number }).maxPressure;
+        // With the sidewall maximum given: past it, it blows out (a Warning within 10 % of it); else the shares over the cold pressure.
+        const pct = (pr.r - 1) * 100;
+        judge('blowout', pct, (lvl) => `Tire pressure ${lvl}: ${pr.id} reaches ${pr.kPa.toFixed(0)} kPa, ${pct >= 0 ? `${pct.toFixed(0)} % over` : `${(-pct).toFixed(0)} % under`} its ${given ? 'sidewall maximum' : 'cold pressure'} (${rt.refPressure.toFixed(0)} kPa) at ${pr.t.toFixed(1)} s${lvl === 'over the limit' ? ': it blows out' : ''}`, pr.t, given ? { fail: 0, warn: -10 } : undefined);
+      }
+      judge('impact', peak.g.v, (lvl) => `Impact ${lvl}: the body's vertical acceleration reaches ${peak.g.v.toFixed(1)} g at ${peak.g.t.toFixed(1)} s`, peak.g.t);
+      const ld = peak.load;
+      if (ld.id) { const lid = ld.id; judge('tireOverload', ld.r, (lvl) => `Tire load ${lvl}: ${lid} carries ${(ld.N / 1000).toFixed(1)} kN, ${ld.r.toFixed(1)} × its ${(byId[lid].tire.model.ratedLoad ?? 0) > 0 ? 'rated' : 'estimated rated'} load at ${ld.t.toFixed(1)} s`, ld.t); }
     }
     // Kickback: a jolt at the steering wheel above the limit.
     maxKick = Math.max(maxKick, kickSeg);

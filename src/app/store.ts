@@ -93,7 +93,7 @@ export function mountedTireWidth(s: Record<ScalarKey, Field>): number {
 }
 
 /** Tire load / force-model inputs (docs/MATH.md § L4). */
-export const TIRE_KEYS = ['rate', 'pressure', 'setAltitude', 'setTemperature', 'opAltitude', 'opTemperature', 'volumeFactor'] as const;
+export const TIRE_KEYS = ['rate', 'pressure', 'setAltitude', 'setTemperature', 'opAltitude', 'opTemperature', 'volumeFactor', 'maxPressure', 'loadRating'] as const;
 export type TireKey = (typeof TIRE_KEYS)[number];
 export const TIRE_META: Record<TireKey, { label: string; quantity: Quantity; unit: string; initial: number; models: TireModelKind[] }> = {
   rate: { label: 'Vertical stiffness', quantity: 'rate', unit: 'N/mm', initial: 120, models: ['stiffness'] },
@@ -103,6 +103,9 @@ export const TIRE_META: Record<TireKey, { label: string; quantity: Quantity; uni
   opAltitude: { label: 'Driving altitude', quantity: 'altitude', unit: 'm', initial: 0, models: ['gas'] },
   opTemperature: { label: 'Driving temperature', quantity: 'temperature', unit: '°C', initial: 20, models: ['gas'] },
   volumeFactor: { label: 'Volume-loss factor', quantity: 'ratio', unit: '×', initial: 1, models: ['gas'] },
+  // Round 5, the landing checks (0 = not given: a share over the cold pressure / an estimate from the tire).
+  maxPressure: { label: 'Max pressure (sidewall; 0 = not given)', quantity: 'pressure', unit: 'kPa', initial: 0, models: ['gas'] },
+  loadRating: { label: 'Load rating (sidewall; 0 = estimate)', quantity: 'mass', unit: 'kg', initial: 0, models: ['gas', 'stiffness'] },
 };
 export type TireModelKind = 'rigid' | 'stiffness' | 'gas';
 
@@ -514,10 +517,12 @@ export function toProfile(e: EditableGeometry): TireProfile {
 }
 
 export function toForceModel(kind: TireModelKind, f: Record<TireKey, Field>, volumeChange: boolean): TireForceModel | null {
-  if (kind === 'stiffness') return { kind: 'stiffness', rate: f.rate.value };
+  const rated = f.loadRating && f.loadRating.value > 0 ? { ratedLoad: f.loadRating.value * 9.80665 } : {};
+  if (kind === 'stiffness') return { kind: 'stiffness', rate: f.rate.value, ...rated };
   if (kind === 'gas') {
     return {
-      kind: 'gas', volumeChange, volumeFactor: f.volumeFactor.value,
+      kind: 'gas', volumeChange, volumeFactor: f.volumeFactor.value, ...rated,
+      ...(f.maxPressure && f.maxPressure.value > 0 ? { maxPressure: f.maxPressure.value } : {}),
       conditions: {
         setPressure: f.pressure.value, setAltitude: f.setAltitude.value, setTemperature: f.setTemperature.value,
         operatingAltitude: f.opAltitude.value, operatingTemperature: f.opTemperature.value,

@@ -21,9 +21,12 @@ export interface TireConditions {
 }
 
 export type TireForceModel =
-  | { readonly kind: 'stiffness'; /** N/mm */ readonly rate: number }
+  | { readonly kind: 'stiffness'; /** N/mm */ readonly rate: number; /** Rated load (sidewall), N (round 5; absent: estimated). */ readonly ratedLoad?: number }
   | {
       readonly kind: 'gas';
+      /** Round 5, the landing checks: the sidewall's maximum pressure (kPa gauge) and rated load (N); absent: not given. */
+      readonly maxPressure?: number;
+      readonly ratedLoad?: number;
       readonly conditions: TireConditions;
       /** Apply the air-volume change from the displaced volume (toggle). */
       readonly volumeChange: boolean;

@@ -61,7 +61,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 50;
+export const FORMAT_VERSION = 51;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -421,6 +421,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   48: (f) => ({ ...f, formatVersion: 49 }),
   // 49 → 50: transition segments (a segment's grade rounding from the one before's to the one after's); older files have none.
   49: (f) => ({ ...f, formatVersion: 50 }),
+  // 50 → 51: a tire's max pressure and load rating (sidewall; 0 = not given): older files have neither.
+  50: (f) => ({ ...f, formatVersion: 51 }),
   39: (f) => ({ ...f, formatVersion: 40, ...(isObj(f.vehicle) && isObj(f.vehicle.fields) ? { vehicle: { ...f.vehicle, fields: { ...f.vehicle.fields, rollingResistance: { text: '0', value: 0 } } } } : {}) }),
   // 34 → 35: aero side force, roll sensitivity and balance shift off.
   34: (f) => ({ ...f, formatVersion: 35, ...(isObj(f.aero) && isObj(f.aero.fields) ? { aero: { ...f.aero, fields: { ...f.aero.fields, CsA: { text: '0', value: 0 }, sideCp: { text: '900', value: 900 }, rollSensF: { text: '0', value: 0 }, rollSensR: { text: '0', value: 0 }, yawBalance: { text: '0', value: 0 } } } } : {}) }),

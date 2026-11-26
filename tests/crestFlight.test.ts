@@ -88,3 +88,44 @@ describe('the car leaves the road over a crest', () => {
     expect(offTime(round)).toBe(0);
   }, 120000);
 });
+
+describe('landing checks (round 5)', () => {
+  const jump = (over: Partial<ReturnType<typeof base>> = {}, checks?: Record<string, unknown>) => {
+    const segs = [seg({ v0: 20, v1: 20, grade: 0.1 }), seg({ distance: 40, v0: 20, v1: 20, grade: -0.1 })].map((s) => (checks ? { ...s, checks: checks as never } : s));
+    return rideRun({ ...base(), ...over }, { FL: geom }, segs, { hz: 200 }).findings.flat();
+  };
+  it('the body\'s landing g: a Warning by default (≈ 3 g), the rule\'s severity past its limit', async () => {
+    const { PROFILES } = await import('../src/core/tests/checks');
+    expect(jump().some((f) => f.check === 'impact' && f.severity === 'warn')).toBe(true);
+    const strict = { ...PROFILES.default.checks, impact: { severity: 'fail', threshold: 2, threshold2: 1 } };
+    expect(jump({}, strict).some((f) => f.check === 'impact' && f.severity === 'fail')).toBe(true);
+  }, 60000);
+  it('a tire\'s pressure over its sidewall maximum, its load over its rating', () => {
+    const d = base().designs.FL!;
+    const rated = { ...d, model: { ...d.model, maxPressure: 60, ratedLoad: 1000 } as typeof d.model };
+    const fs = jump({ designs: { FL: rated } });
+    expect(fs.some((f) => f.check === 'blowout' && f.severity === 'fail' && /sidewall maximum/.test(f.text))).toBe(true);
+    expect(fs.some((f) => f.check === 'tireOverload' && f.severity === 'fail' && /rated load/.test(f.text))).toBe(true);
+    // Not given: the cold pressure and an estimated rating — this jump stays within them.
+    expect(jump().filter((f) => f.check === 'blowout' || f.check === 'tireOverload')).toEqual([]);
+  }, 60000);
+});
+
+describe('tire sidewall ratings (format 51)', () => {
+  it('max pressure and load rating: saved, opened, into the tire model (0 = not given)', async () => {
+    const { toForceModel } = await import('../src/app/store');
+    const d = defaultDesign();
+    expect(FORMAT_VERSION).toBeGreaterThanOrEqual(51);
+    expect(d.tire.maxPressure.value).toBe(0);
+    expect(d.tire.loadRating.value).toBe(0);
+    const m0 = toForceModel('gas', d.tire, true) as { maxPressure?: number; ratedLoad?: number };
+    expect(m0.maxPressure).toBeUndefined();
+    expect(m0.ratedLoad).toBeUndefined();
+    const rated = { ...d, tire: { ...d.tire, maxPressure: { text: '240', value: 240 }, loadRating: { text: '450', value: 450 } } };
+    const back = importProject(JSON.parse(JSON.stringify(serializeProject(rated as never, 'T')))).design;
+    expect(back.tire.maxPressure.value).toBe(240);
+    const m = toForceModel('gas', back.tire, true) as { maxPressure?: number; ratedLoad?: number };
+    expect(m.maxPressure).toBe(240);
+    expect(m.ratedLoad).toBeCloseTo(450 * 9.80665, 6);
+  });
+});

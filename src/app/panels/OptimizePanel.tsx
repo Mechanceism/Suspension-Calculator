@@ -21,14 +21,16 @@ import { layoutOf, toGeometry,
   useApp, rootOf, defaultOptimizerSetup, defaultVehicleOptimizerSetup, mergedCorners,
   POINT_KEYS, POINT_NAMES, activeParam, activePointKeys, OPT_DEFAULT_RANGE, GRIP_KEYS, GRIP_META,
   type Field, type OptimizerSetup, type PointKey, type GoalSetting, type CornerDesign,
+  type VehScalar,
 } from '../store';
+import { adjustmentRanges } from '../testOptimize';
 import { CORNER_IDS, type CornerId } from '../../core/vehicle/vehicle';
 import { POINT_LABELS, pointLabel } from '../components';
 import type { SuspensionKind, DoubleWishboneGeometry } from '../../core/suspension/doubleWishbone';
 import { lockKeys, pointAxisLocked } from '../locks';
 import { armMetrics } from '../../core/suspension/armGeometry';
 import {
-  buildProblem, buildVehicleProblem, runOptimizer, runVehicleOptimizer, varKey, parseVarKey, vehVarKey, parseVehVarKey, customVarKey, parseCustomVarKey, customOfVariable,
+  buildProblem, buildVehicleProblem, runOptimizer, runVehicleOptimizer, vehUpdateOf, vehScalarKey, parseVehScalarKey, varKey, parseVarKey, vehVarKey, parseVehVarKey, customVarKey, parseCustomVarKey, customOfVariable,
   pointKeyOf, designRoots, type RunHandle, type RunResult,
 } from '../optimizer';
 import { ValueInput } from './ValueInput';
@@ -672,6 +674,70 @@ function VehiclePresets() {
   );
 }
 
+const ADJ_LABEL: Record<VehScalar, string> = { staticCamber: 'Static camber', staticToe: 'Static toe', tirePressure: 'Tire pressure', rideHeight: 'Ride height' };
+const ADJ_UNIT: Record<VehScalar, string> = { staticCamber: '°', staticToe: '°', tirePressure: 'kPa', rideHeight: 'mm' };
+
+/**
+ * Round 5: the vehicle optimizer's other variables — what a mechanic adjusts without moving a pickup point: each
+ * design's static camber, toe and tire pressure, each axle's static ride height. Free / fixed and their ranges.
+ */
+function Adjustments({ roots, all, ranges, update }: {
+  roots: CornerId[]; all: Record<CornerId, CornerDesign>; ranges: Record<string, { lo: Field; hi: Field }>;
+  update: (fn: (r: Record<string, { lo: Field; hi: Field }>) => Record<string, { lo: Field; hi: Field }>) => void;
+}) {
+  const rideHeight = useApp((s) => s.rideHeight);
+  const rows: { key: string; label: string; name: VehScalar; now: string }[] = [];
+  for (const root of roots) {
+    const d = all[root];
+    rows.push({ key: vehScalarKey(root, 'staticCamber'), label: `${root} static camber`, name: 'staticCamber', now: d.geom.scalars.staticCamber.text });
+    rows.push({ key: vehScalarKey(root, 'staticToe'), label: `${root} static toe`, name: 'staticToe', now: d.geom.scalars.staticToe.text });
+    if (d.tireModel === 'gas') rows.push({ key: vehScalarKey(root, 'tirePressure'), label: `${root} tire pressure`, name: 'tirePressure', now: d.tire.pressure.text });
+  }
+  for (const [root, axle] of [['FL', 'front'], ['RL', 'rear']] as const) {
+    rows.push({ key: vehScalarKey(root, 'rideHeight'), label: `Ride height, ${axle}`, name: 'rideHeight', now: rideHeight.on ? rideHeight[axle].text : 'design' });
+  }
+  const setBound = (key: string, which: 'lo' | 'hi', text: string) => update((r) => {
+    const n = Number(text);
+    return r[key] && Number.isFinite(n) ? { ...r, [key]: { ...r[key]!, [which]: { text, value: n } } } : r;
+  });
+  const free = (key: string, on: boolean) => update((r) => {
+    if (!on) { const { [key]: _drop, ...rest } = r; void _drop; return rest; }
+    const def = adjustmentRanges(useApp.getState())[key];
+    return def ? { ...r, [key]: def } : r;
+  });
+  return (
+    <Section title="Adjustments" open={rows.some((x) => ranges[x.key])}>
+      <p className="hint">What a mechanic sets without moving a pickup point: static camber and toe (the wheel's alignment at the design position — moving points changes how they change with travel, not these), tire pressure (gas tire model) and ride height (the spring preload). Free ones move with the points; locked ones (Locks tab) can't be freed.</p>
+      <div className="jm-row">
+        <button className="chip" onClick={() => update((r) => ({ ...r, ...adjustmentRanges(useApp.getState()) }))} title="Free every adjustment that isn't locked, with its default range">Free all</button>
+        <button className="chip" onClick={() => update((r) => Object.fromEntries(Object.entries(r).filter(([k]) => !parseVehScalarKey(k))))} title="Fix every adjustment">Fix all</button>
+      </div>
+      <table className="opt-table">
+        <thead><tr><th>Free</th><th>Adjustment</th><th>Now</th><th>Range</th></tr></thead>
+        <tbody>
+          {rows.map((x) => {
+            const r = ranges[x.key];
+            return (
+              <tr key={x.key}>
+                <td><input type="checkbox" checked={!!r} onChange={(e) => free(x.key, e.target.checked)} /></td>
+                <td>{x.label}</td>
+                <td className="num">{x.now} {x.now !== 'design' ? ADJ_UNIT[x.name] : ''}</td>
+                <td className="nowrap">{r ? (
+                  <>
+                    <input type="number" style={{ width: 64 }} defaultValue={r.lo.text} onBlur={(e) => setBound(x.key, 'lo', e.target.value)} />
+                    {' – '}
+                    <input type="number" style={{ width: 64 }} defaultValue={r.hi.text} onBlur={(e) => setBound(x.key, 'hi', e.target.value)} /> {ADJ_UNIT[x.name]}
+                  </>
+                ) : <span className="muted">fixed</span>}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </Section>
+  );
+}
+
 export function VehicleOptimizePanel() {
   const o = useApp((s) => s.vehicleOptimizer);
   const update = useApp((s) => s.updateVehicleOptimizer);
@@ -825,6 +891,7 @@ export function VehicleOptimizePanel() {
           </div>
         )}
       />
+      <Adjustments roots={roots.map((r) => r.root)} all={all} ranges={o.ranges} update={(fn) => update((v) => ({ ...v, ranges: fn(v.ranges) }))} />
       <Section title="What matters most" open={false}>
         <SensitivityReport build={() => buildVehicleProblem(useApp.getState())} current={geometryKey} what="the optimizer's miss" />
       </Section>
@@ -832,10 +899,10 @@ export function VehicleOptimizePanel() {
         <RunArea
           useRun={useVehicleRun} blockers={built.blockers} meta={VEHICLE_GOAL_META} current={geometryKey}
           label="Optimize vehicle"
-          notes={skippedNote(built.skippedLocked, (k) => { const v = parseVehVarKey(k)!; return `${v.root} ${POINT_LABELS[v.k]} ${AXES[v.axis]}`; }, built.problem.holds ?? [])}
+          notes={skippedNote(built.skippedLocked, (k) => { const sv = parseVehScalarKey(k); if (sv) return `${sv.name === 'rideHeight' ? (sv.root === 'FL' ? 'front' : 'rear') : sv.root} ${ADJ_LABEL[sv.name].toLowerCase()}`; const v = parseVehVarKey(k)!; return `${v.root} ${POINT_LABELS[v.k]} ${AXES[v.axis]}`; }, built.problem.holds ?? [])}
           start={(onP) => runVehicleOptimizer(built.problem, onP)}
           onApply={(r) => {
-            applyVehicleOptimized(r.variables.map((v) => ({ root: v.root!, key: pointKeyOf(v.point), axis: v.axis, value: v.after })));
+            applyVehicleOptimized(r.variables.map((v) => vehUpdateOf(v, v.after)));
             notify('Optimized geometry applied to the corner designs. Undo is in the Optimize tab.');
           }}
           undo={{ available: !!vehOptUndo, run: undoVehicleOptimized }}

@@ -221,6 +221,39 @@ export interface VehicleEval {
   limit?: LateralLimit | null;
 }
 
+/**
+ * The vehicle optimizer's variables beyond the points (round 5): a design's tire set pressure, an axle's static ride
+ * height. The problem at x with them set (static camber / toe are in the geometry: geometriesFor).
+ */
+export function problemAt(p: VehicleProblem, x: number[]): VehicleProblem {
+  let q = p;
+  p.variables.forEach((v, i) => {
+    const val = x[i]!;
+    if (v.point === 'tirePressure') {
+      const d = q.designs[v.root];
+      if (!d || d.model.kind !== 'gas') return;
+      q = { ...q, designs: { ...q.designs, [v.root]: { ...d, model: { ...d.model, conditions: { ...d.model.conditions, setPressure: val } } } } };
+    } else if (v.point === 'rideHeight') {
+      q = { ...q, rideHeight: { ...q.rideHeight, [isFront(v.root) ? 'front' : 'rear']: val } };
+    }
+  });
+  return q;
+}
+
+/** A variable's value in the problem as it is (points, camber / toe from the geometry; pressure, ride height). */
+export function vehicleVariableValue(p: VehicleProblem, v: VehicleVariable, designRide?: number): number {
+  if (v.point === 'tirePressure') { const m = p.designs[v.root]?.model; return m && m.kind === 'gas' ? m.conditions.setPressure : NaN; }
+  if (v.point === 'rideHeight') return (isFront(v.root) ? p.rideHeight?.front : p.rideHeight?.rear) ?? designRide ?? NaN;
+  return variableValue(p.designs[v.root]!.geometry, v);
+}
+
+/** The design ride height (mm: the car at its design position, −ground Y) — what a ride-height variable starts from when none is set. */
+export function designRideHeight(p: VehicleProblem): number {
+  const geoms = Object.fromEntries(Object.entries(p.designs).map(([r, d]) => [r, d!.geometry])) as Partial<Record<CornerId, DoubleWishboneGeometry>>;
+  const asm = assembleVehicle({ ...p, rideHeight: undefined }, geoms);
+  return asm ? -asm.groundY : NaN;
+}
+
 const geometriesFor = (p: VehicleProblem, x: number[]) => {
   const out: Partial<Record<CornerId, DoubleWishboneGeometry>> = {};
   for (const root of Object.keys(p.designs) as CornerId[]) {
@@ -663,9 +696,10 @@ export interface VehicleOptimizeResult extends VehicleReport { lsq: LsqResult }
 
 export function reportVehicle(p: VehicleProblem, x: number[]): VehicleReport {
   const geometries = geometriesFor(p, x);
-  const x0 = p.variables.map((v) => variableValue(p.designs[v.root]!.geometry, v));
-  const before = evaluateVehicle(p, geometriesFor(p, x0));
-  const after = evaluateVehicle(p, geometries);
+  const ride0 = p.variables.some((v) => v.point === 'rideHeight') ? designRideHeight(p) : undefined;
+  const x0 = p.variables.map((v) => vehicleVariableValue(p, v, ride0));
+  const before = evaluateVehicle(problemAt(p, x0), geometriesFor(p, x0));
+  const after = evaluateVehicle(problemAt(p, x), geometries);
   return {
     geometries,
     variables: p.variables.map((v, i) => {
@@ -684,13 +718,14 @@ export function reportVehicle(p: VehicleProblem, x: number[]): VehicleReport {
 /** The vehicle optimizer's objective: residuals of the goals, holds, keep-close and packaging at x. */
 export function vehicleObjective(p: VehicleProblem) {
   const goals = p.goals.filter((g) => g.weight > 0);
-  const x0 = p.variables.map((v) => variableValue(p.designs[v.root]!.geometry, v));
+  const ride0 = p.variables.some((v) => v.point === 'rideHeight') ? designRideHeight(p) : undefined;
+  const x0 = p.variables.map((v) => vehicleVariableValue(p, v, ride0));
   const lo = p.variables.map((v) => Math.min(v.lo, v.hi));
   const hi = p.variables.map((v) => Math.max(v.lo, v.hi));
   const holds = (p.holds ?? []).map((h) => ({ h, v0: holdTarget(p.designs[h.root]!.geometry, h) }));
   const keep = Math.sqrt(p.keepClose ?? 0.01);
   const guesses: Partial<Record<string, ChassisPose>> = {};
-  const start = evaluateVehicle(p, geometriesFor(p, x0), guesses);
+  const start = evaluateVehicle(problemAt(p, x0), geometriesFor(p, x0), guesses);
   const refs = new Map(goals.filter((g) => VEHICLE_GOAL_META[g.kind].maximize).map((g) => [g.kind, start ? vehicleGoalValue(g.kind, p, start) : null]));
 
   // Every evaluation warm-starts from the start's solved poses, never from the last point evaluated (round 5):
@@ -699,7 +734,7 @@ export function vehicleObjective(p: VehicleProblem) {
   // (default car, Autocross (simple): 14.01 vs 13.96 s after one round).
   const residuals = (x: number[]): number[] | null => {
     const geoms = geometriesFor(p, x);
-    const e = evaluateVehicle(p, geoms, guesses, true);
+    const e = evaluateVehicle(problemAt(p, x), geoms, guesses, true);
     if (!e) return null;
     const r: number[] = [];
     for (const goal of goals) {
@@ -723,7 +758,7 @@ export function optimizeVehicle(p: VehicleProblem, onIteration?: (info: Progress
 /** The free variables' start and range (without evaluating anything). */
 export function vehicleBounds(p: VehicleProblem): { x0: number[]; lo: number[]; hi: number[] } {
   return {
-    x0: p.variables.map((v) => variableValue(p.designs[v.root]!.geometry, v)),
+    x0: (() => { const ride0 = p.variables.some((v) => v.point === 'rideHeight') ? designRideHeight(p) : undefined; return p.variables.map((v) => vehicleVariableValue(p, v, ride0)); })(),
     lo: p.variables.map((v) => Math.min(v.lo, v.hi)),
     hi: p.variables.map((v) => Math.max(v.lo, v.hi)),
   };
@@ -775,7 +810,7 @@ export interface SensitivitySample { cost: number; values: number[] }
 /** One DOE point: the optimizer's total miss and each goal's value (NaN where it can't be evaluated). */
 export function sensitivitySample(p: VehicleProblem, obj: ReturnType<typeof vehicleObjective>, x: number[]): SensitivitySample {
   const r = obj.residuals(x);
-  const e = r ? evaluateVehicle(p, geometriesFor(p, x), obj.guesses, true) : null;
+  const e = r ? evaluateVehicle(problemAt(p, x), geometriesFor(p, x), obj.guesses, true) : null;
   return {
     cost: r ? 0.5 * r.reduce((a, v) => a + v * v, 0) : NaN,
     values: obj.goals.map((g) => (e ? vehicleGoalValue(g.kind, p, e) ?? NaN : NaN)),

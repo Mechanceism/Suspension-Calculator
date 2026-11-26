@@ -13,8 +13,7 @@ import {
 } from '../core/optimize/corner';
 import {
   VEHICLE_GOAL_KINDS, VEHICLE_GOAL_META, reportVehicle, vehicleSteps, vehicleBounds, sensitivityPlan, sensitivityResult,
-  type SensitivitySample, type VehicleProblem, type VehicleReport, type VehicleVariable, type VehicleHold,
-} from '../core/optimize/vehicle';
+  type SensitivitySample, type VehicleProblem, type VehicleReport, type VehicleVariable, type VehicleHold, designRideHeight, vehicleVariableValue } from '../core/optimize/vehicle';
 import type { GripModel } from '../core/tire/grip';
 import type { MFCoeffs, TireGrip } from '../core/tire/magicFormula';
 import type { TirModel } from '../core/tire/tir';
@@ -30,8 +29,7 @@ import { inputPerRev } from '../core/tests/steer';
 import { ratioSpecOf, layoutOf,
   POINT_KEYS, rootOf, toGeometry, toProfile, toForceModel, mergedCorners, vehicleStaticLoads, defaultOptimizerSetup, GRIP_KEYS, MF_KEYS,
   DEFAULT_DAMPER_CURVE, type DamperCurveText, type AppState, type FadeKey, type PointKey, type OptimizerSetup, type SharedDesign, type GripKey, type MFKey, type Field, type DamperKey, type DamperMode,
-  type BrakeKey, type BrakeMoreKey,
-} from './store';
+  type BrakeKey, type BrakeMoreKey, isVehScalar, type VehScalar, type VehUpdateKey } from './store';
 import { STATE_KEY } from './anchors';
 import { lockKeys, pointAxisLocked } from './locks';
 import { toSpec } from './heldDimensions';
@@ -62,6 +60,21 @@ export function customOfVariable(id: string): { joint: string; which: 'p' | 'q' 
   const [, joint, which] = id.split(':');
   return { joint: joint!, which: which === 'q' ? 'q' : 'p' };
 }
+/**
+ * Round 5: the vehicle optimizer's other variables — `FL.scalar.staticCamber` / `staticToe` / `tirePressure` (a
+ * design's), `FL.scalar.rideHeight` (the front axle's) and `RL.scalar.rideHeight` (the rear's).
+ */
+export const vehScalarKey = (root: CornerId, name: VehScalar) => `${root}.scalar.${name}`;
+export function parseVehScalarKey(key: string): { root: CornerId; name: VehScalar } | null {
+  const [root, mid, name] = key.split('.');
+  return (CORNER_IDS as string[]).includes(root!) && mid === 'scalar' && isVehScalar(name ?? '') ? { root: root as CornerId, name: name as VehScalar } : null;
+}
+/** A vehicle optimizer result variable as a store update (a point, or one of the other variables). */
+export const vehUpdateOf = (v: { root?: CornerId; point: HardpointId | string; axis: 0 | 1 | 2 }, value: number): { root: CornerId; key: VehUpdateKey; axis: 0 | 1 | 2; value: number } =>
+  ({ root: v.root!, key: isVehScalar(v.point) ? v.point : pointKeyOf(v.point as HardpointId), axis: v.axis, value });
+/** The range key of a vehicle variable. */
+export const vehRangeKeyOf = (u: { root: CornerId; key: VehUpdateKey; axis: 0 | 1 | 2 }) => (isVehScalar(u.key) ? vehScalarKey(u.root, u.key) : vehVarKey(u.root, u.key, u.axis));
+
 /** Vehicle optimizer keys carry the design (root corner): `FL.trInner.y`. */
 export const vehVarKey = (root: CornerId, k: PointKey, axis: 0 | 1 | 2) => `${root}.${varKey(k, axis)}`;
 export function parseVehVarKey(key: string): { root: CornerId; k: PointKey; axis: 0 | 1 | 2 } | null {
@@ -339,6 +352,16 @@ export function buildVehicleProblem(s: AppState, over: { caseSource?: string; pl
   const variables: VehicleVariable[] = [];
   const skippedLocked: string[] = [];
   for (const [key, r] of Object.entries(o.ranges)) {
+    // Round 5: a design's static camber / toe / tire pressure, an axle's ride height.
+    const sv = parseVehScalarKey(key);
+    if (sv) {
+      const d = all[sv.root];
+      const lock = sv.name === 'tirePressure' ? lockKeys.field(sv.root, 'tire', 'pressure') : sv.name === 'rideHeight' ? null : lockKeys.field(sv.root, 'scalar', sv.name);
+      const usable = sv.name === 'rideHeight' ? (sv.root === 'FL' || sv.root === 'RL') : roots.includes(sv.root) && (sv.name !== 'tirePressure' || d.tireModel === 'gas');
+      if (!usable || (lock && s.locks[lock])) { skippedLocked.push(key); continue; }
+      variables.push({ root: sv.root, point: sv.name, axis: 0, lo: r.lo.value, hi: r.hi.value });
+      continue;
+    }
     const v = parseVehVarKey(key);
     if (!v) continue;
     if (!roots.includes(v.root) || pointAxisLocked(s.locks, v.root, v.k, v.axis, all[v.root].geom.damperArm, all[v.root].geom.kind, layoutOf(all[v.root].geom), all[v.root].geom.steerMechanism, all[v.root].geom.steeredAxle)) { skippedLocked.push(key); continue; }
@@ -437,7 +460,7 @@ export const runOptimizer = (problem: CornerProblem, onProgress: (p: ProgressInf
 const runVehicleOnce = (problem: VehicleProblem, onProgress: (p: ProgressInfo) => void): RunHandle<VehicleReport> =>
   POOL_SIZE > 1 && problem.variables.length > 1
     ? runVehicleParallel(problem, onProgress)
-    : run('vehicle', problem, onProgress, (x) => reportVehicle(problem, x ?? problem.variables.map((v) => variableValue(problem.designs[v.root]!.geometry, v))));
+    : run('vehicle', problem, onProgress, (x) => reportVehicle(problem, x ?? (() => { const ride0 = problem.variables.some((v) => v.point === 'rideHeight') ? designRideHeight(problem) : undefined; return problem.variables.map((v) => vehicleVariableValue(problem, v, ride0)); })()));
 
 /**
  * The vehicle optimizer. With the Shimmy margin goal, a final check before the result is offered: the worn

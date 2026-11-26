@@ -37,11 +37,12 @@ export type HardpointId =
   | 'pitmanEnd' | 'idlerPivot1' | 'idlerPivot2' | 'idlerEnd'
   /** Custom linkage: a joint's point, `custom:<joint id>:p` or `:q`. */
   | `custom:${string}`
-  /** Not points (axis 0): static camber and toe (deg), the tire's set pressure (kPa). */
-  | 'staticCamber' | 'staticToe' | 'tirePressure';
+  /** Not points (axis 0): static camber and toe (deg), the tire's set pressure (kPa); the vehicle optimizer also
+   * an axle's static ride height (mm; its root 'FL' = front, 'RL' = rear — round 5). */
+  | 'staticCamber' | 'staticToe' | 'tirePressure' | 'rideHeight';
 
 /** Variables that aren't point coordinates. */
-export const SCALAR_VARIABLES = ['staticCamber', 'staticToe', 'tirePressure'] as const;
+export const SCALAR_VARIABLES = ['staticCamber', 'staticToe', 'tirePressure', 'rideHeight'] as const;
 const isScalar = (id: string) => (SCALAR_VARIABLES as readonly string[]).includes(id);
 /** Static camber and toe of a geometry, deg (from its spin axis). */
 export const staticCamberToe = (g: DoubleWishboneGeometry) => {

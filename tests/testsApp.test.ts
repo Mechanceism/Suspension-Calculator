@@ -86,8 +86,10 @@ describe('road surface in tests', () => {
     d.tests = [t];
     const back = importProject(JSON.parse(JSON.stringify(serializeProject(d, 'R')))).design.tests[0]!;
     expect(back.segments[1]!.features.map((f) => f.kind)).toEqual(['bump', 'pothole']);
-    expect(back.segments[3]!.rough.on).toBe(true);
-    expect(roadSpecOf(back.segments[3]!)).toEqual(roadSpecOf(t.segments[3]!));
+    // (Found by name: round 5 added transition segments to the preset.)
+    const lumpy = t.segments.findIndex((s) => s.name === 'Lumpy decline right turn');
+    expect(back.segments[lumpy]!.rough.on).toBe(true);
+    expect(roadSpecOf(back.segments[lumpy]!)).toEqual(roadSpecOf(t.segments[lumpy]!));
     // An old test with lumpy: true and no rough field.
     const old = JSON.parse(JSON.stringify(serializeProject(d, 'R')));
     delete old.tests[0].segments[3].rough;

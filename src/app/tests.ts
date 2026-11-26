@@ -29,6 +29,12 @@ export interface TestSegment {
   longG: Field;
   /** % (+ uphill) */
   grade: Field;
+  /**
+   * A transition (round 5): the grade changes evenly along it from the segment before's to the segment after's
+   * (a rounded crest or dip; its length sets how gradual). Its own grade isn't used. Without one between two
+   * grades the change is abrupt — a sharp crest can launch the car.
+   */
+  transition?: boolean;
   /** deg (+ left side lower) */
   bank: Field;
   /** mm (+ bump, − pothole) */
@@ -168,6 +174,7 @@ export const SEGMENT_PRESETS: SegmentPreset[] = [
   { label: 'Left turn 30 mph, R 20 m', make: () => ({ name: 'Left turn', path: 'left', radius: f(20, 'distance'), distance: f(31, 'distance'), speedStart: f(30 * MPH, 'speed'), speedEnd: f(30 * MPH, 'speed') }) },
   { label: 'Right turn 30 mph, R 20 m', make: () => ({ name: 'Right turn', path: 'right', radius: f(20, 'distance'), distance: f(31, 'distance'), speedStart: f(30 * MPH, 'speed'), speedEnd: f(30 * MPH, 'speed') }) },
   { label: 'Incline 10%', make: () => ({ name: 'Incline', grade: f(10, 'percent') }) },
+  { label: 'Transition (rounds a change of grade)', make: () => ({ name: 'Transition', transition: true, distance: f(20, 'distance') }) },
   { label: 'Decline 10%', make: () => ({ name: 'Decline', grade: f(-10, 'percent') }) },
   { label: 'Speed bump (40 mm, both sides)', make: () => ({ name: 'Speed bump', speedStart: f(15 * MPH, 'speed'), speedEnd: f(15 * MPH, 'speed'), distance: f(30, 'distance'), features: [newFeature('bump', 12)] }) },
   { label: 'Pothole (right side, 50 mm)', make: () => ({ name: 'Pothole', features: [newFeature('pothole', 20)] }) },
@@ -235,7 +242,9 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
       segments: [
         newSegment({ name: 'Flat straight', distance: f(100, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(40 * MPH, 'speed') }),
         newSegment({ name: 'Bumps + potholes straight', distance: f(60, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(40 * MPH, 'speed'), features: [{ ...newFeature('bump', 15), side: 'left' }, newFeature('pothole', 35)] }),
+        newSegment({ name: 'Into the climb', transition: true, distance: f(15, 'distance'), speedStart: f(40 * MPH, 'speed'), speedEnd: f(35 * MPH, 'speed') }),
         newSegment({ name: 'Incline left turn', path: 'left', radius: f(40, 'distance'), grade: f(10, 'percent'), distance: f(60, 'distance'), speedStart: f(35 * MPH, 'speed'), speedEnd: f(35 * MPH, 'speed') }),
+        newSegment({ name: 'Crest', transition: true, distance: f(30, 'distance'), speedStart: f(35 * MPH, 'speed'), speedEnd: f(35 * MPH, 'speed') }),
         newSegment({ name: 'Lumpy decline right turn', path: 'right', radius: f(40, 'distance'), grade: f(-10, 'percent'), rough: { on: true, seed: 42, maxHeight: f(25, 'length'), scale: f(1.2, 'distance'), coverage: f(70, 'percent') }, distance: f(60, 'distance'), speedStart: f(35 * MPH, 'speed'), speedEnd: f(35 * MPH, 'speed') }),
       ],
     }),
@@ -258,8 +267,11 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
         segments: [
           newSegment({ name: 'Launch', distance: f(80, 'distance'), speedStart: f(0, 'speed'), speedEnd: f(70 / 3.6, 'speed'), rough: rough(11, 20) }),
           newSegment({ name: 'Fast left', path: 'left', radius: f(60, 'distance'), distance: f(70, 'distance'), speedStart: f(70 / 3.6, 'speed'), speedEnd: f(70 / 3.6, 'speed'), rough: rough(12) }),
+          newSegment({ name: 'Up to the crest', transition: true, distance: f(8, 'distance'), speedStart: f(80 / 3.6, 'speed'), speedEnd: f(80 / 3.6, 'speed') }),
           newSegment({ name: 'Crest', grade: f(8, 'percent'), distance: f(40, 'distance'), speedStart: f(80 / 3.6, 'speed'), speedEnd: f(80 / 3.6, 'speed'), rough: rough(13, 20) }),
+          newSegment({ name: 'Over the crest', transition: true, distance: f(8, 'distance'), speedStart: f(80 / 3.6, 'speed'), speedEnd: f(80 / 3.6, 'speed') }),
           newSegment({ name: 'Downhill', grade: f(-8, 'percent'), distance: f(40, 'distance'), speedStart: f(80 / 3.6, 'speed'), speedEnd: f(40 / 3.6, 'speed'), rough: rough(14) }),
+          newSegment({ name: 'Off the hill', transition: true, distance: f(8, 'distance'), speedStart: f(40 / 3.6, 'speed'), speedEnd: f(40 / 3.6, 'speed') }),
           newSegment({ name: 'Tight right', path: 'right', radius: f(25, 'distance'), distance: f(40, 'distance'), speedStart: f(40 / 3.6, 'speed'), speedEnd: f(40 / 3.6, 'speed'), rough: rough(15, 40) }),
           newSegment({ name: 'Straight', distance: f(100, 'distance'), speedStart: f(40 / 3.6, 'speed'), speedEnd: f(80 / 3.6, 'speed'), rough: rough(16) }),
           newSegment({ name: 'Medium left', path: 'left', radius: f(40, 'distance'), distance: f(60, 'distance'), speedStart: f(55 / 3.6, 'speed'), speedEnd: f(55 / 3.6, 'speed'), rough: rough(17, 35) }),
@@ -292,8 +304,9 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
         segments: [
           seg('Launch 0–50', 80, 0, 50), seg('Brake 50–30', 25, 50, 30), turn('Left turn 1', 'left'),
           seg('Accelerate 30–45', 50, 30, 45), seg('Brake 45–30', 20, 45, 30), turn('Right turn 1', 'right'),
-          seg('Uphill 6 %, accelerate 30–40', 60, 30, 40, 6), seg('Downhill 6 %, brake 40–30', 60, 40, 30, -6),
-          turn('Left turn 2', 'left'), seg('Accelerate 30–45', 50, 30, 45), seg('Brake 45–30', 20, 45, 30), turn('Right turn 2', 'right'),
+          { ...seg('Into the hill', 10, 30, 30), transition: true }, seg('Uphill 6 %, accelerate 30–40', 60, 30, 40, 6),
+          { ...seg('Over the top', 20, 40, 40), transition: true }, seg('Downhill 6 %, brake 40–30', 60, 40, 30, -6),
+          { ...seg('Off the hill', 10, 30, 30), transition: true }, turn('Left turn 2', 'left'), seg('Accelerate 30–45', 50, 30, 45), seg('Brake 45–30', 20, 45, 30), turn('Right turn 2', 'right'),
           seg('Exit 30–50', 60, 30, 50),
         ],
       };
@@ -309,7 +322,16 @@ export const TEST_PRESETS: { label: string; make: () => Omit<TestDesign, 'id'> }
 export const rankWeight = (rank: number, n: number) => Math.max(1, n + 1 - Math.min(Math.max(1, Math.round(rank)), n));
 
 /** Core spec of a segment, with the checks that apply to it. */
+/** A transition's grades (%, from → to): the nearest segments before and after it that aren't transitions (level when none). */
+export function transitionGrades(test: Pick<TestDesign, 'segments'> | undefined, s: TestSegment): { from: number; to: number } {
+  const segs = test?.segments ?? [];
+  const i = segs.findIndex((x) => x.id === s.id);
+  const near = (step: number) => { for (let j = i + step; j >= 0 && j < segs.length; j += step) if (!segs[j]!.transition) return segs[j]!.grade.value; return 0; };
+  return i < 0 ? { from: s.grade.value, to: s.grade.value } : { from: near(-1), to: near(1) };
+}
+
 export function segmentSpec(s: TestSegment, test?: TestDesign): TestSegmentSpec {
+  const tr = s.transition ? transitionGrades(test, s) : null;
   return {
     checks: s.checks ?? test?.checks,
     weight: rankWeight(s.rank, test?.segments.length ?? 1),
@@ -324,7 +346,8 @@ export function segmentSpec(s: TestSegment, test?: TestDesign): TestSegmentSpec 
       : Math.max(s.radius.value, 0.01)),
     latG: isOff(s.latG) ? null : s.latG.value,
     longG: isOff(s.longG) ? null : s.longG.value,
-    grade: Math.atan(s.grade.value / 100),
+    grade: Math.atan((tr ? tr.from : s.grade.value) / 100),
+    ...(tr ? { gradeEnd: Math.atan(tr.to / 100) } : {}),
     bank: (s.bank.value * Math.PI) / 180,
     bumps: Object.fromEntries(CORNER_IDS.filter((id) => s.bumps[id].value !== 0).map((id) => [id, s.bumps[id].value])),
     samples: 3,

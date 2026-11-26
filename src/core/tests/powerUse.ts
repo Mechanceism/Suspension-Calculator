@@ -8,7 +8,7 @@
  *  - the power the motor would need for the tires to be the limit everywhere it accelerated flat out, at the
  *    speeds it drove: max (the tires' push at the driver's push · v) ÷ η.
  */
-import { G, type SegmentSpec } from './segments';
+import { G, type SegmentSpec, gradeAlong } from './segments';
 import { combinedLimit, type PlanCar, type SegmentPlan } from './plan';
 import { wheelDrive, type Powertrain } from '../vehicle/powertrain';
 
@@ -53,7 +53,7 @@ export function powerUse(plans: SegmentPlan[], segments: SegmentSpec[], car: Pla
       u.time += dt; u.distance += ds;
       // The planner sets each step's acceleration from the speed it starts at: judged there too.
       const a = (v1 * v1 - v0 * v0) / (2 * ds), v = v0;
-      const F = m * a + dragA * v * v + m * G * (Math.sin(sg.grade) + crr);
+      const F = m * a + dragA * v * v + m * G * (Math.sin(gradeAlong(sg, pl.s[k - 1]!)) + crr);
       if (F <= 1e-6) continue; // coasting or braking
       u.wheelTorque = Math.max(u.wheelTorque, F * radius);
       u.wheelPower = Math.max(u.wheelPower, (F * v) / 1000);

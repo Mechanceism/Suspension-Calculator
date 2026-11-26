@@ -61,7 +61,7 @@ import {
 } from './store';
 
 export const FILE_FORMAT = 'suspension-calculator-project';
-export const FORMAT_VERSION = 49;
+export const FORMAT_VERSION = 50;
 export const APP_VERSION: string = pkg.version;
 
 type FieldJson = { text: string; value: number };
@@ -419,6 +419,8 @@ const MIGRATIONS: Record<number, (f: Json) => Json> = {
   47: (f) => ({ ...f, formatVersion: 48 }),
   // 48 → 49: a brake can be 'driveline' (one brake for the axle, through its differential); older files have none.
   48: (f) => ({ ...f, formatVersion: 49 }),
+  // 49 → 50: transition segments (a segment's grade rounding from the one before's to the one after's); older files have none.
+  49: (f) => ({ ...f, formatVersion: 50 }),
   39: (f) => ({ ...f, formatVersion: 40, ...(isObj(f.vehicle) && isObj(f.vehicle.fields) ? { vehicle: { ...f.vehicle, fields: { ...f.vehicle.fields, rollingResistance: { text: '0', value: 0 } } } } : {}) }),
   // 34 → 35: aero side force, roll sensitivity and balance shift off.
   34: (f) => ({ ...f, formatVersion: 35, ...(isObj(f.aero) && isObj(f.aero.fields) ? { aero: { ...f.aero, fields: { ...f.aero.fields, CsA: { text: '0', value: 0 }, sideCp: { text: '900', value: 900 }, rollSensF: { text: '0', value: 0 }, rollSensR: { text: '0', value: 0 }, yawBalance: { text: '0', value: 0 } } } } : {}) }),
@@ -481,6 +483,7 @@ function readTests(raw: unknown, warnings: string[]): TestDesign[] {
         bumps: Object.fromEntries(CORNER_IDS.map((id) => [id, fieldOr(bumpsRaw[id], 'length', d.bumps[id], where(`bump ${id}`))])) as TestSegment['bumps'],
         lumpy: sr.lumpy === true,
         ...(sr.coast === true ? { coast: true } : {}),
+        ...(sr.transition === true ? { transition: true } : {}),
         rough: (() => {
           const r = isObj(sr.rough) ? sr.rough : null;
           // Format 8 "lumpy" becomes a rough surface.

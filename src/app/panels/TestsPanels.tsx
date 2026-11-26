@@ -16,7 +16,7 @@ import { segmentLongG, segmentLatG, segmentDuration, type PathKind } from '../..
 import type { TestRun, StateResult } from '../../core/tests/run';
 import { CHECK_IDS, CHECK_META, PROFILES, cloneProfile, type CheckProfile, type Severity, type BuiltinProfile, type Finding } from '../../core/tests/checks';
 import { useApp, BRAKE_MORE_META, type Field } from '../store';
-import { SEGMENT_PRESETS, TEST_PRESETS, newSegment, newTestId, planOption, plannedSpeeds, driverSpeedOf, topSpeedOf, segmentSpec, isOff, OFF, type TestDesign, type TestSegment } from '../tests';
+import { SEGMENT_PRESETS, TEST_PRESETS, newSegment, newTestId, planOption, plannedSpeeds, driverSpeedOf, topSpeedOf, segmentSpec, transitionGrades, isOff, OFF, type TestDesign, type TestSegment } from '../tests';
 import { buildVehicleProblem, runTestJob, isCancelled } from '../optimizer';
 import { POOL_SIZE, runLimited } from '../workerPool';
 import { useTireChoice, TIRE_CATALOG, rankTires, applyTire, currentTire, type TireAxleChoice } from '../tireChoice';
@@ -288,7 +288,7 @@ function segmentSummary(seg: TestSegment, disp: ReturnType<typeof useDisplay>) {
   const sp = `${disp.format(seg.speedStart.value, 'm/s', 0)} → ${disp.format(seg.speedEnd.value, 'm/s', 0)}`;
   const path = seg.path === 'straight' ? 'straight' : `${seg.path === 'left' ? '↰' : '↱'} R ${disp.format(seg.radius.value, 'm', 0)}`;
   const road = [
-    seg.grade.value ? `${seg.grade.value > 0 ? '+' : ''}${seg.grade.value}%` : '',
+    seg.transition ? 'transition (grade rounds)' : seg.grade.value ? `${seg.grade.value > 0 ? '+' : ''}${seg.grade.value}%` : '',
     seg.bank.value ? `bank ${seg.bank.value}°` : '',
     CORNER_IDS.some((id) => seg.bumps[id].value) ? 'held bumps' : '',
     seg.features.length ? `${seg.features.length} bump/pothole` : '',
@@ -405,7 +405,7 @@ function SegmentEditor({ test, seg, index, wheelbase }: { test: TestDesign; seg:
             </>
           )}
           <tr className="seg-layer"><td colSpan={4}>Road</td></tr>
-          <RoadEditor seg={seg} upd={upd} />
+          <RoadEditor seg={seg} upd={upd} {...(seg.transition ? { grades: transitionGrades(test, seg) } : {})} />
           <tr className="seg-layer"><td colSpan={4}>Importance</td></tr>
           <tr title="Priority within the test when optimizing (P1 = most important; equal = same priority). Separate from the run order.">
             <td>Priority</td>

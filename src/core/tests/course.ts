@@ -3,7 +3,7 @@
  * make (straights and arcs, the same exact arcs as the playback frames and the track map), its height from
  * the grades, its bank, and the road under it (rough surface, bumps / potholes) across its width.
  */
-import type { SegmentSpec } from './segments';
+import { heightAlong, gradeAlong, type SegmentSpec } from './segments';
 import { roadHeight } from './road';
 import type { PlaybackFrame } from './run';
 
@@ -48,8 +48,8 @@ export function course(segs: Pick<SegmentSpec, 'distance' | 'path' | 'radius' | 
         x = x0 + sAlong * Math.cos(h0);
         y = y0 + sAlong * Math.sin(h0);
       }
-      z = z0 + sAlong * Math.sin(sg.grade);
-      out.push({ segment: i, s: sAlong, total: total + sAlong, x, y, z, heading, bank: sg.bank, grade: sg.grade });
+      z = z0 + heightAlong(sg, sAlong);
+      out.push({ segment: i, s: sAlong, total: total + sAlong, x, y, z, heading, bank: sg.bank, grade: gradeAlong(sg, sAlong) });
     }
     total += d;
   });

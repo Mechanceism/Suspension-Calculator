@@ -7,7 +7,7 @@
 import { assembleVehicle, solveCase, type VehicleProblem, type AssembledVehicle } from '../optimize/vehicle';
 import type { DoubleWishboneGeometry } from '../suspension/doubleWishbone';
 import { CORNER_IDS, type CornerId, type ChassisPose, type CornerStatus, type GripSummary, type VehicleResult } from '../vehicle/vehicle';
-import { segmentStates, segmentLatG, roadEffective, topSpeed, G, type RoadState, type SegmentSpec, type CarDims } from './segments';
+import { segmentStates, segmentLatG, roadEffective, topSpeed, G, type RoadState, type SegmentSpec, type CarDims, gradeAlong, vertCurvature } from './segments';
 import { planDuration, planSpeeds, SHAPE_LABEL, LAUNCH_SPEED, type PlanCar, type PlanShape, type SegmentPlan } from './plan';
 import { wheelHeights } from './road';
 import { steerForTurn, type SteerNeed } from './steer';
@@ -784,13 +784,13 @@ export function playbackFrames(
       heading += curv * ds;
       x += ds * Math.cos(heading);
       y += ds * Math.sin(heading);
-      z += ds * Math.sin(sg.grade);
+      z += ds * Math.sin(gradeAlong(sg, sAlong));
       const ay = segmentLatG(sg, v);
       const ax = sg.longG !== null && sg.longG !== undefined && Number.isFinite(sg.longG) ? sg.longG : a / G;
       const wh = sg.road ? wheelHeights(sg.road, sAlong, dims.wheelbase / 1000, dims.halfTrack / 1000) : { FL: 0, FR: 0, RL: 0, RR: 0 };
       const ground: Partial<Record<CornerId, number>> = {};
       for (const id of CORNER_IDS) { const h = (sg.bumps?.[id] ?? 0) + wh[id]; if (Math.abs(h) > 1e-6) ground[id] = h; }
-      const st: RoadState = { name: `${i + 1}@${sAlong.toFixed(1)}m`, segment: i, speed: v, ay, ax, at: sAlong, ...roadEffective(ay, ax, sg.grade, sg.bank), groundOffset: ground, grade: sg.grade, bank: sg.bank };
+      const st: RoadState = { name: `${i + 1}@${sAlong.toFixed(1)}m`, segment: i, speed: v, ay, ax, at: sAlong, ...roadEffective(ay, ax, gradeAlong(sg, sAlong), sg.bank, (v * v * vertCurvature(sg)) / G), groundOffset: ground, grade: gradeAlong(sg, sAlong), bank: sg.bank };
       const r = evalState(p, asm, st, checks, guess, sg);
       if (r.pose) guess = r.pose;
       let brakeTemp: AxleTemps | undefined;
@@ -803,7 +803,7 @@ export function playbackFrames(
         temp = brakeStep(th, temp, force, v, Math.min(dt, T - tt));
       }
       frames.push({
-        t: t0 + tt, segment: i, s: sAlong, speed: v, ay, ax, grade: sg.grade, bank: sg.bank, groundOffset: ground,
+        t: t0 + tt, segment: i, s: sAlong, speed: v, ay, ax, grade: gradeAlong(sg, sAlong), bank: sg.bank, groundOffset: ground,
         pos: { x, y, z }, heading, rack: r.steer?.rackUsed ?? 0, severity: r.severity,
         utilization: Object.fromEntries(CORNER_IDS.map((id) => [id, r.grip?.corners[id].utilization ?? NaN])) as Record<CornerId, number>,
         findings: r.findings.filter((f) => f.severity !== 'pass').map((f) => f.text),

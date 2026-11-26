@@ -32,7 +32,7 @@ import {
 import { solveLinear } from '../math/linalg';
 import { localPatch } from '../tire/geometry';
 import { tireForce } from '../tire/model';
-import { segmentLatG, roadEffective, G, type RoadState } from './segments';
+import { segmentLatG, roadEffective, G, type RoadState, gradeAlong, heightAlong } from './segments';
 import { wheelHeights } from './road';
 import { aeroForces } from '../vehicle/aero';
 import { swayTrailer, newSwayState, coupleTrailer, stepTrailer, followTrailer, swayOf, type SwayState } from './trailerSway';
@@ -327,14 +327,32 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
   // sits on the road with both axles (before, the grade eased over 0.3 s from when the front reached it, and
   // the rear sank into the road past a crest).
   const zStart: number[] = [];
-  segments.reduce((z, sg) => { zStart.push(z); return z + sg.distance * Math.sin(sg.grade); }, 0);
+  segments.reduce((z, sg) => { zStart.push(z); return z + heightAlong(sg, sg.distance); }, 0);
   const zAt = (S: number) => {
     if (S <= 0 || !segments.length) return S * Math.sin(segments[0]?.grade ?? 0);
     let j = 0;
     while (j < segments.length - 1 && S >= starts[j + 1]!) j++;
-    return zStart[j]! + (S - starts[j]!) * Math.sin(segments[j]!.grade);
+    return zStart[j]! + heightAlong(segments[j]!, S - starts[j]!);
   };
   const gradeAt = (S: number) => (wb > 0 ? Math.asin(Math.max(-1, Math.min(1, (zAt(S) - zAt(S - wb)) / wb))) : segments[0]?.grade ?? 0);
+  /** The road's own grade at a distance (a straight slope, or changing evenly along a transition; before the start, the first's). */
+  const slopeAt = (S: number) => {
+    let j = 0;
+    while (j < segments.length - 1 && S >= starts[j + 1]!) j++;
+    const sg = segments[j];
+    return sg ? gradeAlong(sg, S - starts[j]!) : 0;
+  };
+  /**
+   * The road frame's motion (round 5, the car isn't glued to the road): the model works in the frame of the line
+   * between the road points under the two axles (its ground plane), so where the road's grade changes that frame
+   * moves — at the front axle at u·sin(γ_front − γ_chord) normal to itself, and turns at (v_rear − v_front) / wb.
+   * Returned as the body's heave velocity (m/s, at the front axle) and pitch rate (rad/s) that ride along with it.
+   */
+  const frameVel = (S: number, u: number) => {
+    const gc = gradeAt(S);
+    const vF = u * Math.sin(slopeAt(S) - gc), vR = u * Math.sin(slopeAt(S - wb) - gc);
+    return { heave: vF, pitch: wb > 0 ? (vR - vF) / wb : 0 };
+  };
   const kappaAt = (S: number) => {
     let j = 0;
     while (j < segments.length - 1 && S >= starts[j + 1]!) j++;
@@ -432,6 +450,8 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
   let kickMean = NaN, maxKick = 0;
   let H: HandlingState | null = null;
   let maxPathError = 0, maxSideslip = 0, maxSway = 0;
+  /** The road frame's last motion (frameVel): its change each step is taken out of the body's motion relative to it. */
+  let frameV: { heave: number; pitch: number } | null = null;
   /** Forces of the tires on the handling state; in the slow (kinematic) mode, what the motion needs. */
   const handlingNow = (u: number, grav: number): HandlingForces => {
     const wheels = wheelAngles(car!.table, H!.rack, H!.delta);
@@ -593,7 +613,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     segment, frameCount: (resume?.frameCount ?? 0) + frames.length, frameDt,
     state: structuredClone({
       x, v, loads, caps, groundPrev, loadMean, status, tires, bumpPush, bumpWork, dissipated, push, kickMean, maxKick, H, TS, rtdot, yawNow,
-      maxPathError, maxSideslip, maxSway, t0, nextFrame, x2d, y2d, heading, uDrv, sCarry, liftTime, bumpStopTime, loadVarSum, accSum, metricCount, lastMetricT, lastFy,
+      maxPathError, maxSideslip, maxSway, t0, nextFrame, x2d, y2d, heading, uDrv, sCarry, liftTime, bumpStopTime, loadVarSum, accSum, metricCount, lastMetricT, lastFy, frameV,
     }),
   });
   if (resume) {
@@ -602,7 +622,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       tires: typeof tires; bumpPush: number; bumpWork: number; dissipated: number; push: typeof push; kickMean: number; maxKick: number; H: HandlingState | null;
       TS: SwayState | null; rtdot: number; yawNow: number | undefined; maxPathError: number; maxSideslip: number; maxSway: number; t0: number; nextFrame: number;
       x2d: number; y2d: number; heading: number; uDrv: number; sCarry: number; liftTime: number; bumpStopTime: number; loadVarSum: number; accSum: number;
-      metricCount: number; lastMetricT: number; lastFy: Record<CornerId, number> | null;
+      metricCount: number; lastMetricT: number; lastFy: Record<CornerId, number> | null; frameV?: { heave: number; pitch: number } | null;
     };
     x.splice(0, x.length, ...st.x); v.splice(0, v.length, ...st.v);
     loads = st.loads; caps = st.caps; groundPrev = st.groundPrev; tires = st.tires;
@@ -613,6 +633,7 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
     t0 = st.t0; nextFrame = st.nextFrame; x2d = st.x2d; y2d = st.y2d; heading = st.heading; uDrv = st.uDrv; sCarry = st.sCarry;
     liftTime = st.liftTime; bumpStopTime = st.bumpStopTime; loadVarSum = st.loadVarSum; accSum = st.accSum; metricCount = st.metricCount; lastMetricT = st.lastMetricT;
     lastFy = st.lastFy;
+    frameV = st.frameV ?? null;
   }
   let ended: RideEnd | undefined;
   segments.forEach((sg, i) => {
@@ -661,7 +682,8 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
         // grade and rolling resistance the driver expects), within their grip and the pedals the car has;
         // coasting, nothing. The car then speeds up or slows by what the forces leave, bumps included.
         const mass = p.mass;
-        const drag = dragAt(uDrv), gradeF = mass * G * Math.sin(sg.grade), rr = crr * mass * G * Math.cos(sg.grade);
+        const gNow = gradeAlong(sg, Math.min(sDrv, sg.distance));
+        const drag = dragAt(uDrv), gradeF = mass * G * Math.sin(gNow), rr = crr * mass * G * Math.cos(gNow);
         let Ft = sg.coast ? 0 : mass * aCmd + drag + gradeF + rr;
         // Within the tires as they are now (round 4): each driven / braked tire's grip along the road at its load
         // this step, after the side force it carries — a tire going light over a bump or loaded up in a turn
@@ -742,6 +764,17 @@ export function rideOn(p: VehicleProblem, asm: AssembledVehicle, segments: TestS
       const gdot = {} as Record<CornerId, number>;
       for (const id of CORNER_IDS) gdot[id] = (kin.ground[id] - groundPrev[id]) / 1000 / h;
       groundPrev = { ...kin.ground };
+      // The car keeps its own momentum when the road frame changes its motion (round 5): where the grade changes,
+      // the frame's change of heave velocity and pitch rate comes out of the body's velocity relative to it. Over
+      // a crest the road drops away — the car rises off it and flies if the road falls faster than gravity pulls
+      // it down, keeping its pitch rate, and lands through its tires and suspension; into a dip it's pressed down.
+      // (A smooth vertical curve gives the same gradually: the car goes light by u²/R. The frame's own rotation
+      // terms — centrifugal, Coriolis — are left out: small, only while a change of grade is under the car.)
+      {
+        const fv = frameVel(starts[i]! + kin.s, kin.v);
+        if (frameV) { v[0] = v[0]! - (fv.heave - frameV.heave); v[2] = v[2]! - (fv.pitch - frameV.pitch); }
+        frameV = fv;
+      }
       // RK4 on (x, v).
       const deriv = (xs: number[], vs: number[]) => evaluate(input, fs, f, gdot, xs, vs).acc;
       const add = (a: number[], b: number[], s: number) => a.map((ai, j) => ai + b[j]! * s);

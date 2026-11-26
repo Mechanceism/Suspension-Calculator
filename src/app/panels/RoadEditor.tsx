@@ -80,7 +80,7 @@ function RoadPreview({ seg }: { seg: TestSegment }) {
   );
 }
 
-export function RoadEditor({ seg, upd }: { seg: TestSegment; upd: (fn: (s: TestSegment) => TestSegment) => void }) {
+export function RoadEditor({ seg, upd, grades }: { seg: TestSegment; upd: (fn: (s: TestSegment) => TestSegment) => void; /** A transition's grades (%), from → to. */ grades?: { from: number; to: number } }) {
   const disp = useDisplay();
   const r = seg.rough;
   const setRough = (patch: Partial<TestSegment['rough']>) => upd((s) => ({ ...s, rough: { ...s.rough, ...patch } }));
@@ -88,11 +88,19 @@ export function RoadEditor({ seg, upd }: { seg: TestSegment; upd: (fn: (s: TestS
     upd((s) => ({ ...s, features: s.features.map((f) => (f.id === id ? { ...f, ...patch } : f)) }));
   return (
     <>
-      <tr title="+ = uphill (incline), − = downhill (decline)">
-        <td>Grade</td>
-        <td><ValueInput field={seg.grade} unit="%" width={56} onCommit={(t) => upd((s) => ({ ...s, grade: parse(t, 'percent', s.grade) }))} /></td>
-        <td className="unit">%</td><td />
+      <tr title="A transition rounds a change of grade: along it the grade goes evenly from the segment before's to the segment after's (a crest or a dip; longer = more gradual). Without one the change is abrupt — a sharp crest can launch the car.">
+        <td>Transition</td>
+        <td colSpan={3}><label className="check-inline"><input type="checkbox" checked={!!seg.transition} onChange={(e) => upd((s) => ({ ...s, transition: e.target.checked || undefined }))} /> rounds the change of grade</label></td>
       </tr>
+      {seg.transition ? (
+        <tr><td>Grade</td><td colSpan={3} className="muted small-text">from the segment before's to the segment after's{grades ? ` (${grades.from} % → ${grades.to} %)` : ''}</td></tr>
+      ) : (
+        <tr title="+ = uphill (incline), − = downhill (decline)">
+          <td>Grade</td>
+          <td><ValueInput field={seg.grade} unit="%" width={56} onCommit={(t) => upd((s) => ({ ...s, grade: parse(t, 'percent', s.grade) }))} /></td>
+          <td className="unit">%</td><td />
+        </tr>
+      )}
       <tr title="+ = left side lower">
         <td>Bank</td>
         <td><ValueInput field={seg.bank} unit="°" width={56} onCommit={(t) => upd((s) => ({ ...s, bank: parse(t, 'angle', s.bank) }))} /></td>
